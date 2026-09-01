@@ -57,10 +57,14 @@ jobs:
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260907000000_claim_challenge_safety.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260909000000_m3_shadow_receipts.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260909000000_m3_shadow_receipts.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/game_identity_contract.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/character_onboarding_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_shadow_receipt_contract.sql
           CLAIM_CHALLENGE_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/claim_challenge_lock_expiry.sh
           SERVICE_RPC_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/service_rpc_lock_expiry.sh
+          M3_SHADOW_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/m3_shadow_receipt_lock_expiry.sh
 
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
