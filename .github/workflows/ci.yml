@@ -250,7 +250,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make -C src cdto-v1-sanitizer-test CC=gcc
           gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
             -I src tests/unit/onboarding_admission_test.c \
             src/onboarding_admission.c src/onboarding_session.c \
@@ -282,6 +281,17 @@ jobs:
           ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
           UBSAN_OPTIONS=halt_on_error=1 \
             "$RUNNER_TEMP/staged-player-sanitized-test"
+
+      - name: CDTO and journal sanitizers
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-sanitizer-test CC=gcc
+          make -C src cdto-v1-sanitizer-test CC=gcc
+          make -C src object-v1-sanitizer-test CC=gcc
+          make -C src object-graph-v1-sanitizer-test CC=gcc
+          make -C src creature-v1-sanitizer-test CC=gcc
 
       - name: Deterministic AI scenario
         if: matrix.runner == 'ubuntu-latest'
