@@ -27,8 +27,8 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | M1 C·Gateway·Web·SQL 구현 | 로컬 통합 GREEN, testnet 미배포 | 실제 C+Gateway+PostgREST+PostgreSQL 17 stack과 browser 8/8 시나리오가 GREEN. gateway 75/75, reconciler 18/18, importer 15 pass·2 skip, web 17/17 단위 결과도 GREEN. testnet 승격 gate는 아직 남아 있음 |
 | durable onboarding receipt | 컴포넌트 GREEN | `pending → saved → committed` fsync 기록, startup 복구, sanitizer, C player `0600`/shard `0700` writer와 Helm PVC 권한 계약 GREEN |
 | out-of-band reconciler | 컴포넌트 GREEN | no-follow 파일/hash와 exact service RPC, committed 무변이, process-local 중복 억제, aggregate-only polling 및 공격 테스트 GREEN |
-| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 기존 tmpfs PostgreSQL 17 test container에서 bootstrap+020..080을 두 번 적용하고 SQL contracts, claim challenge 및 session/renew/onboarding lock-expiry harness를 직접 GREEN으로 검증. CI도 080을 두 번 적용하도록 고정 |
-| testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 14/14 및 `helm lint` GREEN. 080 migration은 CI에서 060/070 뒤 두 번 적용하도록 고정했고 cluster에는 적용하지 않음; 이 저장소에는 chart 소스가 없음 |
+| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 기존 tmpfs PostgreSQL 17 test container에서 bootstrap+020..080을 두 번 적용하고 SQL contracts, claim challenge 및 session/renew/onboarding lock-expiry harness를 직접 GREEN으로 검증. CI도 모든 additive migration을 두 번 적용하도록 고정 |
+| testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 14/14 및 `helm lint` GREEN. chart는 030~080을 순서대로 한 번 실행하고, 앱 CI는 모든 additive migration을 의도적으로 두 번 적용해 replay 안전성을 검증. cluster에는 적용하지 않음 |
 | legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 15 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
 | M2 CDTO/Rust | flat ObjectV1+CreatureV1 core GREEN, graph pending | clone-only flat `ObjectV1`·`CreatureV1`와 CDTO envelope unit이 GREEN. recursive inventory/parent graph와 live path 연결은 아직 pending |
