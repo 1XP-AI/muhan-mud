@@ -12,8 +12,10 @@ CFLAGS = -g -O2 -std=gnu89 -fcommon -DFINGERACCT -DCHECKDOUBLE -DSUICIDE -DOBJLE
 ifeq ($(shell uname -s),Darwin)
 CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=return-mismatch -Wno-error=incompatible-function-pointer-types
 UNIT_GC_FLAGS = -Wl,-dead_strip
+UNIT_LEGACY_WARN_FLAGS = -Wno-error=implicit-function-declaration -Wno-error=return-mismatch
 else
 UNIT_GC_FLAGS = -Wl,--gc-sections
+UNIT_LEGACY_WARN_FLAGS =
 endif
 
 LIBS = -lm
@@ -62,7 +64,7 @@ unit-test:
 	/tmp/muhan-unit/files1_serializer_test
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/files2_load_obj_test.c files2.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files2_load_obj_test
 	/tmp/muhan-unit/files2_load_obj_test
-	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -DMUHAN_UPDATE_SCHEDULE_TEST -Wno-error=implicit-function-declaration -Wno-error=return-mismatch ../tests/unit/update_schedule_test.c update.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/update_schedule_test
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -DMUHAN_UPDATE_SCHEDULE_TEST $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/update_schedule_test.c update.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/update_schedule_test
 	/tmp/muhan-unit/update_schedule_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_recovery_test.c player_recovery.c player_store.c -o /tmp/muhan-unit/player_recovery_test
 	/tmp/muhan-unit/player_recovery_test
