@@ -1,6 +1,6 @@
 # MUD identity·저장 구조 리팩터링
 
-상태: **코드·계약 테스트 완료, testnet 적용 전**  
+상태: **testnet-1xp 검증 배포 및 Auth→RLS→Gateway→C 실경로 확인 완료**
 작성일: 2026-09-01
 
 ## 결론
@@ -119,7 +119,7 @@ CI는 C를 Linux amd64/arm64, macOS, Windows에서 빌드·smoke하고, Ubuntu�
 scenario를 도입했다. metadata-only inventory exporter는 filename, payload name,
 shard, checksum, size/mtime만 내보내며 password나 raw record를 출력하지 않는다.
 
-### 단계 1 — DB 소유권과 trusted admission (이번 배포)
+### 단계 1 — DB 소유권과 trusted admission (완료)
 
 - `auth.users` 1 : N `game_characters`
 - browser own-active RLS와 read-only roster

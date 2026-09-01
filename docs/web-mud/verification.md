@@ -1,21 +1,24 @@
 # Web MUD MVP 검증 기록
 
 검증일: 2026-09-01  
-범위: 로컬 코드·프로토콜·레거시 런타임 경계  
-결과: 통과(실제 testnet-1xp 배포 검증은 별도 인프라 저장소에서 수행)
+범위: 로컬 코드·프로토콜·레거시 런타임·testnet-1xp 실배포 경계
+결과: 통과
 
 ## 자동 검사
 
 저장소 루트의 `pnpm check`가 통과했다.
 
 - web/gateway TypeScript 검사: 통과
-- gateway 단위·통합 테스트: 9/9 통과
+- gateway 단위·통합 테스트: 28/28 통과
+- web 데이터·접속 계약 테스트: 7/7 통과
 - Next.js 16.3.4 production build: 통과, `/`, `/_not-found`, `/icon.svg` 정적 생성
 - gateway production TypeScript build: 통과
 
 게이트웨이 테스트는 JWT claim 경계, production 설정 거부 조건, exact origin, auth-first relay, 분할 UTF-8, Telnet echo 협상, 알 수 없는 옵션 거절, subnegotiation 제거를 포함한다.
 
-`docker compose config --quiet`와 두 컨테이너 shell script의 `sh -n` 검사도 통과했다. 이 워크스테이션에는 Docker API socket이 없어 이미지 build/up과 컨테이너 내부 healthcheck는 실행하지 못했다.
+`docker compose config --quiet`와 컨테이너 shell script의 `sh -n` 검사도
+통과했다. Linux amd64/arm64와 macOS/Windows 빌드, 컨테이너 healthcheck,
+PostgreSQL 17 계약 검사는 GitHub Actions에서 실행한다.
 
 ## 실제 프로세스 검사
 
@@ -55,8 +58,9 @@ non-prototype warning은 남지만 full link와 실행은 성공했다.
 
 - 첫 text auth frame 전송
 - gateway `ready` control 수신
-- 실제 C MUD 환영 출력 136 bytes를 binary frame으로 수신
-- 세션 종료 뒤 gateway drain
+- 실제 C MUD의 `건강` 명령에서 `체력` binary 응답 수신
+- `끝` 명령 뒤 error frame 없는 `closed`와 WebSocket 1000 정상 종료
+- 세션 종료 뒤 exact Gateway lease 회수
 
 ## 브라우저 검사
 
@@ -66,15 +70,19 @@ Playwright로 1440×1000 desktop과 390×844 mobile에서 로그인 관문과 �
 
 가짜 Supabase 좌표와 의도적으로 닫힌 gateway를 사용한 인증 후 UI 검사의 DNS/WebSocket 오류는 실패 상태 표시를 보기 위한 테스트 조건이며 production build 오류가 아니다.
 
-## 실제 배포에서 남은 확인
+## testnet-1xp 실배포 확인
 
-외부 자격 증명과 프로젝트 설정이 필요한 아래 항목은 이 로컬 검증에 포함되지 않는다.
+2026-09-01에 별도 인프라 저장소의 Helm chart로 다음을 확인했다.
 
-1. self-hosted Supabase에 `game_characters`/claim migration과 RLS 구현·검증
-2. Gateway ownership 검사와 Gateway→MUD trusted admission 구현·검증
-3. 영속 볼륨의 player inventory/backfill, snapshot과 backup/restore rehearsal
-4. `testnet-1xp` chart 배포 뒤 private MUD port와 network policy 확인
-5. production TLS proxy 뒤 exact origin과 `X-Forwarded-Proto` 신뢰 경계 확인
-6. 재시작 후 플레이어 보존, JWT 만료, 느린 브라우저, drain canary
+1. self-hosted Supabase Auth/Postgres/PostgREST와 identity migration 적용
+2. 브라우저 JWT로 자기 `active` 캐릭터 한 건만 보이는 RLS 조회
+3. service role의 table 직접 SELECT 거부와 claim/begin/renew/end RPC 경계
+4. Gateway 외에는 MUD 4000에 접근하지 못하는 NetworkPolicy와 단일 writer PVC
+5. 실제 Auth 가입 → legacy inventory import → owner claim → WSS → HMAC ticket →
+   실제 C MUD `건강`/`끝` 명령 → lease 회수의 한 경로
+6. 배포 전 Postgres custom dump와 MUD PVC tar/checksum 백업, 모든 Pod readiness
+
+후속 운영 gate는 백업 복원 훈련, JWT 만료·느린 소비자·장시간 lease renew canary,
+그리고 단계 2의 legacy password claim/new-character provisioning이다.
 
 절차와 rollback은 각각 `supabase-setup.md`, `vercel-deployment.md`, `runtime-deployment.md`에 기록되어 있다.

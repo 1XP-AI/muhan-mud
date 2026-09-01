@@ -10,7 +10,10 @@ import {
   useState,
 } from "react";
 
-import { createGatewayAuthFrame } from "@/lib/gateway-contract";
+import {
+  createGatewayAuthFrame,
+  shouldReconnectGatewayClose,
+} from "@/lib/gateway-contract";
 
 export type GatewayConnectionState =
   | "idle"
@@ -68,10 +71,6 @@ function echoInput(terminal: Terminal, data: string): void {
       terminal.write(character);
     }
   }
-}
-
-function isPermanentClientClose(code: number): boolean {
-  return code === 1008 || code === 4001 || (code >= 4400 && code < 4500);
 }
 
 export function MudTerminal({
@@ -324,7 +323,7 @@ export function MudTerminal({
         }
 
         const reason = event.reason || `연결이 닫혔습니다 (${event.code}).`;
-        if (isPermanentClientClose(event.code)) {
+        if (!shouldReconnectGatewayClose(event.code)) {
           publishStatus("closed", reason);
           return;
         }

@@ -394,7 +394,7 @@ def main() -> int:
         ensure_no_sensitive(gateway_log, sensitive, "Gateway real-C log")
         if b"MUD1|" in gateway_log:
             raise ScenarioFailure("admission ticket appeared in Gateway log")
-        result["events"].append({"case": "gateway-real-c-relay", "response": "ready-and-health"})
+        result["events"].append({"case": "gateway-real-c-relay", "response": "ready-health-normal-close"})
 
         stop_server(process)
         stop_server(gateway_process)

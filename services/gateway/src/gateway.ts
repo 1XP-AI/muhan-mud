@@ -17,6 +17,7 @@ import { TelnetParser } from './telnet.js'
 
 const PROTOCOL = 'muhan.v1'
 const CLOSE_POLICY = 1008
+const CLOSE_NORMAL = 1000
 const CLOSE_TRY_AGAIN = 1013
 const CLOSE_INTERNAL = 1011
 const CLOSE_RESTART = 1012
@@ -240,6 +241,7 @@ class GatewaySession {
   private leaseMayExist = false
   private closed = false
   private failed = false
+  private normalClosing = false
 
   constructor(
     private readonly ws: WebSocket,
@@ -364,10 +366,17 @@ class GatewaySession {
     mud.on('drain', () => this.resumeWebSocket())
     mud.on('error', () => {
       this.timers.clearTimeout(timer)
-      if (!this.closed) this.fail(CLOSE_INTERNAL, 'MUD connection failed')
+      if (!this.closed && !this.normalClosing) this.fail(CLOSE_INTERNAL, 'MUD connection failed')
     })
     mud.on('end', () => {
-      if (!this.closed) this.fail(CLOSE_INTERNAL, this.state === 'awaiting-admission' ? 'MUD admission failed' : 'MUD connection closed')
+      if (this.closed || this.normalClosing) return
+      if (this.state === 'ready') {
+        this.normalClosing = true
+        this.sendText({ type: 'closed', reason: 'MUD connection closed' })
+        closeSocket(this.ws, CLOSE_NORMAL, 'MUD connection closed')
+        return
+      }
+      this.fail(CLOSE_INTERNAL, 'MUD admission failed')
     })
   }
 

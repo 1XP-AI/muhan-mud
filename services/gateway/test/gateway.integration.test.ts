@@ -173,6 +173,30 @@ test('auth-first trusted relay writes ticket, waits for fragmented ACK, and pres
   ws.close()
 })
 
+test('normal MUD TCP end after admission sends closed without an error and releases the lease', async (t) => {
+  const mud = createServer((socket) => {
+    socket.once('data', () => {
+      socket.write('MUD1 OK\n')
+      setTimeout(() => socket.end(), 10)
+    })
+  })
+  mud.listen(0, '127.0.0.1')
+  await once(mud, 'listening')
+  const authorizer = new RecordingAuthorizer()
+  const gateway = await startGateway(mud, dependencies(authorizer))
+  t.after(async () => { await closeGateway(gateway); await closeServer(mud) })
+
+  const { ws, messages } = await openWs(gateway)
+  ws.send(authFrame())
+  await waitForMessage(messages, ({ data, isBinary }) => !isBinary && Buffer.from(data).toString() === '{"type":"ready"}')
+  const [code] = await once(ws, 'close') as [number]
+
+  assert.equal(code, 1000)
+  assert.ok(messages.some(({ data, isBinary }) => !isBinary && Buffer.from(data).toString() === '{"type":"closed","reason":"MUD connection closed"}'))
+  assert.ok(!messages.some(({ data, isBinary }) => !isBinary && Buffer.from(data).toString().includes('"type":"error"')))
+  await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
+})
+
 test('non-owner authorization rejection never opens MUD TCP and releases the exact attempted session', async (t) => {
   let mudConnections = 0
   const mud = createServer(() => { mudConnections += 1 })
@@ -210,6 +234,7 @@ test('auth frame rejects unknown fields before authentication or MUD TCP', async
 
 for (const scenario of [
   { name: 'ERR', response: (socket: Socket) => socket.write('MUD1 ERR\n') },
+  { name: 'end', response: (socket: Socket) => socket.end() },
   { name: 'oversized preface', response: (socket: Socket) => socket.write(Buffer.alloc(257, 0x41)) },
   { name: 'timeout', response: (_socket: Socket) => {} }
 ]) {
