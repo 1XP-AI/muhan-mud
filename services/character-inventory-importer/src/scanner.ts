@@ -2,7 +2,7 @@ import { constants as fsConstants } from 'node:fs'
 import { lstat, open, opendir } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
-import { expectedShard, type InventoryRecord, validRecord } from './inventory.js'
+import { canonicalNameKey, expectedShard, type InventoryRecord, validRecord } from './inventory.js'
 
 export const MAX_SCAN_FILE_BYTES = 64 * 1024 * 1024
 export const MAX_SCAN_RECORDS = 100_000
@@ -147,6 +147,20 @@ function deterministicSort<T extends DirectoryEntry>(entries: readonly T[]): T[]
   })
 }
 
+function canonicalIdentityAtShard(name: string, shard: string): string | undefined {
+  const canonical = canonicalNameKey(name)
+  const probe: InventoryRecord = {
+    name: canonical,
+    canonicalNameKey: canonical,
+    relativePath: `player/${shard}/${canonical}`,
+    observedShard: shard,
+    expectedShard: expectedShard(canonical),
+    byteSize: 0,
+    sha256: '0'.repeat(64),
+  }
+  return validRecord(probe) ? canonical : undefined
+}
+
 /**
  * Scan a mounted legacy tree without following symlinks or reading a file into
  * memory. Returned records are the same metadata shape accepted by the importer.
@@ -158,6 +172,7 @@ export async function scanMudHome(mudHome: string, options: ScannerOptions = {})
   const rootPath = resolve(mudHome)
   const playerPath = join(rootPath, 'player')
   const records: InventoryRecord[] = []
+  const canonicalOccurrences = new Map<string, number>()
   let rejected = 0
   let considered = 0
   let root: Awaited<ReturnType<typeof open>> | undefined
@@ -183,11 +198,18 @@ export async function scanMudHome(mudHome: string, options: ScannerOptions = {})
           if (name !== undefined && KNOWN_NON_CHARACTER_FILES.has(name)) continue
           considered++
           if (!name) { rejected++; continue }
+          const canonicalIdentity = canonicalIdentityAtShard(name, shard)
+          if (canonicalIdentity) {
+            canonicalOccurrences.set(
+              canonicalIdentity,
+              (canonicalOccurrences.get(canonicalIdentity) ?? 0) + 1,
+            )
+          }
           try {
             const fingerprint = await hashRegularFile(pathForChild(shardDirectory.fd, shardPath, name), maxFileBytes)
             const record: InventoryRecord = {
               name,
-              canonicalNameKey: name,
+              canonicalNameKey: canonicalIdentity ?? name,
               relativePath: `player/${shard}/${name}`,
               observedShard: shard,
               expectedShard: expectedShard(name),
@@ -220,12 +242,11 @@ export async function scanMudHome(mudHome: string, options: ScannerOptions = {})
     ? (left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0)
     : (left.name < right.name ? -1 : 1))
   // Never leave an ambiguous canonical identity for the importer to choose.
-  const duplicateNames = new Set<string>()
-  const seenNames = new Set<string>()
-  for (const record of records) {
-    if (seenNames.has(record.canonicalNameKey)) duplicateNames.add(record.canonicalNameKey)
-    seenNames.add(record.canonicalNameKey)
-  }
+  const duplicateNames = new Set(
+    [...canonicalOccurrences.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name),
+  )
   if (duplicateNames.size === 0) return { records, rejected }
   const uniqueRecords = records.filter((record) => {
     if (!duplicateNames.has(record.canonicalNameKey)) return true
