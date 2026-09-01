@@ -272,6 +272,7 @@ int main(void)
                      roundtrip_length == wire_length && !memcmp(roundtrip, wire, wire_length),
                      "decode then encode must retain canonical bytes");
     object_graph_v1_free(decoded_roots);
+    cdto_v1_free_wire(roundtrip); roundtrip = 0; roundtrip_length = 0;
 
     two_root_fixture(&roots, two_root_objects, two_root_tags);
     failed += expect(object_graph_v1_encode(roots, &roundtrip, &roundtrip_length) == CDTO_V1_OK &&
