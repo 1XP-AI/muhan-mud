@@ -196,6 +196,10 @@ export async function scanMudHome(mudHome: string, options: ScannerOptions = {})
         for (const entry of entries) {
           const name = decodeEntryName(entry.name)
           if (name !== undefined && KNOWN_NON_CHARACTER_FILES.has(name)) continue
+          // The directory listing allows README alongside the remaining
+          // candidate budget. Enforce the global candidate cap before every
+          // candidate so a later shard cannot contribute an extra record.
+          if (considered >= maxRecords) throw new ScanLimitError()
           considered++
           if (!name) { rejected++; continue }
           const canonicalIdentity = canonicalIdentityAtShard(name, shard)

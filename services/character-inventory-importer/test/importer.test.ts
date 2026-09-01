@@ -280,6 +280,16 @@ test('scanner rejects symlink root, shard, file, invalid entries, duplicate iden
   assert.ok(capped.rejected > 0)
 })
 
+test('scanner enforces maxRecords across shards and discards partial results', async (t) => {
+  const fixture = await scannerFixture()
+  t.after(async () => { await (await import('node:fs/promises')).rm(fixture.root, { recursive: true, force: true }) })
+  const bobShard = expectedShard('Bob')
+  await mkdir(join(fixture.player, bobShard), { recursive: true })
+  await writeFile(join(fixture.player, bobShard, 'Bob'), 'another-player')
+
+  assert.deepEqual(await scanMudHome(fixture.root, { maxRecords: 1 }), { records: [], rejected: 1 })
+})
+
 test('scanner rejects oversized and nonregular files without blocking', async (t) => {
   const fixture = await scannerFixture()
   t.after(async () => { await (await import('node:fs/promises')).rm(fixture.root, { recursive: true, force: true }) })
