@@ -1,7 +1,10 @@
 # ADR: M3 DB shadow receipt contract
 
-Status: proposed. No 090 migration or writer change is authorized. Fixtures are
-synthetic only; no password, raw player payload, token, or terminal input.
+Status: superseded research snapshot. The executable, test-only 090 contract and all
+current gates are maintained in [m3-journal-v2-gates.md](m3-journal-v2-gates.md).
+This file preserves the earlier proposal and is not an activation runbook. No C/Rust
+writer or live deployment is authorized; fixtures contain no password, raw player
+payload, token, or terminal input.
 
 ## Authority, routing, and writer model
 
