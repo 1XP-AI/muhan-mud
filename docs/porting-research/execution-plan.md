@@ -24,15 +24,15 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | 범위 | 상태 | 검증/잔여 gate |
 | --- | --- | --- |
 | M0 연구·계약 | 현재 검증 범위 고정 | ADR, DB/Rust/Web 연구와 공통 `MUD1O` fixture가 branch에 고정됨 |
-| M1 C·Gateway·Web·SQL 구현 | 로컬 통합 GREEN, testnet 미배포 | 실제 C+Gateway+PostgREST+PostgreSQL 17 stack과 browser 8/8 시나리오가 GREEN. gateway 75/75, reconciler 18/18, importer 15 pass·2 skip, web 17/17 단위 결과도 GREEN. testnet 승격 gate는 아직 남아 있음 |
+| M1 C·Gateway·Web·SQL 구현 | 로컬 통합 GREEN, testnet 미배포 | 실제 C+Gateway+PostgREST+PostgreSQL 17 stack과 browser 8/8 시나리오가 GREEN. gateway 75/75, reconciler 18/18, importer 16 pass·2 skip, web 17/17 단위 결과도 GREEN. testnet 승격 gate는 아직 남아 있음 |
 | durable onboarding receipt | 컴포넌트 GREEN | `pending → saved → committed` fsync 기록, startup 복구, sanitizer, C player `0600`/shard `0700` writer와 Helm PVC 권한 계약 GREEN |
 | out-of-band reconciler | 컴포넌트 GREEN | no-follow 파일/hash와 exact service RPC, committed 무변이, process-local 중복 억제, aggregate-only polling 및 공격 테스트 GREEN |
-| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 기존 tmpfs PostgreSQL 17 test container에서 bootstrap+020..080을 두 번 적용하고 SQL contracts, claim challenge 및 session/renew/onboarding lock-expiry harness를 직접 GREEN으로 검증. CI도 모든 additive migration을 두 번 적용하도록 고정 |
+| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 로컬에서 bootstrap+020..080을 두 번 적용한 기존 계약이 GREEN이고, 원격 PostgreSQL 17 CI는 020..090을 두 번 적용한다. claim/session RPC와 M3 receipt의 post-lock fresh clock, committed lifecycle 변경 경주가 모두 무변이로 GREEN |
 | testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 14/14 및 `helm lint` GREEN. chart는 030~080을 순서대로 한 번 실행하고, 앱 CI는 모든 additive migration을 의도적으로 두 번 적용해 replay 안전성을 검증. cluster에는 적용하지 않음 |
-| legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 15 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
+| legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 16 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
-| M2 CDTO/Rust | flat ObjectV1+CreatureV1 core GREEN, graph pending | clone-only flat `ObjectV1`·`CreatureV1`와 CDTO envelope unit이 GREEN. recursive inventory/parent graph와 live path 연결은 아직 pending |
-| M3 writer/inventory | journal test-only GREEN, live 연결 pending | writer inventory와 synthetic intent journal unit/ASan은 GREEN이나 `save_ply`·bank·DB dual-write·shadow는 연결하지 않음. `writer_instance_id`/`character_id`/`request_sha256`/staging artifact binding, `LEGACY_PUBLISHED` 전 live/staged posthash 확인, descriptor-walk ancestry가 선행 blocker |
+| M2 CDTO/Rust | ObjectV1+CreatureV1+ObjectGraphV1 clone-only GREEN | recursive preorder graph까지 C/Rust exact-byte differential, malformed taxonomy, depth 64/node 8192, allocation faults와 Linux LeakSanitizer가 GREEN. production read/write·gameplay 경로에는 연결하지 않음 |
+| M3 writer/inventory | 090 SQL GREEN, 091 C journal v2 진행 중 | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS와 least-privilege role을 PostgreSQL 17에서 GREEN으로 고정. `save_ply`·bank·DB dual-write·shadow는 연결하지 않았고 v2 staged artifact/recovery가 선행 blocker |
 
 현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
 testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
@@ -73,6 +73,13 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
   cleanup이 지우던 경로를 fault-injection RED로 고정했다. fd는 한 번만 relinquish하고
   `RECONCILE_REQUIRED` staging hard-link는 검사할 수 있게 유지한다. 이 저널은 여전히
   synthetic/test-only이며 live save 경로에는 연결하지 않는다.
+- ObjectGraph 검증: preorder subtree 재진입, depth 분류 drift, allocation-fault cleanup과
+  Linux 전용 1,483-byte test buffer leak를 RED로 고정했다. C/Rust differential,
+  ASan/UBSan/LeakSanitizer와 Rust 1.92/1.98 Clippy가 모두 GREEN이다.
+- M3 receipt 검증: `P0001` 기대 helper가 대상 SQL 성공도 통과시키던 거짓 양성,
+  `FOR KEY SHARE`가 lifecycle non-key update를 안정화하지 못하는 경주, missing/behind/
+  mismatched head exact retry를 RED로 고정했다. 별도 success sentinel 자기검증,
+  `FOR SHARE`, strict head consistency와 PG17 2-session race로 GREEN을 확인했다.
 
 ### 현재 검증 snapshot (2026-09-02)
 
@@ -84,12 +91,13 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
 | Browser E2E | 8/8 pass (13.6s) | Playwright desktop/mobile, claim password prompt·clear·retry·normal close 포함 |
 | Gateway | 75/75 pass, 0 cancelled | `pnpm --filter @muhan/gateway test` |
 | Reconciler | 18/18 pass | `pnpm --filter @muhan/onboarding-reconciler test` |
-| Importer | 15 pass, 2 skip, 0 fail | `pnpm --filter @muhan/character-inventory-importer test`; PG17 retry는 disposable CI 계약 |
+| Importer | 16 pass, 2 skip, 0 fail | `pnpm --filter @muhan/character-inventory-importer test`; PG17 retry는 disposable CI 계약 |
 | Web | 17/17 pass | `pnpm --filter @muhan/web test` |
 | C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
 | Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
-| M3 journal | pass, test-only | `make -C src character-save-journal-test CC=gcc`; live writer와 미연결 |
-| PG migration 080 | local PG17 pass + CI contract | bootstrap+020..080 두 번 적용, SQL contracts와 두 lock-expiry script 직접 통과; CI도 동일 순서를 고정 |
+| M2 CDTO/Rust graph | pass, clone-only | ObjectGraph C unit/sanitizer, 12 Rust unit+2 differential, fixed/random corpus와 Linux LeakSanitizer |
+| M3 journal v1 / 090 SQL | v1 test-only + 090 PG17 pass | v1은 `make -C src character-save-journal-test CC=gcc`; 090은 migration 2회, SQL contract, fresh-clock/lifecycle race가 CI GREEN. 둘 다 live writer와 미연결 |
+| PG migration 090 | PostgreSQL 17 CI contract GREEN | bootstrap+020..090 두 번 적용, identity/onboarding/M3 SQL과 세 lock-expiry script 통과 |
 | Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
 
 ## 연구 근거
@@ -370,20 +378,23 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
 
 ### M2 CDTO player/inventory clone-only
 
-- 상태: flat `ObjectV1`+`CreatureV1` core와 envelope unit GREEN, clone-only 경계 유지
-- `rust/muhan-core-dto` canonical codec와 sanitized golden/property/fuzz 범위
-- recursive inventory/parent graph와 C↔Rust graph differential은 pending
+- 상태: `ObjectV1`+`CreatureV1`+recursive `ObjectGraphV1`와 envelope unit GREEN,
+  clone-only 경계 유지
+- `rust/muhan-core-dto` canonical codec, exact C↔Rust bytes, sanitized golden/property/
+  malformed/fixed-seed differential 범위
+- preorder closure, depth 64, total node 8192, pointer-free padding과 allocation failure 고정
 - production read/write 변화 없음
 
 ### M3 character/bank dual-write shadow
 
-- 상태: writer inventory와 synthetic journal test-only GREEN; live 연결 pending
-- direct writer 범위와 inventory 목록만 정리
-- journal에는 아직 `writer_instance_id`/`character_id`/`request_sha256`/staging artifact
-  binding이 없고, `LEGACY_PUBLISHED` 전 live/staged posthash 확인과 descriptor-walk
-  ancestry도 필요
-- fsynced intent journal의 live writer 연결, idempotent DB receipt, economy failure
-  injection은 pending
+- 상태: 090 PostgreSQL writer epoch/seal/fence, immutable receipt와 head CAS가 GREEN;
+  live 연결은 없음
+- exact unsealed/unexpired writer, canonical request digest, consistent head와 strict next
+  revision만 ACK하며 successor 뒤 old writer는 영구 fence
+- 091 C journal v2의 `writer_instance_id`/`character_id`/`request_sha256`/derived staged
+  leaf, descriptor ancestry, cumulative 64 MiB hash cap과 crash recovery를 test-only로 진행 중
+- production absent-head seed, `mud_writer` transport, PVC flock/fsync 증적과 retention은
+  승인 전 blocker
 - shadow 관찰과 cutover 조건은 아직 시작하지 않음
 
 ### M4 room/social/timer 도메인 확장
