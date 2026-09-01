@@ -23,12 +23,11 @@
 #define MIGNORE
 #include "mstruct.h"
 #include "mextern.h"
-#include "strstr.c"
 
 char Output[2][80];
 char *start_auth();
 void parse();
-int abort();
+static void auth_timeout(int);
 
 main(argc, argv)
 int argc;
@@ -49,7 +48,7 @@ char *argv[];
 
 	setitimer(ITIMER_REAL, &timer_value, 0);
 
-	signal(SIGALRM, abort);
+	signal(SIGALRM, auth_timeout);
 
 	if(argc != 4) {
 		fprintf(stderr, "Syntax: %s ip_address oport iport\n", argv[0]);
@@ -214,7 +213,9 @@ int     i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
         close(fd);
 }
 
-int abort()
+static void auth_timeout(signal_number)
+int signal_number;
 {
+	(void)signal_number;
 	exit(0);
 }
