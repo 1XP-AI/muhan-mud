@@ -86,7 +86,9 @@ staged_leaf=<command_uuid>.stage\n
 There is no JSON reserialization, trimming, SQL `lower()`, locale conversion, or
 optional field. C computes it before `PREPARED`; 090 recomputes it from trusted route
 data plus validated arguments and rejects mismatch with `22023`. The receipt stores the
-digest, so same `(character_id, command_uuid)` is read-only only for the exact envelope.
+digest, so same `(character_id, command_uuid)` is read-only only for the exact envelope and
+the currently installed exact, unsealed writer tuple. A sealed tuple or installed successor
+permanently fences even an otherwise exact receipt retry.
 
 ## Descriptor walk, stage leaf, and byte cap
 
@@ -137,8 +139,10 @@ All authorizing decisions reread `clock_timestamp()` after every blocking lock.
 | `seal_game_world_writer_epoch(world, instance, epoch)` | world advisory → epoch `FOR UPDATE` → fresh clock. Exact unsealed tuple writes `sealed_at`; it permits no new local command. |
 | `record_legacy_published_receipt(...)` | world advisory → route row `FOR KEY SHARE` → epoch `FOR UPDATE` → head `FOR UPDATE` → receipt PK lookup/insert → fresh clock/CAS. Validate route/lifecycle/digest, then immutable receipt insert and head advance commit together. |
 
-`record` has no DB `PREPARED` state. Exact existing receipt is read-only; otherwise require
-unsealed, unexpired exact writer tuple, expected head (`existing` exact hash or `absent`),
+`record` has no DB `PREPARED` state. An exact existing receipt is read-only only while its
+exact writer tuple is the currently installed, unsealed tuple and no successor has replaced
+it. Every new record additionally requires an unexpired tuple, expected head (`existing`
+exact hash or `absent`),
 strictly next revision, and posthash. Stale epoch/revision/prehash, UUID payload mismatch,
 fence, or route mismatch is `P0001` with no mutation. Malformed lease/envelope/digest is
 `22023`. Only non-login `mud_writer` has execute; browser roles, `service_role`, and Gateway
@@ -153,7 +157,7 @@ leaves, never mtimes.
 | --- | --- | --- |
 | `PREPARED` | stage must exist and hash post; live expected pre/absent allows one rename. Consumed stage + live post permits mark-published. Any other combination freezes divergence. | DB receipt, regenerated stage, blind overwrite, deletion. |
 | `LEGACY_PUBLISHED` | stage must be absent; reread live cumulative posthash, then exact record retry. ACK marks `DB_ACKED`. | DB publication/rollback or acceptance of changed live bytes. |
-| `DB_ACKED` | exact read-only retry only; retain immutable evidence. | DB mutation or backwards transition. |
+| `DB_ACKED` | exact read-only retry only while the same exact unsealed writer tuple remains current; retain immutable evidence. | Retry after seal/successor, DB mutation, or backwards transition. |
 
 With DB offline, PVC-lock holder with a persisted tuple may create/publish local journals;
 DB is not a pre-publish authorizer. An expired tuple may continue local file-authority work,
@@ -178,7 +182,7 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 090 | `red_090_successor_requires_sealed_expired_predecessor` / A+B UUIDs, `pg_sleep` lock marker | B before seal/expiry is `P0001`; after B acquire, A renew/record/seal are permanent `P0001`, head unchanged. |
 | 090 | `red_090_route_is_character_id_not_shard` / two characters sharing derived-shard fixture | wrong ID/name/shard, format, or lifecycle inserts no receipt. |
 | 090 | `red_090_canonical_request_sha256_golden_and_tamper` / exact envelope bytes above | C/SQL golden agrees; newline/order/case/prehash/UUID/leaf tamper is `22023`, never normalization. |
-| 090 | `red_090_receipt_exact_retry_and_head_cas` / existing, absent, receipt rows | exact retry is read-only; changed digest/stale prehash/revision/epoch leaves count and head unchanged. |
+| 090 | `red_090_receipt_exact_retry_and_head_cas` / existing, absent, receipt rows | exact retry is read-only only for the current exact unsealed writer tuple; changed digest/stale prehash/revision/epoch or any retry after seal/successor leaves count and head unchanged. |
 | 090 | `red_090_lock_wait_rechecks_clock` / concurrent PG sessions + `pg_locks` | post-wait expired lease rejects, no deadlock or partial head. |
 | 090 | `red_090_writer_privileges_and_no_identity_mutation` / mud_writer, Gateway, browser roles | only mud_writer executes; no ownership/lifecycle/name/shard mutation. |
 | **091 C staged artifact, test-only** | `red_091_v2_wire_identity_and_leaf_binding` / fixed journal texts | missing/mismatched instance/character/digest/non-derived leaf rejects before mutation. |
