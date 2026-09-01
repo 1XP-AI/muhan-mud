@@ -218,6 +218,10 @@ begin
           return false;
         end if;
       end loop;
+    else
+      -- JSON scalars have no key name to inspect. They are safe as values;
+      -- sensitive material is rejected by the recursively normalized key.
+      null;
   end case;
   return true;
 end;
