@@ -32,7 +32,7 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 16 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
 | M2 CDTO/Rust | ObjectV1+CreatureV1+ObjectGraphV1 clone-only GREEN | recursive preorder graph까지 C/Rust exact-byte differential, malformed taxonomy, depth 64/node 8192, allocation faults와 Linux LeakSanitizer가 GREEN. production read/write·gameplay 경로에는 연결하지 않음 |
-| M3 writer/inventory | 090 SQL + 091a C journal v2 GREEN, 091b 진행 전 | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 test-only stage/hash/parser, raw-byte 거부, write/fsync/close 내구성, static no-live-link gate도 GREEN. `save_ply`·bank·DB dual-write·shadow는 연결하지 않았고 PVC lock·publish·recovery·ACK backlog의 091b가 선행 blocker |
+| M3 writer/inventory | 090 SQL + 091a + 091b-1a C GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 test-only stage/hash/parser와 091b-1a의 persisted writer tuple, process-lifetime PVC lock, every-opener file/directory fsync, static no-live-link gate가 GREEN. `save_ply`·bank·DB dual-write·shadow는 연결하지 않았고 route binding·publish·recovery·ACK backlog의 091b-1b 이후가 선행 blocker |
 
 현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
 testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
@@ -96,7 +96,7 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
 | C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
 | Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
 | M2 CDTO/Rust graph | pass, clone-only | ObjectGraph C unit/sanitizer, 12 Rust unit+2 differential, fixed/random corpus와 Linux LeakSanitizer |
-| M3 journal v1 / 090 SQL / 091a C | v1 test-only + 090 PG17 + 091a local pass | 091a는 일반·ASan/UBSan, `-Werror`, fresh production object/`nm`/link-map gate가 GREEN. stage/hash/parser까지만 구현됐고 live writer와 미연결; 091b와 원격 CI는 미완료 |
+| M3 journal v1 / 090 SQL / 091a·091b-1a C | v1 test-only + 090 PG17 + 091a·091b-1a local pass | 091a stage/hash/parser와 091b-1a persisted tuple/PVC lifetime lock은 일반·ASan/UBSan, `-Werror`, fresh production object/`nm` static no-live-link gate가 GREEN. live writer와 미연결이며 새 091b-1a 원격 CI 및 091b-1b 이후는 미완료 |
 | PG migration 090 | PostgreSQL 17 CI contract GREEN | bootstrap+020..090 두 번 적용, identity/onboarding/M3 SQL과 세 lock-expiry script 통과 |
 | Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
 
@@ -394,8 +394,10 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
 - 091 C journal v2의 `writer_instance_id`/`character_id`/`request_sha256`/derived staged
   leaf, descriptor ancestry, cumulative 64 MiB hash cap, immutable `PREPARED`와 raw-byte/
   write/fsync/close 회귀는 091a test-only GREEN
-- 091b의 PVC 수명 lock, persisted writer/route binding, publish/rename, crash recovery,
-  DB-offline ACK backlog와 no-GC 증거는 아직 구현하지 않았으므로 091 전체는 미완료
+- 091b-1a의 PVC process-lifetime lock, exact persisted writer tuple, first-create 경쟁과
+  재시도 fsync 회귀, production static no-live-link는 test-only GREEN
+- 091b-1b 이후의 trusted route binding, publish/rename, crash recovery, DB-offline ACK
+  backlog와 no-GC 증거는 아직 구현하지 않았으므로 091 전체는 미완료
 - production absent-head seed, `mud_writer` transport, PVC flock/fsync 증적과 retention은
   승인 전 blocker
 - shadow 관찰과 cutover 조건은 아직 시작하지 않음

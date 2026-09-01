@@ -1,13 +1,17 @@
 # M3 journal v2: live wiring 전 계약 게이트
 
-상태: **091a test-only stage/hash/parser slice GREEN, 091b 미구현** (2026-09-02).
+상태: **091a stage/hash/parser와 091b-1a PVC writer 잠금/tuple slice GREEN,
+091b-1b 이후 미구현** (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
-검증한다. 일반·ASan/UBSan·production link-map 테스트가 GREEN이지만 PVC 수명 lock,
-persisted writer/route cache, publish/rename, recovery state machine, DB ACK backlog 및
-production no-GC 운용은 아직 구현하지 않았다. 따라서 091 전체나 live 연결이
-완료된 상태가 아니다. `save_ply`, `file_player_store_save`, bank writer, Gateway/DB,
-production startup에는 링크되지 않는다.
+검증한다. 별도 `src/character_save_journal_v2_writer.*`는 descriptor-relative PVC
+root에서 exact persisted `(world_id, writer_instance_id, writer_epoch)`를 읽고,
+`.m3-writer.lock`의 process-lifetime `flock`과 lock file/journal directory fsync를
+검증한다. 일반·ASan/UBSan·production static no-live-link 테스트는 GREEN이다.
+route binding, publish/rename, recovery state machine, DB ACK backlog 및 production
+no-GC 운용은 아직 구현하지 않았다. 따라서 091 전체나 live 연결이 완료된 상태가
+아니다. 두 v2 모듈 모두 `save_ply`, `file_player_store_save`, bank writer,
+Gateway/DB, production startup에는 링크되지 않는다.
 
 기존 `src/character_save_journal.*`와
 `tests/unit/character_save_journal_test.c`도 **v1 synthetic metadata journal뿐인
@@ -203,9 +207,12 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 091a — GREEN | `red_091a_hash_cap_when_open_fd_grows` / child extends fd after fstat | exactly 64 MiB accepts; initial or cumulative +1 rejects; prefix hash is never accepted. |
 | 091a — GREEN | `red_091a_write_fsync_close_durability` / EINTR, short/zero/EIO write, four close points, four fsync points | retryable writes finish exactly; uncertain durability reports failure, preserves available stage/journal evidence, and never reuses a consumed fd. |
 | 091a — GREEN | `red_091a_static_no_live_linkage` / fresh production object, `nm`, link map, Make `OBJECTS` | no player writer, bank, onboarding, Gateway or DB edge; test hooks absent; v2 absent from live MUD objects. |
+| **091b-1a PVC writer lifetime boundary, test-only — GREEN** | `red_091b_writer_persisted_tuple_and_lifetime_lock` / exact tuple leaves, two processes, first-create pause | only an exact persisted world/instance/epoch tuple opens; one process holds the lock for the context lifetime and a later process can acquire only after close. |
+| 091b-1a — GREEN | `red_091b_first_create_sync_race_and_retry` / creator paused after `O_EXCL`, existing opener, injected fsync failure | every successful opener fsyncs the lock file and journal directory while holding `flock`; a failed creator followed by retry repeats both durability operations. |
+| 091b-1a — GREEN | `red_091b_writer_static_no_live_linkage` / fresh production object, `nm`, Make `OBJECTS` | no player writer, bank, onboarding, Gateway or DB dependency; test hooks absent and the writer object remains outside live MUD objects. |
 | **091b publish/recovery — BLOCKED** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | only exact stage+pre or consumed-stage+post advances; mismatch freezes and makes no DB call. |
 | 091b — BLOCKED | `red_091b_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
-| 091b — BLOCKED | `red_091b_pvc_lock_two_process_race` / `fork` + held flock same volume | one process alone prepares/publishes/reconciles; loser changes nothing. |
+| 091b-1b 이후 — BLOCKED | `red_091b_bound_route_two_process_race` / held writer context + route mock | the sole lock holder may bind route/PREPARED; the loser has no stage, journal, route-cache, or DB effect. |
 | 091b — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
 | 091b — BLOCKED | `red_091b_no_automatic_cleanup_of_evidence` / all states + orphan stage | no automatic delete beyond explicit fixture teardown. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
@@ -214,8 +221,9 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 092 | `red_092_static_no_live_writer_linkage` / source/link-map fixture | no `save_ply`, file writer, bank, Gateway, or production startup reaches v2. Passing is not activation. |
 
 090 is additive private schema/role/RPC plus SQL RED tests only. 091a fixes the test-only
-stage/hash/parser boundary; 091b must add lock, publish and recovery through mocks before 091
-can be called complete. 092 composes those mocks with
+stage/hash/parser boundary and 091b-1a fixes the persisted writer tuple plus PVC lifetime
+lock boundary. 091b-1b/2/3 must add route binding, publish and recovery through mocks before
+091 can be called complete. 092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.
