@@ -30,6 +30,8 @@
 #include <string.h>
 #include "mstruct.h"
 #include "mextern.h"
+#include "player_store.h"
+#include "player_recovery.h"
 
 #ifdef WIN32
 #define ioctl(a,b,c)    ioctlsocket(a,b,c)
@@ -606,7 +608,13 @@ int	fd;
 				continue;
 			}
 
-			if(ch <= 31 || ch == 155)
+			/*
+			 * 0x9B is a legacy single-byte control, but it is also a valid
+			 * UTF-8 continuation byte (for example, in "움").  Invalid
+			 * standalone continuation bytes are rejected by utf8_lead_len
+			 * below, so filtering 0x9B here corrupts valid Korean input.
+			 */
+			if(ch <= 31)
 				continue;
 
 			if(ch < 0x80) {
@@ -903,6 +911,7 @@ extern int  alias_buf_pos[PMAX];
 extern int  alias_buf_num[PMAX];
 
 int Write_CMD = 0;
+static long last_recovery_retry;
 
 void handle_commands()
 {
@@ -913,6 +922,13 @@ void handle_commands()
 	int	i, j;
 	int	itail, ihead;
 	char	buf[IBUFSIZE+1];
+	long	t;
+
+	t = time(0);
+	if(t != last_recovery_retry) {
+		last_recovery_retry = t;
+		player_recovery_retry_one();
+	}
 
 	for(i=0; i<Tablesize; i++) {
 		if(FD_ISSET(i, &Sockets) && Ply[i].io) {
@@ -978,7 +994,7 @@ void handle_commands()
 void disconnect(fd)
 int 	fd;
 {
-	int 	i;
+	int 	i, save_result;
 	etag	*ign, *temp;
 	wq_tag	*wq;
 
@@ -1017,10 +1033,25 @@ int 	fd;
 		}
 		if(Ply[fd].ply->fd > -1) {
 			uninit_ply(Ply[fd].ply);
-			save_ply(Ply[fd].ply->name, Ply[fd].ply);
+			save_result = save_ply(Ply[fd].ply->name, Ply[fd].ply);
+			if(save_result != PLAYER_STORE_OK) {
+				log_f("disconnect: %s 저장 실패 (%d)\n",
+					Ply[fd].ply->name, save_result);
+				if(player_recovery_enqueue(Ply[fd].ply) == 0) {
+					Ply[fd].ply = 0;
+				}
+				else {
+					log_f("disconnect: recovery ownership exhausted for %s; stopping server\n",
+						Ply[fd].ply->name);
+					merror("player recovery ownership", FATAL);
+					return;
+				}
+			}
 		}
-		free_crt(Ply[fd].ply);
-		Ply[fd].ply = 0;
+		if(Ply[fd].ply) {
+			free_crt(Ply[fd].ply);
+			Ply[fd].ply = 0;
+		}
 	}
 	else {
 		for(wq = First_wait, i=1; wq; wq = wq->next_tag, i++)

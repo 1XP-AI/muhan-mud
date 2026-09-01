@@ -9,7 +9,6 @@
 
 #include "mstruct.h"
 #include "mextern.h"
-#include "resource_path.h"
 
 #ifndef WIN32
 
@@ -30,11 +29,10 @@ static void view_file_resolved(fd, file)
 int fd;
 char *file;
 {
-        char resolved[512];
-        if(resolve_legacy_path(file, resolved, sizeof(resolved)) == 0)
-                view_file(fd, 1, resolved);
-        else
-                view_file(fd, 1, file);
+        /* view_file resolves the path when opening it.  Keep the short
+         * logical path in the 80-byte pagination state instead of copying a
+         * potentially long fixture path into that legacy buffer. */
+        view_file(fd, 1, file);
 }
 
 /**********************************************************************/

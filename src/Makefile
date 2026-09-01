@@ -32,7 +32,7 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
-	  player_path.o
+	  player_path.o player_store.o file_player_store.o player_recovery.o
 
 $(OUTFILE): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OBJECTS) -o $(OUTFILE) $(LIBS) $(EXTRA_LIBS)
@@ -46,6 +46,19 @@ auth: auth.o
 
 clean: 
 	rm -f $(OBJECTS) $(OUTFILE)
+
+unit-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_test.c player_store.c -o /tmp/muhan-unit/player_store_test
+	/tmp/muhan-unit/player_store_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_file_test.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/player_store_file_test
+	/tmp/muhan-unit/player_store_file_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/runtime_path_test.c resource_path.c -o /tmp/muhan-unit/runtime_path_test
+	/tmp/muhan-unit/runtime_path_test
+	$(CC) -std=gnu89 -fcommon -I. -Dwrite=serializer_test_write ../tests/unit/files1_serializer_test.c files1.c -o /tmp/muhan-unit/files1_serializer_test
+	/tmp/muhan-unit/files1_serializer_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_recovery_test.c player_recovery.c player_store.c -o /tmp/muhan-unit/player_recovery_test
+	/tmp/muhan-unit/player_recovery_test
 
 port:
 	rm -f io.o main.o;

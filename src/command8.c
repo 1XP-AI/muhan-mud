@@ -9,6 +9,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "player_store.h"
 
 #ifndef WIN32
 
@@ -719,7 +720,7 @@ cmd             *cmnd;
 {
         creature        *dum_ptr;
         object          *obj[MAXWEAR];
-        int             i, n = 0;
+        int             i, n = 0, save_result;
 
         dum_ptr = (creature *)malloc(sizeof(creature));
         if(!dum_ptr) 
@@ -735,15 +736,27 @@ cmd             *cmnd;
                 }
         }
 
-        if(!dum_ptr->name[0]) return(0);
 
-        if(save_ply(dum_ptr->name, dum_ptr) < 0) 
-                merror("savegame", NONFATAL);
+        if(!dum_ptr->name[0]) {
+                for(i=0; i<n; i++)
+                        del_obj_crt(obj[i], dum_ptr);
+                free(dum_ptr);
+                return(0);
+        }
+
+        save_result = save_ply(dum_ptr->name, dum_ptr);
 		
         for(i=0; i<n; i++)
                 del_obj_crt(obj[i], dum_ptr);
 
         free(dum_ptr);
+
+        if(save_result != PLAYER_STORE_OK) {
+                merror("savegame", NONFATAL);
+                print(ply_ptr->fd,
+                      "저장 완료를 확인할 수 없습니다. 접속을 유지한 채 다시 저장하십시오.\n");
+                return(0);
+        }
 
         print(ply_ptr->fd, "저장하였습니다.\n");
 
@@ -757,7 +770,7 @@ creature        *ply_ptr;
 {
         creature        *dum_ptr;
         object          *obj[MAXWEAR];
-        int             i, n = 0;
+        int             i, n = 0, save_result;
 
         dum_ptr = (creature *)malloc(sizeof(creature));
         if(!dum_ptr)
@@ -773,9 +786,15 @@ creature        *ply_ptr;
                 }
         }
 
-        if(!dum_ptr->name[0]) return(0);
+        if(!dum_ptr->name[0]) {
+                for(i=0; i<n; i++)
+                        del_obj_crt(obj[i], dum_ptr);
+                free(dum_ptr);
+                return(0);
+        }
 
-        if(save_ply(dum_ptr->name, dum_ptr) < 0)
+        save_result = save_ply(dum_ptr->name, dum_ptr);
+        if(save_result != PLAYER_STORE_OK)
                 merror("savegame", NONFATAL);
 
         for(i=0; i<n; i++)
@@ -783,7 +802,7 @@ creature        *ply_ptr;
 
         free(dum_ptr);
 
-        return(0);
+        return(save_result);
 
 }
 

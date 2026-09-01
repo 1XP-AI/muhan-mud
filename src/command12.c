@@ -4,6 +4,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "player_store.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -157,8 +158,10 @@ cmd *cmnd;
 {
 	struct	stat	f_stat;
 	creature	*player;
-	int		fd;
+	int		fd, load_result, save_result;
 	int 	ftotal;
+	int		old_family;
+	char		had_family;
 	char	tmp[256];
 	fd = ply_ptr->fd;
 
@@ -184,21 +187,32 @@ cmd *cmnd;
 		return(0);
 	}
 	if(!player) {
-	if(load_ply(cmnd->str[1], &player) < 0) {
+	load_result = load_ply(cmnd->str[1], &player);
+	if(load_result == PLAYER_STORE_NOT_FOUND) {
 		print(fd, "그런 사용자는 없습니다.\n");
+		return(0);
+	}
+	if(load_result != PLAYER_STORE_OK) {
+		print(fd, "사용자 데이터를 읽을 수 없습니다.\n");
 		return(0);
 	}
 	if(player_path_from_name(cmnd->str[1], tmp, sizeof(tmp)) < 0 || stat(tmp, &f_stat)) {
 		print(fd, "그런 사용자는 없습니다.\n");
+		free_crt(player);
 		return(0);
 	}
 	if(F_ISSET(player, PFAMIL)) {
 		if(ply_ptr->daily[DL_EXPND].max == player->daily[DL_EXPND].max) {
 			player->daily[DL_EXPND].max = 0;
 			F_CLR(player, PFAMIL);
+			save_result = save_ply(player->name, player);
+			if(save_result != PLAYER_STORE_OK) {
+				print(fd, "%s님의 추방을 저장하지 못했습니다.\n", player->name);
+				free_crt(player);
+				return(0);
+			}
+			edit_member(player->name, player->class, ply_ptr->daily[DL_EXPND].max, 2);
 			print(fd, "%s님을 패거리에서 추방하였습니다.\n", player->name);
-		edit_member(player->name, player->class, ply_ptr->daily[DL_EXPND].max, 2);
-			save_ply(player->name, player);
 			free_crt(player);
 			return(0);
 		}
@@ -217,9 +231,18 @@ cmd *cmnd;
 	else {
 	if(F_ISSET(player, PFAMIL)) {
 		if(ply_ptr->daily[DL_EXPND].max == player->daily[DL_EXPND].max) {
+			old_family = player->daily[DL_EXPND].max;
+			had_family = F_ISSET(player, PFAMIL);
 			player->daily[DL_EXPND].max = 0;
 			F_CLR(player, PFAMIL);
-		edit_member(player->name, player->class, ply_ptr->daily[DL_EXPND].max, 2);
+			save_result = save_ply(player->name, player);
+			if(save_result != PLAYER_STORE_OK) {
+				player->daily[DL_EXPND].max = old_family;
+				if(had_family) F_SET(player, PFAMIL);
+				print(fd, "%s님의 추방을 저장하지 못했습니다.\n", player->name);
+				return(0);
+			}
+			edit_member(player->name, player->class, ply_ptr->daily[DL_EXPND].max, 2);
 			print(fd, "%s님을 패거리에서 추방하였습니다.\n", player->name);
 			print(player->fd, "\n당신은 패거리에서 추방되었습니다.\n");
 			return(0);
@@ -558,7 +581,6 @@ cmd             *cmnd;
         return(0);
 
 }
-
 
 
 

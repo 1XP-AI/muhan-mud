@@ -11,6 +11,8 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "player_path.h"
+#include "player_store.h"
+#include "player_recovery.h"
 #include "resource_path.h"
 #include <ctype.h>
 
@@ -42,6 +44,7 @@ unsigned char    *str;
 {
 	FILE *fp;
 		int             i;
+		int             load_result;
 		extern int      Numplayers;
 		unsigned char   tempstr[20], str2[50], str3[50], nastr[20];
 		long            t;
@@ -100,15 +103,27 @@ char file[80];
 			}
 
 				lowercize(str, 1);
+				if(player_recovery_login_blocked()) {
+					print(fd, "서버가 이전 접속의 저장을 복구 중입니다. 잠시 후 다시 시도하십시오.\n");
+					print(fd, "\n당신의 이름은 무엇입니까? ");
+					RETURN(fd, login, 1);
+				}
 				last_login[fd]=0;
 				if(player_path_from_name((char *)str, tmp, sizeof(tmp)) == 0) {
 					if (!rp_stat(tmp,&f_stat)) last_login[fd]=f_stat.st_ctime;
 				}
 
-				if(load_ply(str, &ply_ptr) < 0) {
+				load_result = load_ply((char *)str, &ply_ptr);
+				if(load_result == PLAYER_STORE_NOT_FOUND) {
 						strcpy(Ply[fd].extr->tempstr[0], str);
 						print(fd, "\n%S%j 하시겠습니까(예/아니오)? ", str,"4");
 						RETURN(fd, login, 2);
+				}
+				else if(load_result != PLAYER_STORE_OK) {
+						scwrite(fd, "\n캐릭터 데이터를 읽을 수 없습니다. 관리자에게 문의해 주십시오.\n",
+							(int)strlen("\n캐릭터 데이터를 읽을 수 없습니다. 관리자에게 문의해 주십시오.\n"));
+						disconnect(fd);
+						return;
 				}
 
 				else {
@@ -177,17 +192,24 @@ char file[80];
 						for(i=0; i<Tablesize; i++)
 								if(Ply[i].ply && i != fd)
 										if(!strcmp(Ply[i].ply->name,
-										   Ply[fd].ply->name))
+											   Ply[fd].ply->name))
 												disconnect(i);
+						if(player_recovery_login_blocked()) {
+							scwrite(fd, "이전 접속의 저장을 복구하지 못했습니다. 접속을 끊습니다.\n",
+								(int)strlen("이전 접속의 저장을 복구하지 못했습니다. 접속을 끊습니다.\n"));
+							disconnect(fd);
+							return;
+						}
 						free_crt(Ply[fd].ply);
-				if(load_ply(tempstr, &Ply[fd].ply) < 0)
+				load_result = load_ply((char *)tempstr, &Ply[fd].ply);
+				if(load_result != PLAYER_STORE_OK)
 				{
                                                 scwrite(fd, "Player nolonger exits!\n", 23);
 						t = time(0);
 						strcpy(str2, (char *)ctime(&t));
 						str2[strlen(str2)-1] = 0;
-						logn("sui_crash","%s: %s (%s) 는 자살하였습니다.\n",
-								str2, Ply[fd].ply->name, Ply[fd].io->address);
+						logn("player_load_error","%s: %s (%s) 재읽기 실패 (%d).\n",
+								str2, tempstr, Ply[fd].io->address, load_result);
 						disconnect(fd);
 						return;
 				}
@@ -232,6 +254,7 @@ int     param;
 char    *str;
 {
 		int     i, k, l, n, sum;
+		int		save_result;
 		int     num[5];
 
 		switch(param) {
@@ -431,8 +454,13 @@ char    *str;
 		F_SET(Ply[fd].ply,PLECHO);
 		F_SET(Ply[fd].ply,PPROMP);
                 Ply[fd].ply->gold = 500;
-				save_ply(Ply[fd].ply->name, Ply[fd].ply);
 				print(fd, "%c%c%c\n",255,252,1);
+				save_result = save_ply(Ply[fd].ply->name, Ply[fd].ply);
+				if(save_result != PLAYER_STORE_OK) {
+					merror("create_ply", NONFATAL);
+					print(fd, "새 캐릭터를 저장하지 못했습니다. 현재 접속을 유지하는 동안 저장 명령으로 다시 시도하십시오.\n");
+					RETURN(fd, command, 1);
+				}
 
 				print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
 				print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");

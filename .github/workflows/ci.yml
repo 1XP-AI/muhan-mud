@@ -158,3 +158,25 @@ jobs:
             tail -n 200 "$log_file" || true
             exit 1
           fi
+
+      - name: Legacy unit contracts
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src unit-test CC=gcc
+
+      - name: Deterministic AI scenario
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-ai-scenario.sh --output "$RUNNER_TEMP/muhan-ai-scenario.json"
+
+      - name: Upload AI scenario evidence
+        if: always() && matrix.runner == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mud-ai-scenario-${{ github.sha }}
+          path: ${{ runner.temp }}/muhan-ai-scenario.json
+          if-no-files-found: warn

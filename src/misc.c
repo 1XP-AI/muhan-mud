@@ -10,6 +10,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "resource_path.h"
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -339,8 +340,12 @@ char *str;
 	switch(param) {
 	case 1:
 		offset = 0L;
+		if(strlen(str) >= sizeof(Ply[fd].extr->tempstr[1])) {
+			print(fd, "화일 경로가 너무 깁니다.\n");
+			RETURN(fd, command, 1);
+		}
 		strcpy(Ply[fd].extr->tempstr[1], str);
-		ff = open(str, O_RDONLY, 0);
+		ff = rp_open(str, O_RDONLY, 0);
 		if(ff < 0) {
 			print(fd, "화일을 읽을 수 없습니다.\n");
 			RETURN(fd, command, 1);
@@ -393,7 +398,7 @@ char *str;
 			RETURN(fd, command, 1);
 		}
 		offset = atol(Ply[fd].extr->tempstr[0]);
-		ff = open(Ply[fd].extr->tempstr[1], O_RDONLY, 0);
+		ff = rp_open(Ply[fd].extr->tempstr[1], O_RDONLY, 0);
 		if(ff < 0) {
 			print(fd, "화일이 없습니다. 신에게 연락해 주세요.\n");
 			F_CLR(Ply[fd].ply, PREADI);
@@ -534,9 +539,9 @@ long	i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
 	int	fd;
 
 	sprintf(file, "%s/log", LOGPATH);
-	fd = open(file, O_RDWR, 0);
+	fd = rp_open(file, O_RDWR, 0);
 	if(fd < 0) {
-		fd = open(file, O_RDWR | O_CREAT, ACC);
+		fd = rp_open(file, O_RDWR | O_CREAT, ACC);
 		if(fd < 0) return;
 	}
 	lseek(fd, 0L, 2);
@@ -558,9 +563,9 @@ long  i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
 	int fd;
 
 	sprintf(file, "%s/log_dm", LOGPATH);
-	fd = open(file, O_RDWR, 0);
+	fd = rp_open(file, O_RDWR, 0);
 	if(fd < 0) {
-		fd = open(file, O_RDWR | O_CREAT, ACC);
+		fd = rp_open(file, O_RDWR | O_CREAT, ACC);
 		if(fd < 0) return;
 	}
 	lseek(fd, 0L, 2);
@@ -580,9 +585,9 @@ long  i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
     long t;
 
 	sprintf(file, "%s/log_dmcmd", LOGPATH);
-	fd = open(file, O_RDWR, 0);
+	fd = rp_open(file, O_RDWR, 0);
 	if(fd < 0) {
-		fd = open(file, O_RDWR | O_CREAT, ACC);
+		fd = rp_open(file, O_RDWR | O_CREAT, ACC);
 		if(fd < 0) return;
 	}
 	lseek(fd, 0L, 2);
@@ -605,15 +610,15 @@ char *cur_time, *cur_name;
 	int fd, fd2;
 	
 	sprintf(file, "%s/log_fl", LOGPATH);
-	fd = open(file, O_RDWR, 0);
+	fd = rp_open(file, O_RDWR, 0);
 	if(fd<0) {
-		fd = open(file, O_RDWR | O_CREAT, ACC);
+		fd = rp_open(file, O_RDWR | O_CREAT, ACC);
 		if(fd<0) return;
 	}
 	sprintf(file2, "%s/fal/%s", PLAYERPATH, cur_name);
-	fd2 = open(file2, O_RDWR, 0);
+	fd2 = rp_open(file2, O_RDWR, 0);
 	if(fd2 < 0) {
-		fd2 = open(file2, O_RDWR | O_CREAT, ACC);
+		fd2 = rp_open(file2, O_RDWR | O_CREAT, ACC);
 		if(fd2 < 0) return;
 	}
 
@@ -672,7 +677,7 @@ char *filename;
 {
 	int ff;
 
-	ff = open(filename, O_RDONLY);
+	ff = rp_open(filename, O_RDONLY, 0);
 	if(ff > -1) {
 		close(ff);
 		return(1);
@@ -698,7 +703,7 @@ void load_lockouts()
 	Numlockedout = 0;
 
 	sprintf(str, "%s/lockout", LOGPATH);
-	fp = fopen(str, "r");
+	fp = rp_fopen(str, "r");
 	if(!fp) return;
 
 	while(1) {
@@ -755,10 +760,10 @@ long     i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
         char    str[1024];
         int     fd;
  
-        sprintf(file, "%s/%s", LOGPATH,name);
-        fd = open(file, O_RDWR, 0);
-        if(fd < 0) {
-                fd = open(file, O_RDWR | O_CREAT, ACC);
+	sprintf(file, "%s/%s", LOGPATH,name);
+	fd = rp_open(file, O_RDWR, 0);
+	if(fd < 0) {
+		        fd = rp_open(file, O_RDWR | O_CREAT, ACC);
                 if(fd < 0) return;
         }
         lseek(fd, 0L, 2);
@@ -779,8 +784,8 @@ int i1,i2,i3,i4,i5,i6;
     char str[1024];
     int fd;
 
-    sprintf(file,"%s/%s",LOGPATH,name);
-    fd = open(file, O_RDWR|O_CREAT, ACC);
+	sprintf(file,"%s/%s",LOGPATH,name);
+	fd = rp_open(file, O_RDWR|O_CREAT, ACC);
     if(fd<0) return;
 
     lseek(fd,0L,2);
@@ -813,10 +818,10 @@ long  i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
     char str[1024];
     int fd;
 
-    sprintf(file, "%s/log_pl", LOGPATH);
-    fd = open(file, O_RDWR, 0);
-    if(fd < 0) {
-        fd = open(file, O_RDWR | O_CREAT, ACC);
+	sprintf(file, "%s/log_pl", LOGPATH);
+	fd = rp_open(file, O_RDWR, 0);
+	if(fd < 0) {
+		fd = rp_open(file, O_RDWR | O_CREAT, ACC);
         if(fd < 0) return;
     }
     lseek(fd, 0L, 2);
@@ -834,8 +839,8 @@ long  i1, i2, i3, i4, i5, i6, i7, i8, i9, i10;
     char str[1024];
     int fd;
 
-    sprintf(file, "%s/log_plcmd", LOGPATH);
-    fd = open(file, O_RDWR | O_CREAT, ACC);
+	sprintf(file, "%s/log_plcmd", LOGPATH);
+	fd = rp_open(file, O_RDWR | O_CREAT, ACC);
     if(fd < 0) {
         if(fd < 0) return;
     }

@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include "compat_legacy.h"
+#include "utf8_text.h"
 
 #ifndef WIN32
 
@@ -112,8 +113,9 @@ extern void	free_obj(), free_crt(), free_rom();
 
 /* FILES2.C */
 
-extern int	load_rom(), load_mon(), load_obj(), load_ply(), save_ply(),
+extern int	load_rom(), load_mon(), load_obj(),
 		is_rom_loaded(), reload_rom(), resave_rom();
+extern int	load_ply(char *, creature **), save_ply(char *, creature *);
 extern void	put_queue(), pull_queue(), front_queue(), flush_rom(),
 		flush_crt(), flush_obj(), resave_all_rom(), save_all_ply();
 
@@ -376,16 +378,11 @@ extern int	low(), up(), dice(), exp_to_lev(), dec_daily(), sort_cmp(),
 		file_exists(), is_number_str();
 extern char	*crt_str(), *obj_str();
 
-/* UTF8_TEXT.C */
-
-extern int	utf8_validate(), utf8_ends_with(), utf8_prev_char_start(),
-		utf8_has_jongseong_last();
-extern unsigned long utf8_codepoint_len();
-
 /* PLAYER_PATH.C */
 
-extern int	player_path_from_name(), player_path_ensure_dir(),
-		player_name_is_valid();
+extern int	player_path_from_name(const char *, char *, unsigned long),
+		player_path_ensure_dir(const char *),
+		player_name_is_valid(const unsigned char *, unsigned long, unsigned long);
 
 /* SPECIAL1.C */
 

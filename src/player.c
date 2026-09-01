@@ -9,6 +9,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "resource_path.h"
 
 extern char *ply_titles[PMAX];
 
@@ -249,7 +250,7 @@ creature	*ply_ptr;
 		ANSI(ply_ptr->fd, YELLOW);
 		view_file(ply_ptr->fd, 1, file2);
 		ANSI(ply_ptr->fd, NORMAL);
-		unlink(file2);
+		rp_unlink(file2);
 	}
 
 	sprintf(str, "%s/%s", POSTPATH, ply_ptr->name);

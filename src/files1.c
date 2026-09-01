@@ -9,12 +9,37 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include <errno.h>
 
 #define MAX_NESTED_OBJECTS 4096
 #define MAX_ROM_EXITS 200
 #define MAX_ROM_MOBS 4096
 #define MAX_ROM_ITEMS 8192
 #define MAX_ROM_DESC_BYTES (1024 * 1024)
+
+/* Return failure to the caller instead of terminating the server when a
+ * player record cannot be written.  write(2) may be interrupted or may
+ * complete only part of the record. */
+static int write_full(fd, buf, size)
+int fd;
+char *buf;
+unsigned long size;
+{
+	int n;
+
+	while(size) {
+		n = write(fd, buf, size);
+		if(n > 0) {
+			buf += n;
+			size -= n;
+			continue;
+		}
+		if(n < 0 && errno == EINTR)
+			continue;
+		return(-1);
+	}
+	return(0);
+}
 
 /**********************************************************************/
 /*				count_obj			      */
@@ -53,17 +78,15 @@ int 	fd;
 object 	*obj_ptr;
 char 	perm_only;
 {
-	int 	n, cnt, cnt2=0, error=0;
+	int 	cnt, cnt2=0, error=0;
 	otag	*op;
 
-	n = write(fd, obj_ptr, sizeof(object));
-	if(n < sizeof(object))
-		merror("write_obj", FATAL);
+	if(write_full(fd, (char *)obj_ptr, sizeof(object)) < 0)
+		return(-1);
 	
 	cnt = count_obj(obj_ptr, perm_only);
-	n = write(fd, &cnt, sizeof(int));
-	if(n < sizeof(int))
-		merror("write_obj", FATAL);
+	if(write_full(fd, (char *)&cnt, sizeof(int)) < 0)
+		return(-1);
 
 	if(cnt > 0) {
 		op = obj_ptr->first_obj;
@@ -131,17 +154,15 @@ int 		fd;
 creature 	*crt_ptr;
 char 		perm_only;
 {
-	int 	n, cnt, cnt2=0, error=0;
+	int 	cnt, cnt2=0, error=0;
 	otag	*op;
 
-	n = write(fd, crt_ptr, sizeof(creature));
-	if(n < sizeof(creature))
-		merror("write_crt", FATAL);
+	if(write_full(fd, (char *)crt_ptr, sizeof(creature)) < 0)
+		return(-1);
 
 	cnt = count_inv(crt_ptr, perm_only);
-	n = write(fd, &cnt, sizeof(int));
-	if(n < sizeof(int))
-		merror("write_crt", FATAL);
+	if(write_full(fd, (char *)&cnt, sizeof(int)) < 0)
+		return(-1);
 
 	if(cnt > 0) {
 		op = crt_ptr->first_obj;

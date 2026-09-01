@@ -1,6 +1,7 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "player_path.h"
+#include "resource_path.h"
 #include "utf8_text.h"
 
 #include <string.h>
@@ -125,25 +126,32 @@ static void player_shard(const char *name, char out[3])
 int player_path_from_name(const char *name, char *out, unsigned long out_sz)
 {
     char shard[3];
+    char legacy[512];
 
     if(!name || !name[0] || !out || out_sz == 0)
         return -1;
 
     player_shard(name, shard);
-    snprintf(out, out_sz, "%s/%s/%s", PLAYERPATH, shard, name);
-    return 0;
+    if(snprintf(legacy, sizeof(legacy), "%s/%s/%s", PLAYERPATH, shard, name) >=
+       (int)sizeof(legacy))
+        return -1;
+    return resolve_runtime_path(legacy, out, out_sz);
 }
 
 int player_path_ensure_dir(const char *name)
 {
-    char shard[3], dir[256];
+    char shard[3], legacy[512], dir[512];
     struct stat st;
 
     if(!name || !name[0])
         return -1;
 
     player_shard(name, shard);
-    snprintf(dir, sizeof(dir), "%s/%s", PLAYERPATH, shard);
+    if(snprintf(legacy, sizeof(legacy), "%s/%s", PLAYERPATH, shard) >=
+       (int)sizeof(legacy))
+        return -1;
+    if(resolve_runtime_path(legacy, dir, sizeof(dir)) < 0)
+        return -1;
     if(stat(dir, &st) == 0) {
         if(S_ISDIR(st.st_mode))
             return 0;

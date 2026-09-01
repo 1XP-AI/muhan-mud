@@ -9,6 +9,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "player_store.h"
 
 int combo_box();
 int AT_WAR, CALLWAR1, CALLWAR2;
@@ -264,15 +265,22 @@ creature    *ply_ptr;
     object *obj_haha=NULL;
     object *cnt_ptr=NULL;
     int i,n,tes=0;
+    int save_result;
+    char item_name[80];
 
     for(i=0; i<MAXWEAR; i++) {
         if(!ply_ptr->ready[i]) continue;
         if(is_bad_item(ply_ptr->ready[i])) {
             if(ply_ptr->ready[i]->shotsmax > 4999) {
-                log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", ply_ptr->name, ply_ptr->ready[i]->name);
+                strncpy(item_name, ply_ptr->ready[i]->name, sizeof(item_name)-1);
+                item_name[sizeof(item_name)-1] = 0;
                 free_obj(ply_ptr->ready[i]);
                 ply_ptr->ready[i]=NULL;
-                save_ply(ply_ptr->name, ply_ptr);
+                save_result = save_ply(ply_ptr->name, ply_ptr);
+                if(save_result == PLAYER_STORE_OK)
+                    log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", ply_ptr->name, item_name);
+                else
+                    log_pl("나쁜 %s의 %s : 삭제 저장 실패 (%d).\n", ply_ptr->name, item_name, save_result);
             }
             free_obj2(ply_ptr->ready[i]);
         }
@@ -285,11 +293,16 @@ creature    *ply_ptr;
         if(F_ISSET(obj_tag->obj, OCONTN)) check_contain(obj_tag->obj);
         if(is_bad_item(obj_tag->obj)) {
             if(obj_tag->obj->shotsmax > 4999) {
-                log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", ply_ptr->name, obj_tag->obj->name);
+                strncpy(item_name, obj_tag->obj->name, sizeof(item_name)-1);
+                item_name[sizeof(item_name)-1] = 0;
                 obj_haha=obj_tag->obj;
                 del_obj_crt(obj_haha, ply_ptr);
                 free_obj(obj_haha);
-                save_ply(ply_ptr->name, ply_ptr);
+                save_result = save_ply(ply_ptr->name, ply_ptr);
+                if(save_result == PLAYER_STORE_OK)
+                    log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", ply_ptr->name, item_name);
+                else
+                    log_pl("나쁜 %s의 %s : 삭제 저장 실패 (%d).\n", ply_ptr->name, item_name, save_result);
             }
         }
     } 
@@ -324,6 +337,8 @@ object *obj_ptr;
     otag *obj_tag;
     otag *obj_next;
     object *obj_haha;
+    int save_result;
+    char item_name[80];
 
     if(!obj_ptr->first_obj) return;
 
@@ -331,11 +346,16 @@ object *obj_ptr;
         obj_next=obj_tag->next_tag;
         if(is_bad_item(obj_tag->obj)) {
             if(obj_tag->obj->shotsmax > 4999) {
-                log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", obj_ptr->parent_crt->name, obj_tag->obj->name);
+                strncpy(item_name, obj_tag->obj->name, sizeof(item_name)-1);
+                item_name[sizeof(item_name)-1] = 0;
                 obj_haha=obj_tag->obj;
                 del_obj_obj(obj_haha, obj_ptr);
                 free_obj(obj_haha);
-                save_ply(obj_ptr->parent_crt->name, obj_ptr->parent_crt);
+                save_result = save_ply(obj_ptr->parent_crt->name, obj_ptr->parent_crt);
+                if(save_result == PLAYER_STORE_OK)
+                    log_pl("나쁜 %s의 %s : 없애버렸어요.!\n", obj_ptr->parent_crt->name, item_name);
+                else
+                    log_pl("나쁜 %s의 %s : 삭제 저장 실패 (%d).\n", obj_ptr->parent_crt->name, item_name, save_result);
             }
         }
     } 
@@ -395,4 +415,3 @@ object *obj_ptr;
     }
     return 0;
 }
-

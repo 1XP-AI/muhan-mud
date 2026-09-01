@@ -1,0 +1,114 @@
+#include <stdio.h>
+#include <string.h>
+
+#include "player_store.h"
+
+struct creature {
+    int marker;
+};
+
+static int file_save_calls;
+static int file_load_calls;
+static int memory_save_calls;
+static int memory_load_calls;
+
+int file_player_store_save(char *name, struct creature *player)
+{
+    file_save_calls++;
+    return (!strcmp(name, "file") && player && player->marker == 7) ? 11 : -1;
+}
+
+int file_player_store_load(char *name, struct creature **player)
+{
+    static struct creature loaded = { 8 };
+    file_load_calls++;
+    if(strcmp(name, "file"))
+        return -1;
+    *player = &loaded;
+    return 12;
+}
+
+static int memory_save(char *name, struct creature *player)
+{
+    memory_save_calls++;
+    return (!strcmp(name, "memory") && player && player->marker == 7) ? 21 : -1;
+}
+
+static int memory_load(char *name, struct creature **player)
+{
+    static struct creature loaded = { 9 };
+    memory_load_calls++;
+    if(strcmp(name, "memory"))
+        return -1;
+    *player = &loaded;
+    return 22;
+}
+
+static int failing_load(char *name, struct creature **player)
+{
+    (void)name;
+    (void)player;
+    return PLAYER_STORE_CORRUPT;
+}
+
+static int expect(int condition, const char *message)
+{
+    if(condition)
+        return 0;
+    fprintf(stderr, "player_store_test: %s\n", message);
+    return 1;
+}
+
+int main(void)
+{
+    struct creature input = { 7 };
+    struct creature *output = 0;
+    player_store_ops memory_store = { memory_save, memory_load };
+    player_store_ops failing_store = { memory_save, failing_load };
+    player_store_ops invalid_store = { memory_save, 0 };
+    int failed = 0;
+
+    failed += expect(PLAYER_STORE_OK == 0 &&
+                     PLAYER_STORE_NOT_FOUND < 0 &&
+                     PLAYER_STORE_CORRUPT < 0 &&
+                     PLAYER_STORE_IO_ERROR < 0,
+                     "repository results must preserve legacy success/failure checks");
+
+    failed += expect(save_ply("file", &input) == 11, "default save must use FileStore");
+    failed += expect(load_ply("file", &output) == 12 && output->marker == 8,
+                     "default load must use FileStore");
+    failed += expect(file_save_calls == 1 && file_load_calls == 1,
+                     "FileStore call counts must be exact");
+
+    failed += expect(player_store_set(&invalid_store) == -1,
+                     "incomplete repositories must be rejected");
+    failed += expect(player_store_set(&memory_store) == 0,
+                     "complete repository must be accepted");
+    memory_store.save = file_player_store_save;
+    memory_store.load = file_player_store_load;
+    output = 0;
+    failed += expect(save_ply("memory", &input) == 21,
+                     "injected save must use MemoryStore");
+    failed += expect(load_ply("memory", &output) == 22 && output->marker == 9,
+                     "injected load must use MemoryStore");
+    failed += expect(memory_save_calls == 1 && memory_load_calls == 1,
+                     "MemoryStore call counts must be exact");
+
+    failed += expect(player_store_set(&failing_store) == 0,
+                     "failing repository must be injectable");
+    output = (struct creature *)1;
+    failed += expect(load_ply("memory", &output) == PLAYER_STORE_CORRUPT && output == 0,
+                     "wrapper must clear partial output on repository failure");
+    failed += expect(load_ply("memory", 0) == PLAYER_STORE_IO_ERROR,
+                     "wrapper must reject a null output pointer");
+
+    player_store_reset();
+    failed += expect(save_ply("file", &input) == 11 && file_save_calls == 2,
+                     "reset must restore FileStore");
+
+    if(failed)
+        return 1;
+
+    puts("player_store_test: ok");
+    return 0;
+}

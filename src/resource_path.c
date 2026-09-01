@@ -2,6 +2,8 @@
 #include "mextern.h"
 #include "resource_path.h"
 
+#include <errno.h>
+
 #define RP_MAX_LINE 8192
 
 typedef struct rp_alias {
@@ -71,6 +73,58 @@ static int rp_starts_with(const char *s, const char *prefix)
         return 0;
 
     return strncmp(s, prefix, n) == 0;
+}
+
+static int rp_has_explicit_runtime_root(void)
+{
+    char *env_root;
+
+    env_root = getenv("MUHAN_HOME");
+    return(env_root && env_root[0]);
+}
+
+static int rp_is_mudhome_path(const char *path)
+{
+    unsigned long n;
+
+    if(!path)
+        return 0;
+    n = (unsigned long)strlen(MUDHOME);
+    return rp_starts_with(path, MUDHOME) &&
+           (path[n] == 0 || path[n] == '/');
+}
+
+/*
+ * An explicit MUHAN_HOME is a containment boundary for legacy absolute
+ * paths.  Resource lookup may fail inside the selected runtime, but it must
+ * not then consult a different runtime's /home/muhan tree.
+ */
+int runtime_path_allows_legacy_fallback(const char *legacy_path)
+{
+    return(!rp_has_explicit_runtime_root() || !rp_is_mudhome_path(legacy_path));
+}
+
+int resolve_runtime_path(const char *legacy_path, char *out, unsigned long out_sz)
+{
+    char root[512];
+    int n;
+
+    if(!legacy_path || !out || out_sz == 0)
+        return -1;
+
+    rp_get_runtime_root(root, sizeof(root));
+    if(rp_is_mudhome_path(legacy_path) &&
+       strcmp(root, MUDHOME) != 0)
+        n = snprintf(out, out_sz, "%s%s", root, legacy_path + strlen(MUDHOME));
+    else
+        n = snprintf(out, out_sz, "%s", legacy_path);
+
+    if(n < 0 || (unsigned long)n >= out_sz) {
+        out[0] = 0;
+        return -1;
+    }
+
+    return 0;
 }
 
 static void rp_bytes_to_hex(const unsigned char *in, char *out, unsigned long out_sz)
@@ -180,13 +234,32 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
 
     out[0] = 0;
 
-    if(rp_path_exists(legacy_path)) {
-        snprintf(out, out_sz, "%s", legacy_path);
+    rp_get_runtime_root(root, sizeof(root));
+    root_len = (unsigned long)strlen(root);
+
+    /*
+     * An explicit MUHAN_HOME is an isolation boundary. Prefer it even when a
+     * host-level /home/muhan happens to exist, otherwise tests and side-by-side
+     * runtimes can read each other's writable state.
+     */
+    adjusted[0] = 0;
+    if(resolve_runtime_path(legacy_path, adjusted, sizeof(adjusted)) == 0 &&
+       strcmp(adjusted, legacy_path) != 0 &&
+       rp_path_exists(adjusted)) {
+        snprintf(out, out_sz, "%s", adjusted);
         return 0;
     }
 
-    rp_get_runtime_root(root, sizeof(root));
-    root_len = (unsigned long)strlen(root);
+    /*
+     * When resolve_runtime_path rewrote an absolute legacy path, a missing
+     * fixture path must stay missing.  Falling back to the host's
+     * /home/muhan would cross the explicit MUHAN_HOME isolation boundary.
+     */
+    if((!adjusted[0] || strcmp(adjusted, legacy_path) == 0) &&
+       rp_path_exists(legacy_path)) {
+        snprintf(out, out_sz, "%s", legacy_path);
+        return 0;
+    }
 
 #ifdef USE_RUST_RESOLVER
     if(!g_rust_manifest_loaded) {
@@ -198,7 +271,8 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
     if(g_rust_manifest_loaded == 1) {
         if(mr_resolve_legacy_path(legacy_path, candidate, sizeof(candidate)) == 0) {
             if(candidate[0] == '/') {
-                snprintf(out, out_sz, "%s", candidate);
+                if(resolve_runtime_path(candidate, out, out_sz) < 0)
+                    return -1;
             } else {
                 char rust_joined[2048];
                 snprintf(rust_joined, sizeof(rust_joined), "%s/resources_utf8/%s", root, candidate);
@@ -209,8 +283,7 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
     }
 #endif
 
-    adjusted[0] = 0;
-    if(rp_starts_with(legacy_path, MUDHOME) && strcmp(root, MUDHOME) != 0) {
+    if(rp_is_mudhome_path(legacy_path) && strcmp(root, MUDHOME) != 0) {
         snprintf(adjusted, sizeof(adjusted), "%s%s", root, legacy_path + strlen(MUDHOME));
         if(rp_path_exists(adjusted)) {
             snprintf(out, out_sz, "%s", adjusted);
@@ -261,14 +334,14 @@ FILE *rp_fopen(const char *path, const char *mode)
         if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
             return fopen(resolved, mode);
     } else {
-        char root[512], adjusted[2048];
-        rp_get_runtime_root(root, sizeof(root));
-        if(rp_starts_with(path, MUDHOME) && strcmp(root, MUDHOME) != 0) {
-            snprintf(adjusted, sizeof(adjusted), "%s%s", root, path + strlen(MUDHOME));
-            return fopen(adjusted, mode);
-        }
+        if(resolve_runtime_path(path, resolved, sizeof(resolved)) == 0)
+            return fopen(resolved, mode);
     }
 
+    if(!runtime_path_allows_legacy_fallback(path)) {
+        errno = ENOENT;
+        return 0;
+    }
     return fopen(path, mode);
 }
 
@@ -283,14 +356,14 @@ int rp_open(const char *path, int flags, int mode)
         if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
             return open(resolved, flags, mode);
     } else {
-        char root[512], adjusted[2048];
-        rp_get_runtime_root(root, sizeof(root));
-        if(rp_starts_with(path, MUDHOME) && strcmp(root, MUDHOME) != 0) {
-            snprintf(adjusted, sizeof(adjusted), "%s%s", root, path + strlen(MUDHOME));
-            return open(adjusted, flags, mode);
-        }
+        if(resolve_runtime_path(path, resolved, sizeof(resolved)) == 0)
+            return open(resolved, flags, mode);
     }
 
+    if(!runtime_path_allows_legacy_fallback(path)) {
+        errno = ENOENT;
+        return(-1);
+    }
     return open(path, flags, mode);
 }
 
@@ -301,5 +374,22 @@ int rp_stat(const char *path, struct stat *st)
     if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
         return stat(resolved, st);
 
+    if(!runtime_path_allows_legacy_fallback(path)) {
+        errno = ENOENT;
+        return(-1);
+    }
     return stat(path, st);
+}
+
+int rp_unlink(const char *path)
+{
+    char resolved[2048];
+
+    if(resolve_runtime_path(path, resolved, sizeof(resolved)) == 0)
+        return unlink(resolved);
+    if(!runtime_path_allows_legacy_fallback(path)) {
+        errno = ENOENT;
+        return(-1);
+    }
+    return unlink(path);
 }

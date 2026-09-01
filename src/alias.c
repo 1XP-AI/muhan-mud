@@ -2,8 +2,10 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include "mstruct.h"
 #include "mextern.h"
+#include "resource_path.h"
 
 char *ply_titles[PMAX];
 
@@ -42,7 +44,7 @@ creature *ply_ptr;
     alias_buf_num[fd]=0;
 
     sprintf(path, "%s/alias/%s", PLAYERPATH, ply_ptr->name);
-    fp = fopen(path, "r");
+    fp = rp_fopen(path, "r");
     if(!fp) return;
 
     while(!feof(fp) && ply_alias_num[fd]<MAX_ALIAS) {
@@ -235,7 +237,7 @@ creature *ply_ptr;
 
     fd=ply_ptr->fd;
     sprintf(path, "%s/alias/%s", PLAYERPATH, ply_ptr->name);
-    handle = creat(path, 0660);
+    handle = rp_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0660);
     if(handle==-1) {
         print(fd,"화일로 저장하는데 실패하였습니다");
         return;
@@ -441,5 +443,3 @@ char *str;
 
     return buf[fd];
 }
-
-

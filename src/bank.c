@@ -1,6 +1,7 @@
 #include "mtype.h"
 #include "mstruct.h"
 #include "mextern.h"
+#include "resource_path.h"
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -21,7 +22,7 @@ object 	**obj_ptr;
 	char file[80];
 
 	sprintf(file, "%s/bank/%s", PLAYERPATH, str);
-	fd = open(file, O_RDONLY | O_BINARY, 0);
+	fd = rp_open(file, O_RDONLY | O_BINARY, 0);
 	if(fd < 0) {
 			return(-1);
 	}
@@ -31,6 +32,8 @@ object 	**obj_ptr;
         // leak memory bug patch by bluesky
         // leak memory bug patch by testors, again
         free_obj(*obj_ptr);
+        *obj_ptr = 0;
+        close(fd);
         // end of patch by testors
         // end of patch
         return(-1);
@@ -49,14 +52,17 @@ object  *obj_ptr;
 	char file[80];
 
 	sprintf(file, "%s/bank/%s", PLAYERPATH, str);
-	fd = open(file, O_RDWR | O_BINARY, 0);
+	fd = rp_open(file, O_RDWR | O_BINARY, 0);
 	if(fd < 0) {
-		fd = open(file, O_RDWR | O_CREAT, ACC);
+		fd = rp_open(file, O_RDWR | O_CREAT | O_TRUNC, ACC);
 		if(fd < 0)
 			return(-1);
 	}
 	n = write_obj(fd, obj_ptr, 0);
-	if(n <0) return(-1);
+	if(n < 0) {
+		close(fd);
+		return(-1);
+	}
 	close(fd);
 
 	return(0);
@@ -585,9 +591,6 @@ char *part_obj;
 		free_obj(cnt_ptr);
 		savegame_nomsg(ply_ptr);
 }
-
-
-
 
 
 

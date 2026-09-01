@@ -10,7 +10,6 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "resource_path.h"
-
 #ifdef WIN32
 #include <fcntl.h>
 #endif
@@ -525,120 +524,6 @@ object	**obj_ptr;
 		}
 	}
 
-	return(0);
-
-}
-
-/***********************************************************************/
-/*				save_ply			       */
-/***********************************************************************/
-
-/* This function saves the player specified by the string in the first */
-/* parameter, and uses the player in the second parameter.	       */
-
-int save_ply(str, ply_ptr)
-char		*str;
-creature	*ply_ptr;
-{
-	char	file[256], filebak[256];
-	int	fd, n;
-#ifdef COMPRESS
-	char	*a_buf, *b_buf;
-	int	size;
-#endif
-
-	if(player_path_from_name(str, file, sizeof(file)) < 0)
-		return(-1);
-	if(player_path_ensure_dir(str) < 0)
-		return(-1);
-	sprintf(filebak, "%s~", file);
-	rename(file, filebak);
-	fd = rp_open(file, O_RDWR | O_CREAT | O_BINARY, ACC);
-	if(fd < 0) {
-		rename(filebak, file);
-		return(-1);
-	}
-
-#ifdef COMPRESS
-	a_buf = (char *)malloc(100000);
-	if(!a_buf) merror("Memory allocation", FATAL);
-	n = write_crt_to_mem(a_buf, ply_ptr, 0);
-	if(n > 100000) merror(ply_ptr->name, FATAL);
-	b_buf = (char *)malloc(n);
-	if(!b_buf) merror("Memory allocation", FATAL);
-	size = compress(a_buf, b_buf, n);
-	n = write(fd, b_buf, size);
-	free(a_buf);
-	free(b_buf);
-#else
-	n = write_crt(fd, ply_ptr, 0);
-	if(n < 0) {
-		close(fd);
-		unlink(file);
-		rename(filebak, file);
-		return(-1);
-	}
-#endif
-
-	close(fd);
-	unlink(filebak);
-	return(0);
-
-}
-
-/***********************************************************************/
-/*				load_ply			       */
-/***********************************************************************/
-
-/* This function loads the player specified by the string in the first */
-/* parameter, and returns the player in the second parameter.	       */
-
-int load_ply(str, ply_ptr)
-char		*str;
-creature	**ply_ptr;
-{
-	char	file[256];
-	int	fd, n;
-#ifdef COMPRESS
-	char	*a_buf, *b_buf;
-	int	size;
-#endif
-
-	if(player_path_from_name(str, file, sizeof(file)) < 0)
-		return(-1);
-	fd = rp_open(file, O_RDONLY | O_BINARY, 0);
-	if(fd < 0) 
-		return(-1);
-
-	*ply_ptr = (creature *)malloc(sizeof(creature));
-	if(!*ply_ptr)
-		merror("load_ply", FATAL);
-
-#ifdef COMPRESS
-	a_buf = (char *)malloc(50000);
-	if(!a_buf) merror("Memory allocation", FATAL);
-	size = read(fd, a_buf, 50000);
-	if(size >= 50000) merror("Player too large", FATAL);
-	if(size < 1) {
-		close(fd);
-		return(-1);
-	}
-	b_buf = (char *)malloc(100000);
-	if(!b_buf) merror("Memory allocation", FATAL);
-	n = uncompress(a_buf, b_buf, size);
-	if(n > 100000) merror("Player too large", FATAL);
-	n = read_crt_from_mem(b_buf, *ply_ptr, 0);
-	free(a_buf);
-	free(b_buf);
-#else
-	n = read_crt(fd, *ply_ptr);
-	if(n < 0) {
-		close(fd);
-		return(-1);
-	}
-#endif
-
-	close(fd);
 	return(0);
 
 }

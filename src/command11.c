@@ -8,6 +8,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "player_store.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -109,6 +110,7 @@ int     param;
 char *str;
 {
         creature        *ply_ptr;
+        int             save_result;
 
 
         ply_ptr = Ply[fd].ply;
@@ -161,9 +163,13 @@ char *str;
                 if(!strcmp(Ply[fd].extr->tempstr[1],str)){
                         strcpy(ply_ptr->password,str);
                         print(fd, "%c%c%c\n\r", 255, 252, 1);
-                        print(fd,"암호가 변경되었습니다.\n");
                 	F_CLR(Ply[fd].ply, PREADI);
-                        save_ply(ply_ptr->name,ply_ptr);
+                        save_result = save_ply(ply_ptr->name,ply_ptr);
+                        if(save_result != PLAYER_STORE_OK) {
+                                print(fd,"암호 저장 완료를 확인할 수 없습니다. 접속을 유지한 채 다시 저장하십시오.\n");
+                                RETURN(fd, command, 1);
+                        }
+                        print(fd,"암호가 변경되었습니다.\n");
                         RETURN(fd, command, 1);
                 }
                 else{
@@ -399,7 +405,7 @@ cmd             *cmnd;
     struct stat f_stat;
     creature    *player;
         char            tmp[256];
-        int                     fd;
+        int                     fd, load_result;
 
         fd = ply_ptr->fd; 
     if(cmnd->num < 2) {
@@ -411,10 +417,15 @@ cmd             *cmnd;
 
         if (!player){
 
-        if(load_ply(cmnd->str[1], &player) < 0){
+        load_result = load_ply(cmnd->str[1], &player);
+        if(load_result == PLAYER_STORE_NOT_FOUND){
                 print(fd,"그런 사용자는 없습니다.\n");
                 return (0);
-        }             
+        }
+        if(load_result != PLAYER_STORE_OK) {
+                print(fd,"사용자 데이터를 읽을 수 없습니다.\n");
+                return (0);
+        }
 
           if (ply_ptr->class < DM && player->class == DM) {
                         print(fd,"당신은 그 사용자의 정보를 볼 수 없습니다.\n");
@@ -1281,7 +1292,7 @@ int divorce(ply_ptr, cmnd)
 creature    *ply_ptr;
 cmd         *cmnd;
 {
-    int     fd;
+    int     fd, load_result;
     char    str[20];
     creature    *crt_ptr;
 
@@ -1306,13 +1317,19 @@ cmd         *cmnd;
     crt_ptr = find_who(str);
 
     if(!crt_ptr) {
-        if(load_ply(str, &crt_ptr) < 0) {
+        load_result = load_ply(str, &crt_ptr);
+        if(load_result == PLAYER_STORE_NOT_FOUND) {
             print(fd, "당신의 배우자는 존재하지 않습니다.");
             F_CLR(ply_ptr, PMARRI);
             ply_ptr->key[2][0] = 0;
             return(0);
         }
+        if(load_result != PLAYER_STORE_OK) {
+            print(fd, "배우자 데이터를 읽을 수 없습니다. 결혼 상태는 변경하지 않았습니다.");
+            return(0);
+        }
         print(fd, "당신의 배우자가 현재 접속중이지 않습니다.");
+        free_crt(crt_ptr);
         return(0);
     }    
     
@@ -1339,8 +1356,6 @@ cmd         *cmnd;
     }
 }
         
-
-
 
 
 
