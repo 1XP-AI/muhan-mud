@@ -9,9 +9,10 @@ Helm release `muhan-mud-testnet`은 같은 애플리케이션 이미지를 서�
 - mud: 단일 C 서버, 내부 ClusterIP 4000만 사용
 - postgres: `supabase/postgres`와 보존 PVC
 - auth: `supabase/gotrue`, 공개 경로 `/auth/v1`
+- postgrest: browser RLS `/rest/v1`, Gateway에는 내부 native `/rpc`
 - realtime: `supabase/realtime`, 공개 경로 `/realtime/v1`
 
-브라우저에는 공개 anon JWT만 전달한다. JWT signing secret, Postgres password, service-role key, Realtime 암호화 키는 사전 생성한 Kubernetes Secret에만 둔다. 게이트웨이는 외부 issuer `https://muhan.1xp.vc/auth/v1`를 검증하되 사용자 조회는 내부 GoTrue ClusterIP로 수행한다.
+브라우저에는 공개 anon JWT만 전달한다. JWT signing secret, Postgres password, service-role key, Realtime 암호화 키와 MUD admission secret은 사전 생성한 Kubernetes Secret에만 둔다. 게이트웨이는 외부 issuer `https://muhan.1xp.vc/auth/v1`를 검증하되 사용자 조회는 내부 GoTrue ClusterIP로 수행하고, 캐릭터 session RPC는 내부 PostgREST ClusterIP로만 호출한다. MUD에는 같은 admission secret과 `MUD_REQUIRE_TRUSTED_ADMISSION=1`을 주입한다.
 
 Postgres와 MUD PVC에는 `helm.sh/resource-policy: keep`을 적용한다. C 서버는 raw struct 파일을 단일 writer로 저장하므로 replicas는 항상 1이고 Deployment 전략은 `Recreate`다. Helm rollback이나 재배포에서 PVC를 초기화하지 않는다.
 

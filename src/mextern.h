@@ -142,7 +142,7 @@ extern void	sock_init(), sock_loop(), accept_connect(), output_buf(),
 
 /* COMMAND1.C */
 
-extern void	login(), create_ply(), command(), parse();
+extern void	login(), create_ply(), command(), parse(), trusted_admission_login();
 extern int	process_cmd();
 extern int    checkdouble();
 

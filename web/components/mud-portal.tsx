@@ -5,8 +5,13 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AuthGate } from "@/components/auth-gate";
+import { CharacterRoster } from "@/components/character-roster";
 import type { GatewayStatus } from "@/components/mud-terminal";
 import type { ConfigResult } from "@/lib/config";
+import {
+  useCharacterRoster,
+} from "@/lib/character-roster";
+import { shouldOpenGatewaySocket } from "@/lib/gateway-contract";
 import { getBrowserSupabase } from "@/lib/supabase";
 import { useLobbyPresence } from "@/lib/use-lobby-presence";
 
@@ -47,7 +52,10 @@ export function MudPortal({ configResult }: MudPortalProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(Boolean(supabase));
   const [gatewayStatus, setGatewayStatus] = useState(initialGatewayStatus);
+  const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null);
+  const [activeOwnerId, setActiveOwnerId] = useState<string | null>(null);
   const presence = useLobbyPresence(supabase, session);
+  const roster = useCharacterRoster(supabase, session?.user.id ?? null);
 
   useEffect(() => {
     if (!supabase) {
@@ -74,6 +82,12 @@ export function MudPortal({ configResult }: MudPortalProps) {
       data.subscription.unsubscribe();
     };
   }, [supabase]);
+
+  useEffect(() => {
+    setActiveCharacterId(null);
+    setActiveOwnerId(null);
+    setGatewayStatus(initialGatewayStatus);
+  }, [session?.user.id]);
 
   const onGatewayStatus = useCallback((status: GatewayStatus) => {
     setGatewayStatus(status);
@@ -125,6 +139,15 @@ export function MudPortal({ configResult }: MudPortalProps) {
     gatewayStatus.state,
   );
   const worldReady = gatewayStatus.state === "ready";
+  const ownedCharacterIds = roster.characters.map((character) => character.id);
+  const terminalAllowed = shouldOpenGatewaySocket(
+    roster.status,
+    activeOwnerId === session.user.id ? activeCharacterId : null,
+    ownedCharacterIds,
+  );
+  const activeCharacter = terminalAllowed
+    ? roster.characters.find((character) => character.id === activeCharacterId)
+    : undefined;
 
   return (
     <main className="game-shell">
@@ -194,11 +217,45 @@ export function MudPortal({ configResult }: MudPortalProps) {
               <i aria-hidden="true" /> AUTH + WSS
             </span>
           </div>
-          <MudTerminal
-            accessToken={session.access_token}
-            gatewayUrl={configResult.config.gatewayUrl}
-            onStatus={onGatewayStatus}
-          />
+          {activeCharacter ? (
+            <div className="terminal-content">
+              <div className="selected-character-bar">
+                <span>
+                  선택됨 <strong>{activeCharacter.legacy_name}</strong>
+                </span>
+                <button
+                  onClick={() => {
+                    setActiveCharacterId(null);
+                    setActiveOwnerId(null);
+                  }}
+                  type="button"
+                >
+                  캐릭터 변경
+                </button>
+              </div>
+              <MudTerminal
+                accessToken={session.access_token}
+                characterId={activeCharacter.id}
+                gatewayUrl={configResult.config.gatewayUrl}
+                onStatus={onGatewayStatus}
+              />
+            </div>
+          ) : (
+            <CharacterRoster
+              characters={roster.characters}
+              error={roster.error}
+              onEnter={() => {
+                if (roster.selectedId) {
+                  setActiveCharacterId(roster.selectedId);
+                  setActiveOwnerId(session.user.id);
+                }
+              }}
+              onRetry={roster.retry}
+              onSelect={roster.selectCharacter}
+              selectedId={roster.selectedId}
+              status={roster.status}
+            />
+          )}
         </section>
       </div>
     </main>

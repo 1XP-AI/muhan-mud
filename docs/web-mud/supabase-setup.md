@@ -1,6 +1,6 @@
 # Supabase 설정 (MVP)
 
-이 문서는 `20260901000000_profiles_and_lobby_presence.sql` 적용 절차다. Supabase는 웹 사용자 인증, 자기 프로필, `mud:lobby` 접속 Presence만 담당한다. 게임 명령·전투·이동·월드 상태를 브라우저가 Postgres에 쓰는 정책은 만들지 않는다.
+이 문서는 `20260901000000_profiles_and_lobby_presence.sql` 적용 절차다. Supabase는 웹 사용자 인증, 자기 프로필, `mud:lobby` 접속 Presence만 담당한다. 게임 명령·전투·이동·월드 상태를 브라우저가 Postgres에 쓰는 정책은 만들지 않는다. 계정과 MUD character의 ownership index/claim migration은 별도 [Game identity migration 실행 가이드](game-identity-migration.md)를 따른다.
 
 ## 적용
 

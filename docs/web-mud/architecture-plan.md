@@ -1,5 +1,10 @@
 # 무한대전 웹 MUD 아키텍처 및 실행 계획
 
+> 이 문서의 Vercel/managed Supabase 초기안은 보존된 조사 기록이다. 현재
+> 실행안은 self-hosted Supabase Docker 구성 요소(Postgres/Auth/PostgREST/
+> Realtime)와 Kubernetes Helm 배포이며, identity·저장 권위와 단계별 계획은
+> [MUD identity·저장 구조 리팩터링](game-identity-refactor.md)이 기준이다.
+
 작성일: 2026-09-01  
 대상: 무한대전 운영·개발팀  
 상태: MVP 구현·로컬 검증 완료, 외부 프로젝트 연결 대기
@@ -50,7 +55,7 @@ flowchart LR
 - UTF-8 입력과 코드포인트 단위 백스페이스는 이미 지원한다.
 - 비밀번호 구간은 Telnet `WILL ECHO`/`WONT ECHO` 바이트를 사용하므로 게이트웨이가 이를 소비하고 브라우저 로컬 에코를 전환해야 한다.
 - 플레이어와 방 저장은 로컬 파일 rename 기반이며, 단일 writer와 같은 ABI의 영속 볼륨을 요구한다.
-- 현재 `SIGTERM`을 무시하므로 정상 종료 저장을 신뢰할 수 없다. 운영 종료 안정화는 별도 수정 항목이다.
+- `SIGTERM` handler는 `sig_atomic_t` 종료 요청만 설정한다. 다음 75ms `select()` 루프에서 리스너를 닫고 기존 room/player 저장 경로를 실행한다. 저장 I/O 자체는 레거시 동기식이므로 운영 grace period는 최대 월드 저장 시간을 넘겨야 한다.
 
 ### Supabase
 
@@ -70,11 +75,11 @@ flowchart LR
 ### 브라우저 → 게이트웨이
 
 1. 브라우저는 `wss://.../ws`를 `muhan.v1` subprotocol로 연다.
-2. 연결 직후 첫 text frame으로 `{"type":"auth","accessToken":"<Supabase JWT>"}`를 보낸다.
+2. 연결 직후 첫 text frame으로 `{"type":"auth","accessToken":"<Supabase JWT>","characterId":"<lowercase UUID>"}`를 보낸다. `characterId`는 선택자일 뿐 권한 증명이 아니다.
 3. 인증 완료 뒤 키 입력은 UTF-8 binary frame으로 보낸다.
 4. 연결 상태 확인은 제한된 control frame만 허용한다.
 
-JWT를 URL query에 넣지 않는다. 게이트웨이는 Supabase JWKS로 signature, issuer, audience, expiration, subject를 검증한 뒤에만 MUD TCP 연결을 만든다. 비대칭 signing key를 쓰지 않는 기존 프로젝트는 Auth `/user` 검증으로 제한적으로 폴백한다. [Supabase JWT 검증](https://supabase.com/docs/guides/auth/jwts)
+JWT를 URL query에 넣지 않는다. 게이트웨이는 Supabase JWKS로 signature, issuer, audience, expiration, subject를 검증한 뒤 service-only character lease RPC가 반환한 exact owner/active/canonical name도 확인한다. 이 둘 중 하나라도 실패하면 MUD TCP 연결을 만들지 않는다. 비대칭 signing key를 쓰지 않는 기존 프로젝트는 Auth `/user` 검증으로 제한적으로 폴백한다. [Supabase JWT 검증](https://supabase.com/docs/guides/auth/jwts)
 
 ### 게이트웨이 → 브라우저
 
@@ -91,6 +96,7 @@ JWT를 URL query에 넣지 않는다. 게이트웨이는 Supabase JWKS로 signat
 - Supabase `service_role`/secret key는 브라우저 번들에 넣지 않는다.
 - 연결 전 인증 제한 시간, frame 크기, 초당 입력 byte, 동시 연결 상한을 둔다.
 - JWT 만료 시 연결을 닫고 최신 세션으로 재연결한다.
+- Gateway는 C MUD에 JWT를 전달하지 않는다. DB lease와 server-side canonical name으로 15초 이하 HMAC admission line을 만든 뒤, C의 정확한 `MUD1 OK\n` ACK 전까지 game byte를 relay하지 않는다.
 - 터미널 출력은 xterm.js에만 쓰며 DOM HTML로 변환하지 않는다.
 - 프로덕션에서 인증 비활성화 모드는 시작 자체를 거부한다.
 - 게이트웨이는 root가 아닌 전용 사용자로 실행한다.
@@ -184,7 +190,7 @@ docs/web-mud/              설계, 배포, 운영 문서
 
 ## 후속 단계
 
-- C 서버의 SIGTERM graceful shutdown과 ident helper 제거
+- legacy ident helper 제거
 - Supabase user ↔ 레거시 캐릭터 소유권 연결 및 통합 로그인
 - player/room 바이너리 파일의 버전 있는 스냅샷·Postgres 이관
 - 구조화 게임 이벤트와 reconnect resume token

@@ -10,6 +10,8 @@ import {
   useState,
 } from "react";
 
+import { createGatewayAuthFrame } from "@/lib/gateway-contract";
+
 export type GatewayConnectionState =
   | "idle"
   | "connecting"
@@ -27,6 +29,7 @@ export interface GatewayStatus {
 
 interface MudTerminalProps {
   accessToken: string;
+  characterId: string;
   gatewayUrl: string;
   onStatus: (status: GatewayStatus) => void;
 }
@@ -68,11 +71,12 @@ function echoInput(terminal: Terminal, data: string): void {
 }
 
 function isPermanentClientClose(code: number): boolean {
-  return code === 4001 || (code >= 4400 && code < 4500);
+  return code === 1008 || code === 4001 || (code >= 4400 && code < 4500);
 }
 
 export function MudTerminal({
   accessToken,
+  characterId,
   gatewayUrl,
   onStatus,
 }: MudTerminalProps) {
@@ -167,6 +171,7 @@ export function MudTerminal({
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    let terminalFailure: string | null = null;
 
     const publishStatus = (
       state: GatewayConnectionState,
@@ -212,8 +217,6 @@ export function MudTerminal({
     const handleControl = (control: GatewayControl) => {
       switch (control.type) {
         case "ready":
-        case "authenticated":
-        case "auth_ok":
           attempt = 0;
           readyRef.current = true;
           setReady(true);
@@ -222,26 +225,15 @@ export function MudTerminal({
         case "echo":
           updateEcho(control.enabled !== false);
           break;
-        case "status":
-          if (control.status === "ready") {
-            readyRef.current = true;
-            setReady(true);
-            publishStatus(
-              "ready",
-              control.message ?? "무한대전 세계와 연결됐습니다.",
-            );
-          } else if (control.message) {
-            publishStatus("authenticating", control.message);
-          }
+        case "pong":
           break;
         case "error":
-          publishStatus(
-            "error",
+          terminalFailure =
             control.message ??
-              control.reason ??
-              control.code ??
-              "게이트웨이가 연결을 거절했습니다.",
-          );
+            control.reason ??
+            control.code ??
+            "게이트웨이가 연결을 거절했습니다.";
+          publishStatus("error", terminalFailure);
           break;
         case "closed":
           publishStatus(
@@ -249,11 +241,17 @@ export function MudTerminal({
             control.message ?? control.reason ?? "게이트웨이 연결이 닫혔습니다.",
           );
           break;
+        default:
+          if (!readyRef.current) {
+            terminalFailure = "입장 확인 형식이 올바르지 않습니다.";
+            publishStatus("error", terminalFailure);
+            socketRef.current?.close(1008, "invalid admission acknowledgement");
+          }
       }
     };
 
     function connect() {
-      if (cancelled) {
+      if (cancelled || !characterId) {
         return;
       }
 
@@ -280,7 +278,7 @@ export function MudTerminal({
           return;
         }
         publishStatus("authenticating", "입장권을 확인하는 중입니다.");
-        socket.send(JSON.stringify({ type: "auth", accessToken }));
+        socket.send(JSON.stringify(createGatewayAuthFrame(accessToken, characterId)));
       });
 
       socket.addEventListener("message", (event) => {
@@ -294,6 +292,12 @@ export function MudTerminal({
         }
 
         if (event.data instanceof ArrayBuffer) {
+          if (!readyRef.current) {
+            terminalFailure = "캐릭터 입장 확인 전 데이터가 도착했습니다.";
+            publishStatus("error", terminalFailure);
+            socket.close(1008, "data before auth acknowledgement");
+            return;
+          }
           terminalRef.current?.write(new Uint8Array(event.data));
         }
       });
@@ -311,6 +315,11 @@ export function MudTerminal({
         setNotReady();
 
         if (cancelled) {
+          return;
+        }
+
+        if (terminalFailure) {
+          publishStatus("error", terminalFailure);
           return;
         }
 
@@ -337,7 +346,7 @@ export function MudTerminal({
         socket.close(1000, "session changed");
       }
     };
-  }, [accessToken, gatewayUrl, onStatus, updateEcho]);
+  }, [accessToken, characterId, gatewayUrl, onStatus, updateEcho]);
 
   const submitMobileLine = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

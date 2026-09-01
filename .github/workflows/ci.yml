@@ -7,6 +7,44 @@ permissions:
   contents: read
 
 jobs:
+  database-contract:
+    name: Supabase ownership contract
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: contract-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Run ownership and session contract
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" --file=supabase/tests/bootstrap_contract.sql
+          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --file=supabase/tests/game_identity_contract.sql
+
   build-and-smoke:
     name: ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
@@ -173,10 +211,43 @@ jobs:
           set -euo pipefail
           ./scripts/run-ai-scenario.sh --output "$RUNNER_TEMP/muhan-ai-scenario.json"
 
+      - name: SIGTERM shutdown scenario
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-shutdown-scenario.sh --output "$RUNNER_TEMP/muhan-shutdown-scenario.json"
+
+      - name: Setup Node for Gateway/Web contracts
+        if: matrix.runner == 'ubuntu-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install and verify Gateway/Web
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.15.1 --activate
+          pnpm install --frozen-lockfile
+          pnpm check
+
+      - name: Trusted admission scenario
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-admission-scenario.sh --output "$RUNNER_TEMP/muhan-admission-scenario.json"
+
       - name: Upload AI scenario evidence
         if: always() && matrix.runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: mud-ai-scenario-${{ github.sha }}
-          path: ${{ runner.temp }}/muhan-ai-scenario.json
+          path: |
+            ${{ runner.temp }}/muhan-ai-scenario.json
+            ${{ runner.temp }}/muhan-shutdown-scenario.json
+            ${{ runner.temp }}/muhan-admission-scenario.json
           if-no-files-found: warn

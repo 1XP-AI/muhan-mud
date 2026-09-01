@@ -32,6 +32,7 @@
 #include "mextern.h"
 #include "player_store.h"
 #include "player_recovery.h"
+#include "trusted_admission.h"
 
 #ifdef WIN32
 #define ioctl(a,b,c)    ioctlsocket(a,b,c)
@@ -50,13 +51,66 @@ int				Numplayers;
 int				Numwaiting;
 int				Deadchildren;
 static wq_tag			*First_wait;
-static int			Waitsock;
+static int			Waitsock = -1;
 static fd_set			Sockets;
 extern int			Port;
 
 extern char title_cut_index[PMAX];
 static unsigned char		Utf8_pending[PMAX][4];
 static unsigned char		Utf8_pending_len[PMAX];
+
+/* SIGTERM is deliberately handled as a request, not as a shutdown action.
+ * The handler may run while libc or the game state is inconsistent, so it
+ * must only write a sig_atomic_t.  The normal event loop closes the listener
+ * and persists state on its next turn. */
+#ifndef WIN32
+static volatile sig_atomic_t Graceful_shutdown_requested;
+
+static void request_graceful_shutdown(sig)
+int sig;
+{
+	Graceful_shutdown_requested = 1;
+}
+#endif
+
+static int graceful_shutdown_pending()
+{
+#ifndef WIN32
+	return(Graceful_shutdown_requested != 0);
+#else
+	return(0);
+#endif
+}
+
+static void stop_accepting_connections()
+{
+	if(Waitsock < 0)
+		return;
+
+	FD_CLR(Waitsock, &Sockets);
+#ifdef WIN32
+	closesocket(Waitsock);
+#else
+	close(Waitsock);
+#endif
+	Waitsock = -1;
+}
+
+/* This runs only from sock_loop(), never from a signal handler.  Keep the
+ * save order identical to the long-standing scheduled shutdown path. */
+static void graceful_shutdown()
+{
+	long c;
+
+	stop_accepting_connections();
+	broadcast("\n### 서버를 안전하게 종료합니다. 다시 접속해 주세요");
+	output_buf();
+	c = time(0);
+	log_f("--- 머드 SIGTERM 종료: %d --- (%.24s)\n", Port, ctime(&c));
+	resave_all_rom(1);
+	save_all_ply();
+	exit(0);
+}
 
 /* 
 
@@ -129,6 +183,14 @@ int	debug;
 	int 			n, i;
 	extern char		report;
 
+	/* A present but malformed secret is a deployment error, not a reason to
+	 * expose the legacy password listener.  Exit before bind/listen so the
+	 * container readiness probe cannot report a falsely healthy server. */
+	if(trusted_admission_mode() < 0) {
+		fprintf(stderr, "trusted admission configuration is invalid\n");
+		exit(78);
+	}
+
 #ifdef WIN32
         // gotta initialize the winsock stuff
         WORD wVersionRequested; 
@@ -151,7 +213,7 @@ int	debug;
 	}
 #ifndef WIN32
 	signal(SIGPIPE, SIG_IGN);
-	signal(SIGTERM, SIG_IGN);
+	signal(SIGTERM, request_graceful_shutdown);
 	signal(SIGCHLD, child_died);
 
 	Tablesize = getdtablesize();
@@ -203,8 +265,12 @@ int	debug;
 void sock_loop()
 {
 	while(1) {
+		if(graceful_shutdown_pending())
+			graceful_shutdown();
 		if(Deadchildren) reap_children();
 		io_check();
+		if(graceful_shutdown_pending())
+			graceful_shutdown();
 		output_buf();
 		handle_commands();
 		update_game();
@@ -236,7 +302,7 @@ int io_check()
 			if(FD_ISSET(i, &sockcheck)) {
 				if(i != Waitsock)
 					rtn |= accept_input(i);
-				else
+				else if(!graceful_shutdown_pending())
 					accept_connect();
 			}
 		}
@@ -256,7 +322,7 @@ int io_check()
 
 void accept_connect()
 {
-	int			len, fd, i=1, pid;
+	int			len, fd, i=1, pid, admission_mode;
 	iobuf			*io;
 	extra			*extr;
 	struct linger		ling;
@@ -296,33 +362,50 @@ void accept_connect()
 
 	strcpy(io->address, inetname(addr.sin_addr));
 
-#ifndef WIN32
-	pid = vfork();
-	if(!pid) {
-		sprintf(path, "%s/auth", BINPATH);
-		sprintf(port1str, "%d", ntohs(addr.sin_port));
-		sprintf(port2str, "%d", Port);
-		execl(path, "auth", io->address, port1str, port2str, 0);
-		exit(0);
+	admission_mode = trusted_admission_mode();
+	if(admission_mode != 0) {
+		/* Ticket mode trusts the private gateway identity and must not fork the
+		 * legacy ident helper (nor expose an ident-derived identity). */
+		strcpy(io->userid, "gateway");
+		io->lookup_pid = 0;
 	}
 	else {
+	#ifndef WIN32
+		pid = vfork();
+		if(!pid) {
+			sprintf(path, "%s/auth", BINPATH);
+			sprintf(port1str, "%d", ntohs(addr.sin_port));
+			sprintf(port2str, "%d", Port);
+			execl(path, "auth", io->address, port1str, port2str, 0);
+			exit(0);
+		}
+		else {
+			strcpy(io->userid, "unknown");
+			io->lookup_pid = pid;
+		}
+	#else
 		strcpy(io->userid, "unknown");
-		io->lookup_pid = pid;
+		io->lookup_pid = 0;
+	#endif
 	}
-#else
-		strcpy(io->userid, "unknown");
-		io->lookup_pid = pid;
-#endif
 	FD_SET(fd, &Sockets);
 
 	if(Numplayers > Tablesize-2) {
-		print(fd, "Game full.  Try again later.\n");
+		if(admission_mode != 0)
+			scwrite(fd, "MUD1 ERR\n", 9);
+		else
+			print(fd, "Game full.  Try again later.\n");
 		disconnect(fd);
 		return;
 	}
 
 	else if(Numplayers >= MAXPLAYERS &&
 		((unsigned)(ntohl(saddr))>>24) != 127) {
+		if(admission_mode != 0) {
+			scwrite(fd, "MUD1 ERR\n", 9);
+			disconnect(fd);
+			return;
+		}
 		if(Numwaiting > MAXPLAYERS) {
 			scwrite(fd, "Queue full.\n", 12);
 			disconnect(fd);
@@ -345,6 +428,17 @@ void init_connect(fd)
 int	fd;
 {
 	int		i;
+	int		admission_mode;
+
+	admission_mode = trusted_admission_mode();
+	if(admission_mode != 0) {
+		/* Do not emit a banner, name prompt, or site-password prompt here:
+		 * a configured (including invalid) secret is always ticket-only. */
+		Ply[fd].io->intrpt |= 2;
+		Numplayers++;
+		Ply[fd].io->ltime = time(0);
+		RETURN(fd, trusted_admission_login, 1);
+	}
 
 	/*************************************************************/
 	/* The following lines must be left intact as part of the    */
@@ -969,12 +1063,16 @@ void handle_commands()
 			}
 			Ply[i].io->itail = itail;
 			Ply[i].io->commands--;
-			if(Spy[i] > -1) {
-				write(Spy[i], buf, strlen(buf));
-				write(Spy[i], "\r\n", 2);
+			/* Admission tickets carry a bearer MAC.  Do not mirror or command-log
+			 * this first line, and do not dereference ply before admission. */
+			if(Ply[i].io->fn != trusted_admission_login) {
+				if(Spy[i] > -1) {
+					write(Spy[i], buf, strlen(buf));
+					write(Spy[i], "\r\n", 2);
+				}
+				if(Write_CMD && Ply[i].ply)
+					log_overwrite("command.log","%s:%s\n",Ply[i].ply->name, buf);
 			}
-
-			if(Write_CMD) log_overwrite("command.log","%s:%s\n",Ply[i].ply->name, buf);
 
 			(*Ply[i].io->fn) (i, Ply[i].io->fnparam, 
         ((unsigned char)buf[0]==255 && 

@@ -75,6 +75,11 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		tempstr[4][80];
 	char		talksend[20];
 	char		lastcommand[80];
+	/* Trusted-admission identity.  These fields are deliberately not part of
+	 * creature and therefore never enter the legacy player-file format. */
+	char		auth_user_id[37];
+	char		character_id[37];
+	char		admission_nonce[33];
 	ctag		*first_charm;
 	etag		*first_ignore;
 } extra;
@@ -222,4 +227,3 @@ typedef struct creature {
     long __garbage[256];
 */
 } creature;
-

@@ -39,9 +39,39 @@ test('an internal Auth URL does not change the public JWT issuer', () => {
     NODE_ENV: 'production',
     SUPABASE_URL: 'https://mud.example.com',
     SUPABASE_AUTH_URL: 'http://muhan-auth:9999',
+    SUPABASE_INTERNAL_REST_URL: 'http://muhan-kong:8000',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-fixture',
+    MUD_ADMISSION_SECRET: '0123456789abcdef0123456789abcdef',
+    GATEWAY_INSTANCE_ID: 'gateway-contract',
     ALLOWED_ORIGINS: 'https://mud.example.com'
   })
 
   assert.equal(config.supabaseAuthUrl, 'http://muhan-auth:9999')
   assert.equal(config.jwtIssuer, 'https://mud.example.com/auth/v1')
+})
+
+test('authenticated Gateway configuration requires internal service credentials and C-compatible secret', () => {
+  assert.throws(() => loadConfig({
+    NODE_ENV: 'production',
+    SUPABASE_URL: 'https://mud.example.com',
+    ALLOWED_ORIGINS: 'https://mud.example.com'
+  }), /authenticated Gateway requires/)
+  assert.throws(() => loadConfig({
+    NODE_ENV: 'production',
+    SUPABASE_URL: 'https://mud.example.com',
+    SUPABASE_INTERNAL_REST_URL: 'http://muhan-kong:8000',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-fixture',
+    MUD_ADMISSION_SECRET: 'not-long-enough',
+    GATEWAY_INSTANCE_ID: 'gateway-contract',
+    ALLOWED_ORIGINS: 'https://mud.example.com'
+  }), /MUD_ADMISSION_SECRET/)
+  assert.throws(() => loadConfig({
+    NODE_ENV: 'production',
+    SUPABASE_URL: 'https://mud.example.com',
+    SUPABASE_INTERNAL_REST_URL: 'http://muhan-postgrest:3000',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-fixture',
+    MUD_ADMISSION_SECRET: 'x'.repeat(513),
+    GATEWAY_INSTANCE_ID: 'gateway-contract',
+    ALLOWED_ORIGINS: 'https://mud.example.com'
+  }), /MUD_ADMISSION_SECRET/)
 })

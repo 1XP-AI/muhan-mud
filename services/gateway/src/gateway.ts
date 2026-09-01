@@ -1,9 +1,18 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { Socket, createConnection } from 'node:net'
 import { URL } from 'node:url'
 import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import type { GatewayConfig } from './config.js'
 import { AuthenticationError, SupabaseAuthenticator, type AuthenticatedIdentity } from './auth.js'
+import { createAdmissionTicket, admissionTicketLimits } from './admission-ticket.js'
+import {
+  CharacterAuthorizationError,
+  type CharacterAuthorizer,
+  isStrictLowerUuid,
+  SupabaseCharacterAuthorizer,
+  TestOnlyCharacterAuthorizer
+} from './character-authorizer.js'
 import { TelnetParser } from './telnet.js'
 
 const PROTOCOL = 'muhan.v1'
@@ -12,15 +21,35 @@ const CLOSE_TRY_AGAIN = 1013
 const CLOSE_INTERNAL = 1011
 const CLOSE_RESTART = 1012
 const CLOSE_TOKEN_EXPIRED = 4001
+const LEASE_TTL_MS = 120_000
+const LEASE_RENEW_INTERVAL_MS = 60_000
+const LEASE_MIN_REMAINING_MS = 30_000
+const LEASE_RELEASE_RETRY_DELAYS_MS = [50, 200] as const
 
 interface Authenticator {
   verify(accessToken: string): Promise<AuthenticatedIdentity>
 }
 
-interface GatewayDependencies {
+export interface GatewayDependencies {
   authenticator?: Authenticator
+  characterAuthorizer?: CharacterAuthorizer
   connectTcp?: (host: string, port: number) => Socket
   logger?: Pick<Console, 'info' | 'warn' | 'error'>
+  now?: () => number
+  randomBytes?: (size: number) => Buffer
+  randomUuid?: () => string
+  timers?: GatewayTimers
+}
+
+export interface GatewayTimers {
+  setTimeout(callback: () => void, delayMs: number): NodeJS.Timeout
+  clearTimeout(timer: NodeJS.Timeout): void
+}
+
+const systemTimers: GatewayTimers = { setTimeout, clearTimeout }
+
+function unrefTimer(timer: NodeJS.Timeout): void {
+  timer.unref?.()
 }
 
 export interface RunningGateway {
@@ -29,18 +58,19 @@ export interface RunningGateway {
   close(): Promise<void>
 }
 
-type SessionState = 'awaiting-auth' | 'connecting' | 'ready' | 'closed'
+type SessionState = 'awaiting-auth' | 'connecting' | 'awaiting-admission' | 'ready' | 'closed'
 
 class ByteRateLimiter {
   private available: number
-  private previous = Date.now()
+  private previous: number
 
-  constructor(private readonly bytesPerSecond: number) {
+  constructor(private readonly bytesPerSecond: number, private readonly now: () => number) {
     this.available = bytesPerSecond
+    this.previous = now()
   }
 
   take(bytes: number): boolean {
-    const now = Date.now()
+    const now = this.now()
     this.available = Math.min(this.bytesPerSecond, this.available + ((now - this.previous) * this.bytesPerSecond) / 1_000)
     this.previous = now
     if (bytes > this.available) return false
@@ -69,7 +99,12 @@ function isSecureRequest(request: IncomingMessage): boolean {
   return typeof forwarded === 'string' && forwarded.split(',')[0].trim() === 'https'
 }
 
-function parseAuthMessage(data: Buffer): string {
+interface AuthFrame {
+  accessToken: string
+  characterId: string
+}
+
+function parseAuthMessage(data: Buffer): AuthFrame {
   let frame: unknown
   try {
     frame = JSON.parse(data.toString('utf8'))
@@ -78,10 +113,13 @@ function parseAuthMessage(data: Buffer): string {
   }
   if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new AuthenticationError('first frame must be an auth object')
   const value = frame as Record<string, unknown>
-  if (value.type !== 'auth' || typeof value.accessToken !== 'string' || value.accessToken.length === 0 || value.accessToken.length > 12_000) {
-    throw new AuthenticationError('first frame must contain a non-empty auth accessToken')
+  const keys = Object.keys(value).sort()
+  if (keys.length !== 3 || keys[0] !== 'accessToken' || keys[1] !== 'characterId' || keys[2] !== 'type' ||
+      value.type !== 'auth' || typeof value.accessToken !== 'string' || value.accessToken.length === 0 ||
+      value.accessToken.length > 12_000 || !isStrictLowerUuid(value.characterId)) {
+    throw new AuthenticationError('first frame must contain an auth accessToken and lowercase characterId UUID')
   }
-  return value.accessToken
+  return { accessToken: value.accessToken, characterId: value.characterId }
 }
 
 function isPingMessage(data: Buffer): boolean {
@@ -95,9 +133,13 @@ function isPingMessage(data: Buffer): boolean {
 
 export function createGateway(config: GatewayConfig, dependencies: GatewayDependencies = {}): RunningGateway {
   const logger = dependencies.logger ?? console
+  const now = dependencies.now ?? Date.now
   const authenticator = dependencies.authenticator ?? (config.authDisabled
-    ? { verify: async (): Promise<AuthenticatedIdentity> => ({ sub: 'test-user', expiresAtMs: Date.now() + 3_600_000, claims: {} }) }
+    ? { verify: async (): Promise<AuthenticatedIdentity> => ({ sub: TestOnlyCharacterAuthorizer.actorUserId, expiresAtMs: now() + 3_600_000, claims: {} }) }
     : new SupabaseAuthenticator(config))
+  const characterAuthorizer = dependencies.characterAuthorizer ?? (config.authDisabled
+    ? new TestOnlyCharacterAuthorizer()
+    : new SupabaseCharacterAuthorizer(config))
   const connectTcp = dependencies.connectTcp ?? ((host, port) => createConnection({ host, port }))
   let accepting = true
   let activeConnections = 0
@@ -148,10 +190,13 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
 
   webSocketServer.on('connection', (ws, request) => {
     activeConnections += 1
-    const session = new GatewaySession(ws, request, config, authenticator, connectTcp, logger, () => {
+    const session = new GatewaySession(
+      ws, request, config, authenticator, characterAuthorizer, connectTcp, logger,
+      now, dependencies.randomBytes, dependencies.randomUuid ?? randomUUID, dependencies.timers ?? systemTimers, () => {
       sessions.delete(session)
       activeConnections -= 1
-    })
+      }
+    )
     sessions.add(session)
   })
 
@@ -182,8 +227,17 @@ class GatewaySession {
   private mud?: Socket
   private authTimer: NodeJS.Timeout
   private expiryTimer?: NodeJS.Timeout
+  private admissionTimer?: NodeJS.Timeout
+  private renewalTimer?: NodeJS.Timeout
   private readonly parser = new TelnetParser()
   private readonly inputLimiter: ByteRateLimiter
+  private admissionBuffer = Buffer.alloc(0)
+  private sessionId?: string
+  private tokenExpiresAtMs = 0
+  private actorUserId?: string
+  private characterId?: string
+  private legacyNameKey?: string
+  private leaseMayExist = false
   private closed = false
   private failed = false
 
@@ -192,15 +246,20 @@ class GatewaySession {
     private readonly request: IncomingMessage,
     private readonly config: GatewayConfig,
     private readonly authenticator: Authenticator,
+    private readonly characterAuthorizer: CharacterAuthorizer,
     private readonly connectTcp: (host: string, port: number) => Socket,
     private readonly logger: Pick<Console, 'info' | 'warn' | 'error'>,
+    private readonly now: () => number,
+    private readonly randomBytes: ((size: number) => Buffer) | undefined,
+    private readonly randomUuid: () => string,
+    private readonly timers: GatewayTimers,
     private readonly onClosed: () => void
   ) {
-    this.inputLimiter = new ByteRateLimiter(config.inputBytesPerSecond)
-    this.authTimer = setTimeout(() => this.fail(CLOSE_POLICY, 'authentication timed out'), config.authTimeoutMs)
-    this.authTimer.unref()
+    this.inputLimiter = new ByteRateLimiter(config.inputBytesPerSecond, now)
+    this.authTimer = this.timers.setTimeout(() => this.fail(CLOSE_POLICY, 'authentication timed out'), config.authTimeoutMs)
+    unrefTimer(this.authTimer)
     ws.on('message', (data, isBinary) => void this.onMessage(rawToBuffer(data), isBinary))
-    ws.on('error', (error) => this.logger.warn(`websocket error: ${error.message}`))
+    ws.on('error', () => this.logger.warn('websocket transport error'))
     ws.on('close', () => this.finish())
   }
 
@@ -220,20 +279,51 @@ class GatewaySession {
     if (data.length > this.config.maxFrameBytes) return this.fail(CLOSE_POLICY, 'frame too large')
     if (this.state === 'awaiting-auth') {
       if (isBinary) return this.fail(CLOSE_POLICY, 'first frame must be text auth')
-      let token: string
+      let authFrame: AuthFrame
       try {
-        token = parseAuthMessage(data)
+        authFrame = parseAuthMessage(data)
       } catch (error) {
         return this.fail(CLOSE_POLICY, error instanceof Error ? error.message : 'invalid auth frame')
       }
       this.state = 'connecting'
       try {
-        const identity = await this.authenticator.verify(token)
+        const identity = await this.authenticator.verify(authFrame.accessToken)
         if (this.closed) return
+        if (!isStrictLowerUuid(identity.sub)) throw new AuthenticationError('token subject must be a lowercase UUID')
+        const currentMs = this.now()
+        const leaseExpiryMs = Math.min(identity.expiresAtMs, currentMs + LEASE_TTL_MS)
+        if (leaseExpiryMs <= currentMs) throw new AuthenticationError('token has expired')
+        const sessionId = this.randomUuid()
+        if (!isStrictLowerUuid(sessionId)) throw new CharacterAuthorizationError()
+        this.sessionId = sessionId
+        this.tokenExpiresAtMs = identity.expiresAtMs
+        this.actorUserId = identity.sub
+        this.characterId = authFrame.characterId
+        this.leaseMayExist = true
+        const character = await this.characterAuthorizer.beginSession({
+          actorUserId: identity.sub,
+          characterId: authFrame.characterId,
+          sessionId,
+          gatewayInstanceId: this.config.gatewayInstanceId!,
+          expiresAt: new Date(leaseExpiryMs)
+        })
+        if (this.closed) {
+          this.releaseLease()
+          return
+        }
+        this.legacyNameKey = character.legacyNameKey
+        const ticket = createAdmissionTicket({
+          actorUserId: identity.sub,
+          characterId: authFrame.characterId,
+          legacyNameKey: this.legacyNameKey,
+          jwtExpiresAtMs: identity.expiresAtMs,
+          nowMs: this.now()
+        }, this.config.mudAdmissionSecret!, { randomBytes: this.randomBytes })
+        this.timers.clearTimeout(this.authTimer)
         this.scheduleExpiry(identity.expiresAtMs)
-        this.connectMud()
-      } catch (error) {
-        return this.fail(CLOSE_POLICY, error instanceof Error ? error.message : 'authentication failed')
+        this.connectMud(ticket)
+      } catch {
+        return this.fail(CLOSE_POLICY, 'authentication or character authorization failed')
       }
       return
     }
@@ -248,34 +338,79 @@ class GatewaySession {
     if (!this.mud.write(data)) this.pauseWebSocketUntilTcpDrain()
   }
 
-  private connectMud(): void {
+  private connectMud(ticket: Buffer): void {
     const mud = this.connectTcp(this.config.mudHost, this.config.mudPort)
     this.mud = mud
-    const timer = setTimeout(() => {
+    const timer = this.timers.setTimeout(() => {
       if (this.state === 'connecting') {
         mud.destroy()
         this.fail(CLOSE_INTERNAL, 'MUD connection timed out')
       }
     }, this.config.tcpConnectTimeoutMs)
-    timer.unref()
+    unrefTimer(timer)
     mud.once('connect', () => {
-      clearTimeout(timer)
+      this.timers.clearTimeout(timer)
       if (this.closed) return mud.destroy()
-      this.state = 'ready'
-      this.sendText({ type: 'ready' })
+      this.state = 'awaiting-admission'
+      this.admissionTimer = this.timers.setTimeout(() => {
+        if (this.state === 'awaiting-admission') this.fail(CLOSE_INTERNAL, 'MUD admission timed out')
+      }, this.config.mudAdmissionTimeoutMs)
+      unrefTimer(this.admissionTimer)
+      mud.write(ticket, (error) => {
+        if (error && !this.closed) this.fail(CLOSE_INTERNAL, 'MUD admission write failed')
+      })
     })
     mud.on('data', (data: Buffer) => this.onMudData(data))
     mud.on('drain', () => this.resumeWebSocket())
-    mud.on('error', (error) => {
-      clearTimeout(timer)
-      if (!this.closed) this.fail(CLOSE_INTERNAL, `MUD connection error: ${error.message}`)
+    mud.on('error', () => {
+      this.timers.clearTimeout(timer)
+      if (!this.closed) this.fail(CLOSE_INTERNAL, 'MUD connection failed')
     })
     mud.on('end', () => {
-      if (!this.closed) this.fail(CLOSE_INTERNAL, 'MUD connection closed')
+      if (!this.closed) this.fail(CLOSE_INTERNAL, this.state === 'awaiting-admission' ? 'MUD admission failed' : 'MUD connection closed')
     })
   }
 
   private onMudData(data: Buffer): void {
+    if (this.state === 'awaiting-admission') {
+      this.consumeAdmissionPreface(data)
+      return
+    }
+    if (this.state !== 'ready') return
+    this.relayMudData(data)
+  }
+
+  private consumeAdmissionPreface(data: Buffer): void {
+    const newline = data.indexOf(0x0a)
+    if (newline < 0) {
+      if (this.admissionBuffer.length + data.length > admissionTicketLimits.maxTicketLineBytes) {
+        this.fail(CLOSE_INTERNAL, 'invalid MUD admission preface')
+        return
+      }
+      this.admissionBuffer = Buffer.concat([this.admissionBuffer, data])
+      return
+    }
+
+    const prefaceLength = this.admissionBuffer.length + newline + 1
+    if (prefaceLength > admissionTicketLimits.maxTicketLineBytes) {
+      this.fail(CLOSE_INTERNAL, 'invalid MUD admission preface')
+      return
+    }
+    const preface = Buffer.concat([this.admissionBuffer, data.subarray(0, newline + 1)])
+    this.admissionBuffer = Buffer.alloc(0)
+    if (!preface.equals(Buffer.from('MUD1 OK\n', 'ascii'))) {
+      this.fail(CLOSE_INTERNAL, 'MUD admission failed')
+      return
+    }
+    if (this.admissionTimer) this.timers.clearTimeout(this.admissionTimer)
+    this.state = 'ready'
+    this.sendText({ type: 'ready' })
+    this.scheduleLeaseRenewal()
+    const gameBytes = data.subarray(newline + 1)
+    if (gameBytes.length > 0) this.relayMudData(gameBytes)
+  }
+
+  private relayMudData(data: Buffer): void {
     for (const event of this.parser.feed(data)) {
       if (event.type === 'data') this.sendBinary(event.data)
       else if (event.type === 'echo') this.sendText({ type: 'echo', enabled: event.enabled })
@@ -305,10 +440,10 @@ class GatewaySession {
 
   private scheduleExpiry(expiresAtMs: number): void {
     const closeWhenDue = () => {
-      const remaining = expiresAtMs - Date.now()
+      const remaining = expiresAtMs - this.now()
       if (remaining <= 0) return this.fail(CLOSE_TOKEN_EXPIRED, 'token expired')
-      this.expiryTimer = setTimeout(closeWhenDue, Math.min(remaining, 2_147_483_647))
-      this.expiryTimer.unref()
+      this.expiryTimer = this.timers.setTimeout(closeWhenDue, Math.min(remaining, 2_147_483_647))
+      unrefTimer(this.expiryTimer)
     }
     closeWhenDue()
   }
@@ -336,10 +471,60 @@ class GatewaySession {
     if (this.closed) return
     this.closed = true
     this.state = 'closed'
-    clearTimeout(this.authTimer)
-    if (this.expiryTimer) clearTimeout(this.expiryTimer)
+    this.timers.clearTimeout(this.authTimer)
+    if (this.expiryTimer) this.timers.clearTimeout(this.expiryTimer)
+    if (this.admissionTimer) this.timers.clearTimeout(this.admissionTimer)
+    if (this.renewalTimer) this.timers.clearTimeout(this.renewalTimer)
     this.mud?.destroy()
+    this.releaseLease()
     this.onClosed()
+  }
+
+  private releaseLease(attempt = 0): void {
+    if (!this.leaseMayExist || !this.sessionId) return
+    void this.characterAuthorizer.endSession(this.sessionId, this.config.gatewayInstanceId!).catch(() => {
+      const delay = LEASE_RELEASE_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined) {
+        this.logger.warn('character session lease release failed after bounded retries')
+        return
+      }
+      this.timers.setTimeout(() => this.releaseLease(attempt + 1), delay)
+    })
+  }
+
+  private scheduleLeaseRenewal(): void {
+    const renew = async () => {
+      if (this.closed || this.state !== 'ready' || !this.sessionId || !this.actorUserId || !this.characterId || !this.legacyNameKey) return
+      const expiresAtMs = Math.min(this.tokenExpiresAtMs, this.now() + LEASE_TTL_MS)
+      if (expiresAtMs - this.now() < LEASE_MIN_REMAINING_MS) {
+        this.fail(CLOSE_TOKEN_EXPIRED, 'token expires too soon to renew session')
+        return
+      }
+      try {
+        const renewed = await this.characterAuthorizer.renewSession({
+          sessionId: this.sessionId,
+          gatewayInstanceId: this.config.gatewayInstanceId!,
+          expiresAt: new Date(expiresAtMs)
+        })
+        if (this.closed) {
+          this.releaseLease()
+          return
+        }
+        if (renewed.sessionId !== this.sessionId || renewed.actorUserId !== this.actorUserId ||
+          renewed.characterId !== this.characterId || renewed.legacyNameKey !== this.legacyNameKey ||
+          renewed.lifecycle !== 'active' || renewed.expiresAtMs < expiresAtMs - 1_000 ||
+          renewed.expiresAtMs > expiresAtMs + 1_000 || renewed.expiresAtMs <= this.now()) {
+          throw new CharacterAuthorizationError()
+        }
+      } catch {
+        this.fail(CLOSE_INTERNAL, 'character session renewal failed')
+        return
+      }
+      this.renewalTimer = this.timers.setTimeout(() => { void renew() }, LEASE_RENEW_INTERVAL_MS)
+      unrefTimer(this.renewalTimer)
+    }
+    this.renewalTimer = this.timers.setTimeout(() => { void renew() }, LEASE_RENEW_INTERVAL_MS)
+    unrefTimer(this.renewalTimer)
   }
 }
 

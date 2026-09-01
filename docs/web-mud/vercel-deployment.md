@@ -1,5 +1,8 @@
 # Vercel 웹 클라이언트 배포
 
+> 보존된 초기 조사 문서다. 현재 testnet 운영 경로는 Vercel을 사용하지 않고
+> [Kubernetes self-hosted 배포](kubernetes-deployment.md)를 사용한다.
+
 > 보관된 초기 배포안입니다. 현재 운영 기준은 자체 호스팅 Kubernetes이며 `kubernetes-deployment.md`를 따릅니다.
 
 Vercel에는 `web/`의 Next.js 클라이언트만 배포한다. 기존 C MUD와 WebSocket 게이트웨이는 영속 디스크와 상시 프로세스를 제공하는 별도 런타임에 둔다. 브라우저가 도달하는 경로는 Vercel의 HTTPS와 게이트웨이의 WSS뿐이며, MUD TCP 4000은 공개하지 않는다.

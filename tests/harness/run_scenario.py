@@ -469,6 +469,7 @@ def run_game(
     epoch: int,
     seed: int,
     server_log_path: Path,
+    verify_corrupt_player: bool = True,
 ) -> Dict[str, Any]:
     port = choose_port()
     env = os.environ.copy()
@@ -564,26 +565,28 @@ def run_game(
         second.read_until_close("relogin connection close")
         second.sock.close()
 
-        # A truncated player record must be rejected as corrupt data.  This is
-        # intentionally done only inside the disposable fixture, after the
-        # successful create/save/relogin assertions above.
-        third_sock = connect_first(port, timeout, process)
-        third = Session(third_sock, transcript, 3, timeout)
-        sessions.append(third)
-        third.read_until("[엔터]를 누르세요.", "corrupt relogin enter prompt")
-        saved.write_bytes(b"")
-        third.enter()
-        third.read_until("당신의 이름은 무엇입니까?", "corrupt relogin name prompt")
-        third.send_line(scenario["player_name"], "corrupt relogin player name")
-        corrupt_response = third.read_until(
-            "캐릭터 데이터를 읽을 수 없습니다", "corrupt player rejection"
-        )
-        corrupt_tail = third.read_until_close("corrupt relogin connection close")
-        if "하시겠습니까" in decode_text(corrupt_response + corrupt_tail):
-            raise ScenarioFailure("corrupt player was offered new-character creation")
-        third.sock.close()
+        if verify_corrupt_player:
+            # A truncated player record must be rejected as corrupt data.  This is
+            # intentionally done only inside the disposable fixture, after the
+            # successful create/save/relogin assertions above.
+            third_sock = connect_first(port, timeout, process)
+            third = Session(third_sock, transcript, 3, timeout)
+            sessions.append(third)
+            third.read_until("[엔터]를 누르세요.", "corrupt relogin enter prompt")
+            saved.write_bytes(b"")
+            third.enter()
+            third.read_until("당신의 이름은 무엇입니까?", "corrupt relogin name prompt")
+            third.send_line(scenario["player_name"], "corrupt relogin player name")
+            corrupt_response = third.read_until(
+                "캐릭터 데이터를 읽을 수 없습니다", "corrupt player rejection"
+            )
+            corrupt_tail = third.read_until_close("corrupt relogin connection close")
+            if "하시겠습니까" in decode_text(corrupt_response + corrupt_tail):
+                raise ScenarioFailure("corrupt player was offered new-character creation")
+            third.sock.close()
 
-        return {"port": port, "saved_player": file_info, "corrupt_player_rejected": True}
+        return {"port": port, "saved_player": file_info,
+                "corrupt_player_rejected": verify_corrupt_player}
     finally:
         for session in sessions:
             try:

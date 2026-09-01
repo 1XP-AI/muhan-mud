@@ -13,6 +13,7 @@
 #include "player_path.h"
 #include "player_store.h"
 #include "player_recovery.h"
+#include "trusted_admission.h"
 #include "resource_path.h"
 #include <ctype.h>
 
@@ -240,6 +241,79 @@ char file[80];
 						RETURN(fd, command, 1);
 				}
 		}
+}
+
+/* Ticket mode deliberately never falls through to login(): malformed,
+ * expired, replayed, or unavailable tickets all receive the same small
+ * protocol response and then lose the socket. */
+void trusted_admission_login(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{
+	trusted_admission_ticket ticket;
+	creature *ply_ptr;
+	int i, load_result;
+
+	(void)param;
+	if(trusted_admission_validate((char *)str, time(0), &ticket) != 0 ||
+	   player_recovery_login_blocked()) {
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+
+	/* Preflight proves that the requested canonical file is currently usable,
+	 * but never becomes the session snapshot: another session can save newer
+	 * state while it is being disconnected below. */
+	load_result = load_ply(ticket.name, &ply_ptr);
+	if(load_result != PLAYER_STORE_OK || !ply_ptr ||
+	   strcmp(ply_ptr->name, ticket.name) != 0 || F_ISSET(ply_ptr, SUICD)) {
+		if(ply_ptr) free_crt(ply_ptr);
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+	free_crt(ply_ptr);
+	ply_ptr = 0;
+
+	/* Disconnect the old owner before the authoritative re-load.  If its save
+	 * enters recovery, no stale pre-disconnect snapshot may be accepted. */
+	for(i=0; i<Tablesize; i++)
+		if(Ply[i].ply && i != fd && !strcmp(Ply[i].ply->name, ticket.name))
+			disconnect(i);
+	if(player_recovery_login_blocked() || checkdouble(ticket.name)) {
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+	load_result = load_ply(ticket.name, &ply_ptr);
+	if(load_result != PLAYER_STORE_OK || !ply_ptr ||
+	   strcmp(ply_ptr->name, ticket.name) != 0 || F_ISSET(ply_ptr, SUICD)) {
+		if(ply_ptr) free_crt(ply_ptr);
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+
+	Ply[fd].ply = ply_ptr;
+	ply_ptr->fd = fd;
+	check_item(ply_ptr);
+	if(init_ply(ply_ptr) < 0) {
+		free_crt(Ply[fd].ply);
+		Ply[fd].ply = 0;
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+	init_alias(ply_ptr);
+	strcpy(Ply[fd].extr->auth_user_id, ticket.user_id);
+	strcpy(Ply[fd].extr->character_id, ticket.character_id);
+	strcpy(Ply[fd].extr->admission_nonce, ticket.nonce);
+
+	/* The acknowledgement intentionally precedes every legacy game byte. */
+	scwrite(fd, "MUD1 OK\n", 8);
+	RETURN(fd, command, 1);
 }
 
 /**********************************************************************/

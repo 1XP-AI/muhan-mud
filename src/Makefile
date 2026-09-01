@@ -32,7 +32,7 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
-	  player_path.o player_store.o file_player_store.o player_recovery.o
+	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o
 
 $(OUTFILE): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OBJECTS) -o $(OUTFILE) $(LIBS) $(EXTRA_LIBS)
@@ -59,6 +59,8 @@ unit-test:
 	/tmp/muhan-unit/files1_serializer_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_recovery_test.c player_recovery.c player_store.c -o /tmp/muhan-unit/player_recovery_test
 	/tmp/muhan-unit/player_recovery_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/trusted_admission_test.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/trusted_admission_test
+	/tmp/muhan-unit/trusted_admission_test
 
 port:
 	rm -f io.o main.o;

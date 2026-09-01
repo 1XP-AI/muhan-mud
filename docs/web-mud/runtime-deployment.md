@@ -19,6 +19,10 @@ SUPABASE_URL=https://example.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_example
 SUPABASE_JWT_ISSUER=https://example.supabase.co/auth/v1
 SUPABASE_JWT_AUDIENCE=authenticated
+SUPABASE_INTERNAL_REST_URL=http://supabase-postgrest:3000
+SUPABASE_SERVICE_ROLE_KEY=service_role_example
+MUD_ADMISSION_SECRET=replace-with-32-to-512-printable-ascii-bytes
+GATEWAY_INSTANCE_ID=gateway-1
 ```
 
 Then build and start the runtime:
@@ -94,11 +98,24 @@ Restore into an empty replacement volume, preserve ownership for UID/GID
 10001, and start exactly one `mud` instance.  Test restore with a disposable
 environment before directing gateway traffic to it.
 
-The current C process ignores `SIGTERM`; a platform's normal grace period can
-therefore end in `SIGKILL` without the C shutdown save path running.  Take
-regular volume snapshots and treat graceful shutdown support as a required
-follow-up before relying on rolling deployments.  The gateway can be drained
-first, but draining alone cannot make the C server save all in-memory state.
+On `SIGTERM`, the C process now sets only a signal-safe shutdown flag.  Its
+main loop then stops accepting new TCP connections, broadcasts the fixed
+shutdown notice, makes one normal nonblocking output pass, and runs the same
+`resave_all_rom(1)` and `save_all_ply()` sequence used by the scheduled in-game
+shutdown before exiting with status 0.  Drain the gateway first so no browser
+session begins a new admission while the MUD listener is closing.
+
+The normal case is bounded by the event loop's 75 ms select timeout plus the
+existing synchronous save work.  A stalled filesystem can still block those
+legacy writes; retain regular volume snapshots and set the platform grace
+period above the measured save time for the largest production world.  The
+deterministic regression command below runs a real `frp`, sends `SIGTERM`,
+requires a clean bounded exit, and relogs into the saved player.  It redacts
+the test password from transcript, diagnostics, and retained fixture logs.
+
+```bash
+scripts/run-shutdown-scenario.sh
+```
 
 ## Network and secret policy
 
@@ -106,10 +123,18 @@ first, but draining alone cannot make the C server save all in-memory state.
 - Keep `mud-net` private; never add a host port mapping to the MUD service.
 - Set exact production and preview origins in `ALLOWED_ORIGINS`; do not use a
   wildcard.
-- Keep Supabase service-role keys out of the gateway unless a later feature
-  explicitly needs them, and never put them in browser variables.
-- The browser's Supabase login and the legacy MUD character password remain
-  two separate authentication gates in this MVP.
+- Mount the Supabase service-role key only into the Gateway process, alongside
+  its private `SUPABASE_INTERNAL_REST_URL`; never put either in browser
+  variables, logs, frontend build variables, or the MUD process.
+- `MUD_ADMISSION_SECRET` must be the same at the Gateway and C MUD, contain
+  32 through 512 printable ASCII bytes, and be mounted as a secret rather than
+  committed configuration. `GATEWAY_INSTANCE_ID` identifies only the Gateway
+  lease holder and contains no user credential.
+- Deployment manifests pass the Gateway-only REST/service-role/instance values
+  to the Gateway container and the same admission secret to Gateway and MUD.
+  Compose requires these values at interpolation time. Helm also injects
+  `MUD_REQUIRE_TRUSTED_ADMISSION=1`, so a missing secret cannot bring up a
+  legacy password listener.
 
 The gateway must enforce the architecture protocol: authenticate before
 opening MUD TCP, validate JWT issuer/audience/expiry/subject, consume Telnet

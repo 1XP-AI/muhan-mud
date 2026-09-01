@@ -12,10 +12,15 @@ export interface GatewayConfig {
   supabaseUrl?: string
   supabaseAuthUrl?: string
   supabasePublishableKey?: string
+  supabaseInternalRestUrl?: string
+  supabaseServiceRoleKey?: string
   jwtIssuer?: string
   jwtAudience: string
+  mudAdmissionSecret?: string
+  gatewayInstanceId?: string
   authTimeoutMs: number
   tcpConnectTimeoutMs: number
+  mudAdmissionTimeoutMs: number
   maxConnections: number
   maxFrameBytes: number
   inputBytesPerSecond: number
@@ -31,6 +36,8 @@ export class ConfigError extends Error {
 }
 
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
+const TEST_ADMISSION_SECRET = '0123456789abcdef0123456789abcdef'
+const TEST_GATEWAY_INSTANCE_ID = 'gateway-test-fixture'
 
 function requiredInteger(value: string | undefined, name: string, fallback: number, min: number): number {
   if (value === undefined || value === '') return fallback
@@ -105,6 +112,39 @@ function normalizeSupabaseAuthUrl(value: string | undefined): string | undefined
   return url.toString().replace(/\/$/, '')
 }
 
+function normalizeInternalRestUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new ConfigError('SUPABASE_INTERNAL_REST_URL must be an absolute URL')
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new ConfigError('SUPABASE_INTERNAL_REST_URL must use http or https')
+  }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+    throw new ConfigError('SUPABASE_INTERNAL_REST_URL must be an origin without credentials, paths, queries, or fragments')
+  }
+  return url.origin
+}
+
+function validateAdmissionSecret(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  if (!/^[\x20-\x7e]{32,512}$/.test(value)) {
+    throw new ConfigError('MUD_ADMISSION_SECRET must contain 32..512 printable ASCII bytes')
+  }
+  return value
+}
+
+function validateGatewayInstanceId(value: string | undefined): string | undefined {
+  if (!value || value.trim() === '') return undefined
+  if (value.length > 128 || /[\x00-\x1f\x7f]/.test(value)) {
+    throw new ConfigError('GATEWAY_INSTANCE_ID must be 1..128 non-control characters')
+  }
+  return value
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
   const environment = (env.NODE_ENV ?? 'development') as Environment
   if (!['development', 'test', 'production'].includes(environment)) {
@@ -127,6 +167,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   const supabaseAuthUrl = normalizeSupabaseAuthUrl(env.SUPABASE_AUTH_URL)
     ?? (supabaseUrl ? `${supabaseUrl}/auth/v1` : undefined)
   const jwtIssuer = env.SUPABASE_JWT_ISSUER ?? (supabaseUrl ? `${supabaseUrl}/auth/v1` : undefined)
+  const supabaseInternalRestUrl = normalizeInternalRestUrl(env.SUPABASE_INTERNAL_REST_URL)
+  const supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY || undefined
+  const mudAdmissionSecret = validateAdmissionSecret(env.MUD_ADMISSION_SECRET)
+    ?? (authDisabled ? TEST_ADMISSION_SECRET : undefined)
+  const gatewayInstanceId = validateGatewayInstanceId(env.GATEWAY_INSTANCE_ID)
+    ?? (authDisabled ? TEST_GATEWAY_INSTANCE_ID : undefined)
+  if (!authDisabled && (!supabaseInternalRestUrl || !supabaseServiceRoleKey || !mudAdmissionSecret || !gatewayInstanceId)) {
+    throw new ConfigError('authenticated Gateway requires SUPABASE_INTERNAL_REST_URL, SUPABASE_SERVICE_ROLE_KEY, MUD_ADMISSION_SECRET, and GATEWAY_INSTANCE_ID')
+  }
   return {
     environment,
     host: env.HOST ?? '0.0.0.0',
@@ -142,10 +191,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     supabaseUrl,
     supabaseAuthUrl,
     supabasePublishableKey: env.SUPABASE_PUBLISHABLE_KEY,
+    supabaseInternalRestUrl,
+    supabaseServiceRoleKey,
     jwtIssuer,
     jwtAudience: env.SUPABASE_JWT_AUDIENCE ?? 'authenticated',
+    mudAdmissionSecret,
+    gatewayInstanceId,
     authTimeoutMs: requiredInteger(env.AUTH_TIMEOUT_MS, 'AUTH_TIMEOUT_MS', 10_000, 100),
     tcpConnectTimeoutMs: requiredInteger(env.TCP_CONNECT_TIMEOUT_MS, 'TCP_CONNECT_TIMEOUT_MS', 5_000, 100),
+    mudAdmissionTimeoutMs: requiredInteger(env.MUD_ADMISSION_TIMEOUT_MS, 'MUD_ADMISSION_TIMEOUT_MS', 5_000, 100),
     maxConnections: requiredInteger(env.MAX_CONNECTIONS, 'MAX_CONNECTIONS', 200, 1),
     maxFrameBytes: requiredInteger(env.MAX_FRAME_BYTES, 'MAX_FRAME_BYTES', 16_384, 128),
     inputBytesPerSecond: requiredInteger(env.INPUT_BYTES_PER_SECOND, 'INPUT_BYTES_PER_SECOND', 4_096, 1),
