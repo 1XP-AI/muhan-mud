@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -796,7 +797,7 @@ const char *root;
 
 int main(void)
 {
-    char temporary_base[512], root[512];
+    char temporary_base[PATH_MAX], root[PATH_MAX];
     int failed, formatted;
     if(!realpath("/tmp", temporary_base)) return 1;
     formatted = snprintf(root, sizeof(root),
