@@ -1,0 +1,606 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { chmod, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { once } from 'node:events'
+import test from 'node:test'
+import { createRequire } from 'node:module'
+import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
+import { loadConfig } from '../../services/gateway/src/config.js'
+import { createGateway, type RunningGateway } from '../../services/gateway/src/gateway.js'
+import { SupabaseCharacterAuthorizer } from '../../services/gateway/src/character-authorizer.js'
+import { SupabaseOnboardingAuthorizer, type OnboardingAuthorizer } from '../../services/gateway/src/onboarding-authorizer.js'
+import { NodeReconcilerFilesystem, OnboardingReconciler } from '../../services/onboarding-reconciler/src/reconciler.js'
+
+const run = promisify(execFile)
+const actor = '11111111-1111-4111-8111-111111111111'
+const cancelledCorrelation = '22222222-2222-4222-8222-222222222222'
+const correlation = '33333333-3333-4333-8333-333333333333'
+const badCorrelation = '55555555-5555-4555-8555-555555555555'
+const denialCorrelation = '77777777-7777-4777-8777-777777777777'
+// C create_ply accepts passwords up to 14 bytes.
+const password = 'stack-e2e-pass'
+const accessToken = 'stack-e2e-browser-token'
+const admissionSecret = 'stack-e2e-admission-secret-0123456789'
+const requestedName = 'StackHero'
+// C's lowercize(name, 1) folds every ASCII letter and capitalizes only the
+// first byte. The DB key and the on-disk player file must use this exact form.
+const canonicalName = 'Stackhero'
+const badRequestedName = 'StackBad'
+const badCanonicalName = 'Stackbad'
+const origin = 'http://localhost:3000'
+const root = resolve(process.env.STACK_E2E_ROOT ?? process.cwd())
+const require = createRequire(join(root, 'package.json'))
+const WebSocket: any = require(resolve(root, 'services/gateway/node_modules/ws/index.js'))
+const fixture = process.env.STACK_E2E_FIXTURE ?? resolve(process.env.TMPDIR ?? '/tmp', `muhan-stack-e2e-fixture-${process.pid}`)
+let mudDiagnostics = ''
+let browserDiagnostics = ''
+
+type Evidence = { schema: 1, status: 'passed' | 'failed', events: Array<Record<string, string>>, error?: string }
+const evidence: Evidence = { schema: 1, status: 'failed', events: [] }
+
+function redact(value: string): string {
+  return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, admissionSecret, password, accessToken]
+    .filter((secret): secret is string => Boolean(secret))
+    .reduce((output, secret) => output.split(secret).join('<REDACTED>'), value)
+}
+
+async function eventually(check: () => void | Promise<void>, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let last: unknown
+  while (Date.now() < deadline) {
+    try { await check(); return } catch (error) { last = error }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw last instanceof Error ? last : new Error('condition timed out')
+}
+
+async function raceWithTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function sql(query: string): Promise<string> {
+  const result = await run('docker', ['exec', process.env.STACK_E2E_PG_CONTAINER!, 'psql', '-U', 'postgres', '-d', 'stack_e2e', '-At', '-v', 'ON_ERROR_STOP=1', '-c', query], { maxBuffer: 1024 * 1024 })
+  return result.stdout.trim()
+}
+
+async function choosePort(): Promise<number> {
+  const net = await import('node:net')
+  const server = net.createServer()
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const port = address.port
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()))
+  return port
+}
+
+async function prepareFixture(): Promise<void> {
+  await mkdir(fixture, { recursive: true })
+  for (const directory of ['rooms', 'objmon', 'help', 'post']) {
+    await cp(join(root, directory), join(fixture, directory), { recursive: true })
+  }
+  await cp(join(root, 'resources_utf8', 'player'), join(fixture, 'player'), { recursive: true })
+  for (const directory of ['alias', 'bank', 'simul', 'suic', 'fal', 'invite', 'vote', 'marriage', 'family']) {
+    await mkdir(join(fixture, 'player', directory), { recursive: true })
+  }
+  for (const directory of ['log', 'bin']) await mkdir(join(fixture, directory), { recursive: true })
+  await mkdir(join(fixture, 'log', 'auth'), { recursive: true })
+}
+
+function startMud(binary: string, port: number): ChildProcess {
+  const child = spawn(binary, ['-r', String(port)], {
+    cwd: fixture,
+    env: { ...process.env, MUHAN_HOME: fixture, MUD_ENABLE_ONBOARDING: '1', MUD_REQUIRE_TRUSTED_ADMISSION: '1', MUD_ADMISSION_SECRET: admissionSecret, LC_ALL: 'C.UTF-8' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  const capture = (data: Buffer): void => {
+    mudDiagnostics = `${mudDiagnostics}${data.toString('utf8')}`.slice(-8_000)
+  }
+  child.stdout?.on('data', capture)
+  child.stderr?.on('data', capture)
+  return child
+}
+
+async function stopMud(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) {
+    assert.equal(child.signalCode, null)
+    assert.equal(child.exitCode, 0)
+    return
+  }
+  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>
+  child.kill('SIGTERM')
+  let timeout: NodeJS.Timeout | undefined
+  try {
+    const [code, signal] = await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('MUD did not exit after SIGTERM')), 10_000) }),
+    ])
+    assert.equal(signal, null)
+    assert.equal(code, 0)
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+async function stopMudDuringFailure(child: ChildProcess): Promise<void> {
+  try {
+    await stopMud(child)
+    return
+  } catch {
+    // Preserve the original test failure, but do not leave a C server behind
+    // if graceful shutdown itself is the thing under test that failed.
+    if (child.exitCode === null) {
+      const exited = once(child, 'exit')
+      child.kill('SIGKILL')
+      await exited
+    }
+  }
+}
+
+async function crashMud(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return
+  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>
+  child.kill('SIGKILL')
+  const [code, signal] = await exited
+  assert.equal(code, null)
+  assert.equal(signal, 'SIGKILL')
+}
+
+async function waitForMud(port: number, child: ChildProcess): Promise<void> {
+  const net = await import('node:net')
+  await eventually(async () => {
+    if (child.exitCode !== null) throw new Error(`MUD exited before listening (${child.exitCode})`)
+    await new Promise<void>((resolveConnect, reject) => {
+      const socket = net.createConnection({ host: '127.0.0.1', port })
+      socket.once('connect', () => { socket.destroy(); resolveConnect() })
+      socket.once('error', (error) => { socket.destroy(); reject(error) })
+    })
+  }, 20_000)
+}
+
+class Browser {
+  readonly frames: Array<{ data: Buffer, binary: boolean }> = []
+  constructor(readonly ws: any) {
+    ws.on('message', (data, binary) => this.frames.push({ data: Buffer.from(data as Uint8Array), binary }))
+  }
+  text(): string {
+    const text = this.frames.filter((frame) => frame.binary).map((frame) => frame.data.toString('utf8')).join('')
+    browserDiagnostics = text.slice(-8_000)
+    return text
+  }
+  json(type: string): boolean {
+    return this.frames.some((frame) => {
+      if (frame.binary) return false
+      try { const value = JSON.parse(frame.data.toString('utf8')) as { type?: string }; return value.type === type } catch { return false }
+    })
+  }
+  send(data: string): void { this.ws.send(Buffer.from(data, 'utf8')) }
+}
+
+async function openOnboarding(address: string, correlationId: string, mode: 'provision' | 'claim' = 'provision'): Promise<Browser> {
+  const ws = new WebSocket(`${address.replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin })
+  await once(ws, 'open')
+  const browser = new Browser(ws)
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken, mode, correlationId }))
+  await eventually(() => assert.ok(browser.frames.some((frame) => !frame.binary && frame.data.toString() === JSON.stringify({ type: 'onboarding-ready', mode }))))
+  await eventually(() => assert.match(browser.text(), /당신의 이름은 무엇입니까/))
+  return browser
+}
+
+async function runReconciler(restUrl: string): Promise<void> {
+  const child = spawn(join(root, 'services/onboarding-reconciler/node_modules/.bin/tsx'), [join(root, 'services/onboarding-reconciler/src/cli.ts'), '--once'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      MUHAN_HOME: fixture,
+      SUPABASE_INTERNAL_REST_URL: restUrl,
+      SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT,
+      ONBOARDING_RECONCILER_RPC_ATTEMPTS: '2',
+      ONBOARDING_RECONCILER_RETRY_DELAY_MS: '10',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let output = ''
+  const capture = (data: Buffer): void => { output = `${output}${data.toString('utf8')}`.slice(-2_000) }
+  child.stdout?.on('data', capture)
+  child.stderr?.on('data', capture)
+  const [code, signal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
+  assert.equal(signal, null)
+  if (code !== 0) {
+    const diagnostic = await new OnboardingReconciler({ muhanHome: fixture, postgrestUrl: restUrl, serviceRoleKey: process.env.STACK_E2E_SERVICE_ROLE_JWT!, rpcAttempts: 1 }).runOnce()
+    throw new Error(`onboarding reconciler exited unsuccessfully: ${output} ${JSON.stringify(diagnostic)}`)
+  }
+}
+
+async function hardenPlayerDirectories(...names: string[]): Promise<void> {
+  await chmod(fixture, 0o700)
+  await chmod(join(fixture, 'player'), 0o700)
+  await chmod(join(fixture, 'onboarding-receipts'), 0o700)
+  for (const name of names) {
+    const shard = createHash('sha1').update(name).digest('hex').slice(0, 2)
+    assert.equal((await stat(join(fixture, 'player', shard))).mode & 0o777, 0o700, `C shard directory must be private: ${name}`)
+    assert.equal((await stat(join(fixture, 'player', shard, name))).mode & 0o777, 0o600, `C player file must be private: ${name}`)
+  }
+  for (const path of [fixture, join(fixture, 'onboarding-receipts'), join(fixture, 'player')]) {
+    assert.equal((await stat(path)).mode & 0o777, 0o700, `reconciler root must be private: ${path}`)
+  }
+  const reconcilerFs = new NodeReconcilerFilesystem()
+  try { await reconcilerFs.assertSafeDirectory(fixture) } catch { throw new Error('stack fixture is not a safe reconciler home') }
+  try { await reconcilerFs.assertSafeDirectory(join(fixture, 'onboarding-receipts')) } catch { throw new Error('stack receipt directory is not safe') }
+}
+
+async function runSingleRecoveryReceipt(restUrl: string): Promise<void> {
+  const directory = join(fixture, 'onboarding-receipts')
+  const entries = ['33333333-3333-4333-8333-333333333333.receipt']
+  const hidden = entries.map((entry) => ({ source: join(directory, entry), target: join(directory, `${entry}.during-recovery`) }))
+  for (const entry of hidden) await rename(entry.source, entry.target)
+  try { await runReconciler(restUrl) } finally {
+    for (const entry of hidden) await rename(entry.target, entry.source)
+  }
+}
+
+async function openGame(address: string, characterId: string): Promise<Browser> {
+  const ws = new WebSocket(`${address.replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin })
+  await once(ws, 'open')
+  const browser = new Browser(ws)
+  ws.send(JSON.stringify({ type: 'auth', accessToken, characterId }))
+  await eventually(() => assert.ok(browser.json('ready')))
+  return browser
+}
+
+async function closeAndWait(ws: any): Promise<void> {
+  if (ws.readyState === WebSocket.OPEN) ws.close()
+  if (ws.readyState !== WebSocket.CLOSED) {
+    await raceWithTimeout(once(ws, 'close'), 5_000)
+    if (ws.readyState !== WebSocket.CLOSED) ws.terminate()
+  }
+}
+
+async function terminateAndWait(ws: any): Promise<void> {
+  if (ws.readyState !== WebSocket.CLOSED) {
+    const closed = once(ws, 'close')
+    ws.terminate()
+    await raceWithTimeout(closed, 5_000)
+  }
+}
+
+async function waitForRejectedWebSocket(ws: any): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      ws.off('error', onError)
+      ws.off('unexpected-response', onUnexpected)
+      resolve()
+    }
+    const onError = (): void => finish()
+    const onUnexpected = (_request: unknown, response: import('node:http').IncomingMessage): void => {
+      response.resume()
+      finish()
+    }
+    ws.once('error', onError)
+    ws.once('unexpected-response', onUnexpected)
+  })
+  if (ws.readyState !== WebSocket.CLOSED) {
+    // ws can remain in CONNECTING after an HTTP rejection while its transport
+    // has already been destroyed by the server.
+    ws.on('error', () => undefined)
+    try { ws.terminate() } catch { /* the rejected transport is already closed */ }
+  }
+}
+
+async function closeGatewayBounded(gateway: RunningGateway): Promise<void> {
+  // Let the Gateway own its configured drain grace period. Returning before
+  // that lifecycle settles leaves its server handle alive in this worker.
+  await gateway.close()
+  // These are test-owned, in-process connections; make the final cleanup
+  // idempotent without affecting any external resource.
+  gateway.server.closeAllConnections?.()
+  gateway.server.closeIdleConnections?.()
+}
+
+async function main(): Promise<void> {
+  let gateway: RunningGateway | undefined
+  let mud: ChildProcess | undefined
+  try {
+    assert.ok(process.env.STACK_E2E_BINARY, 'STACK_E2E_BINARY is required')
+    assert.ok(process.env.STACK_E2E_SERVICE_ROLE_JWT, 'STACK_E2E_SERVICE_ROLE_JWT is required')
+    await prepareFixture()
+    await sql(`insert into auth.users (id, aud, role, email_confirmed_at) values ('${actor}', 'authenticated', 'authenticated', now()) on conflict (id) do nothing`)
+
+    // RED/GREEN guard: /onboarding is not routable with the feature disabled,
+    // therefore the C connector must remain untouched.
+    let cConnects = 0
+    const offConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'false', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: 'http://127.0.0.1:9999', SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `off-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: '1', ALLOWED_ORIGINS: origin })
+    const offGateway = createGateway(offConfig, { connectTcp: () => { cConnects += 1; throw new Error('flag-off must not connect') } })
+    offGateway.server.listen(0, '127.0.0.1')
+    await once(offGateway.server, 'listening')
+    const off = new WebSocket(`${offGateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin })
+    await waitForRejectedWebSocket(off)
+    assert.equal(cConnects, 0)
+    await offGateway.close()
+    evidence.events.push({ case: 'flag-off', result: 'no-c-connect' })
+
+    const mudPort = await choosePort()
+    mud = startMud(process.env.STACK_E2E_BINARY, mudPort)
+    await waitForMud(mudPort, mud)
+    const config = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: 'http://127.0.0.1:0', SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `stack-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(mudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
+    // The REST origin is injected after the PostgREST host port is published
+    // by the runner; this process-level override is replaced below.
+    const restUrl = process.env.STACK_E2E_REST_URL
+    assert.ok(restUrl && !restUrl.endsWith(':0'), 'runner must provide a PostgREST URL')
+    config.supabaseInternalRestUrl = restUrl
+    const authenticator = { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 120_000, claims: {} }) }
+    const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config)
+    let finalizeObservedSaved = false
+    const onboardingAuthorizer: OnboardingAuthorizer = {
+      begin: (request) => actualOnboardingAuthorizer.begin(request),
+      cancelUnreserved: (request) => actualOnboardingAuthorizer.cancelUnreserved(request),
+      reserve: (request) => actualOnboardingAuthorizer.reserve(request),
+      challenge: (request) => actualOnboardingAuthorizer.challenge(request),
+      finalize: async (request) => {
+        const savedReceipt = await readFile(join(fixture, 'onboarding-receipts', `${request.correlationId}.receipt`), 'utf8')
+        assert.match(savedReceipt, /state=saved\n/)
+        finalizeObservedSaved = true
+        return actualOnboardingAuthorizer.finalize(request)
+      },
+      reconcile: (request) => actualOnboardingAuthorizer.reconcile(request),
+      claim: (request) => actualOnboardingAuthorizer.claim(request),
+    }
+    gateway = createGateway(config, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(config), onboardingAuthorizer })
+    gateway.server.listen(0, '127.0.0.1')
+    await once(gateway.server, 'listening')
+
+    const cancelled = await openOnboarding(gateway.address(), cancelledCorrelation)
+    await closeAndWait(cancelled.ws)
+    await eventually(async () => assert.equal(await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${cancelledCorrelation}'`), 'cancelled'))
+    evidence.events.push({ case: 'early-cancel-retry', result: 'cancelled-then-new-correlation-allowed' })
+
+    const browser = await openOnboarding(gateway.address(), correlation)
+    browser.send(`${requestedName}\n`)
+    await eventually(() => assert.match(browser.text(), /당신은 남자입니까/))
+    await eventually(async () => assert.equal(await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || c.legacy_name || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${correlation}'`), 'provisioning|reserved|provisioning|Stackhero|Stackhero'))
+    browser.send('남\n')
+    await eventually(() => assert.match(browser.text(), /직업을 고르세요/))
+    browser.send('4\n')
+    await eventually(() => assert.match(browser.text(), /능력:/))
+    browser.send('12 10 12 10 10\n')
+    await eventually(() => assert.match(browser.text(), /익숙한 무기를/))
+    browser.send('1\n')
+    await eventually(() => assert.match(browser.text(), /성향을 고르십시요/))
+    browser.send('선\n')
+    await eventually(() => assert.match(browser.text(), /종족/))
+    browser.send('7\n')
+    await eventually(() => assert.match(browser.text(), /새 암호를/))
+    browser.send(`${password}\n`)
+    await eventually(async () => assert.match(await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8'), /state=(saved|committed)\n/))
+    await eventually(() => assert.ok(browser.json('provisioned')))
+    assert.equal(finalizeObservedSaved, true)
+
+    const player = join(fixture, 'player', createHash('sha1').update(canonicalName).digest('hex').slice(0, 2), canonicalName)
+    const digest = createHash('sha256').update(await readFile(player)).digest('hex')
+    const characterId = await sql(`select character_id from private.game_character_provisioning_requests where correlation_id = '${correlation}'`)
+    const state = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || p.saved_file_sha256 || '|' || c.owner_user_id || '|' || c.legacy_name || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${correlation}'`)
+    assert.equal(state, `finalized|finalized|active|${digest}|${actor}|Stackhero|Stackhero`)
+    await assert.rejects(
+      () => new SupabaseOnboardingAuthorizer(config).finalize({ actorUserId: actor, correlationId: correlation, characterId, fileSha256: 'f'.repeat(64), storageFormat: 'player-v1' }),
+      /onboarding authorization was refused/
+    )
+    assert.equal(await sql(`select status || '|' || lifecycle from private.game_character_provisioning_requests p join public.game_characters c on c.id = p.character_id where p.correlation_id = '${correlation}'`), 'finalized|active')
+    const receipt = await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8')
+    assert.match(receipt, /state=committed\n/)
+    assert.match(receipt, new RegExp(`canonical_name_hex=${Buffer.from(canonicalName, 'utf8').toString('hex')}\\n`))
+    assert.doesNotMatch(receipt, new RegExp(`${password}|${admissionSecret}|${accessToken}`))
+    browser.send('건강\n')
+    await eventually(() => assert.match(browser.text(), /체력/))
+
+    // A second browser cannot acquire the same DB-backed lease while gameplay
+    // is still connected; closing the first socket must release it.
+    const duplicate = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin })
+    await once(duplicate, 'open')
+    duplicate.send(JSON.stringify({ type: 'auth', accessToken, characterId: (await sql(`select character_id from private.game_character_provisioning_requests where correlation_id = '${correlation}'`)) }))
+    const [duplicateCloseCode] = await once(duplicate, 'close') as [number]
+    assert.equal(duplicateCloseCode, 1008)
+    await closeAndWait(browser.ws)
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${characterId}'`), '0'))
+    evidence.events.push({ case: 'wrong-db-hash', result: 'actual-RPC-rejected-without-state-change' })
+    evidence.events.push({ case: 'real-stack-provision', result: 'intent-reservation-finalized-file-sha-receipt-game-command' })
+    evidence.events.push({ case: 'lease', result: 'duplicate-rejected-release-on-close' })
+
+    // Fault injection is above the transport only: both finalize attempts get
+    // a transient RPC failure. The Gateway must fail before writing MUD1O
+    // COMMIT, leaving the reservation provisioning rather than publishing a
+    // partially verified player.
+    await gateway.close()
+    gateway = undefined
+    await stopMud(mud)
+    mud = undefined
+    evidence.events.push({ case: 'mud-process-exit', result: 'SIGTERM-exit-0' })
+    const badMudPort = await choosePort()
+    mud = startMud(process.env.STACK_E2E_BINARY, badMudPort)
+    await waitForMud(badMudPort, mud)
+    const badConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `bad-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(badMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
+    let badFinalizeRpcCalls = 0
+    const badFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      // The Gateway may reconcile an indeterminate finalize response. Fail
+      // both RPC attempts before PostgREST sees them so this is a genuine
+      // finalize outage, not a successful reconciliation that permits COMMIT.
+      if (url.endsWith('/rpc/finalize_game_character_provisioning') || url.endsWith('/rpc/reconcile_game_character_provisioning')) {
+        badFinalizeRpcCalls += 1
+        return new Response('{"error":"injected finalize outage"}', { status: 503, headers: { 'content-type': 'application/json' } })
+      }
+      return fetch(input, init)
+    }
+    gateway = createGateway(badConfig, {
+      authenticator,
+      characterAuthorizer: new SupabaseCharacterAuthorizer(badConfig),
+      onboardingAuthorizer: new SupabaseOnboardingAuthorizer(badConfig, badFetch),
+    })
+    gateway.server.listen(0, '127.0.0.1')
+    await once(gateway.server, 'listening')
+    const bad = await openOnboarding(gateway.address(), badCorrelation)
+    bad.send(`${badRequestedName}\n`)
+    await eventually(() => assert.match(bad.text(), /당신은 남자입니까/))
+    bad.send('남\n')
+    await eventually(() => assert.match(bad.text(), /직업을 고르세요/))
+    bad.send('4\n')
+    await eventually(() => assert.match(bad.text(), /능력:/))
+    bad.send('12 10 12 10 10\n')
+    await eventually(() => assert.match(bad.text(), /익숙한 무기를/))
+    bad.send('1\n')
+    await eventually(() => assert.match(bad.text(), /성향을 고르십시요/))
+    bad.send('선\n')
+    await eventually(() => assert.match(bad.text(), /종족/))
+    bad.send('7\n')
+    await eventually(() => assert.match(bad.text(), /새 암호를/))
+    bad.send(`${password}\n`)
+    await eventually(async () => assert.equal(await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || c.legacy_name || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${badCorrelation}'`), 'provisioning|reserved|provisioning|Stackbad|Stackbad'))
+    const badPlayer = join(fixture, 'player', createHash('sha1').update(badCanonicalName).digest('hex').slice(0, 2), badCanonicalName)
+    let badDigest = ''
+    let badReceipt = ''
+    await eventually(async () => {
+      badDigest = createHash('sha256').update(await readFile(badPlayer)).digest('hex')
+      badReceipt = await readFile(join(fixture, 'onboarding-receipts', `${badCorrelation}.receipt`), 'utf8')
+      assert.match(badReceipt, /state=saved\n/)
+    })
+    assert.equal(bad.json('provisioned'), false)
+    const badState = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || coalesce(p.saved_file_sha256, '<null>') || '|' || c.owner_user_id || '|' || c.legacy_name || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${badCorrelation}'`)
+    assert.equal(badState, `provisioning|reserved|provisioning|<null>|${actor}|Stackbad|Stackbad`)
+    const badCharacterId = await sql(`select character_id from private.game_character_provisioning_requests where correlation_id = '${badCorrelation}'`)
+    assert.doesNotMatch(badReceipt, /state=committed\n/)
+    assert.match(badReceipt, new RegExp(`canonical_name_hex=${Buffer.from(badCanonicalName, 'utf8').toString('hex')}\\n`))
+    assert.match(badReceipt, new RegExp(`saved_file_sha256=${badDigest}\\n`))
+    assert.equal(badFinalizeRpcCalls, 2)
+    // Preserve the exact saved-file bytes for the crash-window evidence. A
+    // graceful C shutdown may flush the still-staged onboarding creature and
+    // legitimately change the file after the receipt hash was recorded.
+    await crashMud(mud)
+    mud = undefined
+    evidence.events.push({ case: 'mud-process-crash', result: 'SIGKILL-preserved-saved-receipt-bytes' })
+    await terminateAndWait(bad.ws)
+    // The fault-injection Gateway is no longer used after the crash window;
+    // close it before replacing the handle with the recovery Gateway.
+    await gateway.close()
+    gateway = undefined
+    evidence.events.push({ case: 'finalize-failure', result: 'rpc-outage-saved-no-COMMIT-no-state-publish' })
+
+    // RED/GREEN recovery gate: a saved C receipt is durable evidence after the
+    // Gateway outage. A fresh reconciler process must promote exactly that
+    // reservation before a regular /ws admission can be issued.
+    // The reconciler intentionally accepts only private roots. The C writer
+    // must already have emitted 0700 shard directories and 0600 player files;
+    // only the copied disposable roots are hardened to mirror the Helm volume
+    // bootstrap.
+    await hardenPlayerDirectories(canonicalName, badCanonicalName)
+    process.stderr.write('stack-e2e: recovery-start\n')
+    await runSingleRecoveryReceipt(restUrl)
+    process.stderr.write('stack-e2e: recovery-rpc-green\n')
+    const recoveredState = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || p.saved_file_sha256 || '|' || c.owner_user_id from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${badCorrelation}'`)
+    assert.equal(recoveredState, `finalized|finalized|active|${badDigest}|${actor}`)
+    evidence.events.push({ case: 'saved-receipt-recovery', result: 'fresh-reconciler-promoted-active' })
+
+    const recoveredMudPort = await choosePort()
+    mud = startMud(process.env.STACK_E2E_BINARY, recoveredMudPort)
+    await waitForMud(recoveredMudPort, mud)
+    const recoveredConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `recover-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(recoveredMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
+    gateway = createGateway(recoveredConfig, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(recoveredConfig), onboardingAuthorizer: new SupabaseOnboardingAuthorizer(recoveredConfig) })
+    gateway.server.listen(0, '127.0.0.1')
+    await once(gateway.server, 'listening')
+    process.stderr.write('stack-e2e: recovery-gateway-listening\n')
+    const recoveredGame = await openGame(gateway.address(), badCharacterId)
+    process.stderr.write('stack-e2e: recovery-ws-ready\n')
+    recoveredGame.send('건강\n')
+    await eventually(() => assert.match(recoveredGame.text(), /체력/))
+    await closeAndWait(recoveredGame.ws)
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${badCharacterId}'`), '0'))
+    await gateway.close()
+    gateway = undefined
+    await stopMud(mud)
+    mud = undefined
+    process.stderr.write('stack-e2e: recovery-game-green\n')
+    evidence.events.push({ case: 'recovered-mud1-admission', result: 'regular-ws-and-game-command' })
+
+    // Claim gate: reuse the known C player file produced by the failed
+    // provisioning attempt as an imported_unclaimed record in this disposable
+    // database. The claim flow still verifies the original password inside C;
+    // PostgREST receives only the verified canonical name and actor binding.
+    // The normal MUD1 session above may legitimately flush a newer legacy
+    // player snapshot on shutdown. Import records therefore pin the exact
+    // bytes that the subsequent C claim will verify, not the earlier recovery
+    // receipt hash.
+    const claimPlayer = join(fixture, 'player', createHash('sha1').update(badCanonicalName).digest('hex').slice(0, 2), badCanonicalName)
+    const claimDigest = createHash('sha256').update(await readFile(claimPlayer)).digest('hex')
+    await sql(`update public.game_characters set lifecycle = 'imported_unclaimed', owner_user_id = null, claimed_at = null, imported_file_sha256 = '${claimDigest}' where id = '${badCharacterId}'`)
+    assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') || '|' || imported_file_sha256 from public.game_characters where id = '${badCharacterId}'`), `imported_unclaimed|<null>|${claimDigest}`)
+    const claimCorrelation = '66666666-6666-4666-8666-666666666666'
+    const claimMudPort = await choosePort()
+    mud = startMud(process.env.STACK_E2E_BINARY, claimMudPort)
+    await waitForMud(claimMudPort, mud)
+    const claimConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `claim-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(claimMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
+    gateway = createGateway(claimConfig, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(claimConfig), onboardingAuthorizer: new SupabaseOnboardingAuthorizer(claimConfig) })
+    gateway.server.listen(0, '127.0.0.1')
+    await once(gateway.server, 'listening')
+    process.stderr.write('stack-e2e: claim-gateway-listening\n')
+    const claim = await openOnboarding(gateway.address(), claimCorrelation, 'claim')
+    claim.send(`${badCanonicalName}\n`)
+    await eventually(() => assert.match(claim.text(), /암호를 넣어 주십시요/))
+    claim.send(`${password}\n`)
+    await eventually(() => assert.ok(claim.json('claimed')))
+    process.stderr.write('stack-e2e: claim-rpc-green\n')
+    await closeAndWait(claim.ws)
+    const claimState = await sql(`select i.status || '|' || c.lifecycle || '|' || c.owner_user_id || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${badCharacterId}' where i.correlation_id = '${claimCorrelation}'`)
+    assert.equal(claimState, `finalized|active|${actor}|${badCanonicalName}`)
+    evidence.events.push({ case: 'legacy-claim', result: 'C-password-verified-rpc-claimed' })
+
+    // A subsequent claim against the now-active target must be denied at the
+    // challenge RPC. C must not receive ALLOW or expose its password prompt,
+    // and the existing owner/lifecycle must remain unchanged.
+    const denied = await openOnboarding(gateway.address(), denialCorrelation, 'claim')
+    denied.send(`${badCanonicalName}\n`)
+    await eventually(() => assert.ok(denied.json('error')))
+    assert.equal(denied.text().includes('암호를 넣어 주십시요'), false)
+    const deniedState = await sql(`select lifecycle || '|' || c.owner_user_id from public.game_characters c where c.id = '${badCharacterId}'`)
+    assert.equal(deniedState, `active|${actor}`)
+    await closeAndWait(denied.ws)
+    evidence.events.push({ case: 'legacy-claim-denial', result: 'challenge-denied-owner-unchanged' })
+
+    // The claimed row must immediately use the unchanged normal MUD1 lane.
+    process.stderr.write('stack-e2e: claim-before-mud1\n')
+    const claimedGame = await openGame(gateway.address(), badCharacterId)
+    process.stderr.write('stack-e2e: claim-mud1-ready\n')
+    claimedGame.send('건강\n')
+    await eventually(() => assert.match(claimedGame.text(), /체력/))
+    await closeAndWait(claimedGame.ws)
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${badCharacterId}'`), '0'))
+    process.stderr.write('stack-e2e: claim-game-green\n')
+    evidence.events.push({ case: 'claimed-mud1-admission', result: 'regular-ws-and-game-command' })
+    evidence.status = 'passed'
+  } finally {
+    process.stderr.write(`stack-e2e: finally-gateway-${gateway ? 'start' : 'none'}\n`)
+    if (gateway) await closeGatewayBounded(gateway).catch(() => undefined)
+    process.stderr.write(`stack-e2e: finally-gateway-done\n`)
+    process.stderr.write(`stack-e2e: finally-mud-${mud ? 'start' : 'none'}\n`)
+    if (mud) await stopMudDuringFailure(mud)
+    process.stderr.write(`stack-e2e: finally-mud-done\n`)
+    evidence.error = evidence.status === 'passed' ? undefined : 'stack-e2e failed; inspect redacted runner output'
+    const artifact = process.env.STACK_E2E_ARTIFACT
+    if (artifact) await writeFile(artifact, redact(JSON.stringify(evidence, null, 2)), 'utf8')
+  }
+}
+
+// Keep the runner-owned Promise in node:test's lifecycle. A bare main().catch
+// leaves failures and cleanup outside the test worker's awaited graph, which
+// can report a pending Promise after the event loop becomes idle.
+test('real stack E2E completes with deterministic cleanup', { timeout: 120_000 }, async () => {
+  await main()
+})

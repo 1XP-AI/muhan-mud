@@ -27,12 +27,14 @@
   "cToGatewayControls": [
     "MUD1O OK\n",
     "MUD1O RESERVE|<name_utf8_lowerhex>\n",
+    "MUD1O CHALLENGE|<legacy_name_hex>|<file_sha256>\n",
     "MUD1O VERIFIED|<name_utf8_lowerhex>|<file_sha256>\n",
     "MUD1O SAVED|<character_uuid>|<file_sha256>|<storage_format>\n",
     "MUD1O ERR\n"
   ],
   "gatewayToCControls": [
     "MUD1O RESERVED|<character_uuid>\n",
+    "MUD1O ALLOW\n",
     "MUD1O CLAIMED|<character_uuid>\n",
     "MUD1O COMMIT\n",
     "MUD1O ABORT\n"

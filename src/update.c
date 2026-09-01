@@ -9,6 +9,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include "onboarding_session.h"
 #include "update.h"
 
 static long last_update;
@@ -111,6 +112,17 @@ long    t;
     for(i=0; i<Tablesize; i++) {
         if(!Ply[i].io) continue;
         if(Ply[i].ply && Ply[i].ply->class == DM) continue;
+        if(Ply[i].extr &&
+           Ply[i].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM &&
+           (((onboarding_state)Ply[i].extr->onboarding_state ==
+             ONBOARDING_STATE_CLAIM_AWAIT_ALLOW) ||
+            ((onboarding_state)Ply[i].extr->onboarding_state ==
+             ONBOARDING_STATE_CLAIM_PASSWORD_READY)) &&
+           !onboarding_session_claim_allow_live(
+             Ply[i].extr->onboarding_claim_challenged_at, t)) {
+            onboarding_fail(i);
+            continue;
+        }
         if(t - Ply[i].io->ltime > 300 && Ply[i].io->fn != waiting) {
             write(i, "\r\n입력없이 5분이상 유지하면 접속이 끊어집니다.\r\n", 48);
             disconnect(i);

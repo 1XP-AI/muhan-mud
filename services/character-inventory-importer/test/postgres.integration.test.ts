@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict'
+import { createHash, randomBytes } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { expectedShard, importRecords, type InventoryRecord } from '../src/inventory.js'
+import { PostgresImportStore } from '../src/postgres-store.js'
+import { scanMudHome } from '../src/scanner.js'
+
+const require = createRequire(import.meta.url)
+const { Pool } = require('pg') as { Pool: new (options: { connectionString: string, max: number }) => DisposablePool }
+
+interface QueryResult<Row = Record<string, unknown>> { rows: Row[], rowCount?: number }
+interface DisposableClient {
+  query<Row = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<QueryResult<Row>>
+  release(): void
+}
+interface DisposablePool {
+  query<Row = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<QueryResult<Row>>
+  connect(): Promise<DisposableClient>
+  end(): Promise<void>
+}
+
+const allow = process.env.INVENTORY_E2E_ALLOW_DISPOSABLE === '1'
+const skipReason = allow
+  ? (process.platform === 'linux' ? false : 'requires Linux openat/O_NOFOLLOW filesystem semantics')
+  : 'set INVENTORY_E2E_ALLOW_DISPOSABLE=1 to enable disposable Postgres integration tests'
+
+function disposableDatabaseUrl(): string {
+  const value = process.env.INVENTORY_E2E_DATABASE_URL ?? process.env.DATABASE_URL
+  assert.ok(value, 'INVENTORY_E2E_DATABASE_URL or DATABASE_URL is required when integration tests are enabled')
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('integration DATABASE_URL must be a PostgreSQL URL') }
+  assert.ok(url.protocol === 'postgres:' || url.protocol === 'postgresql:', 'integration DATABASE_URL must be PostgreSQL')
+  assert.ok(['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname), 'integration DATABASE_URL must target loopback')
+  assert.ok(url.username && !/service_role|anon|authenticated/i.test(url.username), 'integration DB user must be disposable admin')
+  assert.equal(url.search, '', 'integration DATABASE_URL must not carry credential-like query parameters')
+  assert.doesNotMatch(value, /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/, 'integration DATABASE_URL must not contain a JWT')
+  return value
+}
+
+function digest(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function record(name: string, body = `player:${name}`): InventoryRecord {
+  const shard = expectedShard(name)
+  return {
+    name,
+    canonicalNameKey: name,
+    relativePath: `player/${shard}/${name}`,
+    observedShard: shard,
+    expectedShard: shard,
+    byteSize: Buffer.byteLength(body),
+    sha256: digest(body),
+  }
+}
+
+async function countWorld(pool: DisposablePool, world: string): Promise<number> {
+  const result = await pool.query<{ count: string }>('select count(*)::text as count from public.game_characters where world_id = $1', [world])
+  return Number(result.rows[0]?.count ?? 0)
+}
+
+test('disposable Linux/Postgres importer contract is atomic and serializes retries', { skip: skipReason }, async (t) => {
+  const databaseUrl = disposableDatabaseUrl()
+  const pool = new Pool({ connectionString: databaseUrl, max: 2 })
+  const world = `ci-importer-${process.pid}-${Date.now()}-${randomBytes(6).toString('hex')}`
+  const root = await mkdtemp(join(tmpdir(), 'muhan-importer-e2e-'))
+  const importer = new PostgresImportStore(databaseUrl)
+  const concurrentLeft = new PostgresImportStore(databaseUrl)
+  const concurrentRight = new PostgresImportStore(databaseUrl)
+  t.after(async () => {
+    // This predicate can only match this run's unique world id; cleanup is
+    // narrowly scoped and never targets an existing world.
+    await pool.query('delete from public.game_characters where world_id = $1', [world])
+    await Promise.all([importer.close(), concurrentLeft.close(), concurrentRight.close(), pool.end(), rm(root, { recursive: true, force: true })])
+  })
+
+  const alice = record('Alice', 'alice-player-body')
+  const bob = record('Bob', 'bob-player-body')
+  const player = join(root, 'player', alice.expectedShard)
+  await mkdir(player, { recursive: true })
+  await writeFile(join(player, 'Alice'), 'alice-player-body')
+  await mkdir(join(root, 'player', bob.expectedShard), { recursive: true })
+  await writeFile(join(root, 'player', bob.expectedShard, 'Bob'), 'bob-player-body')
+
+  const scan = await scanMudHome(root)
+  assert.equal(scan.rejected, 0)
+  assert.deepEqual(scan.records.map((entry) => entry.name), ['Alice', 'Bob'])
+  assert.doesNotMatch(JSON.stringify(scan.records), /alice-player-body|bob-player-body/)
+
+  const dryRun = await importRecords(importer, scan.records, { worldId: world, apply: false })
+  assert.equal(dryRun.wouldInsert, 2)
+  assert.equal(dryRun.inserted, 0)
+  assert.equal(await countWorld(pool, world), 0)
+
+  const applied = await importRecords(importer, scan.records, { worldId: world, apply: true })
+  assert.equal(applied.inserted, 2)
+  assert.equal(applied.idempotent, 0)
+  assert.equal(await countWorld(pool, world), 2)
+
+  const retried = await importRecords(importer, scan.records, { worldId: world, apply: true })
+  assert.equal(retried.inserted, 0)
+  assert.equal(retried.idempotent, 2)
+  assert.equal(await countWorld(pool, world), 2)
+
+  const invalid = { ...record('Invalid'), sha256: 'not-a-sha256' }
+  const invalidBatch = await importRecords(importer, [record('Freshinvalid'), invalid], { worldId: world, apply: true })
+  assert.equal(invalidBatch.quarantined.invalid_metadata, 1)
+  assert.equal(invalidBatch.inserted, 0)
+  assert.equal(await countWorld(pool, world), 2)
+
+  const conflict = record('Conflict', 'conflict-player-body')
+  const fresh = record('Fresh', 'fresh-player-body')
+  await pool.query(
+    `insert into public.game_characters
+       (world_id, legacy_name, legacy_name_key, legacy_shard, lifecycle, storage_format, imported_file_sha256)
+     values ($1, $2, $2, $3, 'suspended', 1, $4)`,
+    [world, conflict.name, conflict.expectedShard, conflict.sha256],
+  )
+  const conflictedBatch = await importRecords(importer, [fresh, conflict], { worldId: world, apply: true })
+  assert.equal(conflictedBatch.quarantined.lifecycle_conflict, 1)
+  assert.equal(conflictedBatch.inserted, 0)
+  assert.equal(await countWorld(pool, world), 3)
+  const freshRows = await pool.query('select 1 from public.game_characters where world_id = $1 and legacy_name_key = $2', [world, fresh.canonicalNameKey])
+  assert.equal(freshRows.rowCount, 0)
+
+  const concurrent = record('Concurrent', 'concurrent-player-body')
+  const [left, right] = await Promise.all([
+    importRecords(concurrentLeft, [concurrent], { worldId: world, apply: true }),
+    importRecords(concurrentRight, [concurrent], { worldId: world, apply: true }),
+  ])
+  assert.equal(left.inserted + right.inserted, 1)
+  assert.equal(left.idempotent + right.idempotent, 1)
+  assert.equal(await countWorld(pool, world), 4)
+})

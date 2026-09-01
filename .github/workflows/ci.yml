@@ -40,13 +40,47 @@ jobs:
           DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
         run: |
           set -euo pipefail
-          psql "$DATABASE_URL" --file=supabase/tests/bootstrap_contract.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260903000000_character_onboarding.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260903000000_character_onboarding.sql
-          psql "$DATABASE_URL" --file=supabase/tests/game_identity_contract.sql
-          psql "$DATABASE_URL" --file=supabase/tests/character_onboarding_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260903000000_character_onboarding.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260903000000_character_onboarding.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260904000000_onboarding_intent_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260904000000_onboarding_intent_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260907000000_claim_challenge_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260907000000_claim_challenge_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/game_identity_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/character_onboarding_contract.sql
+          CLAIM_CHALLENGE_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/claim_challenge_lock_expiry.sh
+          SERVICE_RPC_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/service_rpc_lock_expiry.sh
+
+      - name: Setup Node for importer integration
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install importer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.15.1 --activate
+          pnpm install --frozen-lockfile --filter @muhan/character-inventory-importer...
+
+      - name: Run disposable Linux/Postgres importer integration
+        shell: bash
+        env:
+          INVENTORY_E2E_ALLOW_DISPOSABLE: "1"
+          INVENTORY_E2E_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          pnpm --filter @muhan/character-inventory-importer test:integration
 
   build-and-smoke:
     name: ${{ matrix.runner }}
@@ -206,19 +240,46 @@ jobs:
         run: |
           set -euo pipefail
           make -C src unit-test CC=gcc
+          python3 tests/unit/player_writer_contract_test.py
+          python3 tests/unit/creature_object_layout_contract_test.py
 
       - name: Onboarding protocol sanitizers
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
+          make -C src cdto-v1-sanitizer-test CC=gcc
           gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
             -I src tests/unit/onboarding_admission_test.c \
-            src/onboarding_admission.c src/trusted_admission.c src/player_path.c \
+            src/onboarding_admission.c src/onboarding_session.c \
+            src/trusted_admission.c src/player_path.c \
             src/utf8_text.c src/resource_path.c \
             -o "$RUNNER_TEMP/onboarding-admission-sanitized-test"
           ASAN_OPTIONS=detect_leaks=1 \
             "$RUNNER_TEMP/onboarding-admission-sanitized-test"
+          gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/onboarding_receipt_test.c \
+            src/onboarding_receipt.c src/resource_path.c \
+            -o "$RUNNER_TEMP/onboarding-receipt-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/onboarding-receipt-sanitized-test"
+          gcc -std=gnu89 -fcommon -Wno-error=implicit-function-declaration \
+            -ffunction-sections -fdata-sections \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/room_time_test.c src/room.c \
+            -Wl,--gc-sections -o "$RUNNER_TEMP/room-time-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/room-time-sanitized-test"
+          gcc -std=gnu89 -fcommon -Wno-error=implicit-function-declaration \
+            -ffunction-sections -fdata-sections \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/staged_player_stage_test.c src/player.c \
+            -Wl,--gc-sections -o "$RUNNER_TEMP/staged-player-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/staged-player-sanitized-test"
 
       - name: Deterministic AI scenario
         if: matrix.runner == 'ubuntu-latest'
@@ -250,12 +311,48 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm check
 
+      - name: Browser xterm onboarding contract
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:browser
+
+      - name: Rust CDTO clone-only contract
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml -p muhan-core-dto --all-targets -- -D warnings
+          ./scripts/run-cdto-differential.sh
+          cargo test --manifest-path rust/Cargo.toml --workspace
+
       - name: Trusted admission scenario
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-admission-scenario.sh --output "$RUNNER_TEMP/muhan-admission-scenario.json"
+
+      - name: Real onboarding scenario with ASan and UBSan
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sanitized_binary="$RUNNER_TEMP/muhan-onboarding-sanitized"
+          sanitizer_flags='-g -O1 -std=gnu89 -fcommon -DFINGERACCT -DCHECKDOUBLE -DSUICIDE -DOBJLEVEL -DDEBUG -fsanitize=address,undefined -fno-omit-frame-pointer'
+          make -B -C src -j2 CC=gcc CFLAGS="$sanitizer_flags" OUTFILE="$sanitized_binary"
+          # The scenario deliberately SIGKILLs the server at the SAVED crash
+          # window, so LeakSanitizer cannot run its process-exit sweep here.
+          # Leak detection remains enabled in the normally exiting unit job.
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+          AI_SCENARIO_ALLOW_EXTERNAL_BINARY=1 \
+          AI_SCENARIO_BINARY="$sanitized_binary" \
+            ./scripts/run-onboarding-scenario.sh \
+              --output "$RUNNER_TEMP/muhan-onboarding-sanitized-scenario.json"
 
       - name: Upload AI scenario evidence
         if: always() && matrix.runner == 'ubuntu-latest'
@@ -266,4 +363,5 @@ jobs:
             ${{ runner.temp }}/muhan-ai-scenario.json
             ${{ runner.temp }}/muhan-shutdown-scenario.json
             ${{ runner.temp }}/muhan-admission-scenario.json
+            ${{ runner.temp }}/muhan-onboarding-sanitized-scenario.json
           if-no-files-found: warn

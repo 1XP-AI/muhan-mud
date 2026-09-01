@@ -33,6 +33,7 @@
 #include "player_store.h"
 #include "player_recovery.h"
 #include "trusted_admission.h"
+#include "onboarding_session.h"
 
 #ifdef WIN32
 #define ioctl(a,b,c)    ioctlsocket(a,b,c)
@@ -186,8 +187,8 @@ int	debug;
 	/* A present but malformed secret is a deployment error, not a reason to
 	 * expose the legacy password listener.  Exit before bind/listen so the
 	 * container readiness probe cannot report a falsely healthy server. */
-	if(trusted_admission_mode() < 0) {
-		fprintf(stderr, "trusted admission configuration is invalid\n");
+	if(trusted_admission_mode() < 0 || onboarding_session_mode() < 0) {
+		fprintf(stderr, "admission configuration is invalid\n");
 		exit(78);
 	}
 
@@ -428,15 +429,19 @@ void init_connect(fd)
 int	fd;
 {
 	int		i;
-	int		admission_mode;
+	int		admission_mode, onboarding_mode;
 
 	admission_mode = trusted_admission_mode();
+	onboarding_mode = onboarding_session_mode();
 	if(admission_mode != 0) {
 		/* Do not emit a banner, name prompt, or site-password prompt here:
 		 * a configured (including invalid) secret is always ticket-only. */
 		Ply[fd].io->intrpt |= 2;
 		Numplayers++;
 		Ply[fd].io->ltime = time(0);
+		if(onboarding_mode == 1) {
+			RETURN(fd, onboarding_admission_login, 1);
+		}
 		RETURN(fd, trusted_admission_login, 1);
 	}
 
@@ -1013,7 +1018,7 @@ void handle_commands()
     char commands[256];
     creature *ply_ptr;
 
-	int	i, j;
+	int	i, j, claim_input;
 	int	itail, ihead;
 	char	buf[IBUFSIZE+1];
 	long	t;
@@ -1063,9 +1068,17 @@ void handle_commands()
 			}
 			Ply[i].io->itail = itail;
 			Ply[i].io->commands--;
-			/* Admission tickets carry a bearer MAC.  Do not mirror or command-log
-			 * this first line, and do not dereference ply before admission. */
-			if(Ply[i].io->fn != trusted_admission_login) {
+			/* handle_commands copies the ring-buffer line into this stack
+			 * buffer.  Capture claim mode before the callback can disconnect and
+			 * free extr; the callback's password argument must be wiped here too. */
+			claim_input = Ply[i].extr &&
+				Ply[i].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM;
+			/* Admission tickets and onboarding passwords carry credentials.  Do
+			 * not mirror or command-log them, and do not dereference ply before
+			 * either ticket path has admitted the connection. */
+			if(Ply[i].io->fn != trusted_admission_login &&
+			   Ply[i].io->fn != onboarding_admission_login &&
+			   !(Ply[i].extr && Ply[i].extr->onboarding_mode)) {
 				if(Spy[i] > -1) {
 					write(Spy[i], buf, strlen(buf));
 					write(Spy[i], "\r\n", 2);
@@ -1074,9 +1087,18 @@ void handle_commands()
 					log_overwrite("command.log","%s:%s\n",Ply[i].ply->name, buf);
 			}
 
+			if(onboarding_control_during_wizard(i, (unsigned char *)buf)) {
+				if(claim_input)
+					onboarding_session_zeroize_claim_memory(
+						0, 0, buf, sizeof(buf));
+				continue;
+			}
+
 			(*Ply[i].io->fn) (i, Ply[i].io->fnparam, 
         ((unsigned char)buf[0]==255 && 
         ((unsigned char)buf[1]==253 || (unsigned char)buf[1]==254)) ? buf+2 : buf);
+		if(claim_input)
+			onboarding_session_zeroize_claim_memory(0, 0, buf, sizeof(buf));
 		}
 	}
 }
@@ -1095,6 +1117,26 @@ int 	fd;
 	int 	i, save_result;
 	etag	*ign, *temp;
 	wq_tag	*wq;
+
+	/* A peer EOF/read error can bypass onboarding_fail() while a MUD1O claim
+	 * waits for ALLOW or CLAIMED.  Identify that lane before freeing io/extr,
+	 * and force it non-saveable before wiping the loaded password. */
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr &&
+	   Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {
+		if(Ply[fd].ply) {
+			Ply[fd].ply->fd = -1;
+			onboarding_session_zeroize_claim_memory(
+				Ply[fd].ply->password, sizeof(Ply[fd].ply->password), 0, 0);
+		}
+		if(Ply[fd].io)
+			onboarding_session_zeroize_claim_memory(
+				0, 0, Ply[fd].io->input, sizeof(Ply[fd].io->input));
+		onboarding_session_zeroize_claim_memory(
+			Ply[fd].extr->tempstr[0], sizeof(Ply[fd].extr->tempstr[0]),
+			Ply[fd].extr->onboarding_claim_sha256,
+			sizeof(Ply[fd].extr->onboarding_claim_sha256));
+		Ply[fd].extr->onboarding_claim_challenged_at = 0;
+	}
 
 	close_alias(fd);
 #ifdef WIN32

@@ -71,6 +71,12 @@ char	*argv[];
 	srand(getpid() + time(0));
 	load_lockouts();
 	load_family();
+	/* The recovery pass closes the atomic-player-rename -> receipt-SAVED
+	 * crash window before this process can accept a single connection. */
+	if(onboarding_recovery_startup() != 0) {
+		fprintf(stderr, "onboarding recovery failed\n");
+		exit(78);
+	}
 	
 #ifndef DEBUG
  	sock_init(Port,0);

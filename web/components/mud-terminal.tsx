@@ -20,6 +20,7 @@ export type GatewayConnectionState =
   | "connecting"
   | "authenticating"
   | "ready"
+  | "provisioned"
   | "retrying"
   | "closed"
   | "error";
@@ -35,6 +36,7 @@ interface MudTerminalProps {
   characterId: string;
   gatewayUrl: string;
   onStatus: (status: GatewayStatus) => void;
+  onTerminated?: () => void;
 }
 
 interface GatewayControl {
@@ -78,6 +80,7 @@ export function MudTerminal({
   characterId,
   gatewayUrl,
   onStatus,
+  onTerminated,
 }: MudTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -170,7 +173,6 @@ export function MudTerminal({
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
-    let terminalFailure: string | null = null;
 
     const publishStatus = (
       state: GatewayConnectionState,
@@ -184,6 +186,8 @@ export function MudTerminal({
     const setNotReady = () => {
       readyRef.current = false;
       setReady(false);
+      // Retry/termination must not carry command text or a password forward.
+      setMobileLine("");
       updateEcho(true);
     };
 
@@ -213,7 +217,11 @@ export function MudTerminal({
       reconnectTimer = setTimeout(connect, delay);
     };
 
-    const handleControl = (control: GatewayControl) => {
+    const handleControl = (
+      control: GatewayControl,
+      socket: WebSocket,
+      markProtocolMalformed: () => void,
+    ) => {
       switch (control.type) {
         case "ready":
           attempt = 0;
@@ -227,12 +235,15 @@ export function MudTerminal({
         case "pong":
           break;
         case "error":
-          terminalFailure =
+          // Error text is informational. The following close frame owns the
+          // retry/termination decision and may be a transient 1011/12/13.
+          publishStatus(
+            "error",
             control.message ??
-            control.reason ??
-            control.code ??
-            "게이트웨이가 연결을 거절했습니다.";
-          publishStatus("error", terminalFailure);
+              control.reason ??
+              control.code ??
+              "게이트웨이가 연결을 거절했습니다.",
+          );
           break;
         case "closed":
           publishStatus(
@@ -241,11 +252,9 @@ export function MudTerminal({
           );
           break;
         default:
-          if (!readyRef.current) {
-            terminalFailure = "입장 확인 형식이 올바르지 않습니다.";
-            publishStatus("error", terminalFailure);
-            socketRef.current?.close(1008, "invalid admission acknowledgement");
-          }
+          markProtocolMalformed();
+          publishStatus("error", "게이트웨이 응답 형식이 올바르지 않습니다.");
+          socket.close(1008, "invalid gateway control frame");
       }
     };
 
@@ -270,6 +279,10 @@ export function MudTerminal({
 
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
+      let protocolMalformed = false;
+      const markProtocolMalformed = () => {
+        protocolMalformed = true;
+      };
 
       socket.addEventListener("open", () => {
         if (cancelled) {
@@ -283,22 +296,33 @@ export function MudTerminal({
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string") {
           try {
-            handleControl(JSON.parse(event.data) as GatewayControl);
+            handleControl(
+              JSON.parse(event.data) as GatewayControl,
+              socket,
+              markProtocolMalformed,
+            );
           } catch {
+            markProtocolMalformed();
             publishStatus("error", "알 수 없는 게이트웨이 응답을 받았습니다.");
+            socket.close(1008, "malformed gateway control frame");
           }
           return;
         }
 
         if (event.data instanceof ArrayBuffer) {
           if (!readyRef.current) {
-            terminalFailure = "캐릭터 입장 확인 전 데이터가 도착했습니다.";
-            publishStatus("error", terminalFailure);
+            markProtocolMalformed();
+            publishStatus("error", "캐릭터 입장 확인 전 데이터가 도착했습니다.");
             socket.close(1008, "data before auth acknowledgement");
             return;
           }
           terminalRef.current?.write(new Uint8Array(event.data));
+          return;
         }
+
+        markProtocolMalformed();
+        publishStatus("error", "게이트웨이 프레임 형식이 올바르지 않습니다.");
+        socket.close(1008, "malformed gateway frame");
       });
 
       socket.addEventListener("error", () => {
@@ -308,23 +332,19 @@ export function MudTerminal({
       });
 
       socket.addEventListener("close", (event) => {
-        if (socketRef.current === socket) {
-          socketRef.current = null;
-        }
+        // An older socket can close after a reconnect has replaced it.
+        if (socketRef.current !== socket) return;
+        socketRef.current = null;
         setNotReady();
 
         if (cancelled) {
           return;
         }
 
-        if (terminalFailure) {
-          publishStatus("error", terminalFailure);
-          return;
-        }
-
         const reason = event.reason || `연결이 닫혔습니다 (${event.code}).`;
-        if (!shouldReconnectGatewayClose(event.code)) {
+        if (!shouldReconnectGatewayClose(event.code, attempt, protocolMalformed)) {
           publishStatus("closed", reason);
+          onTerminated?.();
           return;
         }
         scheduleReconnect(reason);
@@ -345,7 +365,7 @@ export function MudTerminal({
         socket.close(1000, "session changed");
       }
     };
-  }, [accessToken, characterId, gatewayUrl, onStatus, updateEcho]);
+  }, [accessToken, characterId, gatewayUrl, onStatus, onTerminated, updateEcho]);
 
   const submitMobileLine = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

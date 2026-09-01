@@ -80,6 +80,19 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		auth_user_id[37];
 	char		character_id[37];
 	char		admission_nonce[33];
+	/* MUD1O transient identity/state.  extra is never serialized with a
+	 * creature, so the actor/correlation/character IDs cannot enter player
+	 * files.  The compact state fields are protocol guards, not credentials. */
+	char		onboarding_actor_id[37];
+	char		onboarding_correlation_id[37];
+	char		onboarding_character_id[37];
+	char		onboarding_mode;
+	char		onboarding_state;
+	char		onboarding_world_staged;
+	/* Claim-only, in-memory evidence. It is never serialized and is cleared
+	 * immediately after VERIFIED or any fail-closed exit. */
+	char		onboarding_claim_sha256[65];
+	long		onboarding_claim_challenged_at;
 	ctag		*first_charm;
 	etag		*first_ignore;
 } extra;

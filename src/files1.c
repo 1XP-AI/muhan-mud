@@ -12,10 +12,23 @@
 #include <errno.h>
 
 #define MAX_NESTED_OBJECTS 4096
+#ifndef PLAYER_DECODE_MAX_DEPTH
+#define PLAYER_DECODE_MAX_DEPTH 64
+#endif
+#ifndef PLAYER_DECODE_MAX_OBJECTS
+#define PLAYER_DECODE_MAX_OBJECTS 8192
+#endif
 #define MAX_ROM_EXITS 200
 #define MAX_ROM_MOBS 4096
 #define MAX_ROM_ITEMS 8192
 #define MAX_ROM_DESC_BYTES (1024 * 1024)
+
+#ifdef PLAYER_DECODER_TEST_HOOK
+extern void *player_decoder_malloc(unsigned long size);
+#define PLAYER_DECODER_MALLOC(size) player_decoder_malloc(size)
+#else
+#define PLAYER_DECODER_MALLOC(size) malloc(size)
+#endif
 
 /* Return failure to the caller instead of terminating the server when a
  * player record cannot be written.  write(2) may be interrupted or may
@@ -524,6 +537,272 @@ creature 	*crt_ptr;
 		return(-1);
 	else
 		return(0);
+}
+
+/**********************************************************************/
+/*                         read_crt_player                            */
+/**********************************************************************/
+
+/* Player files can be supplied by an internet-facing MUD1O claim/load
+ * request.  Keep this bounded reader separate from read_crt(), which is
+ * also used for trusted room blobs and must retain its legacy behavior. */
+
+typedef struct player_decode_context {
+	unsigned long object_count;
+	unsigned long max_objects;
+	unsigned int max_depth;
+} player_decode_context;
+
+static int player_read_full(fd, buf, size)
+int fd;
+char *buf;
+unsigned long size;
+{
+	int n;
+
+	while(size > 0) {
+		n = read(fd, buf, size);
+		if(n > 0) {
+			buf += n;
+			size -= n;
+			continue;
+		}
+		if(n < 0 && errno == EINTR)
+			continue;
+		return(-1);
+	}
+	return(0);
+}
+
+static void free_player_object(obj_ptr)
+object *obj_ptr;
+{
+	otag *op, *next;
+
+	if(!obj_ptr)
+		return;
+	op = obj_ptr->first_obj;
+	while(op) {
+		next = op->next_tag;
+		free_player_object(op->obj);
+		free(op);
+		op = next;
+	}
+	free(obj_ptr);
+}
+
+static void free_player_object_list(head)
+otag *head;
+{
+	otag *op, *next;
+
+	op = head;
+	while(op) {
+		next = op->next_tag;
+		free_player_object(op->obj);
+		free(op);
+		op = next;
+	}
+}
+
+static void reset_player_object_links(obj_ptr)
+object *obj_ptr;
+{
+	obj_ptr->first_obj = 0;
+	obj_ptr->parent_obj = 0;
+	obj_ptr->parent_rom = 0;
+	obj_ptr->parent_crt = 0;
+}
+
+static void reset_player_creature_links(crt_ptr)
+creature *crt_ptr;
+{
+	int n;
+
+	crt_ptr->first_obj = 0;
+	crt_ptr->first_fol = 0;
+	crt_ptr->first_enm = 0;
+	crt_ptr->first_tlk = 0;
+	crt_ptr->parent_rom = 0;
+	crt_ptr->following = 0;
+	for(n = 0; n < 20; ++n)
+		crt_ptr->ready[n] = 0;
+}
+
+static int player_has_nul(value, size)
+char *value;
+unsigned long size;
+{
+	while(size > 0) {
+		if(*value == 0)
+			return(1);
+		value++;
+		size--;
+	}
+	return(0);
+}
+
+static int player_creature_strings_valid(crt_ptr)
+creature *crt_ptr;
+{
+	return(player_has_nul(crt_ptr->name, sizeof(crt_ptr->name)) &&
+	       player_has_nul(crt_ptr->description, sizeof(crt_ptr->description)) &&
+	       player_has_nul(crt_ptr->talk, sizeof(crt_ptr->talk)) &&
+	       player_has_nul(crt_ptr->password, sizeof(crt_ptr->password)) &&
+	       player_has_nul(crt_ptr->key[0], sizeof(crt_ptr->key[0])) &&
+	       player_has_nul(crt_ptr->key[1], sizeof(crt_ptr->key[1])) &&
+	       player_has_nul(crt_ptr->key[2], sizeof(crt_ptr->key[2])));
+}
+
+static int player_object_strings_valid(obj_ptr)
+object *obj_ptr;
+{
+	return(player_has_nul(obj_ptr->name, sizeof(obj_ptr->name)) &&
+	       player_has_nul(obj_ptr->description, sizeof(obj_ptr->description)) &&
+	       player_has_nul(obj_ptr->key[0], sizeof(obj_ptr->key[0])) &&
+	       player_has_nul(obj_ptr->key[1], sizeof(obj_ptr->key[1])) &&
+	       player_has_nul(obj_ptr->key[2], sizeof(obj_ptr->key[2])) &&
+	       player_has_nul(obj_ptr->use_output, sizeof(obj_ptr->use_output)));
+}
+
+static int player_require_eof(fd)
+int fd;
+{
+	char extra;
+	int n;
+
+	do {
+		n = read(fd, &extra, sizeof(extra));
+	} while(n < 0 && errno == EINTR);
+	return(n == 0 ? 0 : -1);
+}
+
+static int read_player_obj(fd, obj_ptr, context, depth)
+int fd;
+object *obj_ptr;
+player_decode_context *context;
+unsigned int depth;
+{
+	int cnt, i;
+	otag *op;
+	object *obj;
+	otag **prev;
+
+	if(!obj_ptr || !context)
+		return(-1);
+	memset(obj_ptr, 0, sizeof(object));
+	if(depth > context->max_depth ||
+	   context->object_count >= context->max_objects)
+		return(-1);
+	context->object_count++;
+	if(player_read_full(fd, (char *)obj_ptr, sizeof(object)) < 0) {
+		reset_player_object_links(obj_ptr);
+		goto fail;
+	}
+	reset_player_object_links(obj_ptr);
+	if(!player_object_strings_valid(obj_ptr))
+		goto fail;
+	if(obj_ptr->shotscur > obj_ptr->shotsmax)
+		obj_ptr->shotscur = obj_ptr->shotsmax;
+	if(player_read_full(fd, (char *)&cnt, sizeof(int)) < 0)
+		goto fail;
+	if(cnt < 0 || cnt > MAX_NESTED_OBJECTS ||
+	   (unsigned long)cnt > context->max_objects - context->object_count)
+		goto fail;
+
+	prev = &obj_ptr->first_obj;
+	for(i = 0; i < cnt; ++i) {
+		op = (otag *)PLAYER_DECODER_MALLOC(sizeof(otag));
+		if(!op)
+			goto fail;
+		obj = (object *)PLAYER_DECODER_MALLOC(sizeof(object));
+		if(!obj) {
+			free(op);
+			goto fail;
+		}
+		if(read_player_obj(fd, obj, context, depth + 1) < 0) {
+			free(obj);
+			free(op);
+			goto fail;
+		}
+		obj->parent_obj = obj_ptr;
+		op->obj = obj;
+		op->next_tag = 0;
+		*prev = op;
+		prev = &op->next_tag;
+	}
+	return(0);
+
+fail:
+	free_player_object_list(obj_ptr->first_obj);
+	obj_ptr->first_obj = 0;
+	return(-1);
+}
+
+int read_crt_player(fd, crt_ptr)
+int fd;
+creature *crt_ptr;
+{
+	int n, cnt, i;
+	otag *op;
+	otag **prev;
+	object *obj;
+	player_decode_context context;
+
+	if(!crt_ptr)
+		return(-1);
+	memset(crt_ptr, 0, sizeof(creature));
+	n = player_read_full(fd, (char *)crt_ptr, sizeof(creature));
+	/* Even a short read may have copied hostile bytes over pointer fields. */
+	reset_player_creature_links(crt_ptr);
+	if(n < 0)
+		return(-1);
+	if(crt_ptr->type != PLAYER || !player_creature_strings_valid(crt_ptr))
+		return(-1);
+	/* A disk record must never reattach a player's persisted socket. */
+	crt_ptr->fd = -1;
+	if(crt_ptr->mpcur > crt_ptr->mpmax)
+		crt_ptr->mpcur = crt_ptr->mpmax;
+	if(crt_ptr->hpcur > crt_ptr->hpmax)
+		crt_ptr->hpcur = crt_ptr->hpmax;
+	if(player_read_full(fd, (char *)&cnt, sizeof(int)) < 0)
+		return(-1);
+	context.object_count = 0;
+	context.max_objects = PLAYER_DECODE_MAX_OBJECTS;
+	context.max_depth = PLAYER_DECODE_MAX_DEPTH;
+	if(cnt < 0 || cnt > MAX_NESTED_OBJECTS ||
+	   (unsigned long)cnt > context.max_objects)
+		return(-1);
+
+	prev = &crt_ptr->first_obj;
+	for(i = 0; i < cnt; ++i) {
+		op = (otag *)PLAYER_DECODER_MALLOC(sizeof(otag));
+		if(!op)
+			goto fail;
+		obj = (object *)PLAYER_DECODER_MALLOC(sizeof(object));
+		if(!obj) {
+			free(op);
+			goto fail;
+		}
+		if(read_player_obj(fd, obj, &context, 1) < 0) {
+			free_player_object(obj);
+			free(op);
+			goto fail;
+		}
+		obj->parent_crt = crt_ptr;
+		op->obj = obj;
+		op->next_tag = 0;
+		*prev = op;
+		prev = &op->next_tag;
+	}
+	if(player_require_eof(fd) < 0)
+		goto fail;
+	return(0);
+
+fail:
+	free_player_object_list(crt_ptr->first_obj);
+	crt_ptr->first_obj = 0;
+	return(-1);
 }
 
 /**********************************************************************/

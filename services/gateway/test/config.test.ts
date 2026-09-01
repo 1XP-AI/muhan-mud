@@ -25,6 +25,12 @@ test('test-only disabled authentication produces a bounded gateway config', () =
   assert.equal(config.mudPort, 4100)
   assert.equal(config.maxConnections, 2)
   assert.deepEqual([...config.allowedOrigins], ['http://localhost:3000', 'https://preview.example.com'])
+  assert.equal(config.mudOnboardingEnabled, false)
+})
+
+test('onboarding is an opt-in strict true or false flag', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true' }).mudOnboardingEnabled, true)
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: '1' }), /MUD_ONBOARDING_ENABLED must be true or false/)
 })
 
 test('origins cannot contain paths or wildcard-like values', () => {

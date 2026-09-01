@@ -270,6 +270,7 @@ const onboarding_control *control;
                oa_empty(control->file_sha256, sizeof(control->file_sha256)) &&
                oa_empty(control->storage_format, sizeof(control->storage_format));
     case ONBOARDING_CONTROL_VERIFIED:
+    case ONBOARDING_CONTROL_CHALLENGE:
         return oa_hex_value(control->name_hex) &&
                oa_empty(control->character_id, sizeof(control->character_id)) &&
                oa_lower_hex_value(control->file_sha256,
@@ -299,6 +300,7 @@ const onboarding_control *control;
                oa_empty(control->storage_format, sizeof(control->storage_format));
     case ONBOARDING_CONTROL_COMMIT:
     case ONBOARDING_CONTROL_ABORT:
+    case ONBOARDING_CONTROL_ALLOW:
         return oa_empty(control->name_hex, sizeof(control->name_hex)) &&
                oa_empty(control->character_id, sizeof(control->character_id)) &&
                oa_empty(control->file_sha256, sizeof(control->file_sha256)) &&
@@ -368,6 +370,14 @@ onboarding_control *control;
                          part[2]) != 0)
             control->kind = ONBOARDING_CONTROL_INVALID;
     }
+    else if(oa_prepare_control_line(line, copy, part, 2) == 0 &&
+            !strcmp(part[0], "MUD1O CHALLENGE")) {
+        control->kind = ONBOARDING_CONTROL_CHALLENGE;
+        if(oa_copy_value(control->name_hex, sizeof(control->name_hex), part[1]) != 0 ||
+           oa_copy_value(control->file_sha256, sizeof(control->file_sha256),
+                         part[2]) != 0)
+            control->kind = ONBOARDING_CONTROL_INVALID;
+    }
     else if(oa_prepare_control_line(line, copy, part, 3) == 0 &&
             !strcmp(part[0], "MUD1O SAVED")) {
         control->kind = ONBOARDING_CONTROL_SAVED;
@@ -400,6 +410,7 @@ onboarding_control *control;
     if(oa_prepare_control_line(line, copy, part, 0) == 0) {
         if(!strcmp(part[0], "MUD1O COMMIT")) control->kind = ONBOARDING_CONTROL_COMMIT;
         else if(!strcmp(part[0], "MUD1O ABORT")) control->kind = ONBOARDING_CONTROL_ABORT;
+        else if(!strcmp(part[0], "MUD1O ALLOW")) control->kind = ONBOARDING_CONTROL_ALLOW;
     }
     else if(oa_prepare_control_line(line, copy, part, 1) == 0) {
         if(!strcmp(part[0], "MUD1O RESERVED")) control->kind = ONBOARDING_CONTROL_RESERVED;
@@ -436,6 +447,10 @@ int gateway;
         written = snprintf(out, out_size, "MUD1O VERIFIED|%s|%s\n",
                            control->name_hex, control->file_sha256);
         break;
+    case ONBOARDING_CONTROL_CHALLENGE:
+        written = snprintf(out, out_size, "MUD1O CHALLENGE|%s|%s\n",
+                           control->name_hex, control->file_sha256);
+        break;
     case ONBOARDING_CONTROL_SAVED:
         written = snprintf(out, out_size, "MUD1O SAVED|%s|%s|%s\n",
                            control->character_id, control->file_sha256,
@@ -457,6 +472,9 @@ int gateway;
         break;
     case ONBOARDING_CONTROL_ABORT:
         written = snprintf(out, out_size, "MUD1O ABORT\n");
+        break;
+    case ONBOARDING_CONTROL_ALLOW:
+        written = snprintf(out, out_size, "MUD1O ALLOW\n");
         break;
     default:
         return -1;
@@ -493,6 +511,8 @@ onboarding_state state;
            state == ONBOARDING_STATE_PROVISION_RESERVED ||
            state == ONBOARDING_STATE_PROVISION_AWAIT_COMMIT ||
            state == ONBOARDING_STATE_CLAIM_READY ||
+           state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW ||
+           state == ONBOARDING_STATE_CLAIM_PASSWORD_READY ||
            state == ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED;
 }
 
@@ -534,8 +554,13 @@ const onboarding_control *control;
         *state = ONBOARDING_STATE_PROVISION_AWAIT_COMMIT;
         return 0;
     }
-    if(control->kind == ONBOARDING_CONTROL_VERIFIED &&
+    if(control->kind == ONBOARDING_CONTROL_CHALLENGE &&
        *state == ONBOARDING_STATE_CLAIM_READY) {
+        *state = ONBOARDING_STATE_CLAIM_AWAIT_ALLOW;
+        return 0;
+    }
+    if(control->kind == ONBOARDING_CONTROL_VERIFIED &&
+       *state == ONBOARDING_STATE_CLAIM_PASSWORD_READY) {
         *state = ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED;
         return 0;
     }
@@ -559,6 +584,11 @@ const onboarding_control *control;
     if(control->kind == ONBOARDING_CONTROL_COMMIT &&
        *state == ONBOARDING_STATE_PROVISION_AWAIT_COMMIT) {
         *state = ONBOARDING_STATE_READY;
+        return 0;
+    }
+    if(control->kind == ONBOARDING_CONTROL_ALLOW &&
+       *state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW) {
+        *state = ONBOARDING_STATE_CLAIM_PASSWORD_READY;
         return 0;
     }
     if(control->kind == ONBOARDING_CONTROL_CLAIMED &&

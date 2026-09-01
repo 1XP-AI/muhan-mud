@@ -12,10 +12,14 @@ CFLAGS = -g -O2 -std=gnu89 -fcommon -DFINGERACCT -DCHECKDOUBLE -DSUICIDE -DOBJLE
 ifeq ($(shell uname -s),Darwin)
 CFLAGS += -Wno-error=implicit-function-declaration -Wno-error=return-mismatch -Wno-error=incompatible-function-pointer-types
 UNIT_GC_FLAGS = -Wl,-dead_strip
-UNIT_LEGACY_WARN_FLAGS = -Wno-error=implicit-function-declaration -Wno-error=return-mismatch
+	UNIT_LEGACY_WARN_FLAGS = -Wno-error=implicit-function-declaration -Wno-error=return-mismatch
+	CDTO_V1_TEST_WARN_FLAGS = -Wno-deprecated-non-prototype
+	DECODER_ASAN_OPTIONS = detect_leaks=0:halt_on_error=1
 else
-UNIT_GC_FLAGS = -Wl,--gc-sections
-UNIT_LEGACY_WARN_FLAGS =
+	UNIT_GC_FLAGS = -Wl,--gc-sections
+	UNIT_LEGACY_WARN_FLAGS =
+	CDTO_V1_TEST_WARN_FLAGS =
+	DECODER_ASAN_OPTIONS = detect_leaks=1:halt_on_error=1
 endif
 
 LIBS = -lm
@@ -37,7 +41,7 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
-	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o
+	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_recovery.o
 
 $(OUTFILE): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OBJECTS) -o $(OUTFILE) $(LIBS) $(EXTRA_LIBS)
@@ -62,6 +66,7 @@ unit-test:
 	/tmp/muhan-unit/runtime_path_test
 	$(CC) -std=gnu89 -fcommon -I. -Dwrite=serializer_test_write ../tests/unit/files1_serializer_test.c files1.c -o /tmp/muhan-unit/files1_serializer_test
 	/tmp/muhan-unit/files1_serializer_test
+	$(MAKE) files1-decoder-test
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/files2_load_obj_test.c files2.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files2_load_obj_test
 	/tmp/muhan-unit/files2_load_obj_test
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -DMUHAN_UPDATE_SCHEDULE_TEST $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/update_schedule_test.c update.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/update_schedule_test
@@ -70,8 +75,64 @@ unit-test:
 	/tmp/muhan-unit/player_recovery_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/trusted_admission_test.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/trusted_admission_test
 	/tmp/muhan-unit/trusted_admission_test
-	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_admission_test.c onboarding_admission.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/onboarding_admission_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_admission_test.c onboarding_admission.c onboarding_session.c onboarding_receipt.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/onboarding_admission_test
 	/tmp/muhan-unit/onboarding_admission_test
+	python3 ../tests/unit/onboarding_credential_lifecycle_test.py
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_receipt_test.c onboarding_receipt.c resource_path.c -o /tmp/muhan-unit/onboarding_receipt_test
+	/tmp/muhan-unit/onboarding_receipt_test
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_recovery_test.c onboarding_recovery.c resource_path.c utf8_text.c -o /tmp/muhan-unit/onboarding_recovery_test
+	/tmp/muhan-unit/onboarding_recovery_test
+	$(MAKE) cdto-v1-test
+	$(MAKE) object-v1-test
+	$(MAKE) creature-v1-test
+	$(MAKE) character-save-journal-test
+
+character-save-journal-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DCHARACTER_SAVE_JOURNAL_TESTING -I. ../tests/unit/character_save_journal_test.c character_save_journal.c player_path.c resource_path.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_test
+	/tmp/muhan-unit/character_save_journal_test
+
+character-save-journal-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DCHARACTER_SAVE_JOURNAL_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_test.c character_save_journal.c player_path.c resource_path.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_sanitizer_test
+
+files1-decoder-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -DPLAYER_DECODER_TEST_HOOK -Dread=decoder_test_read -fsanitize=address,undefined -fno-omit-frame-pointer -c files1.c -o /tmp/muhan-unit/files1_decoder_files1.o
+	$(CC) -std=gnu89 -fcommon -I. -fsanitize=address,undefined -fno-omit-frame-pointer -c ../tests/unit/files1_decoder_test.c -o /tmp/muhan-unit/files1_decoder_test.o
+	$(CC) -fsanitize=address,undefined /tmp/muhan-unit/files1_decoder_files1.o /tmp/muhan-unit/files1_decoder_test.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files1_decoder_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/files1_decoder_test
+
+cdto-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/cdto_v1_test.c cdto_v1.c -o /tmp/muhan-unit/cdto_v1_test
+	/tmp/muhan-unit/cdto_v1_test
+
+cdto-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/cdto_v1_test.c cdto_v1.c -o /tmp/muhan-unit/cdto_v1_sanitizer_test
+	/tmp/muhan-unit/cdto_v1_sanitizer_test
+
+object-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/object_v1_test.c object_v1.c cdto_v1.c -o /tmp/muhan-unit/object_v1_test
+	/tmp/muhan-unit/object_v1_test
+
+object-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/object_v1_test.c object_v1.c cdto_v1.c -o /tmp/muhan-unit/object_v1_sanitizer_test
+	/tmp/muhan-unit/object_v1_sanitizer_test
+
+creature-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/creature_v1_test.c creature_v1.c cdto_v1.c -o /tmp/muhan-unit/creature_v1_test
+	/tmp/muhan-unit/creature_v1_test
+
+creature-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/creature_v1_test.c creature_v1.c cdto_v1.c -o /tmp/muhan-unit/creature_v1_sanitizer_test
+	/tmp/muhan-unit/creature_v1_sanitizer_test
 
 port:
 	rm -f io.o main.o;

@@ -19,6 +19,79 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 절대적인 “버그 0%”를 증명할 수는 없다. 대신 **검증되지 않은 기능은 권위
 경로로 전환하지 않는다**는 규칙을 강제한다.
 
+## 현재 실행 상태 (2026-09-02)
+
+| 범위 | 상태 | 검증/잔여 gate |
+| --- | --- | --- |
+| M0 연구·계약 | 현재 검증 범위 고정 | ADR, DB/Rust/Web 연구와 공통 `MUD1O` fixture가 branch에 고정됨 |
+| M1 C·Gateway·Web·SQL 구현 | 로컬 통합 GREEN, testnet 미배포 | 실제 C+Gateway+PostgREST+PostgreSQL 17 stack과 browser 8/8 시나리오가 GREEN. gateway 75/75, reconciler 18/18, importer 15 pass·2 skip, web 17/17 단위 결과도 GREEN. testnet 승격 gate는 아직 남아 있음 |
+| durable onboarding receipt | 컴포넌트 GREEN | `pending → saved → committed` fsync 기록, startup 복구, sanitizer, C player `0600`/shard `0700` writer와 Helm PVC 권한 계약 GREEN |
+| out-of-band reconciler | 컴포넌트 GREEN | no-follow 파일/hash와 exact service RPC, committed 무변이, process-local 중복 억제, aggregate-only polling 및 공격 테스트 GREEN |
+| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 기존 tmpfs PostgreSQL 17 test container에서 bootstrap+020..080을 두 번 적용하고 SQL contracts, claim challenge 및 session/renew/onboarding lock-expiry harness를 직접 GREEN으로 검증. CI도 080을 두 번 적용하도록 고정 |
+| testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 14/14 및 `helm lint` GREEN. 080 migration은 CI에서 060/070 뒤 두 번 적용하도록 고정했고 cluster에는 적용하지 않음; 이 저장소에는 chart 소스가 없음 |
+| legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 15 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
+| C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
+| M2 CDTO/Rust | flat ObjectV1+CreatureV1 core GREEN, graph pending | clone-only flat `ObjectV1`·`CreatureV1`와 CDTO envelope unit이 GREEN. recursive inventory/parent graph와 live path 연결은 아직 pending |
+| M3 writer/inventory | journal test-only GREEN, live 연결 pending | writer inventory와 synthetic intent journal unit/ASan은 GREEN이나 `save_ply`·bank·DB dual-write·shadow는 연결하지 않음. `writer_instance_id`/`character_id`/`request_sha256`/staging artifact binding, `LEGACY_PUBLISHED` 전 live/staged posthash 확인, descriptor-walk ancestry가 선행 blocker |
+
+현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
+testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
+importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통과하기 전에는
+`onboarding.enabled`를 켜거나 testnet에 배포하지 않는다.
+
+1. clean checkout에서 실제 C+Gateway+PostgREST+PG17 stack E2E 및 CI 재현
+2. testnet PVC에서 C player 파일/샤드의 `0600`/`0700` 권한과 backup/restore 확인
+3. feature-off 배포 뒤 실제 ingress에서 desktop/mobile smoke와 rollback 확인
+4. 전체 ASan/UBSan, secret/artifact scan 및 공급망 검증
+5. M3 선행 blocker 구현 뒤에만 dual-write shadow 관찰
+
+### 최근 TDD 결함 수정과 회귀 증거
+
+현재 검증에서 확인한 여러 실제 결함은 각각 RED를 먼저 고정한 뒤 최소 수정과
+회귀 테스트로 GREEN을 확인했다. 이 목록은 해당 경로의 검증 결과이지 전체 시스템의
+무결성을 보증하는 표현이 아니다.
+
+- `40001` 재시도: serializable transaction이 serialization failure를 받으면 같은
+  immutable batch를 새 client·새 transaction으로 최대 3회 재시도한다. 짧은 고정
+  backoff를 사용하며, validation/conflict와 기타 오류는 재시도하지 않는다. 실제
+  Linux + PostgreSQL 17 importer 통합 테스트가 GREEN이다.
+- stale clock: advisory/row lock을 기다린 뒤 transaction-start `now()`가 만료된
+  CHALLENGE/final CLAIM을 통과시키던 RED를 재현했다. 두 RPC 모두 lock 획득 뒤
+  `clock_timestamp()`를 다시 읽도록 수정했고, lock-wait harness에서 만료 후
+  `P0001` 거부와 무변이를 확인했다.
+- password state: 비밀번호 prompt의 echo/clear·취소·재접속 상태 전이를 테스트하고
+  자동 재전송과 secret artifact 기록이 없음을 확인했다.
+- symlink/errno: importer scanner의 no-follow symlink, non-regular file, short
+  read와 errno 경계를 TDD로 고정해 모호한 파일을 import하지 않도록 했다.
+- bounded player decoder: 인터넷-facing player load에 depth 64·전체 object 8192
+  budget, short/EINTR read, partial pointer scrub, PLAYER/fd invariant, 각 C-string
+  NUL, exact EOF와 clean-tree 실패를 고정했다. ASan/UBSan decoder unit과 일반 C
+  unit이 GREEN이며, COMPRESS의 length-less decoder 경로는 player load에서
+  fail-closed다.
+- save journal durability: temp `close()` 오류에서 descriptor를 두 번 닫을 수 있던
+  소유권 경계와, canonical hard-link 뒤 unlink 실패 시 보존해야 할 staging을 generic
+  cleanup이 지우던 경로를 fault-injection RED로 고정했다. fd는 한 번만 relinquish하고
+  `RECONCILE_REQUIRED` staging hard-link는 검사할 수 있게 유지한다. 이 저널은 여전히
+  synthetic/test-only이며 live save 경로에는 연결하지 않는다.
+
+### 현재 검증 snapshot (2026-09-02)
+
+실행한 검증의 숫자와 범위를 다음처럼 고정한다. 단위 테스트의 skip은 실패가
+아니지만, 이를 전체 기능 통과로 확대 해석하지 않는다.
+
+| 계층 | 결과 | 근거 |
+| --- | --- | --- |
+| Browser E2E | 8/8 pass (13.6s) | Playwright desktop/mobile, claim password prompt·clear·retry·normal close 포함 |
+| Gateway | 75/75 pass, 0 cancelled | `pnpm --filter @muhan/gateway test` |
+| Reconciler | 18/18 pass | `pnpm --filter @muhan/onboarding-reconciler test` |
+| Importer | 15 pass, 2 skip, 0 fail | `pnpm --filter @muhan/character-inventory-importer test`; PG17 retry는 disposable CI 계약 |
+| Web | 17/17 pass | `pnpm --filter @muhan/web test` |
+| C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
+| Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
+| M3 journal | pass, test-only | `make -C src character-save-journal-test CC=gcc`; live writer와 미연결 |
+| PG migration 080 | local PG17 pass + CI contract | bootstrap+020..080 두 번 적용, SQL contracts와 두 lock-expiry script 직접 통과; CI도 동일 순서를 고정 |
+| Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
+
 ## 연구 근거
 
 - [영속성·Supabase 이관 연구](persistence-supabase.md)
@@ -131,13 +204,20 @@ full/recovery queue는 active로 전환하지 않는다.
 
 ```text
 xterm legacy name
-  → C canonical load
-  → xterm old game password, Telnet echo off
+  → C canonical load + player-file SHA-256
+  → C: MUD1O CHALLENGE|<name_hex>|<file_sha256>
+  → Gateway: service-only challenge RPC
+  → DB: actor/correlation/character/SHA exact binding, target-wide 3회/15분,
+        90초 allow ledger
+  → Gateway: MUD1O ALLOW
+  → xterm old game password, Telnet echo off (ALLOW 전에는 prompt 금지)
   → C가 기존 player password를 정확히 한 번 비교
+  → C가 player file SHA-256을 다시 계산해 challenge와 exact match
   → C: MUD1O VERIFIED|<name_hex>|<file_sha256>
-  → Gateway: claim_legacy_game_character RPC, same correlation
+  → Gateway: ledger-bound final claim RPC, same actor/correlation/character/SHA
+  → DB: challenge 미사용·미만료와 imported_file_sha256를 row lock 안에서 exact match
   → Gateway: MUD1O CLAIMED|<character_uuid>
-  → C authoritative reload/init
+  → C claim socket close
   → Browser roster refresh → existing MUD1 admission
 ```
 
@@ -154,12 +234,20 @@ wrong password, missing/corrupt/IO error, already owned는 browser에 같은 일
   - `correlation_id`, actor, mode, status, expiry, consumed/finalized timestamps
 - `private.game_character_provisioning_requests`
   - character, canonical name, expected/saved digest, format, reconcile state
+- `private.game_character_claim_attempts`
+  - correlation, actor, character, exact imported-file digest, 90초 allow/claimed timestamps
+  - 같은 target은 actor가 달라도 15분에 세 번만 password prompt까지 진입
 - service-only RPC
   - `begin_game_character_onboarding`
   - `begin_game_character_provisioning`
   - `finalize_game_character_provisioning`
   - `reconcile_game_character_provisioning`
-- 기존 `claim_legacy_game_character`는 C 검증 뒤에만 호출한다.
+  - `challenge_legacy_game_character_onboarding`
+- `claim_legacy_game_character_onboarding`은 선행 challenge와 C가 재검증한 exact
+  player SHA-256을 `imported_file_sha256`과 같은 row lock 안에서 비교한 뒤에만
+  ownership을 옮긴다.
+- 이전 4인자 `claim_legacy_game_character` primitive는 service role execute를 회수해
+  fingerprint 검사를 우회할 수 없게 한다.
 
 브라우저는 onboarding/private row와 RPC를 읽거나 호출하지 못한다. service role도
 table CRUD를 받지 않고 narrow RPC execute만 받는다. 같은 correlation+payload retry는
@@ -273,24 +361,30 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
 
 ### M1 웹 onboarding
 
-- 신규 provisioning과 기존 claim을 실제 xterm에서 수행
-- 저장/claim DB 확정 전 gameplay 차단
-- 실제 C/Gateway/Postgres/Playwright desktop+mobile 통과
-- password/token/ticket artifact leak 0
+- 상태: 로컬 component와 실제 C/Gateway/PostgREST/PostgreSQL 17 stack GREEN
+- browser 8/8 시나리오와 lock-wait TTL regression GREEN
+- gateway 75/75, reconciler 18/18, importer 15 pass·2 skip, web 17/17 단위 결과 GREEN
+- 신규 provisioning과 기존 claim은 저장/claim DB 확정 전 gameplay를 차단
+- testnet에는 아직 배포하지 않았고 `onboarding.enabled`는 OFF
+- 남은 gate는 clean-checkout 재검증, backup/rollback, testnet shadow 관찰
 
 ### M2 CDTO player/inventory clone-only
 
-- ABI fingerprint와 C exporter/importer
-- `rust/muhan-core-dto` canonical codec
-- sanitized golden/property/fuzz/differential suite
+- 상태: flat `ObjectV1`+`CreatureV1` core와 envelope unit GREEN, clone-only 경계 유지
+- `rust/muhan-core-dto` canonical codec와 sanitized golden/property/fuzz 범위
+- recursive inventory/parent graph와 C↔Rust graph differential은 pending
 - production read/write 변화 없음
 
 ### M3 character/bank dual-write shadow
 
-- direct writer facade coverage
-- fsynced intent journal + idempotent DB receipt
-- economy concurrency/failure injection
-- 7일 zero mismatch
+- 상태: writer inventory와 synthetic journal test-only GREEN; live 연결 pending
+- direct writer 범위와 inventory 목록만 정리
+- journal에는 아직 `writer_instance_id`/`character_id`/`request_sha256`/staging artifact
+  binding이 없고, `LEGACY_PUBLISHED` 전 live/staged posthash 확인과 descriptor-walk
+  ancestry도 필요
+- fsynced intent journal의 live writer 연결, idempotent DB receipt, economy failure
+  injection은 pending
+- shadow 관찰과 cutover 조건은 아직 시작하지 않음
 
 ### M4 room/social/timer 도메인 확장
 

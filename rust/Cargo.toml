@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "muhan-core-dto",
   "muhan-resource-index",
   "muhan-resource-ffi",
 ]

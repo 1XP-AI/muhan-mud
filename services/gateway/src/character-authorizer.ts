@@ -1,6 +1,9 @@
 import type { GatewayConfig } from './config.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const MAX_RPC_JSON_BYTES = 64 * 1024
+const MAX_RPC_TIMEOUT_MS = 5_000
+const LEASE_KEYS = ['character_id', 'session_id', 'expires_at', 'owner_user_id', 'lifecycle', 'legacy_name_key'] as const
 
 export interface BeginCharacterSessionRequest {
   actorUserId: string
@@ -43,12 +46,12 @@ export class CharacterAuthorizationError extends Error {
 }
 
 interface LeaseResponse {
-  character_id?: unknown
-  session_id?: unknown
-  expires_at?: unknown
-  owner_user_id?: unknown
-  lifecycle?: unknown
-  legacy_name_key?: unknown
+  character_id: unknown
+  session_id: unknown
+  expires_at: unknown
+  owner_user_id: unknown
+  lifecycle: unknown
+  legacy_name_key: unknown
 }
 
 function parseLeaseExpiry(value: unknown, expected: Date): number {
@@ -74,15 +77,43 @@ function isStrictUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value)
 }
 
-async function parseArray(response: Response): Promise<unknown[]> {
-  let body: unknown
-  try {
-    body = await response.json()
-  } catch {
-    throw new CharacterAuthorizationError()
+function validGatewayInstanceId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value)
+}
+
+function validLeaseExpiryInput(value: unknown, now: number): value is Date {
+  if (!(value instanceof Date)) return false
+  const expiresAtMs = value.getTime()
+  return Number.isFinite(expiresAtMs) && expiresAtMs > now && expiresAtMs <= now + 5 * 60_000
+}
+
+function oneLeaseRow(body: unknown): LeaseResponse {
+  if (!Array.isArray(body) || body.length !== 1 || !body[0] || typeof body[0] !== 'object' || Array.isArray(body[0])) throw new CharacterAuthorizationError()
+  const row = body[0] as Record<string, unknown>
+  const keys = Object.keys(row)
+  if (keys.length !== LEASE_KEYS.length || keys.some((key) => !LEASE_KEYS.includes(key as typeof LEASE_KEYS[number]))) throw new CharacterAuthorizationError()
+  return row as unknown as LeaseResponse
+}
+
+async function jsonResponse(response: Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type')
+  const contentLength = response.headers.get('content-length')
+  if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType) || (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_RPC_JSON_BYTES))) throw new CharacterAuthorizationError()
+  const reader = response.body?.getReader()
+  if (!reader) throw new CharacterAuthorizationError()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const next = await reader.read()
+    if (next.done) break
+    total += next.value.byteLength
+    if (total > MAX_RPC_JSON_BYTES) throw new CharacterAuthorizationError()
+    chunks.push(next.value)
   }
-  if (!Array.isArray(body)) throw new CharacterAuthorizationError()
-  return body
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  return JSON.parse(new TextDecoder().decode(bytes))
 }
 
 /**
@@ -94,15 +125,18 @@ async function parseArray(response: Response): Promise<unknown[]> {
 export class SupabaseCharacterAuthorizer implements CharacterAuthorizer {
   private readonly internalRestUrl: string
   private readonly serviceRoleKey: string
+  private readonly rpcTimeoutMs: number
 
-  constructor(config: GatewayConfig, private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(config: GatewayConfig, private readonly fetchImpl: typeof fetch = fetch, private readonly now: () => number = Date.now) {
     const required = requiredConfig(config)
     this.internalRestUrl = required.supabaseInternalRestUrl
     this.serviceRoleKey = required.supabaseServiceRoleKey
+    this.rpcTimeoutMs = Math.min(config.authTimeoutMs, MAX_RPC_TIMEOUT_MS)
   }
 
   async beginSession(request: BeginCharacterSessionRequest): Promise<AuthorizedCharacter> {
-    if (!isStrictUuid(request.actorUserId) || !isStrictUuid(request.characterId) || !isStrictUuid(request.sessionId)) {
+    if (!isStrictUuid(request.actorUserId) || !isStrictUuid(request.characterId) || !isStrictUuid(request.sessionId) ||
+      !validGatewayInstanceId(request.gatewayInstanceId) || !validLeaseExpiryInput(request.expiresAt, this.now())) {
       throw new CharacterAuthorizationError()
     }
 
@@ -117,44 +151,18 @@ export class SupabaseCharacterAuthorizer implements CharacterAuthorizer {
   }
 
   async endSession(sessionId: string, gatewayInstanceId: string): Promise<void> {
-    if (!isStrictUuid(sessionId) || gatewayInstanceId.trim().length === 0 || gatewayInstanceId.length > 128 ||
-        /[\x00-\x1f\x7f]/.test(gatewayInstanceId)) return
-    let response: Response
-    try {
-      response = await this.fetchImpl(new URL('/rpc/end_game_character_session', this.internalRestUrl), {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({
-          p_session_id: sessionId,
-          p_gateway_instance_id: gatewayInstanceId
-        })
-      })
-    } catch {
-      throw new CharacterAuthorizationError()
-    }
-    if (!response.ok) throw new CharacterAuthorizationError()
+    if (!isStrictUuid(sessionId) || !validGatewayInstanceId(gatewayInstanceId)) throw new CharacterAuthorizationError()
+    const result = await this.rpc('end_game_character_session', { p_session_id: sessionId, p_gateway_instance_id: gatewayInstanceId })
+    if (typeof result !== 'boolean') throw new CharacterAuthorizationError()
   }
 
   async renewSession(request: RenewCharacterSessionRequest): Promise<RenewedCharacterSession> {
-    if (!isStrictUuid(request.sessionId)) throw new CharacterAuthorizationError()
-    let response: Response
-    try {
-      response = await this.fetchImpl(new URL('/rpc/renew_game_character_session', this.internalRestUrl), {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({
-          p_session_id: request.sessionId,
-          p_gateway_instance_id: request.gatewayInstanceId,
-          p_expires_at: request.expiresAt.toISOString()
-        })
-      })
-    } catch {
-      throw new CharacterAuthorizationError()
-    }
-    if (!response.ok) throw new CharacterAuthorizationError()
-    const rows = await parseArray(response)
-    if (rows.length !== 1 || !rows[0] || typeof rows[0] !== 'object') throw new CharacterAuthorizationError()
-    const row = rows[0] as LeaseResponse
+    if (!isStrictUuid(request.sessionId) || !validGatewayInstanceId(request.gatewayInstanceId) || !validLeaseExpiryInput(request.expiresAt, this.now())) throw new CharacterAuthorizationError()
+    const row = oneLeaseRow(await this.rpc('renew_game_character_session', {
+      p_session_id: request.sessionId,
+      p_gateway_instance_id: request.gatewayInstanceId,
+      p_expires_at: request.expiresAt.toISOString()
+    }))
     if (row.session_id !== request.sessionId || !isStrictUuid(row.owner_user_id) ||
       !isStrictUuid(row.character_id) || typeof row.legacy_name_key !== 'string' ||
       row.lifecycle !== 'active') throw new CharacterAuthorizationError()
@@ -170,26 +178,31 @@ export class SupabaseCharacterAuthorizer implements CharacterAuthorizer {
   }
 
   private async callLeaseRpc(request: BeginCharacterSessionRequest): Promise<LeaseResponse> {
-    let response: Response
+    return oneLeaseRow(await this.rpc('begin_game_character_session', {
+      p_actor_user_id: request.actorUserId,
+      p_character_id: request.characterId,
+      p_session_id: request.sessionId,
+      p_gateway_instance_id: request.gatewayInstanceId,
+      p_expires_at: request.expiresAt.toISOString()
+    }))
+  }
+
+  private async rpc(name: string, body: Record<string, unknown>): Promise<unknown> {
+    const controller = new AbortController()
+    // Keep this short deadline referenced: it is the authoritative lifecycle
+    // handle when the fetch implementation has no other active socket/timer.
+    const timer = setTimeout(() => controller.abort(), this.rpcTimeoutMs)
     try {
-      response = await this.fetchImpl(new URL('/rpc/begin_game_character_session', this.internalRestUrl), {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify({
-          p_actor_user_id: request.actorUserId,
-          p_character_id: request.characterId,
-          p_session_id: request.sessionId,
-          p_gateway_instance_id: request.gatewayInstanceId,
-          p_expires_at: request.expiresAt.toISOString()
-        })
+      const response = await this.fetchImpl(new URL(`/rpc/${name}`, this.internalRestUrl), {
+        method: 'POST', redirect: 'error', signal: controller.signal, headers: this.headers(), body: JSON.stringify(body)
       })
+      if (!response.ok) throw new CharacterAuthorizationError()
+      return await jsonResponse(response)
     } catch {
       throw new CharacterAuthorizationError()
+    } finally {
+      clearTimeout(timer)
     }
-    if (!response.ok) throw new CharacterAuthorizationError()
-    const leases = await parseArray(response)
-    if (leases.length !== 1 || !leases[0] || typeof leases[0] !== 'object') throw new CharacterAuthorizationError()
-    return leases[0] as LeaseResponse
   }
 
   private headers(): Record<string, string> {

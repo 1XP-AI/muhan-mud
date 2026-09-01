@@ -4,6 +4,7 @@ import fixture from '../../../tests/fixtures/onboarding_protocol_v1.json' with {
 import {
   OnboardingProtocolError,
   OnboardingControlLineParser,
+  OnboardingControlDemultiplexer,
   assertLegalOnboardingTransition,
   canTransitionOnboardingState,
   createOnboardingTicket,
@@ -68,13 +69,37 @@ test('parses fragmented and coalesced bounded C control lines', () => {
   assert.throws(() => parser.push('MUD1O ' + 'x'.repeat(2048)), OnboardingProtocolError)
 })
 
+test('parses claim challenge controls and keeps ALLOW private to the C lane', () => {
+  const parser = new OnboardingControlLineParser()
+  const sha = 'b'.repeat(64)
+  assert.deepEqual(parser.push(`MUD1O CHALLENGE|416c696365|${sha}\nMUD1O ALLOW\n`), [
+    { type: 'CHALLENGE', nameHex: '416c696365', fileSha256: sha },
+    { type: 'ALLOW' },
+  ])
+  const demux = new OnboardingControlDemultiplexer()
+  const result = demux.push(Buffer.from(`MUD1O CHALLENGE|416c696365|${sha}\n`))
+  assert.deepEqual(result.controls, [{ type: 'CHALLENGE', nameHex: '416c696365', fileSha256: sha }])
+  assert.deepEqual(result.game, [])
+})
+
+test('demultiplexes fragmented private controls without leaking them into game bytes', () => {
+  const parser = new OnboardingControlDemultiplexer()
+  assert.deepEqual(parser.push(Buffer.from('prompt MUD1')).game.map(String), ['prompt '])
+  const result = parser.push(Buffer.from(`O SAVED|${actor}|${'a'.repeat(64)}|player-v1\nnext`))
+  assert.deepEqual(result.controls, [{ type: 'SAVED', characterId: actor, fileSha256: 'a'.repeat(64), storageFormat: 'player-v1' }])
+  assert.deepEqual(result.game.map(String), ['next'])
+})
+
 test('enforces explicit onboarding state transitions', () => {
+  assert.equal(canTransitionOnboardingState('CHALLENGE', 'ALLOW'), true)
+  assert.equal(canTransitionOnboardingState('ALLOW', 'VERIFIED'), true)
   assert.equal(canTransitionOnboardingState('RESERVE', 'RESERVED'), true)
   assert.equal(canTransitionOnboardingState('VERIFIED', 'CLAIMED'), true)
   assert.equal(canTransitionOnboardingState('SAVED', 'COMMIT'), true)
   assert.equal(canTransitionOnboardingState('ERR', 'ABORT'), true)
   assert.equal(canTransitionOnboardingState('RESERVED', 'COMMIT'), false)
   assert.equal(canTransitionOnboardingState('RESERVED', 'VERIFIED'), false)
+  assert.equal(canTransitionOnboardingState('VERIFIED', 'ALLOW'), false)
   assert.equal(canTransitionOnboardingState('RESERVED', 'CLAIMED'), false)
   assert.equal(canTransitionOnboardingState('CLAIMED', 'SAVED'), false)
   assert.throws(() => assertLegalOnboardingTransition('RESERVED', 'COMMIT'), OnboardingProtocolError)

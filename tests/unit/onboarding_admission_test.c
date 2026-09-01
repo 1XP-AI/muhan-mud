@@ -1,8 +1,14 @@
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "onboarding_admission.h"
+#include "onboarding_session.h"
 #include "trusted_admission.h"
+#include "mstruct.h"
 
 #define TEST_SECRET "0123456789abcdef0123456789abcdef"
 #define FIXTURE_NOW 1788268990L
@@ -190,17 +196,40 @@ static int test_ticket_rejections(void)
     return failed;
 }
 
+static int test_inprocess_replay(void)
+{
+    static const char provision_ticket[] =
+        "MUD1O|P|1788269000|00112233445566778899aabbccddeeff|"
+        "11111111-1111-4111-8111-111111111111|"
+        "22222222-2222-4222-8222-222222222222|"
+        "b9c4f1e6bf4d17608c7bdfca6cd5d87a79b42b13c00cff731bb99d1d7200d9fe\n";
+    onboarding_admission_ticket ticket;
+    int failed = 0;
+
+    onboarding_session_reset_for_test();
+    failed += expect(onboarding_session_validate_ticket(provision_ticket, TEST_SECRET,
+                     FIXTURE_NOW, &ticket) == 0,
+                     "runtime MUD1O validation must consume a valid nonce in-process");
+    failed += expect(onboarding_session_validate_ticket(provision_ticket, TEST_SECRET,
+                     FIXTURE_NOW, &ticket) < 0,
+                     "a runtime MUD1O ticket must be rejected after one use");
+    onboarding_session_reset_for_test();
+    return failed;
+}
+
 static int test_controls(void)
 {
     static const char c_lines[][128] = {
         "MUD1O OK\n",
         "MUD1O RESERVE|416c696365\n",
+        "MUD1O CHALLENGE|416c696365|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         "MUD1O VERIFIED|416c696365|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         "MUD1O SAVED|11111111-1111-4111-8111-111111111111|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|player-v1\n",
         "MUD1O ERR\n"
     };
     static const char gateway_lines[][64] = {
         "MUD1O RESERVED|11111111-1111-4111-8111-111111111111\n",
+        "MUD1O ALLOW\n",
         "MUD1O CLAIMED|22222222-2222-4222-8222-222222222222\n",
         "MUD1O COMMIT\n",
         "MUD1O ABORT\n"
@@ -214,13 +243,13 @@ static int test_controls(void)
     char oversized[ONBOARDING_ADMISSION_MAX_LINE + 1];
     int i, fence_ok, failed = 0;
 
-    for(i=0; i<5; i++) {
+    for(i=0; i<6; i++) {
         failed += expect(onboarding_parse_c_control(c_lines[i], &control) == 0 &&
                          onboarding_format_c_control(output, sizeof(output), &control) == 0 &&
                          strcmp(output, c_lines[i]) == 0,
                          "every fixture C-to-Gateway control must parse and format exactly");
     }
-    for(i=0; i<4; i++) {
+    for(i=0; i<5; i++) {
         failed += expect(onboarding_parse_gateway_control(gateway_lines[i], &control) == 0 &&
                          onboarding_format_gateway_control(output, sizeof(output), &control) == 0 &&
                          strcmp(output, gateway_lines[i]) == 0,
@@ -229,9 +258,11 @@ static int test_controls(void)
     failed += expect(onboarding_parse_c_control("MUD1O OK\r\n", &control) < 0 &&
                      onboarding_parse_c_control("MUD1O RESERVE|416c696365|extra\n", &control) < 0 &&
                      onboarding_parse_c_control("MUD1O VERIFIED|416c696365|ABC\n", &control) < 0 &&
+                     onboarding_parse_c_control("MUD1O CHALLENGE|416c696365|claim-secret\n", &control) < 0 &&
                      onboarding_parse_c_control("MUD1O SAVED|11111111-1111-4111-8111-111111111111|"
                                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|bad value\n", &control) < 0 &&
                      onboarding_parse_gateway_control("MUD1O COMMIT", &control) < 0 &&
+                     onboarding_parse_gateway_control("MUD1O ALLOW|extra\n", &control) < 0 &&
                      onboarding_parse_gateway_control("MUD1O CLAIMED|11111111-1111-4111-8111-111111111111|x\n", &control) < 0,
                      "control parser must reject CRLF, unknown fields, and malformed values");
 
@@ -299,11 +330,31 @@ static int test_state_guard(void)
     ticket.mode = ONBOARDING_ADMISSION_MODE_CLAIM;
     failed += expect(onboarding_state_accept_ticket(&state, &ticket) == 0,
                      "claim ticket must be accepted from new state");
+    onboarding_parse_c_control("MUD1O CHALLENGE|416c696365|"
+                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", &control);
+    failed += expect(onboarding_state_apply_c_control(&state, &control) == 0 &&
+                     state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW,
+                     "claim must challenge before any password can be accepted");
+    failed += expect(onboarding_state_apply_c_control(&state, &control) < 0 &&
+                     state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW,
+                     "duplicate challenge must fail closed without changing state");
+    onboarding_parse_c_control("MUD1O VERIFIED|416c696365|"
+                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", &control);
+    failed += expect(onboarding_state_apply_c_control(&state, &control) < 0 &&
+                     state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW,
+                     "VERIFIED before ALLOW must be rejected");
+    onboarding_parse_gateway_control("MUD1O ALLOW\n", &control);
+    failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
+                     state == ONBOARDING_STATE_CLAIM_PASSWORD_READY,
+                     "only ALLOW enables the single password comparison");
+    failed += expect(onboarding_state_apply_gateway_control(&state, &control) < 0 &&
+                     state == ONBOARDING_STATE_CLAIM_PASSWORD_READY,
+                     "duplicate ALLOW must be rejected");
     onboarding_parse_c_control("MUD1O VERIFIED|416c696365|"
                                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", &control);
     failed += expect(onboarding_state_apply_c_control(&state, &control) == 0 &&
                      state == ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED,
-                     "claim must verify before claimed response");
+                     "claim must verify only after ALLOW and password comparison");
     onboarding_parse_gateway_control("MUD1O CLAIMED|22222222-2222-4222-8222-222222222222\n", &control);
     failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
                      state == ONBOARDING_STATE_READY,
@@ -326,13 +377,141 @@ static int test_state_guard(void)
     return failed;
 }
 
+static int test_claim_window_and_file_mutation(void)
+{
+    char root[] = "/tmp/muhan-claim-digest.XXXXXX";
+    char player_dir[1024], path[1024], symlink_target[1024];
+    char shard_dir[1024], outside_player[1024], outside_shard[1024];
+    char *slash, *shard_name;
+    char before[ONBOARDING_ADMISSION_SHA256_HEX_LEN + 1];
+    char after[ONBOARDING_ADMISSION_SHA256_HEX_LEN + 1];
+    int fd, failed = 0;
+
+    failed += expect(onboarding_session_claim_allow_live(1000, 1000) &&
+                     onboarding_session_claim_allow_live(1000, 1090) &&
+                     !onboarding_session_claim_allow_live(1000, 1091) &&
+                     !onboarding_session_claim_allow_live(0, 1000),
+                     "claim ALLOW must use one fixed 90-second fail-closed window");
+    if(!mkdtemp(root) || setenv("MUHAN_HOME", root, 1) != 0) return failed + 1;
+    snprintf(player_dir, sizeof(player_dir), "%s/player", root);
+    if(mkdir(player_dir, 0700) != 0 || player_path_ensure_dir("Alice") != 0 ||
+       player_path_from_name("Alice", path, sizeof(path)) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if(fd < 0 || write(fd, "before", 6) != 6 || close(fd) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", before) == 0,
+                     "challenge digest must read the canonical player file");
+    fd = open(path, O_WRONLY | O_TRUNC, 0600);
+    if(fd < 0 || write(fd, "after", 5) != 5 || close(fd) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", after) == 0 &&
+                     strcmp(before, after) != 0,
+                     "post-password digest must detect a player-file mutation");
+    unlink(path);
+    snprintf(symlink_target, sizeof(symlink_target), "%s/symlink-target", root);
+    fd = open(symlink_target, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if(fd < 0 || write(fd, "outside", 7) != 7 || close(fd) != 0 ||
+       symlink(symlink_target, path) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", after) < 0,
+                     "claim digest must reject a symlinked player file");
+    unlink(path);
+    unlink(symlink_target);
+    snprintf(shard_dir, sizeof(shard_dir), "%s", path);
+    slash = strrchr(shard_dir, '/');
+    if(!slash) { unsetenv("MUHAN_HOME"); return failed + 1; }
+    *slash = 0;
+    shard_name = strrchr(shard_dir, '/');
+    if(!shard_name) { unsetenv("MUHAN_HOME"); return failed + 1; }
+    ++shard_name;
+    if(rmdir(shard_dir) != 0 || rmdir(player_dir) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    snprintf(outside_player, sizeof(outside_player), "%s/outside-player", root);
+    snprintf(outside_shard, sizeof(outside_shard), "%s/%s", outside_player, shard_name);
+    if(mkdir(outside_player, 0700) != 0 || mkdir(outside_shard, 0700) != 0 ||
+       snprintf(symlink_target, sizeof(symlink_target), "%s/Alice", outside_shard) >= (int)sizeof(symlink_target) ||
+       (fd = open(symlink_target, O_WRONLY | O_CREAT | O_TRUNC, 0600)) < 0 ||
+       write(fd, "outside", 7) != 7 || close(fd) != 0 ||
+       symlink(outside_player, player_dir) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", after) < 0,
+                     "claim digest must reject a MUHAN_HOME/player symlink");
+    unlink(player_dir);
+    if(mkdir(player_dir, 0700) != 0 ||
+       symlink(outside_shard, shard_dir) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", after) < 0,
+                     "claim digest must reject an intermediate shard symlink");
+    unlink(shard_dir);
+    if(mkdir(shard_dir, 0700) != 0 ||
+       (fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600)) < 0 ||
+       ftruncate(fd, (off_t)PLAYER_PATH_READ_MAX_BYTES + 1) != 0 || close(fd) != 0) {
+        unsetenv("MUHAN_HOME");
+        return failed + 1;
+    }
+    failed += expect(onboarding_session_file_sha256("Alice", after) < 0,
+                     "claim digest must reject a regular player file above 64MiB");
+    unlink(path);
+    unlink(symlink_target);
+    rmdir(outside_shard);
+    rmdir(outside_player);
+    rmdir(shard_dir);
+    rmdir(player_dir);
+    rmdir(root);
+    unsetenv("MUHAN_HOME");
+    memset(before, 0, sizeof(before));
+    memset(after, 0, sizeof(after));
+    return failed;
+}
+
+static int test_claim_credential_zeroization(void)
+{
+    unsigned char password[sizeof(((creature *)0)->password)];
+    unsigned char input[96];
+    unsigned int i;
+    int failed = 0;
+
+    /* Use shape-only bytes: the unit must never print or retain a credential
+     * fixture while proving that every byte, including trailing capacity, is
+     * erased before the owner is released. */
+    memset(password, 'P', sizeof(password));
+    memset(input, 'I', sizeof(input));
+    onboarding_session_zeroize_claim_memory(password, sizeof(password),
+                                             input, sizeof(input));
+    for(i = 0; i < sizeof(password); i++)
+        failed += expect(password[i] == 0,
+                         "MUD1O claim password storage must be wiped byte-for-byte");
+    for(i = 0; i < sizeof(input); i++)
+        failed += expect(input[i] == 0,
+                         "MUD1O claim input transient must be wiped byte-for-byte");
+    return failed;
+}
+
 int main(void)
 {
     int failed = 0;
     failed += test_fixture_tickets();
     failed += test_ticket_rejections();
+    failed += test_inprocess_replay();
     failed += test_controls();
     failed += test_state_guard();
+    failed += test_claim_window_and_file_mutation();
+    failed += test_claim_credential_zeroization();
     if(failed) return 1;
     puts("onboarding_admission_test: ok");
     return 0;

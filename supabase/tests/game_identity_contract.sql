@@ -193,39 +193,56 @@ insert into public.game_characters (
 );
 
 select pg_temp.assert_true(
-  not has_table_privilege('authenticated', 'public.game_identity_events', 'select')
+  not has_table_privilege('anon', 'public.game_identity_events', 'select')
+  and not has_table_privilege('anon', 'public.game_identity_events', 'insert')
+  and not has_table_privilege('anon', 'public.game_identity_events', 'update')
+  and not has_table_privilege('anon', 'public.game_identity_events', 'delete')
+  and not has_table_privilege('authenticated', 'public.game_identity_events', 'select')
   and not has_table_privilege('authenticated', 'public.game_identity_events', 'insert')
   and not has_table_privilege('authenticated', 'public.game_identity_events', 'update')
   and not has_table_privilege('authenticated', 'public.game_identity_events', 'delete'),
   'browser role must not access audit events'
 );
 select pg_temp.assert_true(
-  not has_table_privilege('authenticated', 'private.game_character_sessions', 'select')
+  not has_table_privilege('anon', 'private.game_character_sessions', 'select')
+  and not has_table_privilege('anon', 'private.game_character_sessions', 'insert')
+  and not has_table_privilege('anon', 'private.game_character_sessions', 'update')
+  and not has_table_privilege('anon', 'private.game_character_sessions', 'delete')
+  and not has_table_privilege('authenticated', 'private.game_character_sessions', 'select')
   and not has_table_privilege('authenticated', 'private.game_character_sessions', 'insert')
   and not has_table_privilege('authenticated', 'private.game_character_sessions', 'update')
   and not has_table_privilege('authenticated', 'private.game_character_sessions', 'delete'),
   'browser role must not access session leases'
 );
 select pg_temp.assert_true(
-  not has_table_privilege('authenticated', 'private.game_character_snapshots', 'select')
+  not has_table_privilege('anon', 'private.game_character_snapshots', 'select')
+  and not has_table_privilege('anon', 'private.game_character_snapshots', 'insert')
+  and not has_table_privilege('anon', 'private.game_character_snapshots', 'update')
+  and not has_table_privilege('anon', 'private.game_character_snapshots', 'delete')
+  and not has_table_privilege('authenticated', 'private.game_character_snapshots', 'select')
   and not has_table_privilege('authenticated', 'private.game_character_snapshots', 'insert')
   and not has_table_privilege('authenticated', 'private.game_character_snapshots', 'update')
   and not has_table_privilege('authenticated', 'private.game_character_snapshots', 'delete'),
   'browser role must not access snapshots'
 );
 select pg_temp.assert_true(
-  not has_table_privilege('authenticated', 'public.game_characters', 'insert')
+  not has_table_privilege('anon', 'public.game_characters', 'select')
+  and not has_table_privilege('anon', 'public.game_characters', 'insert')
+  and not has_table_privilege('anon', 'public.game_characters', 'update')
+  and not has_table_privilege('anon', 'public.game_characters', 'delete')
+  and not has_table_privilege('authenticated', 'public.game_characters', 'insert')
   and not has_table_privilege('authenticated', 'public.game_characters', 'update')
   and not has_table_privilege('authenticated', 'public.game_characters', 'delete'),
   'browser role must not mutate character ownership or lifecycle'
 );
 select pg_temp.assert_true(
-  not has_function_privilege('authenticated', 'public.claim_legacy_game_character(text,text,uuid,uuid)', 'execute'),
-  'browser role must not call claim RPC'
+  not has_function_privilege('anon', 'public.claim_legacy_game_character(text,text,uuid,uuid)', 'execute')
+  and not has_function_privilege('authenticated', 'public.claim_legacy_game_character(text,text,uuid,uuid)', 'execute'),
+  'browser roles must not call claim RPC'
 );
 select pg_temp.assert_true(
-  has_function_privilege('service_role', 'public.claim_legacy_game_character(text,text,uuid,uuid)', 'execute'),
-  'service role must be able to call claim RPC'
+  not has_function_privilege('service_role', 'public.claim_legacy_game_character(text,text,uuid,uuid)', 'execute'),
+  'service role must use the fingerprint-bound onboarding claim wrapper'
 );
 select pg_temp.assert_true(
   not has_function_privilege('authenticated', 'public.begin_game_character_session(uuid,uuid,uuid,text,timestamptz)', 'execute')
@@ -301,7 +318,8 @@ select pg_temp.assert_true(
 );
 reset role;
 
-set local role service_role;
+-- The unexposed primitive remains covered as the migration owner; runtime
+-- service_role access is tested above and must remain revoked.
 select pg_temp.assert_true(
   (select lifecycle = 'active' and owner_user_id = '10000000-0000-0000-0000-000000000001'::uuid
    from public.claim_legacy_game_character(

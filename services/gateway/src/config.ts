@@ -8,6 +8,7 @@ export interface GatewayConfig {
   mudPort: number
   allowedOrigins: ReadonlySet<string>
   requireSecureTransport: boolean
+  mudOnboardingEnabled: boolean
   authDisabled: boolean
   supabaseUrl?: string
   supabaseAuthUrl?: string
@@ -152,6 +153,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   }
 
   const authDisabled = parseBoolean(env.AUTH_DISABLED, 'AUTH_DISABLED')
+  const mudOnboardingEnabled = parseBoolean(env.MUD_ONBOARDING_ENABLED, 'MUD_ONBOARDING_ENABLED')
   if (authDisabled && environment !== 'test') {
     throw new ConfigError('AUTH_DISABLED is permitted only when NODE_ENV=test')
   }
@@ -187,6 +189,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     mudPort: requiredPort(env.MUD_PORT, 'MUD_PORT', 4000),
     allowedOrigins: parseOrigins(env.ALLOWED_ORIGINS, environment),
     requireSecureTransport: environment === 'production',
+    mudOnboardingEnabled,
     authDisabled,
     supabaseUrl,
     supabaseAuthUrl,
