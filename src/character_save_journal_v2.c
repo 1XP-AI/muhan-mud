@@ -290,7 +290,12 @@ const character_save_journal_v2_wire *w; char out[65];
     char envelope[1024], leaf[44]; int n; unsigned char raw[32]; v2_sha256 sha;
     if(!out || !v2_wire_valid(w,0) || character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf)) != 0) return -1;
     n=snprintf(envelope,sizeof(envelope),"m3-shadow-receipt-v2\nworld_id=%s\ncharacter_id=%s\nlegacy_name_key_hex=%s\nlegacy_shard=%s\ncommand_uuid=%s\nwriter_instance_id=%s\nwriter_epoch=%" PRIu64 "\nwriter_revision=%" PRIu64 "\nexpected_state=%s\nexpected_sha256=%s\npost_sha256=%s\nstorage_format=%u\nstaged_leaf=%s\n",w->world_id,w->character_id,w->legacy_name_key_hex,w->legacy_shard,w->command_uuid,w->writer_instance_id,w->writer_epoch,w->writer_revision,v2_expected_name(w->expected_state),w->expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT?"-":w->expected_sha256,w->post_sha256,(unsigned int)w->storage_format,leaf);
-    if(n<0 || (size_t)n>=sizeof(envelope)) return -1; v2_sha_init(&sha); v2_sha_update(&sha,(unsigned char *)envelope,(size_t)n); v2_sha_final(&sha,raw); v2_hex(raw,out); return 0;
+    if(n < 0 || (size_t)n >= sizeof(envelope)) return -1;
+    v2_sha_init(&sha);
+    v2_sha_update(&sha, (unsigned char *)envelope, (size_t)n);
+    v2_sha_final(&sha, raw);
+    v2_hex(raw, out);
+    return 0;
 }
 
 static int v2_dir_ok(fd)
@@ -322,7 +327,10 @@ static int v2_open_root(path)
 const char *path;
 {
     int fd,next; const char *p,*q; char component[128]; size_t n;
-    if(!path || path[0]!='/') return -1; fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC); if(fd<0) return -1; p=path+1;
+    if(!path || path[0] != '/') return -1;
+    fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if(fd < 0) return -1;
+    p = path + 1;
     while(*p) { q=strchr(p,'/'); n=q?(size_t)(q-p):strlen(p); if(!n||n>=sizeof(component)||(n==1&&p[0]=='.')||(n==2&&p[0]=='.'&&p[1]=='.')) { close(fd); return -1; } memcpy(component,p,n); component[n]=0; next=openat(fd,component,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC); close(fd); if(next<0) return -1; fd=next; p=q?q+1:p+n; }
     if(!v2_dir_ok(fd)) { close(fd); return -1; } return fd;
 }
@@ -413,7 +421,11 @@ const char *root; const character_save_journal_v2_wire *w; const void *stage_byt
 { v2_tree t; char request[65], leaf[44], jleaf[48], digest[65], text[V2_TEXT_MAX]; int stage_fd=-1,journal_fd=-1,result=-1,n;
   if(!stage_bytes||stage_length>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES||!v2_wire_valid(w,1)||character_save_journal_v2_request_sha256(w,request)!=0||strcmp(request,w->request_sha256)||character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf))!=0||v2_tree_open(root,w->legacy_shard,&t)!=0)return -1;
   stage_fd=openat(t.stage_fd,leaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC,0600); if(!v2_file_ok(stage_fd)||v2_write_all(stage_fd,stage_bytes,stage_length)!=0||v2_sync(stage_fd,1)!=0)goto out; if(v2_close_file(stage_fd,1)!=0){stage_fd=-1;goto out;}stage_fd=-1;
-  if(v2_sync(t.stage_fd,2)!=0)goto out; stage_fd=openat(t.stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC); if(character_save_journal_v2_hash_fd(stage_fd,digest)!=0||strcmp(digest,w->post_sha256))goto out; if(v2_close_file(stage_fd,2)!=0){stage_fd=-1;goto out;}stage_fd=-1;
+  if(v2_sync(t.stage_fd,2)!=0)goto out;
+  stage_fd=openat(t.stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
+  if(character_save_journal_v2_hash_fd(stage_fd,digest)!=0||strcmp(digest,w->post_sha256))goto out;
+  if(v2_close_file(stage_fd,2)!=0){stage_fd=-1;goto out;}
+  stage_fd=-1;
   n=snprintf(jleaf,sizeof(jleaf),"%s.prepared",w->command_uuid); if(n<0||(size_t)n>=sizeof(jleaf)||v2_format(w,text,sizeof(text))<0)goto out; journal_fd=openat(t.journal_fd,jleaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC,0600); if(!v2_file_ok(journal_fd)||v2_write_all(journal_fd,text,strlen(text))!=0||v2_sync(journal_fd,3)!=0)goto out; if(v2_close_file(journal_fd,3)!=0){journal_fd=-1;goto out;}journal_fd=-1;if(v2_sync(t.journal_fd,4)!=0)goto out;result=0;
  out:if(stage_fd>=0)close(stage_fd);if(journal_fd>=0)close(journal_fd);memset(text,0,sizeof(text));v2_tree_close(&t);return result; }
 
