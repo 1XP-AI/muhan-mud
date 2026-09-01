@@ -24,7 +24,7 @@ Auth JWT 설정에서 가능하면 비대칭 signing key(예: ES256/RS256)를 �
 
 ## 정책 범위
 
-Migration은 `authenticated`에 자기 `profiles` 행의 SELECT/INSERT/UPDATE만 허용한다. `anon`은 테이블 권한이 없고 DELETE 정책도 없다. `realtime.messages`에는 `authenticated`의 `mud:lobby` + `extension = 'presence'` SELECT/INSERT만 있다. Broadcast, Postgres Changes, 다른 topic, 게임-state 테이블 쓰기 권한은 의도적으로 없다.
+Migration은 `authenticated`에 자기 `profiles` 행의 SELECT/INSERT/UPDATE만 허용한다. `anon`은 테이블 권한이 없고 DELETE 정책도 없다. Realtime v2의 private 채널 입장 검사는 Broadcast와 Presence의 읽기 권한을 함께 요구하므로 `mud:lobby`에서 두 extension의 SELECT를 허용하되, INSERT는 `extension = 'presence'`에만 허용한다. 따라서 클라이언트 Broadcast 전송, Postgres Changes, 다른 topic, 게임-state 테이블 쓰기 권한은 의도적으로 없다.
 
 ## 수동 확인 SQL
 
@@ -59,6 +59,7 @@ Do not casually drop `profiles`: it is tied to `auth.users` and may contain user
 
 ```sql
 drop policy if exists mud_lobby_presence_select on realtime.messages;
+drop policy if exists mud_lobby_read on realtime.messages;
 drop policy if exists mud_lobby_presence_insert on realtime.messages;
 revoke select, insert, update on table public.profiles from authenticated;
 ```
@@ -77,4 +78,3 @@ await channel.track({ status: 'online' })
 ```
 
 An anonymous client, a public channel, or a different topic must be rejected. Presence is for slow connection state only, never per-keystroke input or authoritative game state.
-

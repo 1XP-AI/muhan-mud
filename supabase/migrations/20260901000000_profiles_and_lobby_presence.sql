@@ -67,11 +67,17 @@ create policy profiles_update_own on public.profiles
   using ((select auth.uid()) = id)
   with check ((select auth.uid()) = id);
 
--- Realtime authorization is intentionally limited to lobby Presence.
+-- A private Realtime channel checks read authorization for both Broadcast and
+-- Presence while joining. Broadcast remains receive-only because the only
+-- INSERT policy below is restricted to Presence.
 drop policy if exists mud_lobby_presence_select on realtime.messages;
-create policy mud_lobby_presence_select on realtime.messages
+drop policy if exists mud_lobby_read on realtime.messages;
+create policy mud_lobby_read on realtime.messages
   for select to authenticated
-  using ((select realtime.topic()) = 'mud:lobby' and extension = 'presence');
+  using (
+    (select realtime.topic()) = 'mud:lobby'
+    and extension in ('broadcast', 'presence')
+  );
 
 drop policy if exists mud_lobby_presence_insert on realtime.messages;
 create policy mud_lobby_presence_insert on realtime.messages
