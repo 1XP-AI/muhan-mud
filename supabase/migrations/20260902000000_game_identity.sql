@@ -546,8 +546,8 @@ begin
   end if;
 
   select * into v_lease
-    from private.game_character_sessions
-    where character_id = p_character_id
+    from private.game_character_sessions lease
+    where lease.character_id = p_character_id
     for update;
 
   if found then
@@ -570,13 +570,13 @@ begin
     if v_lease.expires_at > now() then
       raise exception using errcode = 'P0001', message = 'character already has an active session lease';
     end if;
-    update private.game_character_sessions
+    update private.game_character_sessions as lease
       set session_id = p_session_id,
           actor_user_id = p_actor_user_id,
           gateway_instance_id = p_gateway_instance_id,
           expires_at = p_expires_at,
           created_at = now()
-      where character_id = p_character_id;
+      where lease.character_id = p_character_id;
   else
     insert into private.game_character_sessions (
       character_id, session_id, actor_user_id, gateway_instance_id, expires_at
@@ -691,9 +691,9 @@ begin
      or p_gateway_instance_id ~ '[[:cntrl:]]' then
     raise exception using errcode = '22023', message = 'session release arguments are invalid';
   end if;
-  delete from private.game_character_sessions
-    where session_id = p_session_id
-      and gateway_instance_id = p_gateway_instance_id;
+  delete from private.game_character_sessions as lease
+    where lease.session_id = p_session_id
+      and lease.gateway_instance_id = p_gateway_instance_id;
   return found;
 end;
 $$;
