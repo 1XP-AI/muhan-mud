@@ -34,6 +34,26 @@ extern void update_allcmd();
 /*              update_game               */
 /**********************************************************************/
 
+/* Initialize only the expensive random world spawners.  Historically their
+ * zero timestamps made a newly started server run them all at once; normal
+ * first-tick maintenance (notably update_exit) deliberately remains due. */
+void init_update_game(t)
+long t;
+{
+    last_moonstone_update = t;
+    last_monster_update = t;
+    last_monster_two_update = t;
+}
+
+#ifdef MUHAN_UPDATE_SCHEDULE_TEST
+int update_game_spawn_schedule_is(t)
+long t;
+{
+    return(last_moonstone_update == t && last_monster_update == t &&
+           last_monster_two_update == t);
+}
+#endif
+
 /* This function handles all the updates that occur while players are */
 /* typing.                                */
 
@@ -744,7 +764,8 @@ long t;
 
     if(strlen(new_rom->name) < 2) return;
 
-    load_obj(640, &obj_ptr);
+    if(load_obj(640, &obj_ptr) < 0 || !obj_ptr)
+        return;
     obj_ptr->shotsmax+=mrand(1,20);
     obj_ptr->shotscur=obj_ptr->shotsmax;
     add_obj_rom(obj_ptr, new_rom);

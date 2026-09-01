@@ -476,6 +476,9 @@ object	**obj_ptr;
 	qtag	*qt;
 	char	file[256];
 
+	if(!obj_ptr)
+		return(-1);
+	*obj_ptr = 0;
 	if(index >= OMAX || index < 0)
 		return(-1);
 
@@ -484,7 +487,17 @@ object	**obj_ptr;
 	if(Obj[index].obj) {
 		front_queue(&Obj[index].q_obj, &Objhead, &Objtail, &Osize);
 		*obj_ptr = (object *)malloc(sizeof(object));
+		if(!*obj_ptr) {
+			merror("load_obj", FATAL);
+			return(-1);
+		}
 		**obj_ptr = *Obj[index].obj;
+		/* Object template files contain a raw legacy struct.  These are
+		 * runtime links from the writer's process, never saved contents. */
+		(*obj_ptr)->first_obj = 0;
+		(*obj_ptr)->parent_obj = 0;
+		(*obj_ptr)->parent_rom = 0;
+		(*obj_ptr)->parent_crt = 0;
 	}
 
 	/* Otherwise load the object, erase objects if queue size           */
@@ -501,19 +514,42 @@ object	**obj_ptr;
 		n = lseek(fd, (long)((index%OFILESIZE)*sizeof(object)), 0);
 		if(n < 0L) {
 			close(fd);
+			free(*obj_ptr);
+			*obj_ptr = 0;
 			return(-1);
 		}
 		n = read(fd, *obj_ptr, sizeof(object));
 		close(fd);
-		if(n < sizeof(object))
+		if(n < sizeof(object)) {
+			free(*obj_ptr);
+			*obj_ptr = 0;
 			return(-1);
+		}
+
+		/* The object catalog is a raw binary struct file.  Do not let stale
+		 * process addresses survive into free_obj() or later placement. */
+		(*obj_ptr)->first_obj = 0;
+		(*obj_ptr)->parent_obj = 0;
+		(*obj_ptr)->parent_rom = 0;
+		(*obj_ptr)->parent_crt = 0;
 
 		qt = (qtag *)malloc(sizeof(qtag));
 		if(!qt)
 			merror("load_obj", FATAL);
 		qt->index = index;
 		Obj[index].obj = (object *)malloc(sizeof(object));
+		if(!Obj[index].obj) {
+			free(qt);
+			free(*obj_ptr);
+			*obj_ptr = 0;
+			merror("load_obj", FATAL);
+			return(-1);
+		}
 		*Obj[index].obj = **obj_ptr;
+		Obj[index].obj->first_obj = 0;
+		Obj[index].obj->parent_obj = 0;
+		Obj[index].obj->parent_rom = 0;
+		Obj[index].obj->parent_crt = 0;
 		Obj[index].q_obj = qt;
 		put_queue(&qt, &Objhead, &Objtail, &Osize);
 		while(Osize > OQMAX) {

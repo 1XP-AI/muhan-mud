@@ -88,6 +88,7 @@ char	*argv[];
     //log_overwrite("command.log","--- 재시작 ---");
 	}
 
+	init_update_game(time(0));
 	sock_loop();
 }
 

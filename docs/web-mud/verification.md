@@ -54,6 +54,14 @@ duplicate reload를 차단하는 contract도 검증했다. 이 queue는 프로�
 동안의 RAM 복구 경계이며 crash-safe durable spool은 후속 단계다. 레거시
 non-prototype warning은 남지만 full link와 실행은 성공했다.
 
+Linux amd64 CI에서 한 번 발생한 시작 직후 SIGSEGV는 재실행으로 덮지 않았다.
+ASan과 격리 월드 100회 기동으로 조사한 결과, 첫 tick의 랜덤 월드 spawn이 raw
+object catalog에 남은 이전 프로세스의 `first_obj` 주소를 `free_obj()`에서
+역참조하는 문제였다. 수정 전에는 ASan에서 100회 중 5회, 실제 testnet
+바이너리에서는 80회 중 32번째 기동에 재현됐다. runtime pointer scrub,
+short-read 정리, spawn scheduler 초기화와 단위 계약을 추가한 뒤 Linux amd64
+100/100 기동이 통과했다.
+
 같은 일회용 C 서버에 실제 gateway를 연결한 뒤 `muhan.v1` WebSocket 클라이언트가 다음을 확인했다.
 
 - 첫 text auth frame 전송

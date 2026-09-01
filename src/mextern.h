@@ -354,7 +354,7 @@ extern object	*find_obj();
 
 /* UPDATE.C */
 
-extern void	update_game(), update_users(), update_random(),
+extern void	init_update_game(), update_game(), update_users(), update_random(),
         clear_enm_crt(), update_active(), update_time(), update_moonstone(),
         update_exit(), update_shutdown(), add_active(), del_active(),
         update_monster(), update_monster_two();
