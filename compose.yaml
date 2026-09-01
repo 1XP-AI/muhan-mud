@@ -1,0 +1,84 @@
+name: muhan-web-mud
+
+services:
+  # An empty named volume hides image files mounted at /home/muhan.  Seed it
+  # once from the immutable image tree before the non-root MUD starts.
+  mud-init:
+    build:
+      context: .
+      dockerfile: docker/mud.Dockerfile
+      target: runtime
+    image: muhan-mud:local
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ ! -f /home/muhan/.muhan-volume-seeded ]; then
+          cp -a /opt/muhan-seed/. /home/muhan/
+          touch /home/muhan/.muhan-volume-seeded
+        fi
+        chown -R 10001:10001 /home/muhan
+    volumes:
+      - mud-data:/home/muhan
+    restart: "no"
+    networks:
+      - mud-net
+
+  mud:
+    build:
+      context: .
+      dockerfile: docker/mud.Dockerfile
+      target: runtime
+    image: muhan-mud:local
+    depends_on:
+      mud-init:
+        condition: service_completed_successfully
+    environment:
+      MUD_PORT: "4000"
+      MUHAN_HOME: /home/muhan
+    volumes:
+      - mud-data:/home/muhan
+    expose:
+      - "4000"
+    restart: unless-stopped
+    networks:
+      - mud-net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    depends_on:
+      mud:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      MUD_HOST: mud
+      MUD_PORT: "4000"
+      # The gateway refuses a production configuration without its own JWT
+      # validation and exact origin configuration.  Put real values in .env.
+      NODE_ENV: ${NODE_ENV:-development}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE:-authenticated}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    restart: unless-stopped
+    networks:
+      - edge
+      - mud-net
+
+volumes:
+  # Local-only disposable state. `docker compose down -v` resets it from the
+  # image seed and is never an appropriate production data-retention command.
+  mud-data:
+    name: muhan-web-mud-data
+
+networks:
+  edge:
+    name: muhan-web-mud-edge
+  mud-net:
+    name: muhan-web-mud-internal
+    internal: true

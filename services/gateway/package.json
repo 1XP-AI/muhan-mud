@@ -1,0 +1,23 @@
+{
+  "name": "@muhan/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "jose": "^6.0.10",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

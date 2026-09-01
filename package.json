@@ -1,0 +1,14 @@
+{
+  "name": "muhan-web-mud",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "dev": "pnpm --filter @muhan/web dev",
+    "dev:web": "pnpm --filter @muhan/web dev",
+    "dev:gateway": "pnpm --filter @muhan/gateway dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  }
+}

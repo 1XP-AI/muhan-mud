@@ -47,6 +47,26 @@
 ./scripts/run-smoke.sh
 ```
 
+## 웹 MUD MVP
+
+브라우저 버전은 Next.js/xterm.js 클라이언트, 자체 호스팅 Supabase Auth·RLS·Presence, 별도 WebSocket↔TCP 게이트웨이, 단일 C MUD 런타임으로 구성됩니다. C MUD의 TCP 4000은 외부에 공개하지 않습니다.
+
+```bash
+# JS 의존성 설치와 전체 검증
+pnpm install
+pnpm check
+
+# 환경변수 예시를 복사해 값을 채운 뒤 로컬 통합 실행
+cp .env.example .env
+docker compose up --build
+
+# 다른 터미널에서 웹 클라이언트 실행
+cp web/.env.example web/.env.local
+pnpm dev:web
+```
+
+운영 배포는 `1XP-Inc/testnet` 저장소의 `muhan-mud/` Dockerfile과 Helm chart가 담당합니다. 이 private 소스 저장소를 BuildKit secret으로 clone해 단일 런타임 이미지를 만들고, `testnet-1xp`에 web·gateway·C MUD·Postgres·GoTrue·Realtime을 배포합니다. 자세한 경계는 `docs/web-mud/kubernetes-deployment.md`, 기술 판단은 `docs/web-mud/architecture-plan.md`, 로컬 검증 결과는 `docs/web-mud/verification.md`를 참고하세요.
+
 ## 디렉터리 가이드
 - `tools/revive/`: 복구 유틸리티 스크립트
 - `resources_utf8/`: 정규화된 리소스 트리
