@@ -222,6 +222,39 @@ payload로 감싼다. 내부 list count, depth, child field encoding은 Terra의
 codec implementation에서 별도 versioned subcodec로 확정하되 raw C bytes를
 그대로 복사하지 않는다.
 
+### ObjectGraphV1 (synthetic-only implemented contract)
+
+`ObjectGraphV1` is CDTO kind **6** and is intentionally separate from flat
+`ObjectV1` (kind 2). It accepts only a detached `otag` root forest; roots and
+all descendants must have `parent_rom == NULL` and `parent_crt == NULL`, and
+each descendant's `parent_obj` must exactly name the containing object.
+
+- Field 1 is a BE `u32` node count. Fields 2..N+1 are `bytes`, one per node,
+  in observed linked-list preorder. There are no unknown graph fields.
+- A node is exactly 349 bytes: BE `node_index`, BE signed `parent_index`
+  (`-1` for a root), BE `child_index`, followed by the 337 explicit ObjectV1
+  logical scalar/fixed-array bytes. No `object`, `otag`, room, creature, or
+  padding bytes are copied.
+- `node_index` must equal preorder position; a non-root parent must reference
+  an earlier node on the current open ancestor path; `child_index` must be the
+  next sequential position in that parent/root list. A new root or sibling
+  closes deeper subtrees permanently, so later re-entry to a closed subtree is
+  invalid. This makes depth-first order and ownership independently verifiable.
+- Maximum depth is 64 (root is depth 1); maximum nodes is 8,192; graph CDTO
+  payload is capped at 4 MiB. Cycles, aliases, parent mismatch, invalid shots,
+  and non-zero bytes after a fixed-string NUL are rejected.
+- C import allocates only a new detached object/tag forest and reconstructs
+  `parent_obj`; it never sets room or creature links. It is not connected to
+  `OBJECTS`, `save_ply`, gameplay, DB, or chart code.
+- The C translation unit compile-fails outside its supported ILP32/LP64
+  subset: 8-bit signed `char`, 16-bit `short`, exact 32/64-bit fixed-width
+  integers, and a `long` whose range is no wider than `int64_t`. This is a
+  codec build gate, not runtime ABI guessing. The generic CDTO ABI fingerprint
+  remains diagnostic fixture metadata; it is not a live gameplay/save gate.
+- `object_graph_v1_free` accepts only a successful graph-decoder result; it is
+  not a disposer for source legacy lists. Test-only allocation fault injection
+  is compiled under `OBJECT_GRAPH_V1_TESTING` and is absent from production.
+
 ## RED → GREEN test design
 
 ### Required fixtures

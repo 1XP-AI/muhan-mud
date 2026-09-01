@@ -11,6 +11,7 @@
 #include "cdto_v1.h"
 #include "creature_v1.h"
 #include "object_v1.h"
+#include "object_graph_v1.h"
 
 static void object_fixture(value)
 object *value;
@@ -23,6 +24,41 @@ object *value;
     value->shotsmax = 9; value->shotscur = 7; value->ndice = 1; value->sdice = 8; value->pdice = -3;
     value->armor = -1; value->wearflag = 3; value->magicpower = 6; value->magicrealm = 2; value->special = 77;
     value->flags[0] = 0x55; value->flags[7] = (char)0xaa; value->questnum = 12;
+}
+
+static void object_graph_fixture(roots, objects, tags)
+otag **roots;
+object objects[4];
+otag tags[4];
+{
+    object_fixture(&objects[0]); object_fixture(&objects[1]);
+    object_fixture(&objects[2]); object_fixture(&objects[3]);
+    strcpy(objects[0].name, "synthetic-bag"); objects[0].value = 11; objects[0].weight = 11;
+    strcpy(objects[1].name, "synthetic-coin"); objects[1].value = 12; objects[1].weight = 12;
+    strcpy(objects[2].name, "synthetic-key"); objects[2].value = 13; objects[2].weight = 13;
+    strcpy(objects[3].name, "synthetic-gem"); objects[3].value = 14; objects[3].weight = 14;
+    memset(tags, 0, 4 * sizeof(*tags));
+    tags[0].obj = &objects[0]; tags[1].obj = &objects[1];
+    tags[2].obj = &objects[2]; tags[3].obj = &objects[3];
+    tags[1].next_tag = &tags[2]; objects[0].first_obj = &tags[1];
+    objects[1].parent_obj = &objects[0]; objects[2].parent_obj = &objects[0];
+    objects[1].first_obj = &tags[3]; objects[3].parent_obj = &objects[1];
+    *roots = &tags[0];
+}
+
+static void object_graph_two_root_fixture(roots, objects, tags)
+otag **roots;
+object objects[3];
+otag tags[3];
+{
+    object_fixture(&objects[0]); object_fixture(&objects[1]); object_fixture(&objects[2]);
+    strcpy(objects[0].name, "synthetic-root-a"); objects[0].value = 21; objects[0].weight = 21;
+    strcpy(objects[1].name, "synthetic-child-a"); objects[1].value = 22; objects[1].weight = 22;
+    strcpy(objects[2].name, "synthetic-root-b"); objects[2].value = 23; objects[2].weight = 23;
+    memset(tags, 0, 3 * sizeof(*tags));
+    tags[0].obj = &objects[0]; tags[1].obj = &objects[1]; tags[2].obj = &objects[2];
+    tags[0].next_tag = &tags[2]; objects[0].first_obj = &tags[1]; objects[1].parent_obj = &objects[0];
+    *roots = &tags[0];
 }
 
 static void creature_fixture(value)
@@ -246,6 +282,43 @@ char **argv;
         if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
         else printf("err %d\n", status);
         cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "object-graph-fixture") && argc == 2) {
+        object objects[4]; otag tags[4], *roots;
+        object_graph_fixture(&roots, objects, tags);
+        status = object_graph_v1_encode(roots, &wire, &wire_length);
+        if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
+        else printf("err %d\n", status);
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "object-graph-two-root-fixture") && argc == 2) {
+        object objects[3]; otag tags[3], *roots;
+        object_graph_two_root_fixture(&roots, objects, tags);
+        status = object_graph_v1_encode(roots, &wire, &wire_length);
+        if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
+        else printf("err %d\n", status);
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "object-graph-roundtrip") && argc == 3) {
+        otag *roots;
+        if(!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = object_graph_v1_decode(wire, wire_length, &roots);
+        free(wire); wire = 0;
+        if(status == CDTO_V1_OK) status = object_graph_v1_encode(roots, &wire, &wire_length);
+        if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
+        else printf("err %d\n", status);
+        object_graph_v1_free(roots); cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "object-graph-decode") && argc == 3) {
+        otag *roots;
+        if(!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = object_graph_v1_decode(wire, wire_length, &roots);
+        printf("%d\n", status);
+        object_graph_v1_free(roots); free(wire);
         return 0;
     }
     if (!strcmp(argv[1], "creature-fixture") && argc == 2) {

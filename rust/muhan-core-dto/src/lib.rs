@@ -25,6 +25,7 @@ pub enum Kind {
     Room = 3,
     Session = 4,
     AbiFingerprint = 5,
+    ObjectGraph = 6,
 }
 
 impl Kind {
@@ -35,6 +36,7 @@ impl Kind {
             Self::Room => 8 * 1024 * 1024,
             Self::Session => 1024 * 1024,
             Self::AbiFingerprint => 1024 * 1024,
+            Self::ObjectGraph => 4 * 1024 * 1024,
         }
     }
 
@@ -49,6 +51,7 @@ impl Kind {
             3 => Ok(Self::Room),
             4 => Ok(Self::Session),
             5 => Ok(Self::AbiFingerprint),
+            6 => Ok(Self::ObjectGraph),
             _ => Err(Error::UnknownKind { kind: value }),
         }
     }
@@ -547,6 +550,227 @@ pub fn decode_object_v1(wire: &[u8]) -> Result<ObjectV1, Error> {
     Ok(output)
 }
 
+/// Maximum object nesting and node count accepted by the synthetic-only graph
+/// codec.  These are logical limits, separate from the CDTO envelope limit.
+pub const OBJECT_GRAPH_V1_MAX_DEPTH: usize = 64;
+pub const OBJECT_GRAPH_V1_MAX_NODES: usize = 8192;
+pub const OBJECT_GRAPH_V1_NODE_LENGTH: usize = 349;
+
+/// One preorder ObjectGraphV1 node.  `parent_index` and `child_index` are
+/// explicit wire identities: the root parent is `None`, and its child index is
+/// its root-list position.  The type deliberately has no address-like field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectGraphNodeV1 {
+    pub object: ObjectV1,
+    pub parent_index: Option<u32>,
+    pub child_index: u32,
+}
+
+/// A detached ordered object forest.  Nodes are stored in deterministic
+/// preorder; there is no native list tag, room/creature parent, or allocator
+/// identity in this value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectGraphV1 {
+    pub nodes: Vec<ObjectGraphNodeV1>,
+}
+
+fn object_graph_object_is_canonical(value: &ObjectV1) -> bool {
+    fixed_string_is_canonical(&value.name)
+        && fixed_string_is_canonical(&value.description)
+        && value.key.iter().all(|key| fixed_string_is_canonical(key))
+        && fixed_string_is_canonical(&value.use_output)
+        && value.shots_current <= value.shots_max
+}
+
+fn graph_error(index: usize) -> Error {
+    Error::InvalidFieldLength {
+        field_id: u16::try_from(index + 2).expect("ObjectGraphV1 field ids fit in u16"),
+    }
+}
+
+fn object_graph_node_bytes(index: usize, node: &ObjectGraphNodeV1) -> Result<Vec<u8>, Error> {
+    if !object_graph_object_is_canonical(&node.object) {
+        return Err(graph_error(index));
+    }
+    let parent = node.parent_index.unwrap_or(u32::MAX);
+    if parent != u32::MAX && parent as usize >= index {
+        return Err(graph_error(index));
+    }
+    let mut value = Vec::with_capacity(OBJECT_GRAPH_V1_NODE_LENGTH);
+    value.extend_from_slice(&(index as u32).to_be_bytes());
+    value.extend_from_slice(&parent.to_be_bytes());
+    value.extend_from_slice(&node.child_index.to_be_bytes());
+    value.extend_from_slice(&node.object.name);
+    value.extend_from_slice(&node.object.description);
+    for key in &node.object.key {
+        value.extend_from_slice(key);
+    }
+    value.extend_from_slice(&node.object.use_output);
+    value.extend_from_slice(&node.object.value.to_be_bytes());
+    value.extend_from_slice(&node.object.weight.to_be_bytes());
+    value.extend_from_slice(&node.object.type_code.to_be_bytes());
+    value.extend_from_slice(&node.object.adjustment.to_be_bytes());
+    value.extend_from_slice(&node.object.shots_max.to_be_bytes());
+    value.extend_from_slice(&node.object.shots_current.to_be_bytes());
+    value.extend_from_slice(&node.object.ndice.to_be_bytes());
+    value.extend_from_slice(&node.object.sdice.to_be_bytes());
+    value.extend_from_slice(&node.object.pdice.to_be_bytes());
+    value.extend_from_slice(&node.object.armor.to_be_bytes());
+    value.extend_from_slice(&node.object.wear_flag.to_be_bytes());
+    value.extend_from_slice(&node.object.magic_power.to_be_bytes());
+    value.extend_from_slice(&node.object.magic_realm.to_be_bytes());
+    value.extend_from_slice(&node.object.special.to_be_bytes());
+    value.extend_from_slice(&node.object.flags);
+    value.extend_from_slice(&node.object.quest_num.to_be_bytes());
+    debug_assert_eq!(value.len(), OBJECT_GRAPH_V1_NODE_LENGTH);
+    Ok(value)
+}
+
+fn validate_object_graph_nodes(nodes: &[ObjectGraphNodeV1]) -> Result<(), Error> {
+    if nodes.len() > OBJECT_GRAPH_V1_MAX_NODES {
+        return Err(Error::SizeLimitExceeded {
+            limit: OBJECT_GRAPH_V1_MAX_NODES,
+        });
+    }
+    let mut child_counts = vec![0u32; nodes.len()];
+    let mut depths = vec![0usize; nodes.len()];
+    let mut ancestors = Vec::with_capacity(nodes.len());
+    let mut roots = 0u32;
+    for (index, node) in nodes.iter().enumerate() {
+        let expected = match node.parent_index {
+            None => {
+                ancestors.clear();
+                depths[index] = 1;
+                let value = roots;
+                roots += 1;
+                value
+            }
+            Some(parent) => {
+                let parent = parent as usize;
+                if parent >= index {
+                    return Err(graph_error(index));
+                }
+                let Some(position) = ancestors.iter().position(|&ancestor| ancestor == parent)
+                else {
+                    return Err(graph_error(index));
+                };
+                ancestors.truncate(position + 1);
+                depths[index] = depths[parent] + 1;
+                let value = child_counts[parent];
+                child_counts[parent] += 1;
+                value
+            }
+        };
+        if node.child_index != expected {
+            return Err(graph_error(index));
+        }
+        if depths[index] > OBJECT_GRAPH_V1_MAX_DEPTH {
+            return Err(Error::SizeLimitExceeded {
+                limit: OBJECT_GRAPH_V1_MAX_DEPTH,
+            });
+        }
+        object_graph_node_bytes(index, node)?;
+        ancestors.push(index);
+    }
+    Ok(())
+}
+
+/// Encode a closed, canonical, pointer-free object forest.  Each node has an
+/// explicit preorder index, parent index, and sibling index; legacy object
+/// pointers, struct padding, room/creature attachment, and passwords cannot
+/// be represented by this schema.
+pub fn encode_object_graph_v1(input: &ObjectGraphV1) -> Result<Vec<u8>, Error> {
+    validate_object_graph_nodes(&input.nodes)?;
+    let mut fields = Vec::with_capacity(input.nodes.len() + 1);
+    fields.push(Field::u32(1, input.nodes.len() as u32));
+    for (index, node) in input.nodes.iter().enumerate() {
+        fields.push(Field::bytes(
+            u16::try_from(index + 2).expect("ObjectGraphV1 field ids fit in u16"),
+            object_graph_node_bytes(index, node)?,
+        ));
+    }
+    encode(&Record::new(Kind::ObjectGraph, fields)?)
+}
+
+/// Decode ObjectGraphV1 and fail closed on unknown fields, non-preorder parent
+/// identities, invalid sibling positions, invalid fixed-string tails, or
+/// depth/node limits.  The resulting value is allocation-only Rust data.
+pub fn decode_object_graph_v1(wire: &[u8]) -> Result<ObjectGraphV1, Error> {
+    let record = decode(wire)?;
+    if record.kind != Kind::ObjectGraph || record.fields.is_empty() {
+        return Err(Error::InvalidFieldLength { field_id: 0 });
+    }
+    let count_field = &record.fields[0];
+    if count_field.id != 1 || count_field.type_tag != TYPE_U32 || count_field.value.len() != 4 {
+        return Err(Error::InvalidFieldLength { field_id: 1 });
+    }
+    let count = read_u32(&count_field.value) as usize;
+    if count > OBJECT_GRAPH_V1_MAX_NODES {
+        return Err(Error::InvalidFieldLength { field_id: 1 });
+    }
+    if record.fields.len() != count + 1 {
+        return Err(Error::InvalidFieldLength { field_id: 0 });
+    }
+    let mut nodes = Vec::with_capacity(count);
+    for index in 0..count {
+        let field = &record.fields[index + 1];
+        if field.id != (index + 2) as u16
+            || field.type_tag != TYPE_BYTES
+            || field.value.len() != OBJECT_GRAPH_V1_NODE_LENGTH
+        {
+            return Err(graph_error(index));
+        }
+        let value = field.value.as_slice();
+        if read_u32(&value[0..4]) as usize != index {
+            return Err(graph_error(index));
+        }
+        let parent_raw = read_u32(&value[4..8]);
+        let mut cursor = 12;
+        let take = |cursor: &mut usize, length: usize| {
+            let start = *cursor;
+            *cursor += length;
+            &value[start..start + length]
+        };
+        let object = ObjectV1 {
+            name: array(take(&mut cursor, 80)),
+            description: array(take(&mut cursor, 80)),
+            key: [
+                array(take(&mut cursor, 20)),
+                array(take(&mut cursor, 20)),
+                array(take(&mut cursor, 20)),
+            ],
+            use_output: array(take(&mut cursor, 80)),
+            value: i64::from_be_bytes(array(take(&mut cursor, 8))),
+            weight: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            type_code: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            adjustment: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            shots_max: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            shots_current: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            ndice: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            sdice: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            pdice: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            armor: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            wear_flag: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            magic_power: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            magic_realm: i8::from_be_bytes(array(take(&mut cursor, 1))),
+            special: i16::from_be_bytes(array(take(&mut cursor, 2))),
+            flags: array(take(&mut cursor, 8)),
+            quest_num: i8::from_be_bytes(array(take(&mut cursor, 1))),
+        };
+        debug_assert_eq!(cursor, OBJECT_GRAPH_V1_NODE_LENGTH);
+        if !object_graph_object_is_canonical(&object) {
+            return Err(graph_error(index));
+        }
+        nodes.push(ObjectGraphNodeV1 {
+            object,
+            parent_index: (parent_raw != u32::MAX).then_some(parent_raw),
+            child_index: read_u32(&value[8..12]),
+        });
+    }
+    validate_object_graph_nodes(&nodes)?;
+    Ok(ObjectGraphV1 { nodes })
+}
+
 fn array<const N: usize>(value: &[u8]) -> [u8; N] {
     value
         .try_into()
@@ -886,10 +1110,14 @@ fn sha256(input: &[u8]) -> [u8; DIGEST_LENGTH] {
     bytes.resize(input.len() + 1 + padding, 0);
     bytes.extend_from_slice(&bit_length.to_be_bytes());
     let mut state = INITIAL;
-    for block in bytes.chunks_exact(64) {
+    let (blocks, remainder) = bytes.as_chunks::<64>();
+    debug_assert!(remainder.is_empty());
+    for block in blocks {
         let mut words = [0u32; 64];
-        for (index, chunk) in block.chunks_exact(4).enumerate() {
-            words[index] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let (chunks, remainder) = block.as_chunks::<4>();
+        debug_assert!(remainder.is_empty());
+        for (index, chunk) in chunks.iter().enumerate() {
+            words[index] = u32::from_be_bytes(*chunk);
         }
         for index in 16..64 {
             let small0 = words[index - 15].rotate_right(7)
@@ -1017,6 +1245,204 @@ mod tests {
         assert!(matches!(
             decode_object_v1(&noncanonical_wire),
             Err(Error::InvalidFieldLength { field_id: 12 })
+        ));
+    }
+
+    #[test]
+    fn object_graph_v1_is_preorder_closed_and_padding_free() {
+        let object = ObjectV1 {
+            name: object_fixed(b"synthetic-bag"),
+            description: object_fixed(b"synthetic object"),
+            key: [object_fixed(b"bag"), [0; 20], [0; 20]],
+            use_output: [0; 80],
+            value: 11,
+            weight: 1,
+            type_code: 4,
+            adjustment: 0,
+            shots_max: 5,
+            shots_current: 3,
+            ndice: 1,
+            sdice: 2,
+            pdice: 0,
+            armor: 0,
+            wear_flag: 0,
+            magic_power: 0,
+            magic_realm: 0,
+            special: 0,
+            flags: [0; 8],
+            quest_num: 0,
+        };
+        let graph = ObjectGraphV1 {
+            nodes: vec![
+                ObjectGraphNodeV1 {
+                    object: object.clone(),
+                    parent_index: None,
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object,
+                    parent_index: Some(0),
+                    child_index: 0,
+                },
+            ],
+        };
+        let wire = encode_object_graph_v1(&graph).unwrap();
+        assert_eq!(decode_object_graph_v1(&wire).unwrap(), graph);
+        assert_eq!(
+            encode_object_graph_v1(&decode_object_graph_v1(&wire).unwrap()).unwrap(),
+            wire
+        );
+
+        let mut non_preorder = graph.clone();
+        non_preorder.nodes[1].parent_index = Some(1);
+        assert!(matches!(
+            encode_object_graph_v1(&non_preorder),
+            Err(Error::InvalidFieldLength { .. })
+        ));
+        let closed_root_reentry = ObjectGraphV1 {
+            nodes: vec![
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[1].object.clone(),
+                    parent_index: Some(0),
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: 1,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[1].object.clone(),
+                    parent_index: Some(0),
+                    child_index: 1,
+                },
+            ],
+        };
+        assert!(matches!(
+            encode_object_graph_v1(&closed_root_reentry),
+            Err(Error::InvalidFieldLength { .. })
+        ));
+        let closed_sibling_reentry = ObjectGraphV1 {
+            nodes: vec![
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[1].object.clone(),
+                    parent_index: Some(0),
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: Some(0),
+                    child_index: 1,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[1].object.clone(),
+                    parent_index: Some(1),
+                    child_index: 0,
+                },
+            ],
+        };
+        assert!(matches!(
+            encode_object_graph_v1(&closed_sibling_reentry),
+            Err(Error::InvalidFieldLength { .. })
+        ));
+        let maximum = ObjectGraphV1 {
+            nodes: (0..OBJECT_GRAPH_V1_MAX_NODES)
+                .map(|index| ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: index as u32,
+                })
+                .collect(),
+        };
+        assert!(encode_object_graph_v1(&maximum).is_ok());
+        let mut over_limit = maximum;
+        over_limit.nodes.push(ObjectGraphNodeV1 {
+            object: graph.nodes[0].object.clone(),
+            parent_index: None,
+            child_index: OBJECT_GRAPH_V1_MAX_NODES as u32,
+        });
+        assert!(matches!(
+            encode_object_graph_v1(&over_limit),
+            Err(Error::SizeLimitExceeded {
+                limit: OBJECT_GRAPH_V1_MAX_NODES
+            })
+        ));
+        let depth_64 = ObjectGraphV1 {
+            nodes: (0..OBJECT_GRAPH_V1_MAX_DEPTH)
+                .map(|index| ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: index.checked_sub(1).map(|parent| parent as u32),
+                    child_index: 0,
+                })
+                .collect(),
+        };
+        assert!(encode_object_graph_v1(&depth_64).is_ok());
+        let mut depth_65 = depth_64.clone();
+        depth_65.nodes.push(ObjectGraphNodeV1 {
+            object: graph.nodes[0].object.clone(),
+            parent_index: Some((OBJECT_GRAPH_V1_MAX_DEPTH - 1) as u32),
+            child_index: 0,
+        });
+        assert!(matches!(
+            encode_object_graph_v1(&depth_65),
+            Err(Error::SizeLimitExceeded {
+                limit: OBJECT_GRAPH_V1_MAX_DEPTH
+            })
+        ));
+        let mut depth_fields = decode(&encode_object_graph_v1(&depth_64).unwrap())
+            .unwrap()
+            .fields()
+            .to_vec();
+        depth_fields[0] = Field::u32(1, (OBJECT_GRAPH_V1_MAX_DEPTH + 1) as u32);
+        depth_fields.push(Field::bytes(
+            (OBJECT_GRAPH_V1_MAX_DEPTH + 2) as u16,
+            object_graph_node_bytes(OBJECT_GRAPH_V1_MAX_DEPTH, &depth_65.nodes[64]).unwrap(),
+        ));
+        let depth_wire = encode(&Record::new(Kind::ObjectGraph, depth_fields).unwrap()).unwrap();
+        assert!(matches!(
+            decode_object_graph_v1(&depth_wire),
+            Err(Error::SizeLimitExceeded {
+                limit: OBJECT_GRAPH_V1_MAX_DEPTH
+            })
+        ));
+        let two_roots = ObjectGraphV1 {
+            nodes: vec![
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[1].object.clone(),
+                    parent_index: Some(0),
+                    child_index: 0,
+                },
+                ObjectGraphNodeV1 {
+                    object: graph.nodes[0].object.clone(),
+                    parent_index: None,
+                    child_index: 1,
+                },
+            ],
+        };
+        assert_eq!(
+            decode_object_graph_v1(&encode_object_graph_v1(&two_roots).unwrap()).unwrap(),
+            two_roots
+        );
+        let mut padded = graph;
+        padded.nodes[0].object.name[20] = b'x';
+        assert!(matches!(
+            encode_object_graph_v1(&padded),
+            Err(Error::InvalidFieldLength { .. })
         ));
     }
 
@@ -1263,9 +1689,10 @@ mod tests {
         }
 
         assert_eq!(input.len() % 2, 0);
-        input
-            .as_bytes()
-            .chunks_exact(2)
+        let (pairs, remainder) = input.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
+        pairs
+            .iter()
             .map(|pair| nibble(pair[0]) << 4 | nibble(pair[1]))
             .collect()
     }

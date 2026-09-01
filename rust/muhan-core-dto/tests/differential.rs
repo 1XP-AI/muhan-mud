@@ -5,8 +5,9 @@
 //! tests stay hermetic while CI (or a developer) gets actual byte comparison.
 
 use muhan_core_dto::{
-    decode, decode_creature_v1, decode_object_v1, encode, encode_creature_v1, encode_object_v1,
-    CreatureV1, DailyV1, Error, Field, Kind, ObjectV1, Record, TYPE_BOOL,
+    decode, decode_creature_v1, decode_object_graph_v1, decode_object_v1, encode,
+    encode_creature_v1, encode_object_graph_v1, encode_object_v1, CreatureV1, DailyV1, Error,
+    Field, Kind, ObjectGraphNodeV1, ObjectGraphV1, ObjectV1, Record, TYPE_BOOL,
 };
 use std::env;
 use std::fs;
@@ -202,6 +203,7 @@ fn c_and_rust_match_the_fixed_seed_differential_corpus() {
     assert_boundaries(&oracle, &artifact_dir);
     assert_malformed_rejections(&oracle);
     assert_object_v1(&oracle);
+    assert_object_graph_v1(&oracle);
     assert_creature_v1(&oracle);
 }
 
@@ -416,6 +418,196 @@ fn assert_object_v1(oracle: &Path) {
         ),
         "ObjectV1 must reject added optional fields rather than silently drifting"
     );
+}
+
+fn object_graph_object(name: &[u8], value: i64) -> ObjectV1 {
+    ObjectV1 {
+        name: fixed(name),
+        description: fixed(b"A weathered bronze key."),
+        key: [fixed(b"key"), fixed(b"bronze"), fixed(b"quest")],
+        use_output: fixed(b"The key turns.\n"),
+        value,
+        weight: value as i16,
+        type_code: 4,
+        adjustment: -2,
+        shots_max: 9,
+        shots_current: 7,
+        ndice: 1,
+        sdice: 8,
+        pdice: -3,
+        armor: -1,
+        wear_flag: 3,
+        magic_power: 6,
+        magic_realm: 2,
+        special: 77,
+        flags: [0x55, 0, 0, 0, 0, 0, 0, 0xaa],
+        quest_num: 12,
+    }
+}
+
+fn assert_object_graph_v1(oracle: &Path) {
+    let expected = ObjectGraphV1 {
+        nodes: vec![
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-bag", 11),
+                parent_index: None,
+                child_index: 0,
+            },
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-coin", 12),
+                parent_index: Some(0),
+                child_index: 0,
+            },
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-gem", 14),
+                parent_index: Some(1),
+                child_index: 0,
+            },
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-key", 13),
+                parent_index: Some(0),
+                child_index: 1,
+            },
+        ],
+    };
+    let wire = decode_hex(&run(oracle, &["object-graph-fixture".into()]));
+    assert_eq!(
+        decode_object_graph_v1(&wire).unwrap(),
+        expected,
+        "Rust must decode the C preorder graph semantics"
+    );
+    assert_eq!(
+        encode_object_graph_v1(&expected).unwrap(),
+        wire,
+        "C/Rust ObjectGraphV1 bytes must be identical"
+    );
+    assert_eq!(
+        run(oracle, &["object-graph-roundtrip".into(), hex(&wire)]),
+        hex(&wire),
+        "C graph import/export must retain Rust-compatible canonical bytes"
+    );
+    let two_roots = ObjectGraphV1 {
+        nodes: vec![
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-root-a", 21),
+                parent_index: None,
+                child_index: 0,
+            },
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-child-a", 22),
+                parent_index: Some(0),
+                child_index: 0,
+            },
+            ObjectGraphNodeV1 {
+                object: object_graph_object(b"synthetic-root-b", 23),
+                parent_index: None,
+                child_index: 1,
+            },
+        ],
+    };
+    let two_root_wire = decode_hex(&run(oracle, &["object-graph-two-root-fixture".into()]));
+    assert_eq!(decode_object_graph_v1(&two_root_wire).unwrap(), two_roots);
+    assert_eq!(encode_object_graph_v1(&two_roots).unwrap(), two_root_wire);
+
+    let mut fields = decode(&wire).unwrap().fields().to_vec();
+    fields.push(Field::optional_raw(6, 0x61, vec![1]));
+    let unknown = encode(&Record::new(Kind::ObjectGraph, fields).unwrap()).unwrap();
+    assert_eq!(
+        run(oracle, &["object-graph-decode".into(), hex(&unknown)]),
+        "-13",
+        "C must classify an unknown graph field as a closed schema violation"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&unknown),
+        Err(Error::InvalidFieldLength { .. })
+    ));
+
+    let mut malformed = decode(&wire).unwrap().fields().to_vec();
+    let mut first_node = malformed[1].value().to_vec();
+    first_node[4..8].copy_from_slice(&0u32.to_be_bytes());
+    malformed[1] = Field::bytes(2, first_node);
+    let malformed = encode(&Record::new(Kind::ObjectGraph, malformed).unwrap()).unwrap();
+    assert_eq!(
+        run(oracle, &["object-graph-decode".into(), hex(&malformed)]),
+        "-13",
+        "C and Rust must reject a root carrying a non-root parent identity"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&malformed),
+        Err(Error::InvalidFieldLength { .. })
+    ));
+
+    let mut closed_root = decode(&wire).unwrap().fields().to_vec();
+    let mut node = closed_root[3].value().to_vec();
+    node[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+    node[8..12].copy_from_slice(&1u32.to_be_bytes());
+    closed_root[3] = Field::bytes(4, node);
+    let closed_root = encode(&Record::new(Kind::ObjectGraph, closed_root).unwrap()).unwrap();
+    assert_eq!(
+        run(oracle, &["object-graph-decode".into(), hex(&closed_root)]),
+        "-13",
+        "C must reject a late child re-entering an already closed root subtree"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&closed_root),
+        Err(Error::InvalidFieldLength { .. })
+    ));
+
+    let mut closed_sibling = decode(&wire).unwrap().fields().to_vec();
+    let mut node = closed_sibling[3].value().to_vec();
+    node[4..8].copy_from_slice(&0u32.to_be_bytes());
+    node[8..12].copy_from_slice(&1u32.to_be_bytes());
+    closed_sibling[3] = Field::bytes(4, node);
+    let mut node = closed_sibling[4].value().to_vec();
+    node[4..8].copy_from_slice(&1u32.to_be_bytes());
+    node[8..12].copy_from_slice(&0u32.to_be_bytes());
+    closed_sibling[4] = Field::bytes(5, node);
+    let closed_sibling = encode(&Record::new(Kind::ObjectGraph, closed_sibling).unwrap()).unwrap();
+    assert_eq!(
+        run(
+            oracle,
+            &["object-graph-decode".into(), hex(&closed_sibling)]
+        ),
+        "-13",
+        "C must reject a late grandchild re-entering an already closed sibling subtree"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&closed_sibling),
+        Err(Error::InvalidFieldLength { .. })
+    ));
+
+    let canonical = decode(&wire).unwrap();
+    let mut depth_fields = vec![Field::u32(1, 65)];
+    for index in 0..65u32 {
+        let mut node = canonical.fields()[if index == 0 { 1 } else { 2 }]
+            .value()
+            .to_vec();
+        node[0..4].copy_from_slice(&index.to_be_bytes());
+        node[4..8].copy_from_slice(&(if index == 0 { u32::MAX } else { index - 1 }).to_be_bytes());
+        node[8..12].copy_from_slice(&0u32.to_be_bytes());
+        depth_fields.push(Field::bytes((index + 2) as u16, node));
+    }
+    let depth_65 = encode(&Record::new(Kind::ObjectGraph, depth_fields).unwrap()).unwrap();
+    assert_eq!(
+        run(oracle, &["object-graph-decode".into(), hex(&depth_65)]),
+        "-6",
+        "C must classify wire depth 65 as a graph size-limit violation"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&depth_65),
+        Err(Error::SizeLimitExceeded { limit: 64 })
+    ));
+    assert_eq!(
+        run(
+            oracle,
+            &["object-graph-decode".into(), hex(&wire[..wire.len() - 1]),],
+        ),
+        "-7"
+    );
+    assert!(matches!(
+        decode_object_graph_v1(&wire[..wire.len() - 1]),
+        Err(Error::Truncated { .. })
+    ));
 }
 
 fn assert_creature_v1(oracle: &Path) {

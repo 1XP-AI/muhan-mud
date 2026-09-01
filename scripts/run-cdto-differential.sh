@@ -25,7 +25,7 @@ trap cleanup EXIT
 mkdir -p "$artifact_dir"
 "${CC:-gcc}" -std=gnu89 -fcommon -I"$repo_root/src" -O1 -fno-omit-frame-pointer \
   -fsanitize=address,undefined \
-  "$repo_root/tests/harness/cdto_v1_oracle.c" "$repo_root/src/cdto_v1.c" "$repo_root/src/object_v1.c" "$repo_root/src/creature_v1.c" \
+  "$repo_root/tests/harness/cdto_v1_oracle.c" "$repo_root/src/cdto_v1.c" "$repo_root/src/object_v1.c" "$repo_root/src/object_graph_v1.c" "$repo_root/src/creature_v1.c" \
   -o "$oracle"
 
 CDTO_V1_C_ORACLE="$oracle" \
@@ -35,5 +35,6 @@ cargo test --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto --test
 
 make -C "$repo_root/src" cdto-v1-sanitizer-test CC="${CC:-gcc}"
 make -C "$repo_root/src" object-v1-sanitizer-test CC="${CC:-gcc}"
+make -C "$repo_root/src" object-graph-v1-sanitizer-test CC="${CC:-gcc}"
 make -C "$repo_root/src" creature-v1-sanitizer-test CC="${CC:-gcc}"
 passed=1
