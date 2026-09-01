@@ -45,6 +45,25 @@
 
 # 3) 통합 스모크(C-only + Rust resolver)
 ./scripts/run-smoke.sh
+
+# 4) 플레이어 저장 contract + 실제 생성/저장/재로그인 AI 시나리오
+make -C src unit-test
+./scripts/run-ai-scenario.sh --output /tmp/muhan-ai-scenario.json
+```
+
+플레이어 파일을 마이그레이션하기 전에는 raw 내용을 출력하지 않는 JSONL inventory를
+생성할 수 있습니다. 기본 모드는 old first-character shard와 invalid/duplicate/
+symlink 항목을 기록합니다. C 로그인과 같은 ASCII canonical name/shard 및
+중복 검증을 포함하며, canonical tree 검증에는 `--strict`를 사용합니다.
+
+```bash
+MUHAN_HOME=/path/to/muhan-home \
+  python3 scripts/export-player-inventory.py --output /tmp/player-inventory.jsonl
+MUHAN_HOME=/path/to/muhan-home \
+  python3 scripts/export-player-inventory.py --strict --output /tmp/player-inventory.jsonl
+
+# exporter regression tests (stdlib unittest)
+python3 -m unittest discover -s tests/unit -p 'test_export_player_inventory.py' -v
 ```
 
 ## 웹 MUD MVP
@@ -73,7 +92,7 @@ pnpm dev:web
 - `resources_manifest/`: 경로/리소스 매핑 데이터
 - `src/`: 레거시 C 서버 소스 + 경로 해석 계층
 - `rust/`: 리소스 인덱스/FFI 크레이트
-- `scripts/`, `tests/smoke/`: 빌드/부팅/회귀 검증 자동화
+- `scripts/`, `tests/unit/`, `tests/harness/`, `tests/scenarios/`: 저장 contract와 실제 서버 회귀 검증 자동화
 - `docs/revive/`: 기준선/복구 메모
 
 ## 참고
