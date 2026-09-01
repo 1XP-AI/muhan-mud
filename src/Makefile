@@ -15,17 +15,20 @@ UNIT_GC_FLAGS = -Wl,-dead_strip
 	UNIT_LEGACY_WARN_FLAGS = -Wno-error=implicit-function-declaration -Wno-error=return-mismatch
 	CDTO_V1_TEST_WARN_FLAGS = -Wno-deprecated-non-prototype
 	DECODER_ASAN_OPTIONS = detect_leaks=0:halt_on_error=1
+	V2_LINK_MAP_OPTION = -Wl,-map,
 else
 	UNIT_GC_FLAGS = -Wl,--gc-sections
 	UNIT_LEGACY_WARN_FLAGS =
 	CDTO_V1_TEST_WARN_FLAGS =
 	DECODER_ASAN_OPTIONS = detect_leaks=1:halt_on_error=1
+	V2_LINK_MAP_OPTION = -Wl,-Map,
 endif
 
 LIBS = -lm
 CC = cc
 OUTFILE = frp.new
 EXTRA_LIBS =
+V2_TEST_CFLAGS = -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS)
 
 ifeq ($(USE_RUST_RESOLVER),1)
 CFLAGS += -DUSE_RUST_RESOLVER
@@ -87,6 +90,7 @@ unit-test:
 	$(MAKE) object-graph-v1-test
 	$(MAKE) creature-v1-test
 	$(MAKE) character-save-journal-test
+	$(MAKE) character-save-journal-v2-test
 
 character-save-journal-test:
 	mkdir -p /tmp/muhan-unit
@@ -97,6 +101,25 @@ character-save-journal-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -DCHARACTER_SAVE_JOURNAL_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_test.c character_save_journal.c player_path.c resource_path.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_sanitizer_test
+
+character-save-journal-v2-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2.c -o /tmp/muhan-unit/character_save_journal_v2_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_utf8_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c ../tests/unit/character_save_journal_v2_prod_link_test.c -o /tmp/muhan-unit/character_save_journal_v2_prod_link_test.o
+	$(CC) /tmp/muhan-unit/character_save_journal_v2_prod_link_test.o /tmp/muhan-unit/character_save_journal_v2_prod.o /tmp/muhan-unit/character_save_journal_v2_utf8_prod.o $(V2_LINK_MAP_OPTION)/tmp/muhan-unit/character_save_journal_v2_prod.map -o /tmp/muhan-unit/character_save_journal_v2_prod_link_test
+	/tmp/muhan-unit/character_save_journal_v2_prod_link_test
+	python3 ../tests/unit/character_save_journal_v2_no_live_link_test.py --binary /tmp/muhan-unit/character_save_journal_v2_prod_link_test --object /tmp/muhan-unit/character_save_journal_v2_prod.o --map /tmp/muhan-unit/character_save_journal_v2_prod.map --makefile Makefile
+
+character-save-journal-v2-test: character-save-journal-v2-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -I. ../tests/unit/character_save_journal_v2_test.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_test
+	/tmp/muhan-unit/character_save_journal_v2_test
+
+character-save-journal-v2-sanitizer-test: character-save-journal-v2-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_test.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_sanitizer_test
 
 files1-decoder-test:
 	mkdir -p /tmp/muhan-unit

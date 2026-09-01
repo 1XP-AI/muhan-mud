@@ -1,11 +1,19 @@
 # M3 journal v2: live wiring 전 계약 게이트
 
-상태: 설계·RED test 계획 전용 (2026-09-02). 현재
-`src/character_save_journal.*`와 `tests/unit/character_save_journal_test.c`는
-**v1 synthetic metadata journal뿐인 test-only component**다. 이 문서는 090 SQL,
-091 C staged artifact, 092 mock integration의 순서를 고정할 뿐이며 `save_ply`,
-`file_player_store_save`, bank writer, live DB RPC/migration을 연결하거나 승인하지
-않는다.
+상태: **091a test-only stage/hash/parser slice GREEN, 091b 미구현** (2026-09-02).
+`src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
+digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
+검증한다. 일반·ASan/UBSan·production link-map 테스트가 GREEN이지만 PVC 수명 lock,
+persisted writer/route cache, publish/rename, recovery state machine, DB ACK backlog 및
+production no-GC 운용은 아직 구현하지 않았다. 따라서 091 전체나 live 연결이
+완료된 상태가 아니다. `save_ply`, `file_player_store_save`, bank writer, Gateway/DB,
+production startup에는 링크되지 않는다.
+
+기존 `src/character_save_journal.*`와
+`tests/unit/character_save_journal_test.c`도 **v1 synthetic metadata journal뿐인
+test-only component**다. 이 문서는 090 SQL, 091a 준비 경계, 091b 게시·복구,
+092 mock integration의 순서를 고정할 뿐이며 live DB RPC/migration을 연결하거나
+승인하지 않는다.
 
 ## 근거와 경계
 
@@ -190,21 +198,24 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 090 | `red_090_receipt_exact_retry_and_head_cas` / existing, absent, receipt rows | missing-head `existing` bootstraps only from the exact imported hash while mismatched/absent inference rejects; exact retry is read-only only for the current exact unsealed, unexpired writer tuple and a consistent head at or beyond its revision. Changed digest/stale prehash/revision/epoch, missing/behind/mismatched head, or retry after expiry/seal/successor leaves receipt and head unchanged. |
 | 090 | `red_090_lock_wait_rechecks_clock` / concurrent PG sessions + `pg_locks` | post-wait expired lease rejects; a committed non-key lifecycle change is observed after route-lock wait and also rejects. No deadlock or partial head. |
 | 090 | `red_090_writer_privileges_and_no_identity_mutation` / mud_writer, Gateway, browser roles | only mud_writer executes; no ownership/lifecycle/name/shard mutation. |
-| **091 C staged artifact, test-only** | `red_091_v2_wire_identity_and_leaf_binding` / fixed journal texts | missing/mismatched instance/character/digest/non-derived leaf rejects before mutation. |
-| 091 | `red_091_descriptor_walk_uid_mode_and_symlink` / disposable wrong UID/mode, symlink, FIFO, device, hard-link tree | any untrusted ancestor/leaf fails closed, no path fallback/auto-chmod. |
-| 091 | `red_091_hash_cap_when_open_fd_grows` / child extends stage/live fd after fstat | >64 MiB cumulative read rejects; prefix hash never accepted. |
-| 091 | `red_091_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | only exact stage+pre or consumed-stage+post advances; mismatch freezes and makes no DB call. |
-| 091 | `red_091_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
-| 091 | `red_091_pvc_lock_two_process_race` / `fork` + held flock same volume | one process alone prepares/publishes/reconciles; loser changes nothing. |
-| 091 | `red_091_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
-| 091 | `red_091_no_automatic_cleanup_of_evidence` / all states + orphan stage | no automatic delete beyond explicit fixture teardown. |
+| **091a C prepare boundary, test-only — GREEN** | `red_091a_v2_wire_identity_leaf_and_raw_bytes` / fixed journal texts | missing/mismatched identity/digest/non-derived leaf, overlong field, embedded NUL, extra bytes reject before mutation and zero parser output. |
+| 091a — GREEN | `red_091a_descriptor_walk_and_file_contract` / disposable wrong UID/mode, symlink, FIFO, device, hard-link and component-swap tree | invalid ancestor/leaf rejects with no path fallback or auto-chmod. |
+| 091a — GREEN | `red_091a_hash_cap_when_open_fd_grows` / child extends fd after fstat | exactly 64 MiB accepts; initial or cumulative +1 rejects; prefix hash is never accepted. |
+| 091a — GREEN | `red_091a_write_fsync_close_durability` / EINTR, short/zero/EIO write, four close points, four fsync points | retryable writes finish exactly; uncertain durability reports failure, preserves available stage/journal evidence, and never reuses a consumed fd. |
+| 091a — GREEN | `red_091a_static_no_live_linkage` / fresh production object, `nm`, link map, Make `OBJECTS` | no player writer, bank, onboarding, Gateway or DB edge; test hooks absent; v2 absent from live MUD objects. |
+| **091b publish/recovery — BLOCKED** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | only exact stage+pre or consumed-stage+post advances; mismatch freezes and makes no DB call. |
+| 091b — BLOCKED | `red_091b_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
+| 091b — BLOCKED | `red_091b_pvc_lock_two_process_race` / `fork` + held flock same volume | one process alone prepares/publishes/reconciles; loser changes nothing. |
+| 091b — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
+| 091b — BLOCKED | `red_091b_no_automatic_cleanup_of_evidence` / all states + orphan stage | no automatic delete beyond explicit fixture teardown. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
 | 092 | `red_092_crash_cutpoints_end_to_end` / exit after every fsync/rename/RPC then restart | only approved recovered state or frozen divergence; no duplicate receipt/head advance. |
 | 092 | `red_092_handoff_drain_then_successor` / queued A ACKs, seal mock, B acquire | B impossible until A ACKs and seals; then A cannot mutate DB. |
 | 092 | `red_092_static_no_live_writer_linkage` / source/link-map fixture | no `save_ply`, file writer, bank, Gateway, or production startup reaches v2. Passing is not activation. |
 
-090 is additive private schema/role/RPC plus SQL RED tests only. 091 consumes that fixed
-contract through mocks and changes only test-only stage/journal code. 092 composes mocks with
+090 is additive private schema/role/RPC plus SQL RED tests only. 091a fixes the test-only
+stage/hash/parser boundary; 091b must add lock, publish and recovery through mocks before 091
+can be called complete. 092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.
