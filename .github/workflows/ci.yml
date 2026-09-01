@@ -34,7 +34,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Run ownership and session contract
+      - name: Run identity and onboarding contracts
         shell: bash
         env:
           DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
@@ -43,7 +43,10 @@ jobs:
           psql "$DATABASE_URL" --file=supabase/tests/bootstrap_contract.sql
           psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
           psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --file=supabase/migrations/20260903000000_character_onboarding.sql
+          psql "$DATABASE_URL" --file=supabase/migrations/20260903000000_character_onboarding.sql
           psql "$DATABASE_URL" --file=supabase/tests/game_identity_contract.sql
+          psql "$DATABASE_URL" --file=supabase/tests/character_onboarding_contract.sql
 
   build-and-smoke:
     name: ${{ matrix.runner }}
@@ -203,6 +206,19 @@ jobs:
         run: |
           set -euo pipefail
           make -C src unit-test CC=gcc
+
+      - name: Onboarding protocol sanitizers
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/onboarding_admission_test.c \
+            src/onboarding_admission.c src/trusted_admission.c src/player_path.c \
+            src/utf8_text.c src/resource_path.c \
+            -o "$RUNNER_TEMP/onboarding-admission-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1 \
+            "$RUNNER_TEMP/onboarding-admission-sanitized-test"
 
       - name: Deterministic AI scenario
         if: matrix.runner == 'ubuntu-latest'
