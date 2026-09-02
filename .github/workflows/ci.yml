@@ -27,12 +27,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install PostgreSQL client
+      - name: Install PostgreSQL client and libpq headers
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y postgresql-client libpq-dev
+
+      - name: Compile isolated libpq receipt adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-receipt-transport-native-compile CC=gcc PG_CONFIG=pg_config
 
       - name: Run identity and onboarding contracts
         shell: bash
@@ -301,6 +307,7 @@ jobs:
           make -C src character-save-journal-v2-publish-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-ack-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-recovery-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-receipt-transport-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc
           make -C src object-graph-v1-sanitizer-test CC=gcc

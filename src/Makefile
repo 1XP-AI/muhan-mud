@@ -29,6 +29,7 @@ CC = cc
 OUTFILE = frp.new
 EXTRA_LIBS =
 V2_TEST_CFLAGS = -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS)
+PG_CONFIG ?= pg_config
 
 ifeq ($(USE_RUST_RESOLVER),1)
 CFLAGS += -DUSE_RUST_RESOLVER
@@ -96,6 +97,28 @@ unit-test:
 	$(MAKE) character-save-journal-v2-publish-test
 	$(MAKE) character-save-journal-v2-ack-test
 	$(MAKE) character-save-journal-v2-recovery-test
+	$(MAKE) character-save-journal-v2-receipt-transport-test
+
+character-save-journal-v2-receipt-transport-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_prod.o
+	python3 ../tests/unit/character_save_journal_v2_receipt_transport_no_live_link_test.py --adapter-object /tmp/muhan-unit/character_save_journal_v2_receipt_transport_prod.o --makefile Makefile --adapter-source character_save_journal_v2_receipt_transport.c --adapter-header character_save_journal_v2_receipt_transport.h --native-source character_save_journal_v2_receipt_transport_native.c --native-header character_save_journal_v2_receipt_transport_native.h
+
+character-save-journal-v2-receipt-transport-test: character-save-journal-v2-receipt-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_receipt_transport_test.c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_test
+	/tmp/muhan-unit/character_save_journal_v2_receipt_transport_test
+
+character-save-journal-v2-receipt-transport-sanitizer-test: character-save-journal-v2-receipt-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_receipt_transport_test.c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
+
+character-save-journal-v2-receipt-transport-native-compile:
+	mkdir -p /tmp/muhan-unit
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-receipt-transport-native-compile: PG_CONFIG unavailable" >&2; exit 2; }
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -c character_save_journal_v2_receipt_transport_native.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_native.o
+	python3 ../tests/unit/character_save_journal_v2_receipt_transport_no_live_link_test.py --native-object /tmp/muhan-unit/character_save_journal_v2_receipt_transport_native.o --makefile Makefile --adapter-source character_save_journal_v2_receipt_transport.c --adapter-header character_save_journal_v2_receipt_transport.h --native-source character_save_journal_v2_receipt_transport_native.c --native-header character_save_journal_v2_receipt_transport_native.h
 
 character-save-journal-v2-recovery-static-test:
 	mkdir -p /tmp/muhan-unit
