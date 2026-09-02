@@ -97,9 +97,14 @@ jobs:
           set -euo pipefail
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --command="alter role mud_writer_login password 'm3-rpc-login-password'"
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_writer_session_contract.sql
           make -C src character-save-journal-v2-runtime-native-compile CC=gcc PG_CONFIG=pg_config
           M3_RUNTIME_ALLOW_DISPOSABLE=1 make -C src character-save-journal-v2-runtime-integration CC=gcc PG_CONFIG=pg_config
+          make -C src character-save-journal-v2-rpc-transport-native-compile CC=gcc PG_CONFIG=pg_config
+          M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1 \
+          M3_RPC_TRANSPORT_DATABASE_URL=postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:5432/postgres \
+            make -C src character-save-journal-v2-rpc-transport-integration CC=gcc PG_CONFIG=pg_config
 
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
@@ -207,6 +212,14 @@ jobs:
           set -euo pipefail
           make -C src clean >/dev/null 2>&1 || true
           make -C src -j2 CC=gcc
+
+      - name: Audit default MUD artifact has no PQ or libpq (Linux)
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-rpc-transport-live-mud-audit \
+            M3_RPC_TRANSPORT_LIVE_BINARY="$GITHUB_WORKSPACE/src/frp.new"
 
       - name: Smoke test (Linux/macOS)
         if: matrix.runner != 'windows-latest'
@@ -334,6 +347,7 @@ jobs:
           make -C src character-save-journal-v2-ack-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-recovery-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-receipt-transport-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-rpc-transport-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc

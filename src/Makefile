@@ -114,6 +114,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-ack-test
 	$(MAKE) character-save-journal-v2-recovery-test
 	$(MAKE) character-save-journal-v2-receipt-transport-test
+	$(MAKE) character-save-journal-v2-rpc-transport-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
@@ -132,6 +133,48 @@ character-save-journal-v2-receipt-transport-sanitizer-test: character-save-journ
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_receipt_transport_test.c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
+
+# This owner is deliberately opt-in/test-only: default OBJECTS and frp.new
+# must never gain it or a libpq symbol.
+character-save-journal-v2-rpc-transport-default-link-inputs:
+	@printf '%s\n' 'OBJECTS=$(OBJECTS)' 'LIBS=$(LIBS)' 'EXTRA_LIBS=$(EXTRA_LIBS)' 'M3_RUNTIME_LIBS=$(M3_RUNTIME_LIBS)'
+
+character-save-journal-v2-rpc-transport-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_prod.o
+	python3 ../tests/unit/character_save_journal_v2_rpc_transport_no_live_link_test.py --object /tmp/muhan-unit/character_save_journal_v2_rpc_transport_prod.o --makefile Makefile --source character_save_journal_v2_rpc_transport.c --header character_save_journal_v2_rpc_transport.h --native-source character_save_journal_v2_rpc_transport_native.c --native-header character_save_journal_v2_rpc_transport_native.h
+
+character-save-journal-v2-rpc-transport-test: character-save-journal-v2-rpc-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_rpc_transport_test.c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_test
+	/tmp/muhan-unit/character_save_journal_v2_rpc_transport_test
+
+character-save-journal-v2-rpc-transport-sanitizer-test: character-save-journal-v2-rpc-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_rpc_transport_test.c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_rpc_transport_sanitizer_test
+
+character-save-journal-v2-rpc-transport-native-compile: character-save-journal-v2-rpc-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-rpc-transport-native-compile: PG_CONFIG unavailable" >&2; exit 2; }
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -c character_save_journal_v2_rpc_transport_native.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_native.o
+	python3 ../tests/unit/character_save_journal_v2_rpc_transport_no_live_link_test.py --object /tmp/muhan-unit/character_save_journal_v2_rpc_transport_prod.o --native /tmp/muhan-unit/character_save_journal_v2_rpc_transport_native.o --makefile Makefile --source character_save_journal_v2_rpc_transport.c --header character_save_journal_v2_rpc_transport.h --native-source character_save_journal_v2_rpc_transport_native.c --native-header character_save_journal_v2_rpc_transport_native.h
+
+# Deliberately opt-in: CI supplies its just-built default executable.  This
+# never reads a developer's local frp.new during unit/static testing.
+M3_RPC_TRANSPORT_LIVE_BINARY ?=
+character-save-journal-v2-rpc-transport-live-mud-audit:
+	@if test -z "$(M3_RPC_TRANSPORT_LIVE_BINARY)"; then echo "m3 RPC live MUD audit skipped (set M3_RPC_TRANSPORT_LIVE_BINARY to a CI artifact)"; else case "$$(uname -s)" in Linux) python3 ../tests/unit/character_save_journal_v2_rpc_transport_live_mud_audit.py --binary "$(M3_RPC_TRANSPORT_LIVE_BINARY)" ;; *) echo "m3 RPC live MUD audit requires Linux" >&2; exit 2 ;; esac; fi
+
+ifeq ($(M3_RPC_TRANSPORT_ALLOW_DISPOSABLE),1)
+character-save-journal-v2-rpc-transport-integration: character-save-journal-v2-rpc-transport-native-compile
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_rpc_transport_integration.c character_save_journal_v2_rpc_transport.c character_save_journal_v2_rpc_transport_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_integration
+	M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1 bash ../supabase/tests/m3_rpc_transport_integration.sh /tmp/muhan-unit/character_save_journal_v2_rpc_transport_integration
+else
+character-save-journal-v2-rpc-transport-integration:
+	@echo "m3 RPC transport integration skipped (set M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1)"
+endif
 
 character-save-journal-v2-runtime-static-test:
 	mkdir -p /tmp/muhan-unit
