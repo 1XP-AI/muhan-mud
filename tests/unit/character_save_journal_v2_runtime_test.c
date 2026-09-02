@@ -19,6 +19,7 @@
 
 typedef struct fake_environment {
     const char *mode;
+    const char *muhan_home;
     const char *world_id;
     const char *conninfo_file;
 } fake_environment;
@@ -45,6 +46,13 @@ typedef struct fake_secret_file {
     int short_read, close_error, mutate_during_read;
 } fake_secret_file;
 
+typedef struct fake_shadow {
+    int start_calls, shutdown_calls, start_result;
+    char supplied_home[128];
+    char supplied_world_id[128];
+    char supplied_conninfo[128];
+} fake_shadow;
+
 static int expect(int condition, const char *message)
 {
     if(condition) return 0;
@@ -56,6 +64,7 @@ static const char *fake_getenv(void *opaque, const char *name)
 {
     fake_environment *environment=(fake_environment *)opaque;
     if(!strcmp(name,"MUD_M3_MODE")) return environment->mode;
+    if(!strcmp(name,"MUHAN_HOME")) return environment->muhan_home;
     if(!strcmp(name,"MUD_M3_WORLD_ID")) return environment->world_id;
     if(!strcmp(name,"MUD_M3_CONNINFO_FILE")) return environment->conninfo_file;
     return 0;
@@ -144,6 +153,24 @@ static const character_save_journal_v2_runtime_file_operations fake_secret_file_
     fake_secret_open,fake_secret_stat,fake_secret_read,fake_secret_close
 };
 
+static int fake_shadow_start(void *opaque, const char *muhan_home,
+                             const char *world_id, const char *conninfo)
+{
+    fake_shadow *shadow=(fake_shadow *)opaque;
+    shadow->start_calls++;
+    (void)snprintf(shadow->supplied_home,sizeof(shadow->supplied_home),"%s",muhan_home);
+    (void)snprintf(shadow->supplied_world_id,sizeof(shadow->supplied_world_id),"%s",world_id);
+    (void)snprintf(shadow->supplied_conninfo,sizeof(shadow->supplied_conninfo),"%s",conninfo);
+    return shadow->start_result;
+}
+
+static void fake_shadow_shutdown(void *opaque)
+{ fake_shadow *shadow=(fake_shadow *)opaque; shadow->shutdown_calls++; }
+
+static const character_save_journal_v2_runtime_shadow_operations fake_shadow_operations={
+    fake_shadow_start,fake_shadow_shutdown
+};
+
 static int bytes_are_zero(const void *bytes, size_t length)
 {
     const unsigned char *cursor=(const unsigned char *)bytes;
@@ -176,6 +203,23 @@ static void runtime_init(character_save_journal_v2_runtime *runtime,
         dependencies.file_operations=&fake_file_operations;
         dependencies.file_opaque=files;
     }
+    character_save_journal_v2_runtime_init(runtime,&dependencies);
+}
+
+static void runtime_shadow_init(character_save_journal_v2_runtime *runtime,
+                                fake_environment *environment, fake_database *database,
+                                fake_secret_file *file, fake_shadow *shadow)
+{
+    character_save_journal_v2_runtime_dependencies dependencies;
+    memset(&dependencies,0,sizeof(dependencies));
+    dependencies.environment_get=fake_getenv;
+    dependencies.environment_opaque=environment;
+    dependencies.database_operations=&fake_database_operations;
+    dependencies.database_opaque=database;
+    dependencies.file_operations=&fake_secret_file_operations;
+    dependencies.file_opaque=file;
+    dependencies.shadow_operations=&fake_shadow_operations;
+    dependencies.shadow_opaque=shadow;
     character_save_journal_v2_runtime_init(runtime,&dependencies);
 }
 
@@ -353,6 +397,114 @@ static int test_probe_wipes_conninfo_without_losing_ready_state(void)
     return failed;
 }
 
+static int test_shadow_requires_explicit_environment_before_conninfo_io(void)
+{
+    character_save_journal_v2_runtime runtime;
+    fake_environment environment; fake_database database; fake_secret_file file;
+    fake_shadow shadow; int failed=0;
+    memset(&environment,0,sizeof(environment)); environment.mode="shadow";
+    environment.world_id="world-a"; environment.conninfo_file="/fake-secret";
+    fake_database_ready(&database); memset(&file,0,sizeof(file));
+    file.bytes="dbname=m3"; file.length=strlen(file.bytes); memset(&shadow,0,sizeof(shadow));
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED,
+                   "shadow must require explicit MUHAN_HOME");
+    failed|=expect(file.open_calls==0&&shadow.start_calls==0&&database.connect_calls==0,
+                   "missing MUHAN_HOME must fail before conninfo, shadow, and probe database access");
+    environment.muhan_home="relative"; runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&file.open_calls==0,
+                   "shadow must reject a relative MUHAN_HOME before conninfo access");
+    environment.muhan_home="/muhan/../escape"; runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&file.open_calls==0,
+                   "shadow must reject a non-canonical MUHAN_HOME before conninfo access");
+    environment.muhan_home="/muhan"; environment.world_id="World";
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&file.open_calls==0,
+                   "shadow must validate the writer world grammar before conninfo access");
+    return failed;
+}
+
+static int test_shadow_transfers_one_scrubbed_conninfo_and_shutdowns_once(void)
+{
+    character_save_journal_v2_runtime runtime;
+    fake_environment environment; fake_database database; fake_secret_file file;
+    fake_shadow shadow; int failed=0;
+    memset(&environment,0,sizeof(environment)); environment.mode="shadow";
+    environment.muhan_home="/muhan"; environment.world_id="world-a";
+    environment.conninfo_file="/fake-secret";
+    fake_database_ready(&database); memset(&file,0,sizeof(file));
+    file.bytes="host=localhost dbname=m3\n"; file.length=strlen(file.bytes);
+    memset(&shadow,0,sizeof(shadow)); runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_READY,
+                   "valid shadow must become ready");
+    failed|=expect(file.open_calls==1&&file.close_calls==1&&shadow.start_calls==1&&database.connect_calls==0,
+                   "shadow must read the conninfo once and not run the probe connection");
+    failed|=expect(!strcmp(shadow.supplied_home,"/muhan")&&!strcmp(shadow.supplied_world_id,"world-a")&&
+                   !strcmp(shadow.supplied_conninfo,"host=localhost dbname=m3"),
+                   "shadow must transfer only validated environment and normalized conninfo bytes");
+    failed|=expect(runtime.conninfo_length==0&&bytes_are_zero(runtime.conninfo,sizeof(runtime.conninfo)),
+                   "shadow must scrub conninfo immediately after startup");
+    character_save_journal_v2_runtime_shutdown(&runtime);
+    character_save_journal_v2_runtime_shutdown(&runtime);
+    failed|=expect(shadow.shutdown_calls==1&&
+                   character_save_journal_v2_runtime_get_state(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED,
+                   "shadow shutdown must be idempotent");
+    return failed;
+}
+
+static int test_active_shadow_reinitialization_is_non_destructive(void)
+{
+    character_save_journal_v2_runtime runtime;
+    fake_environment environment; fake_database database; fake_secret_file file;
+    fake_shadow shadow; int failed=0;
+
+    memset(&environment,0,sizeof(environment)); environment.mode="shadow";
+    environment.muhan_home="/muhan"; environment.world_id="world-a";
+    environment.conninfo_file="/fake-secret";
+    fake_database_ready(&database); memset(&file,0,sizeof(file));
+    file.bytes="dbname=m3"; file.length=strlen(file.bytes);
+    memset(&shadow,0,sizeof(shadow));
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==
+                   CHARACTER_SAVE_JOURNAL_V2_RUNTIME_READY,
+                   "active reinitialization fixture must become ready");
+
+    character_save_journal_v2_runtime_init(&runtime,0);
+    failed|=expect(runtime.current_state==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_READY&&
+                   runtime.shadow_active&&runtime.dependencies.shadow_opaque==&shadow,
+                   "init must not overwrite an active shadow runtime");
+    failed|=expect(shadow.shutdown_calls==0,
+                   "active init guard must not perform an implicit shutdown");
+
+    character_save_journal_v2_runtime_shutdown(&runtime);
+    failed|=expect(shadow.shutdown_calls==1&&
+                   runtime.current_state==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED,
+                   "guarded runtime must retain its one explicit shutdown path");
+    return failed;
+}
+
+static int test_shadow_start_failure_unwinds_and_scrubs(void)
+{
+    character_save_journal_v2_runtime runtime;
+    fake_environment environment; fake_database database; fake_secret_file file;
+    fake_shadow shadow; int failed=0;
+    memset(&environment,0,sizeof(environment)); environment.mode="shadow";
+    environment.muhan_home="/muhan"; environment.world_id="world-a";
+    environment.conninfo_file="/fake-secret";
+    fake_database_ready(&database); memset(&file,0,sizeof(file));
+    file.bytes="dbname=m3"; file.length=strlen(file.bytes);
+    memset(&shadow,0,sizeof(shadow)); shadow.start_result=-1;
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED,
+                   "shadow startup failure must fail closed");
+    failed|=expect(shadow.start_calls==1&&shadow.shutdown_calls==1&&
+                   runtime.conninfo_length==0&&bytes_are_zero(runtime.conninfo,sizeof(runtime.conninfo)),
+                   "shadow startup failure must invoke the one inverse path and scrub conninfo");
+    character_save_journal_v2_runtime_shutdown(&runtime);
+    failed|=expect(shadow.shutdown_calls==1,"failed shadow shutdown must not invoke a second close");
+    return failed;
+}
+
 int main(void)
 {
     int failed=0;
@@ -364,5 +516,9 @@ int main(void)
     failed|=test_probe_requires_writer_world_id_grammar();
     failed|=test_probe_detects_nanosecond_secret_mutation_and_wipes_on_failure();
     failed|=test_probe_wipes_conninfo_without_losing_ready_state();
+    failed|=test_shadow_requires_explicit_environment_before_conninfo_io();
+    failed|=test_shadow_transfers_one_scrubbed_conninfo_and_shutdowns_once();
+    failed|=test_active_shadow_reinitialization_is_non_destructive();
+    failed|=test_shadow_start_failure_unwinds_and_scrubs();
     return failed ? 1 : 0;
 }

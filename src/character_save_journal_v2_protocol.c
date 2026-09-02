@@ -367,6 +367,16 @@ character_save_journal_v2_protocol_report *report_out;
         result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
         goto done;
     }
+    /* A command UUID is an immutable journal identity.  Recovery owns every
+     * valid PREPARED record already present for it; a new save must reject
+     * before creating a stage whose newer route revision could contaminate
+     * that recovery evidence. */
+    if(character_save_journal_v2_read_prepared_at(root_fd,
+       request->command_uuid,&reread)==0) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+        goto done;
+    }
+    memset(&reread,0,sizeof(reread));
     if(character_save_journal_v2_stage_at(root_fd,&wire,bytes,length)) {
         result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
         goto done;

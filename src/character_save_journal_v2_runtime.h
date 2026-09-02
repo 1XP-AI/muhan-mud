@@ -4,8 +4,9 @@
 #include <stddef.h>
 #include <sys/stat.h>
 
-/* This module is deliberately an unattached startup probe.  It never starts
- * a writer, publishes a save, or calls live player storage. */
+/* Opt-in M3 process bootstrap.  Probe mode performs only the writer-session
+ * assertion; shadow mode delegates construction of the live PlayerStore and
+ * its process-owned writer to the native lifecycle boundary. */
 #define CHARACTER_SAVE_JOURNAL_V2_RUNTIME_CONNINFO_MAX 4096
 #define CHARACTER_SAVE_JOURNAL_V2_RUNTIME_WORLD_ID_MAX 64
 #define CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX 1024
@@ -42,6 +43,17 @@ typedef struct character_save_journal_v2_runtime_file_operations {
     int (*close_descriptor)(void *opaque, int descriptor);
 } character_save_journal_v2_runtime_file_operations;
 
+/* Shadow startup owns no credential bytes beyond the duration of this call.
+ * The implementation must take the supplied conninfo only to establish its
+ * one connection, then retain only the resources needed by the live writer.
+ * shutdown is required to be idempotent and to release every partially
+ * constructed resource in reverse order. */
+typedef struct character_save_journal_v2_runtime_shadow_operations {
+    int (*start)(void *opaque, const char *muhan_home, const char *world_id,
+                 const char *conninfo);
+    void (*shutdown)(void *opaque);
+} character_save_journal_v2_runtime_shadow_operations;
+
 typedef struct character_save_journal_v2_runtime_dependencies {
     const char *(*environment_get)(void *opaque, const char *name);
     void *environment_opaque;
@@ -49,6 +61,8 @@ typedef struct character_save_journal_v2_runtime_dependencies {
     void *database_opaque;
     const character_save_journal_v2_runtime_file_operations *file_operations;
     void *file_opaque;
+    const character_save_journal_v2_runtime_shadow_operations *shadow_operations;
+    void *shadow_opaque;
 } character_save_journal_v2_runtime_dependencies;
 
 typedef struct character_save_journal_v2_runtime {
@@ -56,15 +70,20 @@ typedef struct character_save_journal_v2_runtime {
     int has_dependencies;
     character_save_journal_v2_runtime_state current_state;
     size_t conninfo_length;
+    int shadow_active;
     char conninfo[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_CONNINFO_MAX+1];
 } character_save_journal_v2_runtime;
 
+/* Initialize fresh storage, or storage whose prior runtime was shut down.
+ * An accidental call for the active shadow owner is a non-destructive no-op;
+ * callers use start for a deliberate restart because start shuts down first. */
 void character_save_journal_v2_runtime_init(
     character_save_journal_v2_runtime *runtime,
     const character_save_journal_v2_runtime_dependencies *dependencies);
 
 /* MUD_M3_MODE: absent/off disables; probe performs the isolated assertion;
- * every other value fails closed. */
+ * shadow requires explicit MUHAN_HOME, world id, and conninfo path before it
+ * builds the opt-in live writer.  Every other value fails closed. */
 character_save_journal_v2_runtime_state
 character_save_journal_v2_runtime_start(character_save_journal_v2_runtime *runtime);
 

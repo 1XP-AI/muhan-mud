@@ -1335,6 +1335,19 @@ static int test_held_v3_head_authority(void)
     if(file_sha256(root,"player/66/M3alpha",digest)) return failed+1;
     state.v3_head_revision=8;
     strcpy(state.v3_head_sha256,digest);
+    state.route_calls=state.serialize_calls=0;
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE&&
+        report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_SERIALIZED&&
+        state.route_calls==1&&state.serialize_calls==1&&
+        !exists(root,"character-save-stage/10000000-0000-0000-0000-000000000001.stage")&&
+        character_save_journal_v2_read_prepared(root,COMMAND_A,&wire)==0&&
+        wire.writer_revision==8&&character_save_journal_v2_writer_validate_held(
+            &writer,&tuple)==CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "reused command UUID must reject before creating a contaminating stage");
+    state.v3_head_revision=8;
+    strcpy(state.v3_head_sha256,digest);
     state.payload=(const unsigned char *)"revision-nine";
     state.payload_length=strlen((const char *)state.payload);
     state.receipt_command[0]=0;

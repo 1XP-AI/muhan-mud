@@ -57,9 +57,21 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
 	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_recovery.o
 
-M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o
+M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o \
+	character_save_journal_v2_process_owner.o character_save_journal_v2_player_store.o \
+	character_save_journal_v2_live_ops.o character_save_journal_v2_rpc_transport.o \
+	character_save_journal_v2_rpc_transport_native.o character_save_journal_v2_deadline.o \
+	character_save_journal_v2_deadline_native.o character_save_journal_v2_uuid.o \
+	character_save_journal_v2_uuid_native.o character_save_journal_v2_protocol.o \
+	character_save_journal_v2_recovery.o character_save_journal_v2_ack.o \
+	character_save_journal_v2_publish.o character_save_journal_v2_route.o \
+	character_save_journal_v2_writer.o character_save_journal_v2.o \
+	player_record_serializer.o
 
 ifeq ($(USE_M3_RUNTIME),1)
+ifneq ($(shell uname -s),Linux)
+$(error USE_M3_RUNTIME=1 requires Linux deadline and UUID native adapters)
+endif
 OBJECTS += $(M3_RUNTIME_OBJECTS)
 endif
 
@@ -236,6 +248,46 @@ M3_RPC_TRANSPORT_LIVE_BINARY ?=
 character-save-journal-v2-rpc-transport-live-mud-audit:
 	@if test -z "$(M3_RPC_TRANSPORT_LIVE_BINARY)"; then echo "m3 RPC live MUD audit skipped (set M3_RPC_TRANSPORT_LIVE_BINARY to a CI artifact)"; else case "$$(uname -s)" in Linux) python3 ../tests/unit/character_save_journal_v2_rpc_transport_live_mud_audit.py --binary "$(M3_RPC_TRANSPORT_LIVE_BINARY)" ;; *) echo "m3 RPC live MUD audit requires Linux" >&2; exit 2 ;; esac; fi
 
+# The production default is deliberately free of libpq.  This separate gate
+# proves that the complete M3 owner/runtime graph links only in the supported
+# Linux + pg_config environment, and always writes outside src/frp.new.
+M3_RUNTIME_LINK_OUTFILE ?= /tmp/muhan-unit/muhan-m3-runtime
+m3-runtime-linux-link: character-save-journal-v2-runtime-native-test
+	@case "$$(uname -s)" in Linux) ;; *) echo "m3 runtime full link requires Linux" >&2; exit 2 ;; esac
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "m3 runtime full link requires PG_CONFIG to name an installed PostgreSQL client toolchain" >&2; exit 2; }
+	mkdir -p "$$(dirname "$(M3_RUNTIME_LINK_OUTFILE)")"
+	$(MAKE) --no-print-directory USE_M3_RUNTIME=1 PG_CONFIG="$(PG_CONFIG)" CC="$(CC)" OUTFILE="$(M3_RUNTIME_LINK_OUTFILE)" "$(M3_RUNTIME_LINK_OUTFILE)"
+
+# Both PG17 harnesses are intentionally disposable and Linux-only: each
+# starts a private Docker PostgreSQL 17 instance and never reuses a developer
+# database.  Keep the scripts opt-in locally, but make CI opt in explicitly.
+M3_PROCESS_OWNER_PG17_SCRIPT ?= ../supabase/tests/m3_process_owner_pg17_integration.sh
+M3_RUNTIME_SHADOW_PG17_SCRIPT ?= ../supabase/tests/m3_runtime_shadow_pg17_integration.sh
+
+ifeq ($(M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE),1)
+character-save-journal-v2-process-owner-pg17-integration:
+	@case "$$(uname -s)" in Linux) ;; *) echo "m3 process-owner PG17 integration requires Linux" >&2; exit 2 ;; esac
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "m3 process-owner PG17 integration requires PG_CONFIG" >&2; exit 2; }
+	@command -v docker >/dev/null 2>&1 || { echo "m3 process-owner PG17 integration requires docker" >&2; exit 2; }
+	@test -f "$(M3_PROCESS_OWNER_PG17_SCRIPT)" || { echo "m3 process-owner PG17 integration script is missing: $(M3_PROCESS_OWNER_PG17_SCRIPT)" >&2; exit 2; }
+	M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE="$(M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE)" PG_CONFIG="$(PG_CONFIG)" CC="$(CC)" bash "$(M3_PROCESS_OWNER_PG17_SCRIPT)"
+else
+character-save-journal-v2-process-owner-pg17-integration:
+	@echo "m3 process-owner PG17 integration skipped (set M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE=1)"
+endif
+
+ifeq ($(M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE),1)
+character-save-journal-v2-runtime-shadow-pg17-integration:
+	@case "$$(uname -s)" in Linux) ;; *) echo "m3 runtime shadow PG17 integration requires Linux" >&2; exit 2 ;; esac
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "m3 runtime shadow PG17 integration requires PG_CONFIG" >&2; exit 2; }
+	@command -v docker >/dev/null 2>&1 || { echo "m3 runtime shadow PG17 integration requires docker" >&2; exit 2; }
+	@test -f "$(M3_RUNTIME_SHADOW_PG17_SCRIPT)" || { echo "m3 runtime shadow PG17 integration script is missing: $(M3_RUNTIME_SHADOW_PG17_SCRIPT)" >&2; exit 2; }
+	M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE="$(M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE)" PG_CONFIG="$(PG_CONFIG)" CC="$(CC)" bash "$(M3_RUNTIME_SHADOW_PG17_SCRIPT)"
+else
+character-save-journal-v2-runtime-shadow-pg17-integration:
+	@echo "m3 runtime shadow PG17 integration skipped (set M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE=1)"
+endif
+
 ifeq ($(M3_RPC_TRANSPORT_ALLOW_DISPOSABLE),1)
 character-save-journal-v2-rpc-transport-integration: character-save-journal-v2-rpc-transport-native-compile
 	mkdir -p /tmp/muhan-unit
@@ -267,10 +319,22 @@ character-save-journal-v2-runtime-native-compile: character-save-journal-v2-runt
 	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -c character_save_journal_v2_runtime_native.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native.o
 	python3 ../tests/unit/character_save_journal_v2_runtime_no_live_link_test.py --native-object /tmp/muhan-unit/character_save_journal_v2_runtime_native.o --makefile Makefile --runtime-source character_save_journal_v2_runtime.c --runtime-header character_save_journal_v2_runtime.h --native-source character_save_journal_v2_runtime_native.c --native-header character_save_journal_v2_runtime_native.h --main-source main.c
 
+ifeq ($(shell uname -s),Linux)
+character-save-journal-v2-runtime-native-test: character-save-journal-v2-runtime-native-compile
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/unit/character_save_journal_v2_runtime_native_test.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native_test
+	/tmp/muhan-unit/character_save_journal_v2_runtime_native_test
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_runtime_native_test.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_runtime_native_sanitizer_test
+else
+character-save-journal-v2-runtime-native-test:
+	@echo "character-save-journal-v2-runtime-native-test skipped (Linux native lifecycle target)"
+endif
+
 ifeq ($(M3_RUNTIME_ALLOW_DISPOSABLE),1)
 character-save-journal-v2-runtime-integration: character-save-journal-v2-runtime-native-compile
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_runtime_integration.c character_save_journal_v2_runtime.c character_save_journal_v2_runtime_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_runtime_integration
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_runtime_integration.c character_save_journal_v2_runtime.c character_save_journal_v2_runtime_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_runtime_integration
 	M3_WRITER_SESSION_ALLOW_DISPOSABLE=1 bash ../supabase/tests/m3_writer_session_actual_login_integration.sh /tmp/muhan-unit/character_save_journal_v2_runtime_integration
 else
 character-save-journal-v2-runtime-integration:

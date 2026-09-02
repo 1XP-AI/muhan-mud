@@ -26,7 +26,8 @@ typedef enum character_save_journal_v2_process_owner_startup_result {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANDIDATE_UUID = 5,
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_BOOTSTRAP = 6,
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RECOVERY = 7,
-    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_PLAYER_STORE = 8
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_PLAYER_STORE = 8,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED = 9
 } character_save_journal_v2_process_owner_startup_result;
 
 typedef enum character_save_journal_v2_process_owner_shutdown_result {
@@ -55,6 +56,7 @@ typedef struct character_save_journal_v2_process_owner {
     character_save_journal_v2_live_ops live_ops;
     character_save_journal_v2_writer_context held_writer;
     character_save_journal_v2_player_store player_store;
+    player_store_binding player_store_binding;
     character_save_journal_v2_recovery_report recovery_report;
     character_save_journal_v2_recovery_result recovery_result;
     character_save_journal_v2_process_owner_state state;
@@ -62,6 +64,8 @@ typedef struct character_save_journal_v2_process_owner {
     character_save_journal_v2_process_owner_shutdown_result shutdown_result;
     int writer_held;
     int player_store_installed;
+    int operation_active;
+    int shutdown_requested;
 } character_save_journal_v2_process_owner;
 
 /* Initializes only caller-provided storage.  Configuration validity is
@@ -76,8 +80,10 @@ character_save_journal_v2_process_owner_startup_result
 character_save_journal_v2_process_owner_start(
     character_save_journal_v2_process_owner *owner);
 
-/* Resets the global PlayerStore before closing the held writer.  It is
- * idempotent and intentionally does not close or otherwise mutate transport. */
+/* Restores the prior global PlayerStore before closing the held writer.  A
+ * call re-entered during startup requests deferred cancellation; it never
+ * tears resources out from under the active startup frame.  Shutdown is
+ * idempotent and never closes or otherwise mutates transport. */
 character_save_journal_v2_process_owner_shutdown_result
 character_save_journal_v2_process_owner_shutdown(
     character_save_journal_v2_process_owner *owner);

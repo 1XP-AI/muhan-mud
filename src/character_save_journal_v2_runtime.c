@@ -6,6 +6,12 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/* The legacy process has one global PlayerStore binding, so at most one
+ * shadow runtime may own that binding.  Tracking the address outside the
+ * caller-provided object also lets init reject an accidental active-object
+ * reset without reading uninitialized storage on the normal first call. */
+static character_save_journal_v2_runtime *runtime_active_shadow;
+
 static void runtime_wipe(void *memory, size_t length)
 {
     volatile unsigned char *cursor=(volatile unsigned char *)memory;
@@ -105,6 +111,33 @@ static int runtime_copy_environment(char *destination, size_t capacity, const ch
     return 1;
 }
 
+/* Match the pathname grammar used by the descriptor-relative writer root
+ * opener.  This keeps malformed roots from reaching conninfo I/O or a native
+ * database adapter;
+ * ownership, mode, and no-follow checks remain the writer's responsibility. */
+static int runtime_root_safe(const char *path)
+{
+    const char *component;
+    size_t length, component_length=0;
+
+    length=runtime_bounded_length(path,CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX-1);
+    if(length<2||length>=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX||path[0]!='/') return 0;
+    component=path+1;
+    while(1) {
+        if(component[component_length]=='/'||!component[component_length]) {
+            if(component_length>=128||
+               (component_length==1&&component[0]=='.')||
+               (component_length==2&&component[0]=='.'&&component[1]=='.')||
+               (!component_length&&component[component_length]=='/')) return 0;
+            if(!component[component_length]) return 1;
+            component+=component_length+1;
+            component_length=0;
+            continue;
+        }
+        component_length++;
+    }
+}
+
 static int runtime_stat_safe(const struct stat *status)
 {
     mode_t permissions;
@@ -186,6 +219,24 @@ static int runtime_database_operations_complete(const character_save_journal_v2_
            operations->result_clear&&operations->connection_finish;
 }
 
+static int runtime_shadow_operations_complete(
+    const character_save_journal_v2_runtime_shadow_operations *operations)
+{
+    return operations&&operations->start&&operations->shutdown;
+}
+
+static void runtime_shadow_shutdown(character_save_journal_v2_runtime *runtime)
+{
+    const character_save_journal_v2_runtime_shadow_operations *operations;
+
+    if(!runtime||!runtime->shadow_active) return;
+    operations=runtime->dependencies.shadow_operations;
+    if(operations&&operations->shutdown)
+        operations->shutdown(runtime->dependencies.shadow_opaque);
+    runtime->shadow_active=0;
+    if(runtime_active_shadow==runtime) runtime_active_shadow=0;
+}
+
 static int runtime_assert_writer_session(character_save_journal_v2_runtime *runtime)
 {
     const character_save_journal_v2_runtime_database_operations *operations;
@@ -218,6 +269,7 @@ void character_save_journal_v2_runtime_init(
     const character_save_journal_v2_runtime_dependencies *dependencies)
 {
     if(!runtime) return;
+    if(runtime_active_shadow==runtime) return;
     runtime_wipe(runtime,sizeof(*runtime));
     if(dependencies) {
         runtime->dependencies=*dependencies;
@@ -229,15 +281,60 @@ void character_save_journal_v2_runtime_init(
 character_save_journal_v2_runtime_state
 character_save_journal_v2_runtime_start(character_save_journal_v2_runtime *runtime)
 {
-    const char *mode, *world_id, *conninfo_path;
+    const char *mode, *muhan_home, *world_id, *conninfo_path;
+    char root[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX];
     char path[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX];
     size_t mode_length, world_id_length;
     if(!runtime) return CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
     character_save_journal_v2_runtime_shutdown(runtime);
     mode=runtime_get_environment(runtime,"MUD_M3_MODE");
     if(!mode) return runtime->current_state;
-    mode_length=runtime_bounded_length(mode,5);
+    mode_length=runtime_bounded_length(mode,6);
     if(mode_length==3&&!memcmp(mode,"off",3)) return runtime->current_state;
+    if(mode_length==6&&!memcmp(mode,"shadow",6)) {
+        if(!runtime->has_dependencies||
+           !runtime_shadow_operations_complete(runtime->dependencies.shadow_operations)) {
+            runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
+            return runtime->current_state;
+        }
+        muhan_home=runtime_get_environment(runtime,"MUHAN_HOME");
+        world_id=runtime_get_environment(runtime,"MUD_M3_WORLD_ID");
+        conninfo_path=runtime_get_environment(runtime,"MUD_M3_CONNINFO_FILE");
+        world_id_length=runtime_bounded_length(world_id,CHARACTER_SAVE_JOURNAL_V2_RUNTIME_WORLD_ID_MAX);
+        if(!runtime_copy_environment(root,sizeof(root),muhan_home,1)||
+           !runtime_root_safe(root)||
+           !runtime_world_id_safe(world_id,world_id_length)||
+           !runtime_copy_environment(path,sizeof(path),conninfo_path,1)||
+           !runtime_read_conninfo(runtime,path)) {
+            runtime_wipe(runtime->conninfo,sizeof(runtime->conninfo));
+            runtime->conninfo_length=0;
+            runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
+            return runtime->current_state;
+        }
+        if(runtime_active_shadow&&runtime_active_shadow!=runtime) {
+            runtime_wipe(runtime->conninfo,sizeof(runtime->conninfo));
+            runtime->conninfo_length=0;
+            runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
+            return runtime->current_state;
+        }
+        /* Set these before the call: the native operation may have accepted a
+         * PGconn before reporting a later bootstrap failure.  Its idempotent
+         * shutdown is the sole inverse path for every such cutpoint. */
+        runtime->shadow_active=1;
+        runtime_active_shadow=runtime;
+        if(runtime->dependencies.shadow_operations->start(
+            runtime->dependencies.shadow_opaque,root,world_id,runtime->conninfo)) {
+            runtime_wipe(runtime->conninfo,sizeof(runtime->conninfo));
+            runtime->conninfo_length=0;
+            runtime_shadow_shutdown(runtime);
+            runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
+            return runtime->current_state;
+        }
+        runtime_wipe(runtime->conninfo,sizeof(runtime->conninfo));
+        runtime->conninfo_length=0;
+        runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_READY;
+        return runtime->current_state;
+    }
     if(mode_length!=5||memcmp(mode,"probe",5)) {
         runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED;
         return runtime->current_state;
@@ -262,6 +359,7 @@ character_save_journal_v2_runtime_start(character_save_journal_v2_runtime *runti
 void character_save_journal_v2_runtime_shutdown(character_save_journal_v2_runtime *runtime)
 {
     if(!runtime) return;
+    runtime_shadow_shutdown(runtime);
     runtime_wipe(runtime->conninfo,sizeof(runtime->conninfo));
     runtime->conninfo_length=0;
     runtime->current_state=CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED;

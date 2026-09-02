@@ -40,6 +40,14 @@ jobs:
           set -euo pipefail
           make -C src character-save-journal-v2-receipt-transport-native-compile CC=gcc PG_CONFIG=pg_config
 
+      - name: Gate complete M3 runtime link (Linux + libpq)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src m3-runtime-linux-link \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_RUNTIME_LINK_OUTFILE="$RUNNER_TEMP/muhan-m3-runtime"
+
       - name: Run identity and onboarding contracts
         shell: bash
         env:
@@ -120,6 +128,22 @@ jobs:
           set -euo pipefail
           bash supabase/tests/m3_live_save_route_pg17_integration.sh
           bash supabase/tests/m3_provisioning_head_baseline_pg17_integration.sh
+
+      - name: Run isolated M3 owner and runtime-shadow PostgreSQL 17 E2E gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Each harness creates a random-named, loopback-published PostgreSQL
+          # 17 container with tmpfs storage, then removes only that container.
+          # Do not add docker system prune/volume cleanup here: shared runner
+          # storage must remain outside this test's ownership.
+          make -C src character-save-journal-v2-process-owner-pg17-integration \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE=1
+          make -C src character-save-journal-v2-runtime-shadow-pg17-integration \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE=1
 
       - name: Run named-volume restart harness
         if: runner.os == 'Linux'

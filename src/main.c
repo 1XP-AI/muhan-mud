@@ -13,8 +13,22 @@
 #ifdef USE_M3_RUNTIME
 #include "character_save_journal_v2_runtime.h"
 #include "character_save_journal_v2_runtime_native.h"
+
+/* Static storage and exactly one atexit registration keep the opt-in shadow
+ * owner alive for every save, then make all normal exits follow its one
+ * idempotent teardown path.  SIGKILL remains a durable-journal recovery
+ * boundary and cannot run this hook. */
+static character_save_journal_v2_runtime m3_runtime;
+static character_save_journal_v2_runtime_native m3_native;
+static int m3_runtime_atexit_registered;
+
+static void m3_runtime_shutdown_at_exit(void)
+{
+	character_save_journal_v2_runtime_shutdown(&m3_runtime);
+}
 #endif
 #include <time.h>
+#include <stdlib.h>
 #define SCHEDPORT  4000
 
 int Port;
@@ -30,8 +44,6 @@ char	*argv[];
 	void mvc_log();
 	int schedule_g();
 #ifdef USE_M3_RUNTIME
-	character_save_journal_v2_runtime m3_runtime;
-	character_save_journal_v2_runtime_native m3_native;
 	character_save_journal_v2_runtime_state m3_state;
 #endif
 
@@ -69,13 +81,20 @@ char	*argv[];
 	}
 
 #ifdef USE_M3_RUNTIME
-	/* This is an isolated readiness assertion, deliberately before socket
-	 * setup.  Absent/off mode performs no file or database operation. */
+	/* The optional runtime completes shadow bootstrap/recovery/PlayerStore
+	 * installation before socket setup.  Absent/off remains zero-I/O. */
 	character_save_journal_v2_runtime_native_init(&m3_native);
 	character_save_journal_v2_runtime_init(&m3_runtime,&m3_native.dependencies);
+	if(!m3_runtime_atexit_registered) {
+		if(atexit(m3_runtime_shutdown_at_exit)!=0) {
+			fprintf(stderr,"M3 runtime exit handler registration failed\n");
+			exit(78);
+		}
+		m3_runtime_atexit_registered=1;
+	}
 	m3_state=character_save_journal_v2_runtime_start(&m3_runtime);
 	if(m3_state==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED) {
-		fprintf(stderr,"M3 runtime readiness probe failed\n");
+		fprintf(stderr,"M3 runtime startup failed\n");
 		exit(78);
 	}
 #endif

@@ -16,8 +16,26 @@ typedef struct player_store_ops {
     void *opaque;
 } player_store_ops;
 
+/* A managed binding preserves the previously active store and restores it
+ * only while this exact binding still owns the global facade.  Callers must
+ * zero-initialize the binding and keep it alive until unbind. */
+typedef struct player_store_binding {
+    player_store_ops previous;
+    int active;
+} player_store_binding;
+
+typedef enum player_store_unbind_result {
+    PLAYER_STORE_UNBIND_RESTORED = 0,
+    PLAYER_STORE_UNBIND_NOT_CURRENT = 1,
+    PLAYER_STORE_UNBIND_INVALID = -1
+} player_store_unbind_result;
+
 int player_store_set(const player_store_ops *ops);
 void player_store_reset(void);
+int player_store_bind(const player_store_ops *ops,
+    player_store_binding *binding);
+player_store_unbind_result player_store_unbind(
+    player_store_binding *binding);
 
 int save_ply(char *name, struct creature *player);
 int load_ply(char *name, struct creature **player);

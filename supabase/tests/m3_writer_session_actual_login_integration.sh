@@ -16,6 +16,12 @@ container="m3-writer-session-${RANDOM}-${RANDOM}"
 password="m3-contract-login-password"
 runtime_harness="${1:-}"
 conninfo_file=""
+database_host="${M3_WRITER_SESSION_DATABASE_HOST:-127.0.0.1}"
+
+[[ "$database_host" =~ ^[A-Za-z0-9.-]+$ ]] || {
+  echo "m3 writer session integration database host is invalid" >&2
+  exit 2
+}
 
 [[ -n "$runtime_harness" && -x "$runtime_harness" ]] || {
   echo "m3 writer session actual-login integration requires an executable runtime harness" >&2
@@ -109,8 +115,8 @@ host_port="$(docker port "$container" 5432/tcp | sed -n '1{s/.*://;p;}')"
 }
 conninfo_file="$(mktemp "${TMPDIR:-/tmp}/m3-writer-session-conninfo.XXXXXX")"
 chmod 600 "$conninfo_file"
-printf 'host=127.0.0.1 port=%s dbname=postgres user=mud_writer_login password=%s connect_timeout=5\n' \
-  "$host_port" "$password" >"$conninfo_file"
+printf 'host=%s port=%s dbname=postgres user=mud_writer_login password=%s connect_timeout=5\n' \
+  "$database_host" "$host_port" "$password" >"$conninfo_file"
 
 green="$(docker exec --env PGPASSWORD="$password" "$container" \
   psql --host=127.0.0.1 --username=mud_writer_login --dbname=postgres \

@@ -16,9 +16,11 @@ typedef struct fixture {
     character_save_journal_v2_rpc_transport transport;
     char buffer[128];
     int deadline_fail, uuid_fail, bootstrap_fail, recovery_fail, set_fail;
+    int shutdown_during_deadline, shutdown_during_recovery;
     int close_fail, finish_calls, deadline_calls, uuid_calls, live_init_calls;
     int bootstrap_calls, recovery_calls, store_init_calls, build_calls, set_calls;
     int reset_calls, close_calls, global_store_installed;
+    int bound_previous_store, binding_current;
     char trace[32];
     unsigned int trace_length;
     char bootstrap_candidate[37];
@@ -49,6 +51,10 @@ static int fake_deadline(void *opaque, char output[64])
     fixture *test = (fixture *)opaque;
     test->deadline_calls++;
     mark('D');
+    if(test->shutdown_during_deadline) {
+        test->shutdown_during_deadline = 0;
+        character_save_journal_v2_process_owner_shutdown(&test->owner);
+    }
     if(test->deadline_fail) return -1;
     strcpy(output, "2026-09-03T00:02:00Z");
     return 0;
@@ -158,6 +164,10 @@ character_save_journal_v2_recovery_run(
 {
     current->recovery_calls++;
     mark('R');
+    if(current->shutdown_during_recovery) {
+        current->shutdown_during_recovery = 0;
+        character_save_journal_v2_process_owner_shutdown(&current->owner);
+    }
     if(writer != &current->owner.held_writer ||
        receipt != character_save_journal_v2_live_ops_receipt_callback ||
        opaque != &current->owner.live_ops || !report)
@@ -223,6 +233,39 @@ void player_store_reset(void)
     current->reset_calls++;
     mark('X');
     current->global_store_installed = 0;
+}
+
+int player_store_bind(const player_store_ops *ops,
+    player_store_binding *binding)
+{
+    current->set_calls++;
+    mark('S');
+    if(!ops || ops->opaque != &current->owner.player_store ||
+       binding != &current->owner.player_store_binding || binding->active ||
+       current->binding_current)
+        return -1;
+    if(current->set_fail) return -1;
+    current->bound_previous_store = current->global_store_installed;
+    binding->active = 1;
+    current->binding_current = 1;
+    current->global_store_installed = 1;
+    return 0;
+}
+
+player_store_unbind_result player_store_unbind(player_store_binding *binding)
+{
+    current->reset_calls++;
+    mark('X');
+    if(!binding || binding != &current->owner.player_store_binding)
+        return PLAYER_STORE_UNBIND_INVALID;
+    if(!binding->active)
+        return PLAYER_STORE_UNBIND_NOT_CURRENT;
+    binding->active = 0;
+    if(!current->binding_current || current->global_store_installed != 1)
+        return PLAYER_STORE_UNBIND_NOT_CURRENT;
+    current->binding_current = 0;
+    current->global_store_installed = current->bound_previous_store;
+    return PLAYER_STORE_UNBIND_RESTORED;
 }
 
 static void setup(fixture *test)
@@ -374,10 +417,70 @@ static int test_close_failure_and_restart(void)
     return failed;
 }
 
+static int test_prior_store_restore_and_external_takeover(void)
+{
+    fixture test;
+    int failed = 0;
+
+    setup(&test);
+    test.global_store_installed = 2;
+    failed += expect(character_save_journal_v2_process_owner_start(&test.owner) ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
+        test.global_store_installed == 1,
+        "startup must replace a pre-existing store through a managed binding");
+    failed += expect(character_save_journal_v2_process_owner_shutdown(&test.owner) ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK &&
+        test.global_store_installed == 2 && test.reset_calls == 1,
+        "shutdown must restore the exact pre-existing store");
+
+    setup(&test);
+    test.global_store_installed = 2;
+    if(character_save_journal_v2_process_owner_start(&test.owner)) return 1;
+    test.binding_current = 0;
+    test.global_store_installed = 3;
+    failed += expect(character_save_journal_v2_process_owner_shutdown(&test.owner) ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK &&
+        test.global_store_installed == 3 && test.reset_calls == 1,
+        "shutdown must not overwrite a newer external store takeover");
+    return failed;
+}
+
+static int test_reentrant_startup_shutdown_is_deferred(void)
+{
+    fixture test;
+    character_save_journal_v2_process_owner_startup_result result;
+    int failed = 0;
+
+    setup(&test);
+    test.shutdown_during_deadline = 1;
+    result = character_save_journal_v2_process_owner_start(&test.owner);
+    failed += expect(result ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED &&
+        !strcmp(test.trace, "D") && !test.uuid_calls && !test.owner.writer_held &&
+        !test.global_store_installed && test.owner.state ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED,
+        "deadline callback shutdown must cancel before later startup effects");
+    character_save_journal_v2_process_owner_shutdown(&test.owner);
+
+    setup(&test);
+    test.shutdown_during_recovery = 1;
+    result = character_save_journal_v2_process_owner_start(&test.owner);
+    failed += expect(result ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED &&
+        !strcmp(test.trace, "DULBRC") && test.close_calls == 1 &&
+        !test.owner.writer_held && !test.global_store_installed &&
+        test.owner.state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED,
+        "recovery callback shutdown must defer close until recovery returns");
+    character_save_journal_v2_process_owner_shutdown(&test.owner);
+    return failed;
+}
+
 int main(void)
 {
     return test_validate_and_early_cutpoints() |
         test_bootstrap_recovery_and_install_cutpoints() |
         test_success_repeated_start_and_shutdown() |
-        test_close_failure_and_restart();
+        test_close_failure_and_restart() |
+        test_prior_store_restore_and_external_takeover() |
+        test_reentrant_startup_shutdown_is_deferred();
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the M3 runtime probe and its libpq adapter out of the legacy link."""
+"""Keep M3 runtime ownership and its libpq adapter out of the legacy link."""
 
 from __future__ import annotations
 
@@ -58,6 +58,15 @@ def main() -> None:
         raise SystemExit("M3 runtime opt-in Makefile block is missing")
     if "character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o" not in make_text:
         raise SystemExit("M3 runtime opt-in objects are missing")
+    for required in {
+        "character_save_journal_v2_process_owner.o",
+        "character_save_journal_v2_rpc_transport_native.o",
+        "character_save_journal_v2_deadline_native.o",
+        "character_save_journal_v2_uuid_native.o",
+        "character_save_journal_v2_player_store.o",
+    }:
+        if required not in make_text:
+            raise SystemExit(f"M3 shadow runtime omits required object {required}")
     if "M3_RUNTIME_LIBS" not in make_text:
         raise SystemExit("M3 runtime opt-in libpq link flags are missing")
     make = assignments(default_make_text)
@@ -89,6 +98,19 @@ def main() -> None:
     native_header = args.native_header.read_text(encoding="utf-8")
     if "PQ" in runtime_text or "libpq" in runtime_text or "libpq" in runtime_header:
         raise SystemExit("generic M3 runtime exposes libpq")
+    if "MUD_M3_MODE" not in runtime_text or '"shadow"' not in runtime_text:
+        raise SystemExit("generic M3 runtime lacks opt-in shadow mode")
+    if "MUHAN_HOME" not in runtime_text or "shadow_operations" not in runtime_text:
+        raise SystemExit("shadow runtime lacks explicit root validation or lifecycle boundary")
+    if "char muhan_home[" not in native_header or "char world_id[" not in native_header:
+        raise SystemExit("native shadow runtime lacks process-lifetime routing storage")
+    if (
+        "configuration.root=native->muhan_home" not in native_text
+        or "configuration.world_id=native->world_id" not in native_text
+        or "configuration.root=muhan_home" in native_text
+        or "configuration.world_id=world_id" in native_text
+    ):
+        raise SystemExit("native shadow owner retains borrowed routing pointers")
     if "for_test" in runtime_text + runtime_header + native_text + native_header:
         raise SystemExit("M3 runtime test hook leaked")
     main_text = args.main_source.read_text(encoding="utf-8")
@@ -96,6 +118,8 @@ def main() -> None:
         raise SystemExit("M3 opt-in startup incorrectly exits for disabled mode")
     if "character_save_journal_v2_runtime_start(&m3_runtime)" not in main_text or "==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED" not in main_text:
         raise SystemExit("M3 opt-in startup must exit only for failed state")
+    if "atexit(m3_runtime_shutdown_at_exit)" not in main_text:
+        raise SystemExit("M3 runtime must register its normal-exit shutdown hook")
     if args.runtime_object:
         undefined = symbols(args.runtime_object, "-u")
         if any(symbol.startswith("pq") for symbol in undefined):

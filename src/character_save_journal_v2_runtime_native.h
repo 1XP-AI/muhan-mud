@@ -3,12 +3,33 @@
 
 #include "character_save_journal_v2_runtime.h"
 
+#if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
+#include "character_save_journal_v2_deadline_native.h"
+#include "character_save_journal_v2_process_owner.h"
+#include "character_save_journal_v2_rpc_transport_native.h"
+#endif
+
 /* This is the only M3 runtime unit that includes or calls libpq.  The live
  * executable includes it only when USE_M3_RUNTIME=1; no save path owns it. */
 typedef struct character_save_journal_v2_runtime_native {
     character_save_journal_v2_runtime_dependencies dependencies;
+#if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
+    character_save_journal_v2_rpc_transport_native transport_native;
+    character_save_journal_v2_deadline_native deadline_native;
+    character_save_journal_v2_process_owner process_owner;
+    /* process_owner retains these pointers for the complete writer lifetime;
+     * the generic runtime's root is stack storage and getenv is borrowed. */
+    char muhan_home[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PATH_MAX];
+    char world_id[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_WORLD_ID_MAX+1];
+    char *serializer_buffer;
+    unsigned long serializer_buffer_capacity;
+    int shadow_active;
+#endif
 } character_save_journal_v2_runtime_native;
 
+/* Initialize fresh storage for a native owner lifetime.  Teardown is performed
+ * through the paired generic runtime shutdown; an accidental repeated init of
+ * the active owner is a non-destructive no-op. */
 void character_save_journal_v2_runtime_native_init(
     character_save_journal_v2_runtime_native *native);
 

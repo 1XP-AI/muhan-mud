@@ -70,6 +70,8 @@ int main(void)
 {
     struct creature input = { 7 };
     struct creature *output = 0;
+    player_store_binding binding;
+    player_store_binding second_binding;
     player_store_ops memory_store = { memory_save, memory_load,
                                       &save_context };
     player_store_ops failing_store = { memory_save, failing_load,
@@ -106,6 +108,37 @@ int main(void)
     failed += expect(player_store_set(&invalid_store) == -1 &&
                      save_ply("memory", &input) == 21,
                      "invalid repository must preserve the active store");
+
+    memset(&binding, 0, sizeof(binding));
+    memset(&second_binding, 0, sizeof(second_binding));
+    failed += expect(player_store_bind(&failing_store, &binding) == 0 &&
+                     binding.active,
+                     "managed binding must install over an unmanaged store");
+    failed += expect(player_store_bind(&memory_store, &second_binding) == -1 &&
+                     !second_binding.active,
+                     "a second managed binding must not steal ownership");
+    output = (struct creature *)1;
+    failed += expect(load_ply("memory", &output) == PLAYER_STORE_CORRUPT &&
+                     output == 0,
+                     "managed binding must become the active repository");
+    failed += expect(player_store_unbind(&binding) ==
+                     PLAYER_STORE_UNBIND_RESTORED && !binding.active,
+                     "current managed binding must restore the prior repository");
+    failed += expect(save_ply("memory", &input) == 21 &&
+                     memory_save_opaque_calls == 3,
+                     "managed unbind must restore the prior repository by value");
+
+    memset(&binding, 0, sizeof(binding));
+    failed += expect(player_store_bind(&failing_store, &binding) == 0,
+                     "released binding storage must be reusable after zero init");
+    failed += expect(player_store_set(&memory_store) == 0,
+                     "an explicit external set must supersede a managed binding");
+    failed += expect(player_store_unbind(&binding) ==
+                     PLAYER_STORE_UNBIND_NOT_CURRENT && !binding.active,
+                     "stale unbind must not overwrite a newer external repository");
+    failed += expect(save_ply("memory", &input) == 21 &&
+                     memory_save_opaque_calls == 3,
+                     "newer external repository must remain active after stale unbind");
 
     failed += expect(player_store_set(&failing_store) == 0,
                      "failing repository must be injectable");
