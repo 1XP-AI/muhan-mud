@@ -119,6 +119,7 @@ unit-test:
 	$(MAKE) object-v1-test
 	$(MAKE) object-graph-v1-test
 	$(MAKE) creature-v1-test
+	$(MAKE) player-snapshot-v1-test
 	$(MAKE) character-save-journal-test
 	$(MAKE) character-save-journal-v2-test
 	$(MAKE) character-save-journal-v2-writer-test
@@ -611,6 +612,16 @@ creature-v1-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/creature_v1_test.c creature_v1.c cdto_v1.c -o /tmp/muhan-unit/creature_v1_sanitizer_test
 	/tmp/muhan-unit/creature_v1_sanitizer_test
+
+player-snapshot-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -DPLAYER_SNAPSHOT_V1_TESTING -DOBJECT_GRAPH_V1_TESTING $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/player_snapshot_v1_test.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c -o /tmp/muhan-unit/player_snapshot_v1_test
+	/tmp/muhan-unit/player_snapshot_v1_test
+
+player-snapshot-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -DPLAYER_SNAPSHOT_V1_TESTING -DOBJECT_GRAPH_V1_TESTING $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/player_snapshot_v1_test.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c -o /tmp/muhan-unit/player_snapshot_v1_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/player_snapshot_v1_sanitizer_test
 
 port:
 	rm -f io.o main.o;

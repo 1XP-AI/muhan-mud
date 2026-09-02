@@ -4,6 +4,9 @@
 //! and supplies its path.  Keeping the oracle opt-in lets ordinary workspace
 //! tests stay hermetic while CI (or a developer) gets actual byte comparison.
 
+use muhan_core_dto::player_snapshot_v1::{
+    decode_player_snapshot_v1, encode_player_snapshot_v1, LastTimeV1, PlayerSnapshotV1,
+};
 use muhan_core_dto::{
     decode, decode_creature_v1, decode_object_graph_v1, decode_object_v1, encode,
     encode_creature_v1, encode_object_graph_v1, encode_object_v1, CreatureV1, DailyV1, Error,
@@ -110,8 +113,9 @@ fn write_manifest(path: &Path, seed: u64) {
             "seed={seed:016x}\n\
              corpus=synthetic-canonical-bytes-only\n\
              cases=64\n\
-             boundaries=max-fields,one-mib,one-mib-plus,count-overflow\n\
-             malformed=unknown-kind,truncated,duplicate,length-overflow,one-mib-plus\n"
+             player-snapshot-cases=64\n\
+             boundaries=max-fields,one-mib,one-mib-plus,count-overflow,player-roots-4096,player-list-4096,player-depth-64,player-nodes-8192\n\
+             malformed=unknown-kind,truncated,duplicate,length-overflow,one-mib-plus,player-schema\n"
         ),
     )
     .expect("differential artifact manifest must be writable");
@@ -207,6 +211,7 @@ fn c_and_rust_match_the_fixed_seed_differential_corpus() {
     assert_object_v1(&oracle);
     assert_object_graph_v1(&oracle);
     assert_creature_v1(&oracle);
+    assert_player_snapshot_v1(&oracle, &artifact_dir, seed);
 }
 
 #[test]
@@ -677,6 +682,407 @@ fn assert_creature_v1(oracle: &Path) {
         decode_creature_v1(&added),
         Err(Error::InvalidFieldLength { .. })
     ));
+}
+
+fn seeded_player_object(seed: &mut u64, case: usize, index: usize) -> ObjectV1 {
+    let mut value = object_graph_object(
+        format!("snapshot-{case:02}-{index:02}").as_bytes(),
+        next(seed) as i64,
+    );
+    value.weight = next(seed) as i16;
+    value.type_code = next(seed) as i8;
+    value.adjustment = next(seed) as i8;
+    value.shots_max = (next(seed) % (i16::MAX as u64 + 1)) as i16;
+    value.shots_current = (next(seed) % (value.shots_max as u64 + 1)) as i16;
+    value.ndice = next(seed) as i16;
+    value.sdice = next(seed) as i16;
+    value.pdice = next(seed) as i16;
+    value.armor = next(seed) as i8;
+    value.wear_flag = next(seed) as i8;
+    value.magic_power = next(seed) as i8;
+    value.magic_realm = next(seed) as i8;
+    value.special = next(seed) as i16;
+    value.flags = std::array::from_fn(|_| next(seed) as u8);
+    value.quest_num = next(seed) as i8;
+    value
+}
+
+fn seeded_player_snapshot(seed: &mut u64, case: usize) -> PlayerSnapshotV1 {
+    let hp_max = (next(seed) % 30_000 + 1) as i16;
+    let mp_max = (next(seed) % 30_000 + 1) as i16;
+    let node_count = case % 6;
+    let mut nodes = Vec::with_capacity(node_count);
+    for index in 0..node_count {
+        let (parent_index, child_index) = match index {
+            0 => (None, 0),
+            1 => (Some(0), 0),
+            2 => (Some(1), 0),
+            3 => (Some(0), 1),
+            4 => (None, 1),
+            _ => (Some(4), 0),
+        };
+        nodes.push(ObjectGraphNodeV1 {
+            object: seeded_player_object(seed, case, index),
+            parent_index,
+            child_index,
+        });
+    }
+    PlayerSnapshotV1 {
+        name: fixed(format!("player-{case:02}").as_bytes()),
+        description: fixed(format!("seeded player snapshot {case:02}").as_bytes()),
+        talk: fixed(format!("talk-{case:02}").as_bytes()),
+        key: [fixed(b"player"), fixed(b"seeded"), fixed(b"snapshot")],
+        level: next(seed) as u8,
+        type_code: 0,
+        class: next(seed) as i8,
+        race: next(seed) as i8,
+        numwander: next(seed) as i8,
+        alignment: next(seed) as i16,
+        strength: next(seed) as i8,
+        dexterity: next(seed) as i8,
+        constitution: next(seed) as i8,
+        intelligence: next(seed) as i8,
+        piety: next(seed) as i8,
+        hp_max,
+        hp_current: (next(seed) % (hp_max as u64 + 1)) as i16,
+        mp_max,
+        mp_current: (next(seed) % (mp_max as u64 + 1)) as i16,
+        armor: next(seed) as i8,
+        thaco: next(seed) as i8,
+        experience: next(seed) as i64,
+        gold: next(seed) as i64,
+        ndice: next(seed) as i16,
+        sdice: next(seed) as i16,
+        pdice: next(seed) as i16,
+        special: next(seed) as i16,
+        proficiency: std::array::from_fn(|_| next(seed) as i64),
+        realm: std::array::from_fn(|_| next(seed) as i64),
+        spells: std::array::from_fn(|_| next(seed) as u8),
+        flags: std::array::from_fn(|_| next(seed) as u8),
+        quests: std::array::from_fn(|_| next(seed) as u8),
+        quest_num: next(seed) as i8,
+        carry: std::array::from_fn(|_| next(seed) as i16),
+        room_number: next(seed) as i16,
+        daily: std::array::from_fn(|_| DailyV1 {
+            max: next(seed) as u8,
+            current: next(seed) as u8,
+            last_used: next(seed) as i64,
+        }),
+        lasttime: std::array::from_fn(|_| LastTimeV1 {
+            interval: next(seed) as i64,
+            last_used: next(seed) as i64,
+            misc: next(seed) as i16,
+        }),
+        inventory: ObjectGraphV1 { nodes },
+    }
+}
+
+fn assert_player_roundtrip(
+    oracle: &Path,
+    artifact_dir: &Path,
+    label: &str,
+    snapshot: &PlayerSnapshotV1,
+) {
+    let rust_wire = encode_player_snapshot_v1(snapshot).expect("Rust player snapshot must encode");
+    assert_eq!(
+        encode_player_snapshot_v1(&decode_player_snapshot_v1(&rust_wire).unwrap()).unwrap(),
+        rust_wire,
+        "Rust player snapshot must be byte-stable for {label}"
+    );
+    let c_output = run(
+        oracle,
+        &["player-snapshot-roundtrip".into(), hex(&rust_wire)],
+    );
+    assert!(
+        !c_output.starts_with("err "),
+        "C player snapshot rejected {label}: {c_output}"
+    );
+    assert_wire_equal(artifact_dir, label, &decode_hex(&c_output), &rust_wire);
+}
+
+fn assert_player_roundtrip_file(
+    oracle: &Path,
+    artifact_dir: &Path,
+    label: &str,
+    snapshot: &PlayerSnapshotV1,
+) {
+    let rust_wire = encode_player_snapshot_v1(snapshot).expect("large snapshot must encode");
+    assert_eq!(
+        encode_player_snapshot_v1(&decode_player_snapshot_v1(&rust_wire).unwrap()).unwrap(),
+        rust_wire,
+        "Rust player snapshot must be byte-stable for {label}"
+    );
+    let input = artifact_dir.join(format!("{label}-rust.cdto"));
+    let output = artifact_dir.join(format!("{label}-c.cdto"));
+    fs::write(&input, &rust_wire).expect("large snapshot input artifact must be writable");
+    assert_eq!(
+        run(
+            oracle,
+            &[
+                "player-snapshot-roundtrip-file".into(),
+                input.display().to_string(),
+                output.display().to_string(),
+            ],
+        ),
+        format!("ok {}", rust_wire.len()),
+        "C must round-trip the file-transport snapshot"
+    );
+    assert_wire_equal(
+        artifact_dir,
+        label,
+        &fs::read(output).expect("C large snapshot output must be readable"),
+        &rust_wire,
+    );
+}
+
+fn assert_player_rejected(oracle: &Path, wire: &[u8], label: &str) {
+    assert!(
+        decode_player_snapshot_v1(wire).is_err(),
+        "Rust accepted malformed player snapshot: {label}"
+    );
+    assert_ne!(
+        run(oracle, &["player-snapshot-decode".into(), hex(wire)]),
+        "0",
+        "C accepted malformed player snapshot: {label}"
+    );
+}
+
+fn assert_player_rejected_file(oracle: &Path, artifact_dir: &Path, wire: &[u8], label: &str) {
+    assert!(
+        decode_player_snapshot_v1(wire).is_err(),
+        "Rust accepted malformed player snapshot: {label}"
+    );
+    let input = artifact_dir.join(format!("{label}-malformed.cdto"));
+    fs::write(&input, wire).expect("malformed snapshot artifact must be writable");
+    assert_ne!(
+        run(
+            oracle,
+            &[
+                "player-snapshot-decode-file".into(),
+                input.display().to_string(),
+            ],
+        ),
+        "0",
+        "C accepted malformed player snapshot: {label}"
+    );
+}
+
+fn assert_player_snapshot_v1(oracle: &Path, artifact_dir: &Path, seed: u64) {
+    let c_wire = decode_hex(&run(oracle, &["player-snapshot-fixture".into()]));
+    let c_snapshot = decode_player_snapshot_v1(&c_wire)
+        .expect("Rust must decode the complete C PlayerSnapshotV1 fixture");
+    assert_eq!(c_snapshot.type_code, 0);
+    assert!(c_snapshot
+        .daily
+        .iter()
+        .any(|value| value.current > value.max));
+    assert!(c_snapshot.lasttime.iter().any(|value| value.interval < 0));
+    assert!(!c_snapshot.inventory.nodes.is_empty());
+    assert!(
+        !c_wire
+            .windows(b"PW-SENTINEL".len())
+            .any(|window| window == b"PW-SENTINEL"),
+        "legacy password sentinel must not enter PlayerSnapshotV1"
+    );
+    assert_wire_equal(
+        artifact_dir,
+        "player-snapshot-c-fixture",
+        &c_wire,
+        &encode_player_snapshot_v1(&c_snapshot).unwrap(),
+    );
+    assert_eq!(
+        run(oracle, &["player-snapshot-roundtrip".into(), hex(&c_wire)]),
+        hex(&c_wire),
+        "C PlayerSnapshotV1 must decode and re-encode its canonical fixture"
+    );
+
+    let mut generator_seed = seed ^ 0x5053_5631_0000_0001;
+    for case in 0..64 {
+        let snapshot = seeded_player_snapshot(&mut generator_seed, case);
+        assert_player_roundtrip(
+            oracle,
+            artifact_dir,
+            &format!("player-snapshot-seed-{seed:016x}-{case:02}"),
+            &snapshot,
+        );
+    }
+
+    let mut boundary = seeded_player_snapshot(&mut generator_seed, 4096);
+    let root = seeded_player_object(&mut generator_seed, 4096, 0);
+    boundary.inventory.nodes = (0..4096)
+        .map(|index| ObjectGraphNodeV1 {
+            object: root.clone(),
+            parent_index: None,
+            child_index: index,
+        })
+        .collect();
+    assert_player_roundtrip_file(
+        oracle,
+        artifact_dir,
+        "player-snapshot-roots-4096",
+        &boundary,
+    );
+
+    let mut depth = seeded_player_snapshot(&mut generator_seed, 64);
+    depth.inventory.nodes = (0u32..64)
+        .map(|index| ObjectGraphNodeV1 {
+            object: root.clone(),
+            parent_index: index.checked_sub(1),
+            child_index: 0,
+        })
+        .collect();
+    assert_player_roundtrip(oracle, artifact_dir, "player-snapshot-depth-64", &depth);
+
+    let mut maximum = seeded_player_snapshot(&mut generator_seed, 8192);
+    maximum.inventory.nodes = (0u32..8192)
+        .map(|index| ObjectGraphNodeV1 {
+            object: root.clone(),
+            parent_index: match index {
+                0 | 4097 => None,
+                1..=4096 => Some(0),
+                _ => Some(4097),
+            },
+            child_index: match index {
+                0 => 0,
+                1..=4096 => index - 1,
+                4097 => 1,
+                _ => index - 4098,
+            },
+        })
+        .collect();
+    assert_player_roundtrip_file(oracle, artifact_dir, "player-snapshot-nodes-8192", &maximum);
+
+    let valid = encode_player_snapshot_v1(&seeded_player_snapshot(&mut generator_seed, 0))
+        .expect("malformed base snapshot must encode");
+    let base_fields = decode(&valid).unwrap().fields().to_vec();
+
+    let mut fields = base_fields.clone();
+    fields[7] = Field::i8(8, -1);
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "non-player type",
+    );
+
+    let mut fields = base_fields.clone();
+    let mut name = fields[0].value().to_vec();
+    name[1] = 0;
+    name[2] = b'x';
+    fields[0] = Field::bytes(1, name);
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "noncanonical fixed-string tail",
+    );
+
+    let mut fields = base_fields.clone();
+    fields[0] = Field::bytes(1, vec![b'x'; 80]);
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "unterminated player fixed string",
+    );
+
+    let mut fields = base_fields.clone();
+    let mut unterminated_object = root.clone();
+    unterminated_object.name = [b'x'; 80];
+    let unterminated_inventory = ObjectGraphV1 {
+        nodes: vec![ObjectGraphNodeV1 {
+            object: unterminated_object,
+            parent_index: None,
+            child_index: 0,
+        }],
+    };
+    fields[39] = Field::bytes(40, encode_object_graph_v1(&unterminated_inventory).unwrap());
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "unterminated inventory fixed string",
+    );
+
+    let mut fields = base_fields.clone();
+    fields[38] = Field::bytes(39, fields[38].value()[..809].to_vec());
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "lasttime width",
+    );
+
+    let mut fields = base_fields.clone();
+    let wrong_nested = encode(&Record::new(Kind::Session, Vec::new()).unwrap()).unwrap();
+    fields[39] = Field::bytes(40, wrong_nested);
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "nested graph kind",
+    );
+
+    let mut fields = base_fields.clone();
+    let graph = fields[39].value().to_vec();
+    fields[39] = Field::bytes(41, graph.clone());
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "inventory field id",
+    );
+
+    let mut fields = base_fields.clone();
+    fields[39] = Field::optional_bytes(40, graph);
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "inventory field type",
+    );
+
+    let mut fields = base_fields.clone();
+    fields.push(Field::optional_raw(41, 0x61, vec![1]));
+    assert_player_rejected(
+        oracle,
+        &encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap(),
+        "closed outer schema",
+    );
+
+    let mut fields = base_fields.clone();
+    let over_roots = ObjectGraphV1 {
+        nodes: (0..4097)
+            .map(|index| ObjectGraphNodeV1 {
+                object: root.clone(),
+                parent_index: None,
+                child_index: index,
+            })
+            .collect(),
+    };
+    fields[39] = Field::bytes(40, encode_object_graph_v1(&over_roots).unwrap());
+    let over_roots_wire = encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap();
+    assert_player_rejected_file(
+        oracle,
+        artifact_dir,
+        &over_roots_wire,
+        "4097-inventory-roots",
+    );
+
+    let mut fields = base_fields;
+    let over_children = ObjectGraphV1 {
+        nodes: std::iter::once(ObjectGraphNodeV1 {
+            object: root.clone(),
+            parent_index: None,
+            child_index: 0,
+        })
+        .chain((0..4097).map(|index| ObjectGraphNodeV1 {
+            object: root.clone(),
+            parent_index: Some(0),
+            child_index: index,
+        }))
+        .collect(),
+    };
+    fields[39] = Field::bytes(40, encode_object_graph_v1(&over_children).unwrap());
+    let over_children_wire = encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap();
+    assert_player_rejected_file(
+        oracle,
+        artifact_dir,
+        &over_children_wire,
+        "4097-inventory-children",
+    );
 }
 
 fn fixed<const N: usize>(prefix: &[u8]) -> [u8; N] {

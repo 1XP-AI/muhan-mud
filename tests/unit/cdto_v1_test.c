@@ -85,9 +85,12 @@ int main(void)
     cdto_v1_decoded_record decoded;
     unsigned char *wire;
     unsigned char *abi_wire;
+    unsigned char *player_snapshot_wire;
+    unsigned char *player_snapshot_limit_value;
     unsigned char *trailing_wire;
     size_t wire_length;
     size_t abi_length;
+    size_t player_snapshot_length;
     char fixture_hex[(16 + 23 + 32) * 2 + 1];
     int failed;
 
@@ -104,6 +107,8 @@ int main(void)
     record.field_count = 2;
     wire = 0;
     abi_wire = 0;
+    player_snapshot_wire = 0;
+    player_snapshot_limit_value = 0;
     trailing_wire = 0;
     memset(&decoded, 0, sizeof(decoded));
     failed = 0;
@@ -128,6 +133,51 @@ int main(void)
                      !memcmp(decoded.fields[0].value, terra, 5),
                      "decoded field values must retain bytes");
     cdto_v1_free_decoded(&decoded);
+
+    record.kind = CDTO_V1_KIND_PLAYER_SNAPSHOT;
+    failed += expect(cdto_v1_encode(&record, &player_snapshot_wire,
+                                    &player_snapshot_length) == CDTO_V1_OK,
+                     "player snapshot kind must encode within its explicit limit");
+    failed += expect(player_snapshot_wire != 0 &&
+                     player_snapshot_wire[10] == 0 && player_snapshot_wire[11] == 7,
+                     "player snapshot wire kind must be explicit and big-endian");
+    if (player_snapshot_wire) {
+        failed += expect(cdto_v1_decode(player_snapshot_wire, player_snapshot_length,
+                                        &decoded) == CDTO_V1_OK,
+                         "player snapshot kind must decode");
+        failed += expect(decoded.kind == CDTO_V1_KIND_PLAYER_SNAPSHOT,
+                         "decoded player snapshot kind must be retained");
+        cdto_v1_free_decoded(&decoded);
+    }
+    cdto_v1_free_wire(player_snapshot_wire);
+    player_snapshot_wire = 0;
+    player_snapshot_limit_value = (unsigned char *)malloc(
+        CDTO_V1_PLAYER_SNAPSHOT_PAYLOAD_LIMIT);
+    failed += expect(player_snapshot_limit_value != 0,
+                     "player snapshot limit fixture allocation must succeed");
+    if (player_snapshot_limit_value) {
+        fields[0].value = player_snapshot_limit_value;
+        fields[0].length = CDTO_V1_PLAYER_SNAPSHOT_PAYLOAD_LIMIT -
+                           CDTO_V1_FIELD_HEADER_LENGTH;
+        record.field_count = 1;
+        failed += expect(cdto_v1_encode(&record, &player_snapshot_wire,
+                                        &player_snapshot_length) == CDTO_V1_OK,
+                         "player snapshot payload at 4 MiB must encode");
+        cdto_v1_free_wire(player_snapshot_wire);
+        player_snapshot_wire = 0;
+        fields[0].length = CDTO_V1_PLAYER_SNAPSHOT_PAYLOAD_LIMIT -
+                           CDTO_V1_FIELD_HEADER_LENGTH + 1;
+        failed += expect(cdto_v1_encode(&record, &player_snapshot_wire,
+                                        &player_snapshot_length) ==
+                         CDTO_V1_SIZE_LIMIT_EXCEEDED,
+                         "player snapshot payload above 4 MiB must be rejected");
+        free(player_snapshot_limit_value);
+        player_snapshot_limit_value = 0;
+        fields[0].value = terra;
+        fields[0].length = 5;
+        record.field_count = 2;
+    }
+    record.kind = CDTO_V1_KIND_CREATURE;
 
     wire[wire_length - 1] ^= 1;
     failed += expect(cdto_v1_decode(wire, wire_length, &decoded) == CDTO_V1_DIGEST_MISMATCH,
@@ -211,6 +261,7 @@ int main(void)
 
     printf("cdto_v1_test rust_fixture_hex=%s\n", fixture_hex);
     cdto_v1_free_wire(abi_wire);
+    cdto_v1_free_wire(player_snapshot_wire);
     cdto_v1_free_wire(wire);
     return failed ? 1 : 0;
 }

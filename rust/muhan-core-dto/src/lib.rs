@@ -26,6 +26,7 @@ pub enum Kind {
     Session = 4,
     AbiFingerprint = 5,
     ObjectGraph = 6,
+    PlayerSnapshot = 7,
 }
 
 impl Kind {
@@ -37,6 +38,7 @@ impl Kind {
             Self::Session => 1024 * 1024,
             Self::AbiFingerprint => 1024 * 1024,
             Self::ObjectGraph => 4 * 1024 * 1024,
+            Self::PlayerSnapshot => 4 * 1024 * 1024,
         }
     }
 
@@ -52,6 +54,7 @@ impl Kind {
             4 => Ok(Self::Session),
             5 => Ok(Self::AbiFingerprint),
             6 => Ok(Self::ObjectGraph),
+            7 => Ok(Self::PlayerSnapshot),
             _ => Err(Error::UnknownKind { kind: value }),
         }
     }
@@ -59,6 +62,8 @@ impl Kind {
 
 /// The largest legal whole envelope: a Room payload plus prefix and digest.
 pub const MAX_ENVELOPE_SIZE: usize = Kind::Room.payload_limit() + PREFIX_LENGTH + DIGEST_LENGTH;
+
+pub mod player_snapshot_v1;
 
 pub const TYPE_U8: u8 = 1;
 pub const TYPE_U16: u8 = 2;

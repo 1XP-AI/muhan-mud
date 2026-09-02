@@ -137,6 +137,31 @@ size_t length;
     return 1;
 }
 
+static int ogv1_has_nul(value, length)
+const char *value;
+size_t length;
+{
+    return memchr(value, 0, length) != 0;
+}
+
+static void ogv1_copy_fixed_canonical(destination, source, length)
+unsigned char *destination;
+const char *source;
+size_t length;
+{
+    size_t index;
+    int terminated;
+
+    terminated = 0;
+    for(index = 0; index < length; ++index) {
+        if(terminated) destination[index] = 0;
+        else {
+            destination[index] = (unsigned char)source[index];
+            if(!source[index]) terminated = 1;
+        }
+    }
+}
+
 static int ogv1_object_ok(value, parent)
 const object *value;
 const object *parent;
@@ -186,6 +211,58 @@ uint32_t depth;
     return CDTO_V1_OK;
 }
 
+static int ogv1_player_object_ok(value, parent, owner)
+const object *value;
+const object *parent;
+const creature *owner;
+{
+    if(!value || value->parent_obj != parent || value->parent_rom ||
+       value->shotscur > value->shotsmax) return 0;
+    if(parent) {
+        if(value->parent_crt) return 0;
+    } else if(value->parent_crt != owner) return 0;
+    return ogv1_has_nul(value->name, sizeof(value->name)) &&
+           ogv1_has_nul(value->description, sizeof(value->description)) &&
+           ogv1_has_nul(value->key[0], sizeof(value->key[0])) &&
+           ogv1_has_nul(value->key[1], sizeof(value->key[1])) &&
+           ogv1_has_nul(value->key[2], sizeof(value->key[2])) &&
+           ogv1_has_nul(value->use_output, sizeof(value->use_output));
+}
+
+static int ogv1_collect_player_list(build, tag, parent, parent_index, depth, owner)
+ogv1_build *build;
+const otag *tag;
+const object *parent;
+int32_t parent_index;
+uint32_t depth;
+const creature *owner;
+{
+    uint32_t sibling, index;
+    int status;
+
+    if(!tag) return CDTO_V1_OK;
+    if(depth > OBJECT_GRAPH_V1_MAX_DEPTH) return CDTO_V1_SIZE_LIMIT_EXCEEDED;
+    sibling = 0;
+    while(tag) {
+        if(!tag->obj || ogv1_seen(build, tag->obj) ||
+           !ogv1_player_object_ok(tag->obj, parent, owner))
+            return OBJECT_GRAPH_V1_INVALID_GRAPH;
+        if(sibling == OBJECT_GRAPH_V1_PLAYER_MAX_LIST_ITEMS)
+            return CDTO_V1_SIZE_LIMIT_EXCEEDED;
+        if(build->count == OBJECT_GRAPH_V1_MAX_NODES)
+            return CDTO_V1_SIZE_LIMIT_EXCEEDED;
+        index = build->count++;
+        build->objects[index] = tag->obj;
+        build->parents[index] = parent_index;
+        build->siblings[index] = sibling++;
+        status = ogv1_collect_player_list(build, tag->obj->first_obj, tag->obj,
+            (int32_t)index, depth + 1, owner);
+        if(status != CDTO_V1_OK) return status;
+        tag = tag->next_tag;
+    }
+    return CDTO_V1_OK;
+}
+
 static void ogv1_node(out, index, parent, sibling, value)
 unsigned char out[OBJECT_GRAPH_V1_NODE_LENGTH];
 uint32_t index;
@@ -201,6 +278,38 @@ const object *value;
     memcpy(cursor, value->description, sizeof(value->description)); cursor += sizeof(value->description);
     memcpy(cursor, value->key, sizeof(value->key)); cursor += sizeof(value->key);
     memcpy(cursor, value->use_output, sizeof(value->use_output)); cursor += sizeof(value->use_output);
+    ogv1_put64(cursor, value->value); cursor += 8;
+    ogv1_put16(cursor, value->weight); cursor += 2;
+    *cursor++ = (unsigned char)value->type; *cursor++ = (unsigned char)value->adjustment;
+    ogv1_put16(cursor, value->shotsmax); cursor += 2; ogv1_put16(cursor, value->shotscur); cursor += 2;
+    ogv1_put16(cursor, value->ndice); cursor += 2; ogv1_put16(cursor, value->sdice); cursor += 2;
+    ogv1_put16(cursor, value->pdice); cursor += 2;
+    *cursor++ = (unsigned char)value->armor; *cursor++ = (unsigned char)value->wearflag;
+    *cursor++ = (unsigned char)value->magicpower; *cursor++ = (unsigned char)value->magicrealm;
+    ogv1_put16(cursor, value->special); cursor += 2;
+    memcpy(cursor, value->flags, sizeof(value->flags)); cursor += sizeof(value->flags);
+    *cursor = (unsigned char)value->questnum;
+}
+
+static void ogv1_player_node(out, index, parent, sibling, value)
+unsigned char out[OBJECT_GRAPH_V1_NODE_LENGTH];
+uint32_t index;
+int32_t parent;
+uint32_t sibling;
+const object *value;
+{
+    unsigned char *cursor;
+
+    cursor = out;
+    ogv1_put32(cursor, index); cursor += 4;
+    ogv1_put32(cursor, (uint32_t)parent); cursor += 4;
+    ogv1_put32(cursor, sibling); cursor += 4;
+    ogv1_copy_fixed_canonical(cursor, value->name, sizeof(value->name)); cursor += sizeof(value->name);
+    ogv1_copy_fixed_canonical(cursor, value->description, sizeof(value->description)); cursor += sizeof(value->description);
+    ogv1_copy_fixed_canonical(cursor, value->key[0], sizeof(value->key[0])); cursor += sizeof(value->key[0]);
+    ogv1_copy_fixed_canonical(cursor, value->key[1], sizeof(value->key[1])); cursor += sizeof(value->key[1]);
+    ogv1_copy_fixed_canonical(cursor, value->key[2], sizeof(value->key[2])); cursor += sizeof(value->key[2]);
+    ogv1_copy_fixed_canonical(cursor, value->use_output, sizeof(value->use_output)); cursor += sizeof(value->use_output);
     ogv1_put64(cursor, value->value); cursor += 8;
     ogv1_put16(cursor, value->weight); cursor += 2;
     *cursor++ = (unsigned char)value->type; *cursor++ = (unsigned char)value->adjustment;
@@ -280,6 +389,77 @@ size_t *wire_length;
     status = cdto_v1_encode(&record, wire, wire_length);
 done:
     free(values); free(fields); free(build.siblings); free(build.parents); free(build.objects);
+    return status;
+}
+
+int object_graph_v1_encode_player_inventory(roots, owner, wire, wire_length)
+const otag *roots;
+const creature *owner;
+uint8_t **wire;
+size_t *wire_length;
+{
+    ogv1_build build;
+    cdto_v1_field *fields;
+    cdto_v1_record record;
+    unsigned char *values, count[4];
+    uint32_t index;
+    int status;
+
+    if(wire) *wire = 0;
+    if(wire_length) *wire_length = 0;
+    if(!owner || !wire || !wire_length) return CDTO_V1_INVALID_ARGUMENT;
+    memset(&build, 0, sizeof(build));
+    fields = 0;
+    values = 0;
+    build.objects = (const object **)ogv1_calloc(OBJECT_GRAPH_V1_MAX_NODES,
+        sizeof(*build.objects));
+    build.parents = (int32_t *)ogv1_calloc(OBJECT_GRAPH_V1_MAX_NODES,
+        sizeof(*build.parents));
+    build.siblings = (uint32_t *)ogv1_calloc(OBJECT_GRAPH_V1_MAX_NODES,
+        sizeof(*build.siblings));
+    if(!build.objects || !build.parents || !build.siblings) {
+        status = CDTO_V1_ALLOCATION_FAILED;
+        goto done;
+    }
+    status = ogv1_collect_player_list(&build, roots, 0, -1, 1, owner);
+    if(status != CDTO_V1_OK) goto done;
+    fields = (cdto_v1_field *)ogv1_calloc((size_t)build.count + 1,
+        sizeof(*fields));
+    if(!fields) {
+        status = CDTO_V1_ALLOCATION_FAILED;
+        goto done;
+    }
+    if(build.count) {
+        values = (unsigned char *)ogv1_malloc((size_t)build.count *
+            OBJECT_GRAPH_V1_NODE_LENGTH);
+        if(!values) {
+            status = CDTO_V1_ALLOCATION_FAILED;
+            goto done;
+        }
+    }
+    ogv1_put32(count, build.count);
+    fields[0].id = 1;
+    fields[0].type_tag = CDTO_V1_TYPE_U32;
+    fields[0].value = count;
+    fields[0].length = 4;
+    for(index = 0; index < build.count; ++index) {
+        ogv1_player_node(values + (size_t)index * OBJECT_GRAPH_V1_NODE_LENGTH,
+            index, build.parents[index], build.siblings[index], build.objects[index]);
+        fields[index + 1].id = (uint16_t)(index + 2);
+        fields[index + 1].type_tag = CDTO_V1_TYPE_BYTES;
+        fields[index + 1].value = values + (size_t)index * OBJECT_GRAPH_V1_NODE_LENGTH;
+        fields[index + 1].length = OBJECT_GRAPH_V1_NODE_LENGTH;
+    }
+    record.kind = CDTO_V1_KIND_OBJECT_GRAPH;
+    record.fields = fields;
+    record.field_count = (size_t)build.count + 1;
+    status = cdto_v1_encode(&record, wire, wire_length);
+done:
+    free(values);
+    free(fields);
+    free(build.siblings);
+    free(build.parents);
+    free(build.objects);
     return status;
 }
 

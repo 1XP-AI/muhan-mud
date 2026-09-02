@@ -12,6 +12,7 @@
 #include "creature_v1.h"
 #include "object_v1.h"
 #include "object_graph_v1.h"
+#include "player_snapshot_v1.h"
 
 static void object_fixture(value)
 object *value;
@@ -79,6 +80,59 @@ creature *value;
     for(i = 0; i < 16; ++i) { value->spells[i] = (char)(i - 8); value->quests[i] = (char)(0x30 + i); }
     for(i = 0; i < 8; ++i) value->flags[i] = (char)(0xa0 + i);
     for(i = 0; i < 10; ++i) { value->carry[i] = (short)(i - 5); value->daily[i].max = (char)(i + 3); value->daily[i].cur = (char)(i + 1); value->daily[i].ltime = (long)(1000 + i); }
+}
+
+static void player_snapshot_fixture(value, objects, tags)
+creature *value;
+object objects[5];
+otag tags[5];
+{
+    int i;
+
+    creature_fixture(value);
+    value->type = PLAYER;
+    memcpy(value->talk, "Synthetic player talk.", 23);
+    memset(value->password, 0, sizeof(value->password));
+    memcpy(value->password, "PW-SENTINEL", 11);
+    value->fd = 57;
+    value->following = (creature *)1;
+    value->first_fol = (ctag *)1;
+    value->first_enm = (etag *)1;
+    value->first_tlk = (ttag *)1;
+    value->parent_rom = (room *)1;
+    value->daily[0].max = 1;
+    value->daily[0].cur = 2;
+    value->daily[0].ltime = -17L;
+    for(i = 0; i < 45; ++i) {
+        value->lasttime[i].interval = (long)(i * 37 - 700);
+        value->lasttime[i].ltime = (long)(900 - i * 41);
+        value->lasttime[i].misc = (short)(i - 22);
+    }
+    value->name[40] = 'x';
+
+    for(i = 0; i < 5; ++i) object_fixture(&objects[i]);
+    strcpy(objects[0].name, "snapshot-root-a");
+    strcpy(objects[1].name, "snapshot-child-a");
+    strcpy(objects[2].name, "snapshot-child-b");
+    strcpy(objects[3].name, "snapshot-grandchild");
+    strcpy(objects[4].name, "snapshot-root-b");
+    objects[0].name[50] = 'y';
+    memset(tags, 0, 5 * sizeof(*tags));
+    tags[0].obj = &objects[0];
+    tags[1].obj = &objects[1];
+    tags[2].obj = &objects[2];
+    tags[3].obj = &objects[3];
+    tags[4].obj = &objects[4];
+    tags[0].next_tag = &tags[4];
+    objects[0].first_obj = &tags[1];
+    tags[1].next_tag = &tags[2];
+    objects[1].parent_obj = &objects[0];
+    objects[2].parent_obj = &objects[0];
+    objects[1].first_obj = &tags[3];
+    objects[3].parent_obj = &objects[1];
+    objects[0].parent_crt = value;
+    objects[4].parent_crt = value;
+    value->first_obj = &tags[0];
 }
 
 static int nibble(value)
@@ -169,11 +223,54 @@ const unsigned char *wire;
 size_t wire_length;
 {
     FILE *file = fopen(path, "wb");
+    int ok;
+
     if (!file) return 0;
-    if (fwrite(wire, 1, wire_length, file) != wire_length || fclose(file) != 0) {
+    ok = fwrite(wire, 1, wire_length, file) == wire_length;
+    if (fclose(file) != 0) ok = 0;
+    if (!ok) {
         remove(path);
         return 0;
     }
+    return 1;
+}
+
+static int read_wire(path, wire, wire_length)
+const char *path;
+unsigned char **wire;
+size_t *wire_length;
+{
+    FILE *file;
+    unsigned char *bytes;
+    long end;
+    size_t length;
+
+    *wire = 0;
+    *wire_length = 0;
+    file = fopen(path, "rb");
+    if (!file) return 0;
+    if (fseek(file, 0L, SEEK_END) != 0 || (end = ftell(file)) < 0L ||
+        (unsigned long)end > (size_t)-1 || fseek(file, 0L, SEEK_SET) != 0) {
+        fclose(file);
+        return 0;
+    }
+    length = (size_t)end;
+    bytes = (unsigned char *)malloc(length ? length : 1U);
+    if (!bytes) {
+        fclose(file);
+        return 0;
+    }
+    if (length && fread(bytes, 1, length, file) != length) {
+        fclose(file);
+        free(bytes);
+        return 0;
+    }
+    if (fclose(file) != 0) {
+        free(bytes);
+        return 0;
+    }
+    *wire = bytes;
+    *wire_length = length;
     return 1;
 }
 
@@ -339,6 +436,85 @@ char **argv;
         if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
         else printf("err %d\n", status);
         cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "player-snapshot-fixture") && argc == 2) {
+        creature value;
+        object objects[5];
+        otag tags[5];
+
+        player_snapshot_fixture(&value, objects, tags);
+        status = player_snapshot_v1_encode_loaded(&value, &wire, &wire_length);
+        if (status == CDTO_V1_OK &&
+            (value.name[40] != 'x' || objects[0].name[50] != 'y'))
+            status = CDTO_V1_INVALID_ARGUMENT;
+        if (status == CDTO_V1_OK) {
+            print_hex(wire, wire_length);
+            putchar('\n');
+        } else {
+            printf("err %d\n", status);
+        }
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "player-snapshot-roundtrip") && argc == 3) {
+        creature *value;
+
+        value = 0;
+        if (!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = player_snapshot_v1_decode_clone(wire, wire_length, &value);
+        free(wire);
+        wire = 0;
+        if (status == CDTO_V1_OK)
+            status = player_snapshot_v1_encode_loaded(value, &wire, &wire_length);
+        if (status == CDTO_V1_OK) {
+            print_hex(wire, wire_length);
+            putchar('\n');
+        } else {
+            printf("err %d\n", status);
+        }
+        player_snapshot_v1_free_clone(value);
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "player-snapshot-decode") && argc == 3) {
+        creature *value;
+
+        value = 0;
+        if (!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = player_snapshot_v1_decode_clone(wire, wire_length, &value);
+        printf("%d\n", status);
+        player_snapshot_v1_free_clone(value);
+        free(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "player-snapshot-roundtrip-file") && argc == 4) {
+        creature *value;
+
+        value = 0;
+        if (!read_wire(argv[2], &wire, &wire_length)) return 2;
+        status = player_snapshot_v1_decode_clone(wire, wire_length, &value);
+        free(wire);
+        wire = 0;
+        if (status == CDTO_V1_OK)
+            status = player_snapshot_v1_encode_loaded(value, &wire, &wire_length);
+        if (status == CDTO_V1_OK && !write_wire(argv[3], wire, wire_length))
+            status = CDTO_V1_ALLOCATION_FAILED;
+        if (status == CDTO_V1_OK) printf("ok %lu\n", (unsigned long)wire_length);
+        else printf("err %d\n", status);
+        player_snapshot_v1_free_clone(value);
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "player-snapshot-decode-file") && argc == 3) {
+        creature *value;
+
+        value = 0;
+        if (!read_wire(argv[2], &wire, &wire_length)) return 2;
+        status = player_snapshot_v1_decode_clone(wire, wire_length, &value);
+        printf("%d\n", status);
+        player_snapshot_v1_free_clone(value);
+        free(wire);
         return 0;
     }
     if (!strcmp(argv[1], "boundary") && (argc == 3 || argc == 4))

@@ -267,6 +267,24 @@ jobs:
           make -C src clean >/dev/null 2>&1 || true
           make -C src -j2 CC=gcc
 
+      - name: Player snapshot portable contract (Linux/macOS)
+        if: matrix.runner != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler=cc
+          if [[ "${{ matrix.runner }}" == ubuntu* ]]; then
+            compiler=gcc
+          fi
+          make -C src player-snapshot-v1-test CC="$compiler"
+
+      - name: Player snapshot portable contract (Windows/MSYS2)
+        if: matrix.runner == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          make -C src player-snapshot-v1-test CC=gcc
+
       - name: Audit default MUD artifact has no PQ or libpq (Linux)
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
@@ -417,6 +435,7 @@ jobs:
           make -C src object-v1-sanitizer-test CC=gcc
           make -C src object-graph-v1-sanitizer-test CC=gcc
           make -C src creature-v1-sanitizer-test CC=gcc
+          make -C src player-snapshot-v1-sanitizer-test CC=gcc
 
       - name: Bounded player serializer checks
         if: matrix.runner == 'ubuntu-latest'

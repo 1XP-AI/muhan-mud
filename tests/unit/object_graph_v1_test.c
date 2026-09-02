@@ -228,14 +228,16 @@ size_t canonical_length;
 
 int main(void)
 {
-    object objects[4], before[4], deep[65], alias, two_root_objects[3];
+    object objects[4], before[4], deep[65], alias, two_root_objects[3], player_objects[4];
     otag tags[4], deep_tags[65], alias_tags[2], two_root_tags[3], *roots, *decoded_roots;
+    otag player_tags[4];
+    creature player;
     object *many_objects;
     otag *many_tags;
     unsigned char *wire, *roundtrip, *malformed, *node, *trailing;
     size_t wire_length, roundtrip_length, malformed_length, trailing_length;
     cdto_v1_decoded_record record;
-    int failed, status, i;
+    int failed, status, i, index, saw_success;
 
     failed = 0; wire = roundtrip = malformed = node = trailing = 0;
     wire_length = roundtrip_length = malformed_length = trailing_length = 0;
@@ -310,6 +312,64 @@ int main(void)
     objects[0].parent_crt = (creature *)1;
     failed += expect(object_graph_v1_encode(roots, &malformed, &malformed_length) == OBJECT_GRAPH_V1_INVALID_GRAPH,
                      "attached roots must not enter the synthetic-only graph codec");
+
+    fixture(&roots, player_objects, player_tags);
+    memset(&player, 0, sizeof(player));
+    player_objects[0].parent_crt = &player;
+    player_objects[0].name[20] = 'x';
+    failed += expect(object_graph_v1_encode_player_inventory(roots, &player,
+                     &roundtrip, &roundtrip_length) == CDTO_V1_OK && roundtrip &&
+                     object_graph_v1_decode(roundtrip, roundtrip_length, &decoded_roots) == CDTO_V1_OK &&
+                     decoded_roots && decoded_roots->obj && decoded_roots->obj->name[20] == 0 &&
+                     !memcmp(player_objects[0].name + 20, "x", 1),
+                     "player inventory adapter must canonicalize stale string tails without mutating source");
+    object_graph_v1_free(decoded_roots); decoded_roots = 0;
+    cdto_v1_free_wire(roundtrip); roundtrip = 0; roundtrip_length = 0;
+    player_objects[0].parent_crt = 0;
+    failed += expect(object_graph_v1_encode_player_inventory(roots, &player,
+                     &roundtrip, &roundtrip_length) == OBJECT_GRAPH_V1_INVALID_GRAPH &&
+                     !roundtrip && roundtrip_length == 0,
+                     "player adapter must require every root to be owned by its player");
+    player_objects[0].parent_crt = &player;
+    player_objects[1].parent_crt = &player;
+    failed += expect(object_graph_v1_encode_player_inventory(roots, &player,
+                     &roundtrip, &roundtrip_length) == OBJECT_GRAPH_V1_INVALID_GRAPH &&
+                     !roundtrip && roundtrip_length == 0,
+                     "player adapter must reject creature-attached children");
+    player_objects[1].parent_crt = 0;
+#ifdef OBJECT_GRAPH_V1_TESTING
+    fixture(&roots, player_objects, player_tags);
+    memset(&player, 0, sizeof(player));
+    player_objects[0].parent_crt = &player;
+    saw_success = 0;
+    for(index = 0; index < 64; ++index) {
+        roundtrip = (unsigned char *)1; roundtrip_length = 1;
+        object_graph_v1_test_fail_after(index);
+        status = object_graph_v1_encode_player_inventory(roots, &player,
+            &roundtrip, &roundtrip_length);
+        if(status == CDTO_V1_OK) {
+            cdto_v1_free_wire(roundtrip);
+            roundtrip = 0; roundtrip_length = 0;
+            saw_success = 1;
+            break;
+        }
+        failed += expect(status == CDTO_V1_ALLOCATION_FAILED && !roundtrip &&
+                         roundtrip_length == 0,
+                         "player adapter allocator faults must clear outputs");
+    }
+    failed += expect(saw_success,
+                     "player adapter allocator injection must reach success");
+    object_graph_v1_test_reset_allocator();
+#endif
+    fixture(&roots, player_objects, player_tags);
+    memset(&player, 0, sizeof(player));
+    player_objects[0].parent_crt = &player;
+    player_objects[0].parent_obj = &player_objects[1];
+    failed += expect(object_graph_v1_encode_player_inventory(roots, &player,
+                     &roundtrip, &roundtrip_length) == OBJECT_GRAPH_V1_INVALID_GRAPH &&
+                     !roundtrip && roundtrip_length == 0,
+                     "player adapter must reject a root object parent link");
+    player_objects[0].parent_obj = 0;
     fixture(&roots, objects, tags);
     objects[0].name[20] = 'x';
     failed += expect(object_graph_v1_encode(roots, &malformed, &malformed_length) == OBJECT_GRAPH_V1_INVALID_GRAPH,
