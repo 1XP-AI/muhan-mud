@@ -10,6 +10,10 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#ifdef USE_M3_RUNTIME
+#include "character_save_journal_v2_runtime.h"
+#include "character_save_journal_v2_runtime_native.h"
+#endif
 #include <time.h>
 #define SCHEDPORT  4000
 
@@ -25,6 +29,11 @@ char	*argv[];
 	char file[80];
 	void mvc_log();
 	int schedule_g();
+#ifdef USE_M3_RUNTIME
+	character_save_journal_v2_runtime m3_runtime;
+	character_save_journal_v2_runtime_native m3_native;
+	character_save_journal_v2_runtime_state m3_state;
+#endif
 
 	Port = PORTNUM;
 
@@ -58,6 +67,18 @@ char	*argv[];
 	      else if (!strcmp(argv[2],"-r"))
                 report = 1;
 	}
+
+#ifdef USE_M3_RUNTIME
+	/* This is an isolated readiness assertion, deliberately before socket
+	 * setup.  Absent/off mode performs no file or database operation. */
+	character_save_journal_v2_runtime_native_init(&m3_native);
+	character_save_journal_v2_runtime_init(&m3_runtime,&m3_native.dependencies);
+	m3_state=character_save_journal_v2_runtime_start(&m3_runtime);
+	if(m3_state==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED) {
+		fprintf(stderr,"M3 runtime readiness probe failed\n");
+		exit(78);
+	}
+#endif
 
 #ifdef AUTOSHUTDOWN
 	if (!Shutdown.interval){

@@ -85,6 +85,22 @@ jobs:
           make -C src character-save-journal-v2-receipt-transport-integration CC=gcc PG_CONFIG=pg_config
           make -C src character-save-journal-v2-receipt-transport-restart-integration CC=gcc PG_CONFIG=pg_config
 
+      # Keep this after the historical receipt-transport lane: migration 110
+      # intentionally adds the one audited membership that the earlier
+      # no-membership baseline proves absent.
+      - name: Run M3 writer login and startup-session contracts
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          M3_WRITER_SESSION_ALLOW_DISPOSABLE: "1"
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_writer_session_contract.sql
+          make -C src character-save-journal-v2-runtime-native-compile CC=gcc PG_CONFIG=pg_config
+          M3_RUNTIME_ALLOW_DISPOSABLE=1 make -C src character-save-journal-v2-runtime-integration CC=gcc PG_CONFIG=pg_config
+
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
         with:
@@ -318,6 +334,7 @@ jobs:
           make -C src character-save-journal-v2-ack-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-recovery-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-receipt-transport-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc

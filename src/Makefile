@@ -31,6 +31,16 @@ EXTRA_LIBS =
 V2_TEST_CFLAGS = -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS)
 PG_CONFIG ?= pg_config
 
+ifeq ($(USE_M3_RUNTIME),1)
+ifeq ($(shell command -v $(PG_CONFIG) 2>/dev/null),)
+$(error USE_M3_RUNTIME=1 requires PG_CONFIG to name an installed PostgreSQL client toolchain)
+endif
+M3_RUNTIME_PG_INCLUDEDIR := $(shell $(PG_CONFIG) --includedir)
+M3_RUNTIME_PG_LIBDIR := $(shell $(PG_CONFIG) --libdir)
+CFLAGS += -DUSE_M3_RUNTIME -I$(M3_RUNTIME_PG_INCLUDEDIR)
+M3_RUNTIME_LIBS = -L$(M3_RUNTIME_PG_LIBDIR) -lpq
+endif
+
 ifeq ($(USE_RUST_RESOLVER),1)
 CFLAGS += -DUSE_RUST_RESOLVER
 RUST_FFI_LIB ?= ../rust/target/release/libmuhan_resource_ffi.a
@@ -47,8 +57,14 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
 	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_recovery.o
 
+M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o
+
+ifeq ($(USE_M3_RUNTIME),1)
+OBJECTS += $(M3_RUNTIME_OBJECTS)
+endif
+
 $(OUTFILE): $(OBJECTS)
-	$(CC) $(CFLAGS) $(OBJECTS) -o $(OUTFILE) $(LIBS) $(EXTRA_LIBS)
+	$(CC) $(CFLAGS) $(OBJECTS) -o $(OUTFILE) $(LIBS) $(EXTRA_LIBS) $(M3_RUNTIME_LIBS)
 	chmod 777 $(OUTFILE)
 #	strip $(OUTFILE)
 
@@ -58,7 +74,7 @@ auth: auth.o
 	mv auth ../bin
 
 clean: 
-	rm -f $(OBJECTS) $(OUTFILE)
+	rm -f $(OBJECTS) $(M3_RUNTIME_OBJECTS) $(OUTFILE)
 
 unit-test:
 	mkdir -p /tmp/muhan-unit
@@ -98,6 +114,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-ack-test
 	$(MAKE) character-save-journal-v2-recovery-test
 	$(MAKE) character-save-journal-v2-receipt-transport-test
+	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
 
@@ -115,6 +132,37 @@ character-save-journal-v2-receipt-transport-sanitizer-test: character-save-journ
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_receipt_transport_test.c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
+
+character-save-journal-v2-runtime-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_runtime.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_prod.o
+	python3 ../tests/unit/character_save_journal_v2_runtime_no_live_link_test.py --runtime-object /tmp/muhan-unit/character_save_journal_v2_runtime_prod.o --makefile Makefile --runtime-source character_save_journal_v2_runtime.c --runtime-header character_save_journal_v2_runtime.h --native-source character_save_journal_v2_runtime_native.c --native-header character_save_journal_v2_runtime_native.h --main-source main.c
+
+character-save-journal-v2-runtime-test: character-save-journal-v2-runtime-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_runtime_test.c character_save_journal_v2_runtime.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_test
+	/tmp/muhan-unit/character_save_journal_v2_runtime_test
+
+character-save-journal-v2-runtime-sanitizer-test: character-save-journal-v2-runtime-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_runtime_test.c character_save_journal_v2_runtime.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_runtime_sanitizer_test
+
+character-save-journal-v2-runtime-native-compile: character-save-journal-v2-runtime-static-test
+	mkdir -p /tmp/muhan-unit
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-runtime-native-compile: PG_CONFIG unavailable" >&2; exit 2; }
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -c character_save_journal_v2_runtime_native.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native.o
+	python3 ../tests/unit/character_save_journal_v2_runtime_no_live_link_test.py --native-object /tmp/muhan-unit/character_save_journal_v2_runtime_native.o --makefile Makefile --runtime-source character_save_journal_v2_runtime.c --runtime-header character_save_journal_v2_runtime.h --native-source character_save_journal_v2_runtime_native.c --native-header character_save_journal_v2_runtime_native.h --main-source main.c
+
+ifeq ($(M3_RUNTIME_ALLOW_DISPOSABLE),1)
+character-save-journal-v2-runtime-integration: character-save-journal-v2-runtime-native-compile
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_runtime_integration.c character_save_journal_v2_runtime.c character_save_journal_v2_runtime_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_runtime_integration
+	M3_WRITER_SESSION_ALLOW_DISPOSABLE=1 bash ../supabase/tests/m3_writer_session_actual_login_integration.sh /tmp/muhan-unit/character_save_journal_v2_runtime_integration
+else
+character-save-journal-v2-runtime-integration:
+	@echo "m3 runtime integration skipped (set M3_RUNTIME_ALLOW_DISPOSABLE=1)"
+endif
 
 character-save-journal-v2-protocol-prod-link-test:
 	mkdir -p /tmp/muhan-unit
