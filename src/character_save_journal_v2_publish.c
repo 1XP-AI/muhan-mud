@@ -476,7 +476,7 @@ int parent;
 const char *leaf;
 char *out;
 size_t out_size;
-int links;
+nlink_t links;
 int close_kind;
 {
     int fd, result = -1;
@@ -516,7 +516,7 @@ static int pub_marker_exact(tree, leaf, wire, links, sync_file)
 v2_publish_tree *tree;
 const char *leaf;
 const character_save_journal_v2_wire *wire;
-int links;
+nlink_t links;
 int sync_file;
 {
     char text[V2_PUBLISH_TEXT_MAX], expected[V2_PUBLISH_TEXT_MAX];
