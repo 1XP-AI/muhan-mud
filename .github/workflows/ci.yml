@@ -298,6 +298,7 @@ jobs:
           make -C src character-save-journal-v2-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-writer-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-route-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-publish-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc
           make -C src object-graph-v1-sanitizer-test CC=gcc

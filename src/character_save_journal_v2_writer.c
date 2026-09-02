@@ -16,6 +16,9 @@
 #ifndef O_DIRECTORY
 #error "v2 writer lock requires O_DIRECTORY"
 #endif
+#ifndef F_DUPFD_CLOEXEC
+#error "v2 writer requires atomic F_DUPFD_CLOEXEC"
+#endif
 
 #define V2_WRITER_RUNTIME_UID 10001
 #define V2_WRITER_TEXT_MAX 512
@@ -650,6 +653,33 @@ const character_save_journal_v2_writer_context *context;
 character_save_journal_v2_writer_tuple *tuple_out;
 {
   return v2_writer_validate_snapshot(context,tuple_out,0);
+}
+
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_dup_held_root_fd(context,root_fd_out)
+const character_save_journal_v2_writer_context *context;
+int *root_fd_out;
+{
+  character_save_journal_v2_writer_tuple tuple;
+  character_save_journal_v2_writer_context_status status;
+  int duplicate;
+  if(!root_fd_out) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  *root_fd_out=-1;
+  status=v2_writer_validate_snapshot(context,&tuple,0);
+  memset(&tuple,0,sizeof(tuple));
+  if(status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+    return status;
+  }
+  /* A dup followed by F_SETFD leaks this descriptor across a concurrent exec.
+   * Both supported targets provide the atomic form; do not add a racy fallback. */
+  duplicate=fcntl(v2_writer_active->root_fd,F_DUPFD_CLOEXEC,0);
+  if(duplicate<0) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  *root_fd_out=duplicate;
+  return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK;
 }
 
 /* This link-local seam is intentionally absent from the public header.  The

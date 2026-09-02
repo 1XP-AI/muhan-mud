@@ -484,6 +484,22 @@ char *root;
   return failed;
 }
 
+static int test_root_duplicate_is_cloexec(root)
+char *root;
+{
+  character_save_journal_v2_writer_context context;
+  int duplicate=-1, flags, failed=0;
+  if(character_save_journal_v2_writer_open(root,world_id,&context)!=0) return 1;
+  failed+=expect(character_save_journal_v2_writer_dup_held_root_fd(&context,&duplicate)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK&&duplicate>=0&&
+                 (flags=fcntl(duplicate,F_GETFD))>=0&&(flags&FD_CLOEXEC),
+                 "root descriptor duplicate must be atomically returned CLOEXEC");
+  if(duplicate>=0&&close(duplicate)!=0) failed++;
+  failed+=expect(character_save_journal_v2_writer_close(&context)==0,
+                 "CLOEXEC duplicate test context must close normally");
+  return failed;
+}
+
 int main(void)
 {
   char temp_template[]="/tmp/character-save-journal-v2-writer-test-XXXXXX";
@@ -503,7 +519,7 @@ int main(void)
          test_lock_lifetime(root)+test_owner_registry(root)+
          test_opaque_handle_boundaries(root)+
          test_existing_opener_syncs_created_lock(root)+
-         test_leaf_contract_and_faults(root);
+         test_leaf_contract_and_faults(root)+test_root_duplicate_is_cloexec(root);
   failed+=expect(teardown(root)==0,"fixture teardown must remove only exact fixture leaves");
   puts(failed?"character_save_journal_v2_writer_test: failed":"character_save_journal_v2_writer_test: ok");
   return failed?1:0;

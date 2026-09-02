@@ -1,8 +1,9 @@
 # M3 journal v2: live wiring 전 계약 게이트
 
 상태: **091a stage/hash/parser, 091b-1a PVC writer 잠금/tuple, 091b-1b
-held-writer route binding C slice는 local GREEN이고, additive v2 route SQL은 원격
-PG17 검증 대기, 091b-2 이후는 미구현** (2026-09-02).
+held-writer route binding C slice와 additive v2 route SQL은 CI `33579360870`에서
+GNU GCC·PostgreSQL 17 GREEN이고, 091b-2 local publish 경계는 test-only local
+GREEN, 091b-3 DB ACK/recovery 이후는 미구현** (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
 검증한다. 별도 `src/character_save_journal_v2_writer.*`는 descriptor-relative PVC
@@ -10,10 +11,11 @@ root에서 exact persisted `(world_id, writer_instance_id, writer_epoch)`를 읽
 `.m3-writer.lock`의 process-lifetime `flock`과 lock file/journal directory fsync를
 검증한다. `src/character_save_journal_v2_route.*`는 exact held writer handle을 다시
 검증한 뒤 mock lookup 한 번으로 DB 권위 identity/storage tuple을 묶는다. 일반·
-ASan/UBSan·production static no-live-link 테스트는 local GREEN이다. additive route
-RPC의 PostgreSQL 17 계약, publish/rename, recovery state machine, DB ACK backlog 및
-production no-GC 운용은 아직 완료하지 않았다. 따라서 091 전체나 live 연결이 완료된
-상태가 아니다. 세 v2 모듈 모두 `save_ply`, `file_player_store_save`, bank writer,
+ASan/UBSan·production static no-live-link 테스트와 additive route RPC의 PostgreSQL
+17 계약은 CI `33579360870`에서 GREEN이다. 별도 publish 모듈은 expected-existing
+rename과 expected-absent no-replace local publish/retry만 test-only로 검증하며, DB ACK
+backlog와 route-free recovery 및 production no-GC 운용은 아직 완료하지 않았다. 따라서
+091 전체나 live 연결이 완료된 상태가 아니다. 네 v2 모듈 모두 `save_ply`, `file_player_store_save`, bank writer,
 Gateway/DB, production startup에는 링크되지 않는다.
 
 기존 `src/character_save_journal.*`와
@@ -109,16 +111,21 @@ a sealed tuple or installed successor permanently fences even an otherwise exact
 
 The only staged leaf is `<command_uuid>.stage` under `character-save-stage/`; callers
 cannot pass a path or suffix. It is a regular `0600` file, written and fsynced through
-an `openat` descriptor, hash-read through that descriptor, then renamed into the
-already-open `player/<shard>/` descriptor. It is never copied to a live path.
+an `openat` descriptor and hash-read through that descriptor. Expected-existing uses
+same-filesystem `renameat` into the already-open `player/<shard>/` descriptor. Expected-
+absent uses a portable loss-safe no-replace sequence: `linkat`, destination-directory
+fsync, source unlink, then source-directory fsync. That sequence intentionally exposes
+a recoverable two-name state and is not described as an atomic move.
 
 Before each open v2 descriptor-walks configured absolute `MUHAN_HOME` through `player`,
 shard, `character-save-journal`, and `character-save-stage` using
 `O_DIRECTORY|O_NOFOLLOW`; leaves use `O_NONBLOCK|O_NOFOLLOW`. Trust root and each listed
 directory must be UID 10001 (the MUD runtime UID) and exact mode `0700`; live/stage/journal
 regular files must be UID 10001 and exact mode `0600`. Symlink, FIFO, device, wrong owner
-or mode, link count other than one, and unverified component freeze the command. This is a
-deployment trust contract, not a best-effort `chmod` repair.
+or mode, unverified component, or a link count other than one freezes the command, except
+for the exact same-inode two-name pair created by an interrupted local promotion. Recovery
+hash-verifies that pair before removing a name. This is a deployment trust contract, not a
+best-effort `chmod` repair.
 
 Every stage/live hash reader first rejects initial regular-file size over
 `PLAYER_PATH_READ_MAX_BYTES` (64 MiB), then rejects a successful read when
@@ -139,9 +146,12 @@ With the lock held, each command does exactly this:
    Serialize into derived stage, fsync stage + stage directory, and cumulative-hash it.
 2. Descriptor-open/cumulative-hash live bytes. Require explicit `existing + expected hash`
    or `absent`; derive request digest; write+fsync v2 `PREPARED` only after these facts hold.
-3. Reopen/hash stage, `renameat(stage → player/shard/name)`, fsync live parent, reopen/hash
-   live. Only exact posthash can mark `LEGACY_PUBLISHED`; all mismatch/missing-stage/uncertain
-   parent-fsync cases freeze rather than guess or consult DB.
+3. Reopen/hash stage. For expected-existing, `renameat(stage → player/shard/name)`; for
+   expected-absent, no-replace `linkat` → live-parent fsync → stage unlink → stage-parent
+   fsync. Reopen/hash live before writing the marker. Only exact posthash can mark
+   `LEGACY_PUBLISHED`; mismatch or uncertain durability freezes rather than guessing or
+   consulting DB. A consumed stage plus exact posthash is reconciled by fsyncing both
+   parents before marking.
 4. Best-effort `record_legacy_published_receipt`; only exact DB ACK can fsync
    `DB_ACKED`. Timeout/offline leaves `LEGACY_PUBLISHED` durable.
 
@@ -213,11 +223,12 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | **091b-1a PVC writer lifetime boundary, test-only — GREEN** | `red_091b_writer_persisted_tuple_and_lifetime_lock` / exact tuple leaves, two processes, first-create pause | only an exact persisted world/instance/epoch tuple opens; one process holds the lock for the context lifetime and a later process can acquire only after close. |
 | 091b-1a — GREEN | `red_091b_first_create_sync_race_and_retry` / creator paused after `O_EXCL`, existing opener, injected fsync failure | every successful opener fsyncs the lock file and journal directory while holding `flock`; a failed creator followed by retry repeats both durability operations. |
 | 091b-1a — GREEN | `red_091b_writer_static_no_live_linkage` / fresh production object, `nm`, Make `OBJECTS` | no player writer, bank, onboarding, Gateway or DB dependency; test hooks absent and the writer object remains outside live MUD objects. |
-| **091b-1b held-writer route binding, test-only — local GREEN; remote GNU/PG pending** | `red_091b_bound_route_owner_and_identity` / opaque held writer handle + route mock + additive route RPC | forged, copied, zero, garbage and fork-child handles cannot validate, close, or reach the callback; the exact owner gets one lookup and binds only the DB-returned UUID/name/shard/format/lifecycle/imported hash. Same-shard names retain distinct character IDs and all failures preserve output. |
-| **091b publish/recovery — BLOCKED** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | only exact stage+pre or consumed-stage+post advances; mismatch freezes and makes no DB call. |
-| 091b — BLOCKED | `red_091b_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
-| 091b — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
-| 091b — BLOCKED | `red_091b_no_automatic_cleanup_of_evidence` / all states + orphan stage | no automatic delete beyond explicit fixture teardown. |
+| **091b-1b held-writer route binding, test-only — GREEN (`33579360870`)** | `red_091b_bound_route_owner_and_identity` / opaque held writer handle + route mock + additive route RPC | forged, copied, zero, garbage and fork-child handles cannot validate, close, or reach the callback; the exact owner gets one lookup and binds only the DB-returned UUID/name/shard/format/lifecycle/imported hash. Same-shard names retain distinct character IDs and all failures preserve output. GNU GCC sanitizer와 PostgreSQL 17 migration replay/contract도 GREEN. |
+| **091b-2 local publish/recovery, test-only — local GREEN** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | exact stage+pre publishes through expected-existing rename or expected-absent loss-safe no-replace ordering; consumed-stage+exact-post and exact interrupted two-link pairs converge. Mismatch, alias, race, partial marker, close/fsync/unlink ambiguity freezes without DB calls. |
+| 091b-2 — local GREEN | `red_091b_local_marker_retry_and_no_live_linkage` / exact·partial·conflicting `.published.tmp`, destination races, `nm`/Make | only an exact command-owned temporary is narrowly reusable; it is removed only after the exact target is proven durable. Partial, conflicting, aliased, or orphan evidence is retained. Publish test hooks are absent from its production object and the object remains outside live MUD `OBJECTS`. |
+| **091b-3 DB ACK/recovery — BLOCKED** | `red_091b_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
+| 091b-3 — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
+| 091b-3 — BLOCKED | `red_091b_no_automatic_cleanup_of_unclassified_evidence` / all states + orphan stage | no partial, conflicting, aliased, or orphan evidence is automatically deleted; only exact transactional duplicate-name cleanup is permitted. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
 | 092 | `red_092_crash_cutpoints_end_to_end` / exit after every fsync/rename/RPC then restart | only approved recovered state or frozen divergence; no duplicate receipt/head advance. |
 | 092 | `red_092_handoff_drain_then_successor` / queued A ACKs, seal mock, B acquire | B impossible until A ACKs and seals; then A cannot mutate DB. |
@@ -225,8 +236,9 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 
 090 is additive private schema/role/RPC plus SQL RED tests only. 091a fixes the test-only
 stage/hash/parser boundary, 091b-1a fixes the persisted writer tuple plus PVC lifetime lock
-boundary, and 091b-1b adds the held-writer route binding seam without live linkage. 091b-2/3
-must add publish and recovery through mocks before 091 can be called complete. 092 composes those mocks with
+boundary, 091b-1b adds the held-writer route binding seam, and 091b-2 adds local publish plus
+durability recovery without live linkage. 091b-3 must add route-free recovery, DB ACK and
+offline backlog mocks before 091 can be called complete. 092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.

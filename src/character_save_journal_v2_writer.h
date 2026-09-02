@@ -45,6 +45,13 @@ character_save_journal_v2_writer_validate_held(
     const character_save_journal_v2_writer_context *context,
     character_save_journal_v2_writer_tuple *tuple_out);
 
+/* Read-only descriptor handoff for test-only descendants.  On OK it returns
+ * a CLOEXEC duplicate of the exact registered MUHAN_HOME descriptor, never a
+ * pathname; the caller owns only the duplicate. */
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_dup_held_root_fd(
+    const character_save_journal_v2_writer_context *context, int *root_fd_out);
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
 void character_save_journal_v2_writer_set_trusted_uid_for_test(uid_t uid);
 void character_save_journal_v2_writer_fail_fsync_for_test(int lock_file,

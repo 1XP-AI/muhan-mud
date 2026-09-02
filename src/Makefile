@@ -93,6 +93,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-test
 	$(MAKE) character-save-journal-v2-writer-test
 	$(MAKE) character-save-journal-v2-route-test
+	$(MAKE) character-save-journal-v2-publish-test
 
 character-save-journal-test:
 	mkdir -p /tmp/muhan-unit
@@ -152,6 +153,21 @@ character-save-journal-v2-route-sanitizer-test: character-save-journal-v2-route-
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_route_test.c character_save_journal_v2_route.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_route_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_route_sanitizer_test
+
+character-save-journal-v2-publish-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_publish.c -o /tmp/muhan-unit/character_save_journal_v2_publish_prod.o
+	python3 ../tests/unit/character_save_journal_v2_publish_no_live_link_test.py --object /tmp/muhan-unit/character_save_journal_v2_publish_prod.o --makefile Makefile
+
+character-save-journal-v2-publish-test: character-save-journal-v2-publish-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -I. ../tests/unit/character_save_journal_v2_publish_test.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_publish_test
+	/tmp/muhan-unit/character_save_journal_v2_publish_test
+
+character-save-journal-v2-publish-sanitizer-test: character-save-journal-v2-publish-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_publish_test.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_publish_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_publish_sanitizer_test
 
 files1-decoder-test:
 	mkdir -p /tmp/muhan-unit

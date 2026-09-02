@@ -52,6 +52,9 @@ int character_save_journal_v2_read_prepared(const char *root, const char *comman
                                             character_save_journal_v2_wire *out);
 int character_save_journal_v2_hash_fd(int fd,
                                       char out[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN + 1]);
+/* Recovery-only hash for the exact two-name absent-link promotion state. */
+int character_save_journal_v2_hash_fd_two_links(int fd,
+                                                char out[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN + 1]);
 
 #ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
 #include <sys/types.h>

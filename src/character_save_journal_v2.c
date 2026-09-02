@@ -301,9 +301,13 @@ const character_save_journal_v2_wire *w; char out[65];
 static int v2_dir_ok(fd)
 int fd;
 { struct stat st; return fd>=0 && fstat(fd,&st)==0 && S_ISDIR(st.st_mode) && st.st_uid==v2_trusted_uid && (st.st_mode&07777)==0700; }
+static int v2_stat_file_ok(st, links)
+const struct stat *st;
+unsigned int links;
+{ return st && links && S_ISREG(st->st_mode) && st->st_uid==v2_trusted_uid && (st->st_mode&07777)==0600 && st->st_nlink==links; }
 static int v2_file_ok(fd)
 int fd;
-{ struct stat st; return fd>=0 && fstat(fd,&st)==0 && S_ISREG(st.st_mode) && st.st_uid==v2_trusted_uid && (st.st_mode&07777)==0600 && st.st_nlink==1; }
+{ struct stat st; return fd>=0 && fstat(fd,&st)==0 && v2_stat_file_ok(&st,1); }
 static int v2_open_component(parent,name)
 int parent; const char *name;
 { struct stat before, after; int fd;
@@ -403,14 +407,22 @@ int fd,kind;
     do r=fsync(fd); while(r<0&&errno==EINTR); return r;
 }
 
-int character_save_journal_v2_hash_fd(fd,out)
-int fd; char out[65];
-{ struct stat st; unsigned char buffer[8192], raw[32]; uint64_t total=0; ssize_t n; v2_sha256 sha;
-  if(!out||!v2_file_ok(fd)||fstat(fd,&st)<0||st.st_size<0||(uint64_t)st.st_size>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES||lseek(fd,0,SEEK_SET)<0)return -1;
+static int v2_hash_fd_links(fd,out,links)
+int fd; char out[65]; unsigned int links;
+{ struct stat st,after; unsigned char buffer[8192], raw[32]; uint64_t total=0; ssize_t n; v2_sha256 sha;
+  if(!out||!links||fstat(fd,&st)<0||!v2_stat_file_ok(&st,links)||st.st_size<0||(uint64_t)st.st_size>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES||lseek(fd,0,SEEK_SET)<0)return -1;
   #ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
   if(v2_hash_ready_fd>=0){do n=write(v2_hash_ready_fd,"x",1);while(n<0&&errno==EINTR);if(n!=1)return -1;if(v2_hash_release_fd>=0){char x;do n=read(v2_hash_release_fd,&x,1);while(n<0&&errno==EINTR);if(n!=1)return -1;}}
   #endif
-  v2_sha_init(&sha); for(;;){n=read(fd,buffer,sizeof(buffer));if(n<0&&errno==EINTR)continue;if(n<0)return -1;if(!n)break;if((uint64_t)n>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES-total){errno=EFBIG;return -1;}v2_sha_update(&sha,buffer,(size_t)n);total+=(uint64_t)n;}v2_sha_final(&sha,raw);v2_hex(raw,out);return 0; }
+  v2_sha_init(&sha); for(;;){n=read(fd,buffer,sizeof(buffer));if(n<0&&errno==EINTR)continue;if(n<0)return -1;if(!n)break;if((uint64_t)n>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES-total){errno=EFBIG;return -1;}v2_sha_update(&sha,buffer,(size_t)n);total+=(uint64_t)n;}if(fstat(fd,&after)<0||!v2_stat_file_ok(&after,links)||after.st_dev!=st.st_dev||after.st_ino!=st.st_ino||after.st_size!=st.st_size){errno=EAGAIN;return -1;}v2_sha_final(&sha,raw);v2_hex(raw,out);return 0; }
+
+int character_save_journal_v2_hash_fd(fd,out)
+int fd; char out[65];
+{ return v2_hash_fd_links(fd,out,1); }
+
+int character_save_journal_v2_hash_fd_two_links(fd,out)
+int fd; char out[65];
+{ return v2_hash_fd_links(fd,out,2); }
 
 static int v2_format(w,out,out_size)
 const character_save_journal_v2_wire *w; char *out; size_t out_size;
