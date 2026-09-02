@@ -137,6 +137,18 @@ unit-test:
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
+	$(MAKE) character-snapshot-shadow-outbox-test
+
+character-snapshot-shadow-outbox-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SNAPSHOT_SHADOW_OUTBOX_TESTING -I. ../tests/unit/character_snapshot_shadow_outbox_test.c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_test
+	/tmp/muhan-unit/character_snapshot_shadow_outbox_test
+
+character-snapshot-shadow-outbox-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SNAPSHOT_SHADOW_OUTBOX_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_snapshot_shadow_outbox_test.c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_snapshot_shadow_outbox_sanitizer_test
 
 character-save-journal-v2-receipt-transport-static-test:
 	mkdir -p /tmp/muhan-unit
@@ -263,6 +275,18 @@ m3-runtime-linux-link: character-save-journal-v2-runtime-native-test
 # database.  Keep the scripts opt-in locally, but make CI opt in explicitly.
 M3_PROCESS_OWNER_PG17_SCRIPT ?= ../supabase/tests/m3_process_owner_pg17_integration.sh
 M3_RUNTIME_SHADOW_PG17_SCRIPT ?= ../supabase/tests/m3_runtime_shadow_pg17_integration.sh
+M4_FILE_SNAPSHOT_MANIFEST_PG17_SCRIPT ?= ../supabase/tests/m4_file_snapshot_manifest_pg17_integration.sh
+
+ifeq ($(M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE),1)
+character-snapshot-shadow-outbox-pg17-integration:
+	@case "$$(uname -s)" in Linux) ;; *) echo "m4 file snapshot manifest PG17 integration requires Linux" >&2; exit 2 ;; esac
+	@command -v docker >/dev/null 2>&1 || { echo "m4 file snapshot manifest PG17 integration requires docker" >&2; exit 2; }
+	@test -f "$(M4_FILE_SNAPSHOT_MANIFEST_PG17_SCRIPT)" || { echo "m4 file snapshot manifest PG17 integration script is missing: $(M4_FILE_SNAPSHOT_MANIFEST_PG17_SCRIPT)" >&2; exit 2; }
+	M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE=1 bash "$(M4_FILE_SNAPSHOT_MANIFEST_PG17_SCRIPT)"
+else
+character-snapshot-shadow-outbox-pg17-integration:
+	@echo "m4 file snapshot manifest PG17 integration skipped (set M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE=1)"
+endif
 
 ifeq ($(M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE),1)
 character-save-journal-v2-process-owner-pg17-integration:

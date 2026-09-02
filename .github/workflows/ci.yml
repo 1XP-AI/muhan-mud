@@ -129,6 +129,14 @@ jobs:
           bash supabase/tests/m3_live_save_route_pg17_integration.sh
           bash supabase/tests/m3_provisioning_head_baseline_pg17_integration.sh
 
+      - name: Run M4 file snapshot manifest PostgreSQL 17 contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-snapshot-shadow-outbox-pg17-integration \
+            M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE=1
+
       - name: Run isolated M3 owner and runtime-shadow PostgreSQL 17 E2E gates
         if: runner.os == 'Linux'
         shell: bash
@@ -404,6 +412,7 @@ jobs:
           make -C src character-save-journal-v2-process-owner-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
+          make -C src character-snapshot-shadow-outbox-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc
           make -C src object-graph-v1-sanitizer-test CC=gcc
