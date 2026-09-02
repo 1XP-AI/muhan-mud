@@ -9,8 +9,9 @@ CI `33589685559`에서 GREEN이고, immutable PREPARED 한 건을 route 없이 �
 CI `33594859743`에서 GREEN이다. test-only native libpq receipt transport와 disposable
 PostgreSQL 17 실제 통합은 CI `33598858884`에서 GREEN이다. expired/offline에서 같은
 writer의 exact renew와 successor 설치 뒤 영구 fence까지의 local/actual-PG17 계약은
-CI `33601547197`에서 GREEN이다. 092 이후와 production transport·호출·startup 연결은
-미구현**
+CI `33601547197`에서 GREEN이다. 092a test-only composition과 대표 restart/handoff
+계약은 CI `33615886826`에서 GREEN이다. 092b의 모든 fsync/rename/RPC cutpoint 실제
+재시작 matrix와 production transport·호출·startup 연결은 미구현**
 (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
@@ -28,6 +29,12 @@ exact typed `PQexecParams` 한 번과 SQLSTATE 결과 매핑을 실제 PostgreSQ
 검증하지만 명시적 disposable test target에만 링크된다. publish 모듈의 route-free
 `recover_one`은 held writer와 command UUID만 받고 PREPARED의 tuple·shard·name을 두 번
 검증한 뒤에만 marker/live 복구를 수행한다.
+별도 `src/character_save_journal_v2_protocol.*`는 held writer → route/epoch → serializer
+→ durable stage → live precondition → immutable PREPARED → local publish → exact receipt의
+test-only 조합 경계를 고정한다. 요청 root pathname이 serializer 중 바뀌어도 held-root
+descriptor만 사용하고, local ACK marker가 malformed/conflicting이어도 그 증거는
+바꾸지 않은 채 exact idempotent receipt를 다시 호출한다. 이 모듈은 live MUD
+`OBJECTS`에 포함되지 않는다.
 production caller·DB login/impersonation 설정과 no-GC 운용은 아직 완료하지 않았으므로
 091 전체나 live 연결이 완료된 상태가 아니다. v2 모듈 모두
 `save_ply`, `file_player_store_save`, bank writer, Gateway/DB, production startup에는
@@ -247,10 +254,11 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | **091b-3 native PostgreSQL receipt transport, test-only — GREEN (`33598858884`)** | `red_091b_native_receipt_transport_pg17` / disposable PostgreSQL 17 + actual libpq harness | `PGOPTIONS` startup role이 `current_user=mud_writer`, `session_user=postgres`를 만들고 private table 직접 SELECT는 `42501`로 거부됨을 먼저 증명한다. 함수 EXECUTE revoke 대조군은 실제 callback을 `DEFERRED`로 만들며 state를 바꾸지 않는다. 정상 ACK, exact retry timestamp 무변경, `22023` invalid freeze와 `P0001` rejected freeze를 actual typed `PQexecParams`로 검증하고 head·receipt·writer epoch/fence·identity snapshot을 비교한다. 일반 unit·ASan/UBSan과 Linux/ARM/macOS/Windows 전체 CI도 GREEN이며 production `OBJECTS`에는 추가되지 않는다. |
 | **091b-3 expired/offline successor fence, test-only — GREEN (`33601547197`)** | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→exact renew→seal→B | local ACK boundary verifies durable `LEGACY_PUBLISHED`/`DB_ACKED` evidence is unchanged on DEFERRED, expired, and successor-rejected receipt outcomes. The disposable native libpq contract proves actual offline `DEFERRED`, expired receipt rejection, exact A renewal and ACK, then permanent `P0001` A renew/seal and receipt freeze after B installs; head, receipt, epoch, fence and identity snapshots remain exact. Linux/ARM/macOS/Windows full CI is GREEN. |
 | **091b-3 unclassified evidence — GREEN (`33594859743`)** | `red_091b_no_automatic_cleanup_of_unclassified_evidence` / final markers, unrelated temp, tuple, lock, malformed/unsafe leaves | scanner는 `.prepared` candidate 외의 marker·tuple·lock·unrelated temp를 권위 입력으로 보지 않고 삭제하지 않는다. malformed canonical candidate, symlink, FIFO, hard-link는 전체 scan을 무변경으로 중단하며 기존 publish/ACK의 partial/conflicting/alias 회귀도 함께 GREEN이다. Production 자동 GC는 여전히 없다. |
-| **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
-| 092 | `red_092_crash_cutpoints_end_to_end` / exit after every fsync/rename/RPC then restart | only approved recovered state or frozen divergence; no duplicate receipt/head advance. |
-| 092 | `red_092_handoff_drain_then_successor` / queued A ACKs, seal mock, B acquire | B impossible until A ACKs and seals; then A cannot mutate DB. |
-| 092 | `red_092_static_no_live_writer_linkage` / source/link-map fixture | no `save_ply`, file writer, bank, Gateway, or production startup reaches v2. Passing is not activation. |
+| **092a mock composition only — GREEN (`33615886826`)** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | exact order is held writer → route/epoch → serializer → writer revalidation → stage file+directory fsync/hash → live precondition through the same held root → writer revalidation → fresh stage hash → PREPARED → publish → exact receipt. Tuple loss or live mismatch stops at the last durable cutpoint without manufacturing PREPARED. |
+| 092a — GREEN (`33615886826`) | `red_092_exact_receipt_restart_and_local_incomplete` / COMMAND_A·COMMAND_B, fresh child, malformed/conflicting local ACK marker | initial save, PUBLISHED restart, DB_ACKED retry and COMMAND_B drain retry all compare the current command and the same complete receipt snapshot with durable PREPARED. A local marker repair failure preserves evidence and returns `DB_ACKED_LOCAL_INCOMPLETE`; the DB callback is still replayed exactly once per attempt without a second head advance. |
+| 092a process-local handoff mock — GREEN (`33615886826`) | `red_092_handoff_drain_then_successor` / deferred ACK, drained attestation, exact-A seal mock, B install | deferred backlog blocks attest/seal/install. After exact ACK drain, process-local mock order is attest → seal A → close A → install B → validate B, with a newer epoch and different writer instance. This is not an actual PostgreSQL lifecycle or live MUD handoff. |
+| 092a static boundary — GREEN (`33615886826`) | `red_092_static_no_live_writer_linkage` / production object, source and cross-platform link-map fixture | no `save_ply`, file writer, bank, Gateway, DB or test hook reaches the production probe; protocol remains absent from live MUD `OBJECTS`. Passing is not activation. |
+| **092b pending** | `red_092_crash_cutpoints_end_to_end` / terminate after every individual fsync/rename/RPC and restart | only approved recovered state or frozen divergence; no duplicate receipt/head advance. 092a covers representative fresh-child PREPARED/PUBLISHED/local-incomplete restarts, not this exhaustive real cutpoint matrix. |
 
 이 gate의 TDD 반복에서 CI `33601098057`은 `expires_at`만 과거로 옮긴 fixture가
 `expiry_after_issue` 제약을 위반함을 드러냈고, `issued_at`과 `expires_at`을 함께
@@ -258,6 +266,10 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 함수 시그니처를 호출명으로도 사용한 오류를 드러냈고, callable name과 privilege
 signature를 분리했다. 최종 CI `33601547197`의 disposable PostgreSQL 17 native
 callback과 전체 플랫폼 회귀가 모두 GREEN이다.
+092a의 첫 CI `33615554934`는 새 production link probe가 Darwin 전용 `-map`을
+고정해 GNU ld에서 실패하는 RED를 드러냈다. 기존 OS별 `V2_LINK_MAP_OPTION`을 사용하게
+교정한 CI `33615886826`에서 Linux GNU GCC, ARM, macOS, Windows, PostgreSQL 17,
+일반 unit과 ASan/UBSan 전체가 GREEN이다.
 
 090 is additive private schema/role/RPC plus SQL RED tests only. 091a fixes the test-only
 stage/hash/parser boundary, 091b-1a fixes the persisted writer tuple plus PVC lifetime lock
@@ -269,8 +281,9 @@ CI `33594859743`에서 GREEN이다. test-only native DB adapter의 actual Postgr
 통합은 CI `33598858884`에서 GREEN이고 expired/offline exact-renew 및 successor
 permanent-fence 계약은 CI `33601547197`에서 GREEN이다. production transport
 권한·설정·호출·startup 연결은 남아 있으므로 091 전체는 아직 complete가 아니다.
-092 composes those mocks with
-a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
+092a는 held-root save/recovery와 process-local handoff mock을 synthetic serializer로
+조합했고 CI `33615886826`에서 GREEN이다. 모든 개별 fsync/rename/RPC 뒤 실제 재시작을
+검사하는 092b는 남아 있다. Even green 092a does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.
 
