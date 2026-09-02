@@ -23,8 +23,8 @@ character=92000000-0000-0000-0000-000000000001
 writer_a=94000000-0000-0000-0000-000000000001
 writer_b=94000000-0000-0000-0000-000000000002
 function_signature='private.record_legacy_published_receipt(text,text,uuid,uuid,uuid,text,bigint,bigint,text,text,text,smallint)'
-renew_signature='private.renew_game_world_writer_epoch(text,uuid,bigint,timestamptz)'
-seal_signature='private.seal_game_world_writer_epoch(text,uuid,bigint)'
+renew_function='private.renew_game_world_writer_epoch'
+seal_function='private.seal_game_world_writer_epoch'
 identity_snapshot=''
 initial_state=''
 expired_state=''
@@ -132,8 +132,8 @@ run_adapter rejected || fail "stale writer did not map to rejected freeze"
 run_super --command="select private.seal_game_world_writer_epoch('$world','$writer_a'::uuid,1::bigint); update private.game_character_writer_epochs set issued_at=clock_timestamp()-interval '2 seconds', expires_at=clock_timestamp()-interval '1 second' where world_id='$world'; select private.acquire_game_world_writer_epoch('$world','$writer_b'::uuid,clock_timestamp()+interval '3 minutes');" >/dev/null || fail "could not seal A and install disposable B successor"
 [[ "$(run_super --command="select writer_epoch=2 and writer_instance_id='$writer_b'::uuid and sealed_at is null and exists(select 1 from private.game_character_writer_epoch_fences f where f.world_id='$world' and f.writer_epoch=1 and f.writer_instance_id='$writer_a'::uuid and f.successor_epoch=2) from private.game_character_writer_epochs where world_id='$world';")" == t ]] || fail "successor fixture did not retain permanent A fence"
 fenced_state="$(state_snapshot)" || fail "could not snapshot installed successor state"
-expect_p0001 "perform $renew_signature('$world','$writer_a'::uuid,1::bigint,clock_timestamp()+interval '3 minutes')" || fail "fenced A renewal did not return P0001"
-expect_p0001 "perform $seal_signature('$world','$writer_a'::uuid,1::bigint)" || fail "fenced A seal did not return P0001"
+expect_p0001 "perform $renew_function('$world','$writer_a'::uuid,1::bigint,clock_timestamp()+interval '3 minutes')" || fail "fenced A renewal did not return P0001"
+expect_p0001 "perform $seal_function('$world','$writer_a'::uuid,1::bigint)" || fail "fenced A seal did not return P0001"
 run_adapter fenced || fail "successor did not reject A exact receipt retry"
 [[ "$(state_snapshot)" == "$fenced_state" ]] || fail "fenced A renew, seal, or receipt mutated head, receipt, or fence evidence"
 [[ "$(identity_state)" == "$identity_snapshot" ]] || fail "successor fence path mutated identity"
