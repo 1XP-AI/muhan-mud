@@ -20,7 +20,7 @@
 #define PQclear test_PQclear
 #define PQfinish test_PQfinish
 #define character_save_journal_v2_uuid_generate_native test_uuid_generate_native
-#define file_player_store_load test_file_player_store_load
+#define player_store_default_load test_player_store_default_load
 #define character_save_journal_v2_process_owner_init test_process_owner_init
 #define character_save_journal_v2_process_owner_start test_process_owner_start
 #define character_save_journal_v2_process_owner_shutdown test_process_owner_shutdown
@@ -44,7 +44,7 @@
 #undef PQclear
 #undef PQfinish
 #undef character_save_journal_v2_uuid_generate_native
-#undef file_player_store_load
+#undef player_store_default_load
 #undef character_save_journal_v2_process_owner_init
 #undef character_save_journal_v2_process_owner_start
 #undef character_save_journal_v2_process_owner_shutdown
@@ -66,6 +66,7 @@ static int process_owner_init_calls;
 static int process_owner_start_calls;
 static int process_owner_shutdown_calls;
 static int transport_close_calls;
+static int default_load_calls;
 static char supplied_conninfo[64];
 
 static int expect(int condition, const char *message)
@@ -165,11 +166,14 @@ character_save_journal_v2_uuid_result test_uuid_generate_native(
     return CHARACTER_SAVE_JOURNAL_V2_UUID_OK;
 }
 
-int test_file_player_store_load(char *name, struct creature **player)
+int test_player_store_default_load(char *name, struct creature **player)
 {
-    (void)name;
-    (void)player;
-    return -1;
+    static unsigned char fake_player_storage;
+
+    default_load_calls++;
+    if(strcmp(name,"legacy")) return PLAYER_STORE_NOT_FOUND;
+    *player=(struct creature *)&fake_player_storage;
+    return PLAYER_STORE_OK;
 }
 
 void test_process_owner_init(character_save_journal_v2_process_owner *owner,
@@ -246,6 +250,7 @@ static void reset_fakes(void)
     process_owner_start_calls=0;
     process_owner_shutdown_calls=0;
     transport_close_calls=0;
+    default_load_calls=0;
     memset(supplied_conninfo,0,sizeof(supplied_conninfo));
 }
 
@@ -255,6 +260,7 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
     char root[64]="/tmp/muhan-runtime-owned";
     char world[32]="world-a";
     char conninfo[32]="dbname=muhan";
+    struct creature *loaded=0;
     int failed=0;
 
     reset_fakes();
@@ -274,6 +280,10 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
     failed|=expect(native.process_owner.configuration.world_id==native.world_id&&
         native.process_owner.configuration.world_id!=world,
         "process owner world id must point at native-owned storage");
+    failed|=expect(native.process_owner.configuration.file_load(
+        native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
+        PLAYER_STORE_OK&&loaded&&default_load_calls==1,
+        "native owner file fallback must use the PlayerStore default seam");
     root[1]='X';
     world[0]='x';
     failed|=expect(!strcmp(native.process_owner.configuration.root,

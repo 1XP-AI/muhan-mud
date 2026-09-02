@@ -37,6 +37,10 @@ int player_store_bind(const player_store_ops *ops,
 player_store_unbind_result player_store_unbind(
     player_store_binding *binding);
 
+/* Load through the immutable legacy FileStore without consulting the active
+ * repository.  This is the recursion-safe fallback seam for composed stores. */
+int player_store_default_load(char *name, struct creature **player);
+
 int save_ply(char *name, struct creature *player);
 int load_ply(char *name, struct creature **player);
 

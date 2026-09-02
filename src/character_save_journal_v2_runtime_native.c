@@ -60,7 +60,7 @@ static int runtime_native_file_load(void *opaque, char *name,
     struct creature **player)
 {
     (void)opaque;
-    return file_player_store_load(name,player);
+    return player_store_default_load(name,player);
 }
 
 /* This owns exactly the resources constructed by runtime_native_shadow_start.

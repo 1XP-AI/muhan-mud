@@ -44,6 +44,15 @@ static void player_store_binding_clear(player_store_binding *binding)
     binding->active = 0;
 }
 
+static int player_store_load_from(const player_store_ops *store,
+    char *name, struct creature **player)
+{
+    if(!player)
+        return PLAYER_STORE_IO_ERROR;
+    *player = 0;
+    return store->load(store->opaque, name, player);
+}
+
 int player_store_set(const player_store_ops *ops)
 {
     if(!player_store_ops_valid(ops))
@@ -92,6 +101,11 @@ player_store_unbind_result player_store_unbind(
     return PLAYER_STORE_UNBIND_RESTORED;
 }
 
+int player_store_default_load(char *name, struct creature **player)
+{
+    return player_store_load_from(&file_store, name, player);
+}
+
 int save_ply(char *name, struct creature *player)
 {
     return active_store.save(active_store.opaque, name, player);
@@ -99,8 +113,5 @@ int save_ply(char *name, struct creature *player)
 
 int load_ply(char *name, struct creature **player)
 {
-    if(!player)
-        return PLAYER_STORE_IO_ERROR;
-    *player = 0;
-    return active_store.load(active_store.opaque, name, player);
+    return player_store_load_from(&active_store, name, player);
 }

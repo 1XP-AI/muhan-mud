@@ -105,6 +105,20 @@ int main(void)
                      "MemoryStore call counts must be exact");
     failed += expect(memory_save_opaque_calls == 1 && memory_load_opaque_calls == 1,
                      "callbacks must receive the copied opaque context");
+
+    output = 0;
+    failed += expect(player_store_default_load("file", &output) == 12 &&
+                     output && output->marker == 8,
+                     "explicit default load must bypass the active repository");
+    failed += expect(file_load_calls == 2 && memory_load_calls == 1,
+                     "explicit default load must reach only FileStore");
+    output = (struct creature *)1;
+    failed += expect(player_store_default_load("missing", &output) == -1 &&
+                     output == 0,
+                     "explicit default load must clear failed output");
+    failed += expect(player_store_default_load("file", 0) ==
+                     PLAYER_STORE_IO_ERROR,
+                     "explicit default load must reject a null output pointer");
     failed += expect(player_store_set(&invalid_store) == -1 &&
                      save_ply("memory", &input) == 21,
                      "invalid repository must preserve the active store");
