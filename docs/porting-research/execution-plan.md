@@ -19,7 +19,7 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 절대적인 “버그 0%”를 증명할 수는 없다. 대신 **검증되지 않은 기능은 권위
 경로로 전환하지 않는다**는 규칙을 강제한다.
 
-## 현재 실행 상태 (2026-09-02)
+## 현재 실행 상태 (2026-09-03)
 
 | 범위 | 상태 | 검증/잔여 gate |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 16 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
 | M2 CDTO/Rust | ObjectV1+CreatureV1+ObjectGraphV1 clone-only GREEN | recursive preorder graph까지 C/Rust exact-byte differential, malformed taxonomy, depth 64/node 8192, allocation faults와 Linux LeakSanitizer가 GREEN. production read/write·gameplay 경로에는 연결하지 않음 |
-| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2/3 + 092a/092b + 093a CI GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`, route-free single-record `recover_one`은 CI `33591568569`, deterministic lexical backlog scanner는 CI `33594859743`, test-only native libpq adapter의 actual PostgreSQL 17 통합은 CI `33598858884`에서 GREEN. 실제 offline `DEFERRED`, 만료 A exact-renew/ACK, seal 뒤 B 설치와 A 영구 fence는 CI `33601547197`에서 GREEN. 092a의 held-root save/recovery, exact receipt replay와 process-local A→B handoff mock은 CI `33615886826`에서 GREEN. 092b는 26개 named durability cutpoint의 fresh save 41행·fresh recovery 37행과 actual PG17 outcome-unknown/retry를 CI `33628598496`에서 검증했다. 093a는 `mud_writer_login`의 실제 password login·세션 assertion, safe conninfo file과 opt-in startup readiness probe를 CI `33636868773`에서 GREEN으로 고정했다. 실제 route/receipt RPC transport와 `save_ply`·bank·dual-write·shadow 연결, host power loss/PVC 증적은 아직 미완료 |
+| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2/3 + 092a/092b + 093a/093b CI GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`, route-free single-record `recover_one`은 CI `33591568569`, deterministic lexical backlog scanner는 CI `33594859743`, test-only native libpq adapter의 actual PostgreSQL 17 통합은 CI `33598858884`에서 GREEN. 실제 offline `DEFERRED`, 만료 A exact-renew/ACK, seal 뒤 B 설치와 A 영구 fence는 CI `33601547197`에서 GREEN. 092a의 held-root save/recovery, exact receipt replay와 process-local A→B handoff mock은 CI `33615886826`에서 GREEN. 092b는 26개 named durability cutpoint의 fresh save 41행·fresh recovery 37행과 actual PG17 outcome-unknown/retry를 CI `33628598496`에서 검증했다. 093a는 `mud_writer_login`의 실제 password login·세션 assertion, safe conninfo file과 opt-in startup readiness probe를 CI `33636868773`에서 GREEN으로 고정했다. 093b의 이미 인증된 `PGconn` 소유 transport는 매 호출 session assertion, idle transaction, route/acquire/renew/receipt/seal, SQLSTATE와 연결 종료를 실제 PostgreSQL 17에서 검증했고 기본 MUD 바이너리의 libpq 비링크까지 CI `33650871781`에서 GREEN이다. `save_ply`·bank·dual-write·shadow live 연결과 host power loss/PVC 증적은 아직 미완료 |
 
 현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
 testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
@@ -73,6 +73,10 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
   cleanup이 지우던 경로를 fault-injection RED로 고정했다. fd는 한 번만 relinquish하고
   `RECONCILE_REQUIRED` staging hard-link는 검사할 수 있게 유지한다. 이 저널은 여전히
   synthetic/test-only이며 live save 경로에는 연결하지 않는다.
+- RPC 응답 바인딩: PostgreSQL이 요청과 다른 world/name, storage format, lifecycle 또는
+  renew epoch를 돌려주는 RED를 고정했다. 093b transport는 이런 응답을 성공으로
+  승격하지 않고 출력을 지운 뒤 `DEFERRED`로 멈추며, 동일 `PGconn` 재전달과 NULL
+  assertion 결과에서도 dangling pointer나 내부 재시도를 만들지 않는다.
 - ObjectGraph 검증: preorder subtree 재진입, depth 분류 drift, allocation-fault cleanup과
   Linux 전용 1,483-byte test buffer leak를 RED로 고정했다. C/Rust differential,
   ASan/UBSan/LeakSanitizer와 Rust 1.92/1.98 Clippy가 모두 GREEN이다.
@@ -449,11 +453,16 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
   zero-I/O와 opt-in startup readiness를 CI `33636868773`에서 GREEN으로 고정했다.
   testnet chart도 probe를 기본 OFF로 두고 memory `emptyDir` credential과 제한된 DB
   egress만 opt-in render한다.
-- production login/session과 startup readiness 경계는 구현됐지만 실제 route lookup·
-  receipt/epoch 네 RPC transport 및 live writer 호출은 연결하지 않았다. 따라서 091
-  전체와 `save_ply`/bank 연결은 여전히 미완료다.
-- production absent-head seed, 실제 RPC transport lifecycle, PVC flock/fsync 증적과
-  retention은 승인 전 blocker
+- 093b의 isolated direct-libpq transport는 caller가 넘긴 이미 인증된 `PGconn`만
+  소유하고, startup 및 매 RPC 전에 exact writer session과 idle transaction을 다시
+  확인한다. route/acquire/renew/receipt/seal, SQLSTATE `08`/`22`/`P0001`, role drift,
+  backend termination과 no-internal-retry를 실제 PostgreSQL 17 CI `33650871781`에서
+  검증했다. 이 모듈과 libpq는 기본 live MUD `OBJECTS`/최종 ELF에 포함되지 않는다.
+- production login/session, startup readiness와 isolated RPC transport 경계는 구현됐지만
+  실제 `save_ply`·bank·recovery caller, connection/reconnect owner 및 feature flag에는
+  연결하지 않았다. 따라서 dual-write/shadow live 경로는 여전히 미완료다.
+- production absent-head seed, live connection lifecycle, PVC flock/fsync 증적과 retention은
+  승인 전 blocker
 - shadow 관찰과 cutover 조건은 아직 시작하지 않음
 
 ### M4 room/social/timer 도메인 확장

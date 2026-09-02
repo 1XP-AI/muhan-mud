@@ -19,8 +19,9 @@ fence를 로컬에서 검증했고 private CI `33628598496`도 GREEN이다. 093a
 `mud_writer_login`, 실제 password login/session assertion과 opt-in startup readiness
 probe는 private CI `33636868773`에서 GREEN이다. 이는 process crash와 startup
 capability 증거이지 실제 PVC의 power-loss 동작이나 live RPC 호출 증명이 아니다.
-Production route/receipt RPC transport와 live writer 호출은 미구현**
-(2026-09-02).
+093b isolated production RPC transport 경계는 private CI `33650871781`에서 GREEN이지만,
+기본 MUD와 `save_ply`·bank·recovery의 live writer 호출에는 연결하지 않았다.
+(2026-09-03).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
 검증한다. 별도 `src/character_save_journal_v2_writer.*`는 descriptor-relative PVC
@@ -37,6 +38,11 @@ exact typed `PQexecParams` 한 번과 SQLSTATE 결과 매핑을 실제 PostgreSQ
 검증하지만 명시적 disposable test target에만 링크된다. publish 모듈의 route-free
 `recover_one`은 held writer와 command UUID만 받고 PREPARED의 tuple·shard·name을 두 번
 검증한 뒤에만 marker/live 복구를 수행한다.
+별도 093b RPC transport는 이미 인증된 `PGconn`의 소유권만 받아 startup과 매 호출 전에
+`m3_assert_writer_session()` 및 idle transaction을 확인하고 route/acquire/renew/receipt/
+seal을 typed `PQexecParams`로 호출한다. 요청과 다른 route/epoch 응답, role drift,
+connection loss는 fail-closed하며 내부 재접속이나 credential 탐색을 하지 않는다.
+기본 MUD 링크 입력과 최종 Linux ELF에는 이 transport 및 libpq가 없음을 CI에서 검사한다.
 별도 `src/character_save_journal_v2_protocol.*`는 held writer → route/epoch → serializer
 → durable stage → live precondition → immutable PREPARED → local publish → exact receipt의
 test-only 조합 경계를 고정한다. 요청 root pathname이 serializer 중 바뀌어도 held-root
@@ -278,6 +284,7 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 092a static boundary — GREEN (`33615886826`) | `red_092_static_no_live_writer_linkage` / production object, source and cross-platform link-map fixture | no `save_ply`, file writer, bank, Gateway, DB or test hook reaches the production probe; protocol remains absent from live MUD `OBJECTS`. Passing is not activation. |
 | **092b process-SIGKILL matrix — CI `33628598496` GREEN** | `red_092_crash_cutpoints_end_to_end` / 41 fresh save-process rows + 37 fresh recovery-process rows over 26 named durability cutpoints; actual PG17 pre-send/post-commit/protocol/RPC restart lanes | Exact local topology converges only to the approved recovered state, and actual SQL retry produces no duplicate receipt/head advance. Production symbols contain no crash runtime. This does not prove host power-loss/PVC semantics; storage-class evidence and production wiring remain blockers. |
 | **093a writer login/startup readiness — CI `33636868773` GREEN** | `red_093a_writer_login_and_startup_probe` / disposable PostgreSQL 17 password login + C unit/sanitizer/static-link/native integration + Linux opt-in full build | `mud_writer_login LOGIN NOINHERIT`은 SET-only membership과 exact `current_user=mud_writer`, `session_user=mud_writer_login`, timeouts, `search_path`를 강제하고 migration replay가 기존 password hash를 보존한다. Runtime은 no-follow/regular-file/owner/0600/size와 nanosecond mutation을 검사하고 conninfo를 즉시 지운다. absent/OFF는 zero-I/O이고 opt-in probe만 libpq를 링크한다. `save_ply`, bank, route, publish, ACK 호출은 여전히 없다. |
+| **093b isolated RPC transport — CI `33650871781` GREEN** | `red_093b_rpc_transport_contract` / generic operations mock + ASan/UBSan + disposable PostgreSQL 17 `mud_writer_login` + final ELF audit | 이미 인증된 connection만 소유하며 startup/매 호출 exact session assertion과 idle transaction을 요구한다. route/acquire/renew/receipt/seal, strict result shape·world/name/format/lifecycle/epoch binding, SQLSTATE `08`→UNAVAILABLE·`22`→INVALID·`P0001`→REJECTED·기타→DEFERRED, role drift와 backend termination 후 no-retry/close-once가 GREEN이다. default Make 링크 입력과 Linux MUD ELF에는 transport/PQ/libpq가 없으며 live `save_ply`·bank caller는 여전히 연결하지 않았다. |
 
 이 gate의 TDD 반복에서 CI `33601098057`은 `expires_at`만 과거로 옮긴 fixture가
 `expiry_after_issue` 제약을 위반함을 드러냈고, `issued_at`과 `expires_at`을 함께
@@ -300,8 +307,9 @@ CI `33594859743`에서 GREEN이다. test-only native DB adapter의 actual Postgr
 통합은 CI `33598858884`에서 GREEN이고 expired/offline exact-renew 및 successor
 permanent-fence 계약은 CI `33601547197`에서 GREEN이다. 093a의 production login role,
 session assertion과 opt-in startup readiness는 CI `33636868773`에서 GREEN이다. 실제
-route/receipt RPC transport와 live caller 연결은 남아 있으므로 091 전체는 아직
-complete가 아니다.
+route/acquire/renew/receipt/seal transport 경계는 093b CI `33650871781`에서 GREEN이지만
+live caller와 기본 MUD 링크는 의도적으로 남겨 두었으므로 091 전체는 아직 complete가
+아니다.
 092a는 held-root save/recovery와 process-local handoff mock을 synthetic serializer로
 조합했고 CI `33615886826`에서 GREEN이다. 092b의 78개 fresh-process SIGKILL 행과 actual
 PostgreSQL 17 outcome-unknown/retry 조합은 로컬과 private CI `33628598496`에서
@@ -312,11 +320,11 @@ approval, independent review, and an explicit future live-wiring decision remain
 
 ## Unresolved approvals
 
-1. `mud_writer` production RPC transport: 110 migration의 audited login role과
-   startup session assertion은 실제 PG17에서 검증됐지만, test-only receipt adapter를
-   직접 승격할지 localhost sidecar를 채택할지는 미결정이다. production transport는
-   route lookup과 네 RPC만 노출하고 credentials를 file/journal/log/PVC에 남기지 않아야
-   한다. 실제 save/recovery caller를 연결하기 전 별도 TDD와 명시적 승인이 필요하다.
+1. `mud_writer` live activation: 110 migration의 audited login role, startup session
+   assertion과 isolated direct-libpq RPC transport는 실제 PG17에서 검증됐다. 하지만
+   이를 기본 MUD에 직접 링크할지 localhost sidecar를 채택할지, connection/reconnect
+   owner와 feature flag를 어디에 둘지는 미결정이다. 실제 save/recovery caller를
+   연결하기 전 별도 TDD와 명시적 승인이 필요하다.
 2. Production retention watermark/duration and immutable backup destination. Until approved,
    automatic deletion remains disabled.
 3. Storage-class evidence for `flock`, file/directory fsync, and atomic rename on the PVC.
