@@ -75,6 +75,15 @@ jobs:
           SERVICE_RPC_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/service_rpc_lock_expiry.sh
           M3_SHADOW_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/m3_shadow_receipt_lock_expiry.sh
 
+      - name: Run disposable native M3 receipt transport integration
+        shell: bash
+        env:
+          M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE: "1"
+          M3_RECEIPT_TRANSPORT_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-receipt-transport-integration CC=gcc PG_CONFIG=pg_config
+
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
         with:

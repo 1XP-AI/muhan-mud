@@ -120,6 +120,17 @@ character-save-journal-v2-receipt-transport-native-compile:
 	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -c character_save_journal_v2_receipt_transport_native.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_native.o
 	python3 ../tests/unit/character_save_journal_v2_receipt_transport_no_live_link_test.py --native-object /tmp/muhan-unit/character_save_journal_v2_receipt_transport_native.o --makefile Makefile --adapter-source character_save_journal_v2_receipt_transport.c --adapter-header character_save_journal_v2_receipt_transport.h --native-source character_save_journal_v2_receipt_transport_native.c --native-header character_save_journal_v2_receipt_transport_native.h
 
+ifeq ($(M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE),1)
+character-save-journal-v2-receipt-transport-integration:
+	mkdir -p /tmp/muhan-unit
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-receipt-transport-integration: PG_CONFIG unavailable" >&2; exit 2; }
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_receipt_transport_integration.c character_save_journal_v2_receipt_transport.c character_save_journal_v2_receipt_transport_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_integration
+	bash ../supabase/tests/m3_receipt_transport_integration.sh /tmp/muhan-unit/character_save_journal_v2_receipt_transport_integration
+else
+character-save-journal-v2-receipt-transport-integration:
+	@echo "m3 receipt transport integration skipped (set M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE=1)"
+endif
+
 character-save-journal-v2-recovery-static-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_recovery.c -o /tmp/muhan-unit/character_save_journal_v2_recovery_prod.o
