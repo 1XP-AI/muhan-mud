@@ -100,8 +100,10 @@ int main(int argc, char **argv)
     if(!strcmp(mode,"probe")) return probe_native(&native);
     if(!strcmp(mode,"acked"))
         expected=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
-    else if(!strcmp(mode,"denied"))
+    else if(!strcmp(mode,"offline")||!strcmp(mode,"denied"))
         expected=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;
+    else if(!strcmp(mode,"fenced"))
+        expected=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE;
     else if(!strcmp(mode,"invalid"))
         expected=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;
     else if(!strcmp(mode,"rejected"))

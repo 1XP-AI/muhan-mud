@@ -7,7 +7,8 @@ GREEN이다. 091b-3의 exact receipt callback과 local `DB_ACKED` marker slice�
 CI `33589685559`에서 GREEN이고, immutable PREPARED 한 건을 route 없이 복구하는
 `recover_one`은 CI `33591568569`에서 GREEN이고, bounded lexical backlog scanner는
 CI `33594859743`에서 GREEN이다. test-only native libpq receipt transport와 disposable
-PostgreSQL 17 실제 통합은 CI `33598858884`에서 GREEN이다. expired/offline successor,
+PostgreSQL 17 실제 통합은 CI `33598858884`에서 GREEN이다. expired/offline successor
+gate의 local/actual-PG17 contract는 추가됐고 다음 disposable PG17 CI 실행을 기다린다.
 092 이후와 production transport 연결은 미구현**
 (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
@@ -243,7 +244,7 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | **091b-3 route-free single-record recovery, test-only — GREEN (`33591568569`)** | `red_091b_prepared_route_free_recover_one` / absent·existing·consumed-stage·two-name·tuple mismatch·malformed/unsafe evidence | held writer와 command UUID 외의 path, payload, name, route 입력 없이 immutable PREPARED가 정한 shard/name/precondition만 사용한다. 두 번의 tuple/wire 검증 전에 marker를 변경하지 않으며, FD 소유권은 모든 open/read/identity 종료 경로에서 정확히 한 번만 닫힌다. GNU GCC 일반·ASan/UBSan, production static no-live-link와 전체 CI가 GREEN. |
 | **091b-3 lexical recovery/backlog scan, test-only — GREEN (`33594859743`)** | `red_091b_published_recovery_db_offline_backlog` / scrambled lexical PREPARED scan + deferred/freeze mocks | held writer로 최대 1024개의 canonical lowercase UUID PREPARED를 먼저 안전성 검사해 bounded snapshot으로 고정하고 bytewise 정렬한다. 각 command를 한 번씩 route-free recover한 뒤 성공 건만 exact ACK에 넘긴다. Deferred·invalid/rejected freeze·changed-live는 증거를 보존한 채 다음 command를 방문하고, writer capability 상실이나 DB-ACKed/local-incomplete는 즉시 중단한다. OOM·cap·directory/root close·unsafe leaf는 callback 전에 all-zero report로 종료한다. GNU GCC 일반·ASan/UBSan, 전체 unit, static no-live-link와 전체 CI가 GREEN. |
 | **091b-3 native PostgreSQL receipt transport, test-only — GREEN (`33598858884`)** | `red_091b_native_receipt_transport_pg17` / disposable PostgreSQL 17 + actual libpq harness | `PGOPTIONS` startup role이 `current_user=mud_writer`, `session_user=postgres`를 만들고 private table 직접 SELECT는 `42501`로 거부됨을 먼저 증명한다. 함수 EXECUTE revoke 대조군은 실제 callback을 `DEFERRED`로 만들며 state를 바꾸지 않는다. 정상 ACK, exact retry timestamp 무변경, `22023` invalid freeze와 `P0001` rejected freeze를 actual typed `PQexecParams`로 검증하고 head·receipt·writer epoch/fence·identity snapshot을 비교한다. 일반 unit·ASan/UBSan과 Linux/ARM/macOS/Windows 전체 CI도 GREEN이며 production `OBJECTS`에는 추가되지 않는다. |
-| 091b-3 — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
+| **091b-3 — PG17 CI pending** | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→exact renew→seal→B | local ACK boundary verifies durable `LEGACY_PUBLISHED`/`DB_ACKED` evidence is unchanged on DEFERRED, expired, and successor-rejected receipt outcomes; the disposable native libpq contract verifies actual expiry rejection, exact A renewal, and permanent A renew/seal/receipt fence after B install. |
 | **091b-3 unclassified evidence — GREEN (`33594859743`)** | `red_091b_no_automatic_cleanup_of_unclassified_evidence` / final markers, unrelated temp, tuple, lock, malformed/unsafe leaves | scanner는 `.prepared` candidate 외의 marker·tuple·lock·unrelated temp를 권위 입력으로 보지 않고 삭제하지 않는다. malformed canonical candidate, symlink, FIFO, hard-link는 전체 scan을 무변경으로 중단하며 기존 publish/ACK의 partial/conflicting/alias 회귀도 함께 GREEN이다. Production 자동 GC는 여전히 없다. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
 | 092 | `red_092_crash_cutpoints_end_to_end` / exit after every fsync/rename/RPC then restart | only approved recovered state or frozen divergence; no duplicate receipt/head advance. |
@@ -257,8 +258,8 @@ durability recovery without live linkage. 091b-3의 exact receipt callback과 lo
 `DB_ACKED` marker retry는 CI `33589685559`에서 GREEN이고 route-free single-record
 `recover_one`은 CI `33591568569`에서 GREEN이고 bounded lexical backlog scanner는
 CI `33594859743`에서 GREEN이다. test-only native DB adapter의 actual PostgreSQL 17
-통합은 CI `33598858884`에서 GREEN이다. expired/offline successor 통합과 production
-transport 권한·설정·호출 연결은 남아 있다. 이 경계까지 통과해야 091을 complete로
+통합은 CI `33598858884`에서 GREEN이다. expired/offline successor의 새 disposable
+PG17 contract는 CI 실행 대기이며, production transport 권한·설정·호출 연결은 남아 있다. 이 경계까지 통과해야 091을 complete로
 부를 수 있다.
 092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate

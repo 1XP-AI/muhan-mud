@@ -59,6 +59,42 @@ static int negative_marker_evidence(void)
 {char root[PATH_MAX];character_save_journal_v2_writer_context ctx;mock m;evidence_snapshot a,b,c,A,B,C;int failed=0;if(setup_ack(root,&ctx))return 1;memset(&m,0,sizeof(m));m.result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;character_save_journal_v2_ack_faults_for_test(0,0,0,1,0,0,0);if(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)!=CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE)return 1;if(unlink_leaf(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked")||leaf(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked","conflict",8)||snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&a)||snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&b)||a.st.st_nlink!=1||b.st.st_nlink!=1||(a.st.st_dev==b.st.st_dev&&a.st.st_ino==b.st.st_ino))return 1;m.calls=0;failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL&&!m.calls&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&A)==0&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&B)==0&&same_snapshot(&a,&A)&&same_snapshot(&b,&B),"different-inode evidence byte-for-byte unchanged");if(character_save_journal_v2_writer_close(&ctx)||down(root))return failed+1;if(setup_ack(root,&ctx))return failed+1;memset(&m,0,sizeof(m));m.result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;character_save_journal_v2_ack_faults_for_test(0,0,0,1,0,0,0);if(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)!=CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE)return failed+1;{char t[PATH_MAX],q[PATH_MAX];if(p(t,sizeof(t),root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked")||p(q,sizeof(q),root,"character-save-journal/ack-alias")||link(t,q)||snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&a)||snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&b)||snapshot(root,"character-save-journal/ack-alias",&c))return failed+1;}m.calls=0;failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL&&!m.calls&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&A)==0&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&B)==0&&snapshot(root,"character-save-journal/ack-alias",&C)==0&&same_snapshot(&a,&A)&&same_snapshot(&b,&B)&&same_snapshot(&c,&C),"nlink3 evidence byte-for-byte unchanged");if(character_save_journal_v2_writer_close(&ctx)||down(root))return failed+1;if(setup_ack(root,&ctx)||leaf(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp","partial",7)||snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&a))return failed+1;memset(&m,0,sizeof(m));m.result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL&&!m.calls&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked.tmp",&A)==0&&same_snapshot(&a,&A),"partial temp byte-for-byte unchanged");if(character_save_journal_v2_writer_close(&ctx)||down(root))return failed+1;return failed;}
 static int existing_receipt(void)
 {char root[PATH_MAX];character_save_journal_v2_writer_context ctx;mock m;int failed=0;if(!realpath("/tmp",root)||strlen(root)+36>=sizeof(root))return 1;strcat(root,"/muhan-v2-ack-existing-XXXXXX");if(!mkdtemp(root)||seed(root))return 1;memset(&ctx,0,sizeof(ctx));memset(&m,0,sizeof(m));if(character_save_journal_v2_writer_open(root,W,&ctx)||prep_existing(root)||character_save_journal_v2_publish(&ctx,NAME,sizeof(NAME)-1,route,0,CMD))return 1;m.expect_existing=1;m.result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&m.calls==1,"existing receipt sends exact expected_sha256 and golden request/post hashes");if(character_save_journal_v2_writer_close(&ctx)||down(root))return failed+1;return failed;}
+/* This is deliberately a DB-boundary model rather than an ACK test hook:
+ * the local ACK code gets only the receipt outcome.  Its state machine makes
+ * an expired A reject until the exact A tuple renews, then permanently fences
+ * A once a sealed predecessor has installed B. */
+typedef struct epoch_model { int online, expired, renewed, sealed, successor, calls, heads, receipts; } epoch_model;
+static int epoch_is_a_tuple(const char *world_id, const char *writer_instance_id,
+                            unsigned long long writer_epoch)
+{
+    return world_id&&writer_instance_id&&!strcmp(world_id,W)&&
+           !strcmp(writer_instance_id,I)&&writer_epoch==7;
+}
+static int epoch_renew_a(epoch_model *state, const char *world_id,
+                         const char *writer_instance_id,
+                         unsigned long long writer_epoch)
+{
+    if(!state||!state->online||!epoch_is_a_tuple(world_id,writer_instance_id,writer_epoch)||
+       state->sealed||state->successor) return 0;
+    state->renewed=1;
+    state->expired=0;
+    return 1;
+}
+static int epoch_seal_a(epoch_model *state, const char *world_id,
+                        const char *writer_instance_id,
+                        unsigned long long writer_epoch)
+{
+    if(!state||!state->online||!state->renewed||
+       !epoch_is_a_tuple(world_id,writer_instance_id,writer_epoch)||
+       state->sealed||state->successor) return 0;
+    state->sealed=1;
+    return 1;
+}
+static character_save_journal_v2_receipt_result epoch_receipt(o,x)
+void *o;const character_save_journal_v2_receipt *x;
+{epoch_model*state=o; if(!state||!x||strcmp(x->world_id,W)||strcmp(x->writer_instance_id,I)||x->writer_epoch!=7||strcmp(x->command_id,CMD))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;state->calls++;if(!state->online)return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;if((state->expired&&!state->renewed)||state->sealed||state->successor)return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE;state->heads++;state->receipts++;return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;}
+static int expired_offline_then_successor_fence(void)
+{char root[PATH_MAX];character_save_journal_v2_writer_context ctx;epoch_model state;evidence_snapshot published_before,published_after,acked_before,acked_after;int failed=0;if(setup_ack(root,&ctx))return 1;memset(&state,0,sizeof(state));failed+=bad(character_save_journal_v2_ack(&ctx,CMD,epoch_receipt,&state)==CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED&&state.calls==1&&!state.heads&&!state.receipts&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.published",&published_before)==0&&!exists(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked"),"offline deferred receipt leaves LEGACY_PUBLISHED backlog durable and DB-unacknowledged");state.online=1;state.expired=1;failed+=bad(character_save_journal_v2_ack(&ctx,CMD,epoch_receipt,&state)==CHARACTER_SAVE_JOURNAL_V2_ACK_REJECTED_FREEZE&&state.calls==2&&!state.heads&&!state.receipts&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.published",&published_after)==0&&same_snapshot(&published_before,&published_after)&&!exists(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked"),"expired A cannot ACK before its exact renewal and retains local evidence");failed+=bad(!epoch_renew_a(&state,"other",I,7)&&!epoch_renew_a(&state,W,C,7)&&!epoch_renew_a(&state,W,I,8)&&!state.renewed,"wrong world, writer instance, or epoch cannot renew A");failed+=bad(epoch_renew_a(&state,W,I,7)&&character_save_journal_v2_ack(&ctx,CMD,epoch_receipt,&state)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&state.calls==3&&state.heads==1&&state.receipts==1&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&acked_before)==0,"restored DB permits ACK only after exact A renewal");failed+=bad(!epoch_seal_a(&state,"other",I,7)&&!epoch_seal_a(&state,W,C,7)&&!epoch_seal_a(&state,W,I,8)&&epoch_seal_a(&state,W,I,7),"only the exact drained A tuple seals before successor installation");state.successor=1;failed+=bad(!epoch_renew_a(&state,W,I,7)&&!epoch_seal_a(&state,W,I,7)&&character_save_journal_v2_ack(&ctx,CMD,epoch_receipt,&state)==CHARACTER_SAVE_JOURNAL_V2_ACK_REJECTED_FREEZE&&state.calls==4&&state.heads==1&&state.receipts==1&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.published",&published_after)==0&&snapshot(root,"character-save-journal/40000000-0000-0000-0000-000000000001.acked",&acked_after)==0&&same_snapshot(&published_before,&published_after)&&same_snapshot(&acked_before,&acked_after),"successor permanently fences A renew, seal, receipt and preserves head, receipt, and local evidence");if(character_save_journal_v2_writer_close(&ctx)||down(root))return failed+1;return failed;}
 int main(void)
 {
     char root[PATH_MAX];
@@ -133,5 +169,6 @@ int main(void)
     failed+=fault_matrix();
     failed+=negative_marker_evidence();
     failed+=existing_receipt();
+    failed+=expired_offline_then_successor_fence();
     return failed?1:0;
 }
