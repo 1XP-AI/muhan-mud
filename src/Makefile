@@ -95,6 +95,22 @@ unit-test:
 	$(MAKE) character-save-journal-v2-route-test
 	$(MAKE) character-save-journal-v2-publish-test
 	$(MAKE) character-save-journal-v2-ack-test
+	$(MAKE) character-save-journal-v2-recovery-test
+
+character-save-journal-v2-recovery-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_recovery.c -o /tmp/muhan-unit/character_save_journal_v2_recovery_prod.o
+	python3 ../tests/unit/character_save_journal_v2_recovery_no_live_link_test.py --object /tmp/muhan-unit/character_save_journal_v2_recovery_prod.o --makefile Makefile
+
+character-save-journal-v2-recovery-test: character-save-journal-v2-recovery-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. ../tests/unit/character_save_journal_v2_recovery_test.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_recovery_test
+	/tmp/muhan-unit/character_save_journal_v2_recovery_test
+
+character-save-journal-v2-recovery-sanitizer-test: character-save-journal-v2-recovery-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_recovery_test.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_recovery_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_recovery_sanitizer_test
 
 character-save-journal-v2-ack-test: character-save-journal-v2-ack-static-test
 	mkdir -p /tmp/muhan-unit
