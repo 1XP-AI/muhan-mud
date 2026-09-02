@@ -27,12 +27,12 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | M1 C·Gateway·Web·SQL 구현 | 로컬 통합 GREEN, testnet 미배포 | 실제 C+Gateway+PostgREST+PostgreSQL 17 stack과 browser 8/8 시나리오가 GREEN. gateway 75/75, reconciler 18/18, importer 16 pass·2 skip, web 17/17 단위 결과도 GREEN. testnet 승격 gate는 아직 남아 있음 |
 | durable onboarding receipt | 컴포넌트 GREEN | `pending → saved → committed` fsync 기록, startup 복구, sanitizer, C player `0600`/shard `0700` writer와 Helm PVC 권한 계약 GREEN |
 | out-of-band reconciler | 컴포넌트 GREEN | no-follow 파일/hash와 exact service RPC, committed 무변이, process-local 중복 억제, aggregate-only polling 및 비정상 입력 회귀 GREEN |
-| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 로컬에서 bootstrap+020..080을 두 번 적용한 기존 계약이 GREEN이고, 원격 PostgreSQL 17 CI는 020..090을 두 번 적용한다. claim/session RPC와 M3 receipt의 post-lock fresh clock, committed lifecycle 변경 경주가 모두 무변이로 GREEN |
-| testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 14/14 및 `helm lint` GREEN. chart는 030~080을 순서대로 한 번 실행하고, 앱 CI는 모든 additive migration을 의도적으로 두 번 적용해 replay 안전성을 검증. cluster에는 적용하지 않음 |
+| lock-wait TTL 회귀 | GREEN (로컬 PG17 + CI 계약) | 로컬에서 bootstrap+020..080을 두 번 적용한 기존 계약이 GREEN이고, 원격 PostgreSQL 17 CI는 020..110을 두 번 적용한다. claim/session RPC와 M3 receipt의 post-lock fresh clock, committed lifecycle 변경 경주가 모두 무변이로 GREEN |
+| testnet Helm | 로컬 렌더 GREEN, 미배포 | 외부 인프라 chart render 26/26 및 `helm lint` GREEN. chart는 030~110을 순서대로 적용하며 090 선행 상태와 100/110 replay를 검증한다. M3 probe는 기본 OFF이고 conninfo는 memory `emptyDir`에만 복사된다. 앱 CI는 모든 additive migration을 두 번 적용해 replay 안전성을 검증했다. testnet branch commit은 `ca2ee24`이며 cluster에는 적용하지 않음 |
 | legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 16 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
 | M2 CDTO/Rust | ObjectV1+CreatureV1+ObjectGraphV1 clone-only GREEN | recursive preorder graph까지 C/Rust exact-byte differential, malformed taxonomy, depth 64/node 8192, allocation faults와 Linux LeakSanitizer가 GREEN. production read/write·gameplay 경로에는 연결하지 않음 |
-| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2/3 + 092a CI GREEN; 092b process-SIGKILL matrix CI `33628598496` GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`, route-free single-record `recover_one`은 CI `33591568569`, deterministic lexical backlog scanner는 CI `33594859743`, test-only native libpq adapter의 actual PostgreSQL 17 통합은 CI `33598858884`에서 GREEN. 실제 offline `DEFERRED`, 만료 A exact-renew/ACK, seal 뒤 B 설치와 A 영구 fence는 CI `33601547197`에서 GREEN. 092a의 held-root save/recovery, exact receipt replay와 process-local A→B handoff mock은 CI `33615886826`에서 GREEN. 092b는 26개 named durability cutpoint의 fresh save 41행·fresh recovery 37행과 actual PG17 outcome-unknown/retry를 CI `33628598496`에서 검증했다. 실제 host power loss/PVC 증적과 production transport/login/startup wiring은 미완료이며 `save_ply`·bank·dual-write·shadow에는 연결하지 않음 |
+| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2/3 + 092a/092b + 093a CI GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`, route-free single-record `recover_one`은 CI `33591568569`, deterministic lexical backlog scanner는 CI `33594859743`, test-only native libpq adapter의 actual PostgreSQL 17 통합은 CI `33598858884`에서 GREEN. 실제 offline `DEFERRED`, 만료 A exact-renew/ACK, seal 뒤 B 설치와 A 영구 fence는 CI `33601547197`에서 GREEN. 092a의 held-root save/recovery, exact receipt replay와 process-local A→B handoff mock은 CI `33615886826`에서 GREEN. 092b는 26개 named durability cutpoint의 fresh save 41행·fresh recovery 37행과 actual PG17 outcome-unknown/retry를 CI `33628598496`에서 검증했다. 093a는 `mud_writer_login`의 실제 password login·세션 assertion, safe conninfo file과 opt-in startup readiness probe를 CI `33636868773`에서 GREEN으로 고정했다. 실제 route/receipt RPC transport와 `save_ply`·bank·dual-write·shadow 연결, host power loss/PVC 증적은 아직 미완료 |
 
 현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
 testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
@@ -88,6 +88,12 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
   `-map`을 GNU ld에도 전달하는 RED가 재현됐다. OS별 `V2_LINK_MAP_OPTION`으로 교정해
   CI `33615886826`에서 Linux/ARM/macOS/Windows와 PostgreSQL 17 전체를 GREEN으로
   고정했다.
+- M3 093a startup probe 검증: 같은 초 안의 conninfo 교체를 놓치던 timestamp 비교를
+  nanosecond까지 강화하고, READY 뒤 메모리의 conninfo를 지우며, absent/OFF와 READY는
+  기존 startup을 계속하고 FAILED만 종료하도록 회귀를 고정했다. CI harness가 실제
+  login script를 인자 없이 호출하던 wiring도 함께 교정했다. 기본 MUD build는 계속
+  libpq와 runtime object를 링크하지 않으며, opt-in Linux build와 PostgreSQL 17 실제
+  password login/session assertion은 CI `33636868773`에서 GREEN이다.
 
 ### 현재 검증 snapshot (2026-09-02)
 
@@ -104,10 +110,11 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
 | C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
 | Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
 | M2 CDTO/Rust graph | pass, clone-only | ObjectGraph C unit/sanitizer, 12 Rust unit+2 differential, fixed/random corpus와 Linux LeakSanitizer |
-| M3 journal v1 / 090 SQL / 091a·091b-3 C / 092a / 092b process matrix | v1 test-only + 090/100 PG17 + 091a·091b-1a CI `33573456858` + 091b-1b CI `33579360870` + 091b-2 CI `33586412456` + 091b-3 ACK CI `33589685559` + recover_one CI `33591568569` + backlog scanner CI `33594859743` + native PG CI `33598858884` + expiry/successor CI `33601547197` + 092a CI `33615886826` + 092b CI `33628598496` GREEN | 091b-1b의 opaque held-writer handle과 exact DB identity route mock은 GNU GCC/PostgreSQL 17에서 GREEN. 091b-2의 no-clobber local publish, exact two-name crash recovery, fsync/unlink 재시도와 immutable marker evidence는 전체 CI에서 GREEN. 091b-3 ACK slice는 exact absent/existing 12-field callback, offline defer, post-callback writer/live 재검증, marker cutpoint retry와 static no-live-link가 GREEN. route-free `recover_one`은 caller route/path/payload 없이 immutable PREPARED와 held tuple만으로 한 건을 복구한다. Bounded backlog scanner는 전체 candidate snapshot을 먼저 검사하고 bytewise UUID 순으로 recover+ACK하며 deferred/freeze/changed-live 방문, capability-loss 중단, OOM/cap/close 무변경, no-GC와 report 합계를 GNU GCC 일반·ASan/UBSan 및 전체 CI에서 검증했다. Test-only native libpq adapter는 PostgreSQL 17에서 startup role isolation, revoke 대조군, ACK/idempotent retry 및 SQLSTATE freeze 매핑을 실제 실행했고, 실제 offline/expiry/exact-renew/successor permanent fence까지 통과했다. 092a는 held-root stage/precondition/PREPARED, 대표 fresh-child 복구, current-command exact receipt replay, local-incomplete 상세 결과, mock drain/seal/B와 production no-live-link를 검증했다. 092b는 41 save-process + 37 recovery-process SIGKILL 행과 actual PG17 pre-send/post-commit/protocol/RPC retry를 CI `33628598496`에서 검증한다. 이는 process crash 증거이며 host power loss/PVC 보증은 아니다. production transport/login/startup과 live writer 연결은 미완료 |
+| M3 journal v1 / 090 SQL / 091a·091b-3 C / 092a / 092b process matrix / 093a startup probe | v1 test-only + 090/100/110 PG17 + 091a·091b-1a CI `33573456858` + 091b-1b CI `33579360870` + 091b-2 CI `33586412456` + 091b-3 ACK CI `33589685559` + recover_one CI `33591568569` + backlog scanner CI `33594859743` + native PG CI `33598858884` + expiry/successor CI `33601547197` + 092a CI `33615886826` + 092b CI `33628598496` + 093a CI `33636868773` GREEN | 091b-1b의 opaque held-writer handle과 exact DB identity route mock은 GNU GCC/PostgreSQL 17에서 GREEN. 091b-2의 no-clobber local publish, exact two-name crash recovery, fsync/unlink 재시도와 immutable marker evidence는 전체 CI에서 GREEN. 091b-3 ACK slice는 exact absent/existing 12-field callback, offline defer, post-callback writer/live 재검증, marker cutpoint retry와 static no-live-link가 GREEN. route-free `recover_one`은 caller route/path/payload 없이 immutable PREPARED와 held tuple만으로 한 건을 복구한다. Bounded backlog scanner는 전체 candidate snapshot을 먼저 검사하고 bytewise UUID 순으로 recover+ACK하며 deferred/freeze/changed-live 방문, capability-loss 중단, OOM/cap/close 무변경, no-GC와 report 합계를 GNU GCC 일반·ASan/UBSan 및 전체 CI에서 검증했다. Test-only native libpq adapter는 PostgreSQL 17에서 role isolation, revoke 대조군, ACK/idempotent retry 및 SQLSTATE freeze 매핑을 실제 실행했고, 실제 offline/expiry/exact-renew/successor permanent fence까지 통과했다. 092a는 held-root stage/precondition/PREPARED, 대표 fresh-child 복구, current-command exact receipt replay, local-incomplete 상세 결과, mock drain/seal/B와 production no-live-link를 검증했다. 092b는 41 save-process + 37 recovery-process SIGKILL 행과 actual PG17 pre-send/post-commit/protocol/RPC retry를 CI `33628598496`에서 검증한다. 093a는 dedicated NOINHERIT login role, exact startup session assertion, strict conninfo file과 default-off/opt-in runtime 경계를 CI `33636868773`에서 검증한다. 이는 readiness 증거이며 실제 receipt/route RPC 호출이나 live writer 연결은 아니다. host power loss/PVC 보증도 아직 없다. |
 | PG migration 090 | PostgreSQL 17 CI contract GREEN | bootstrap+020..090 두 번 적용, identity/onboarding/M3 SQL과 세 lock-expiry script 통과 |
 | PG migration 100 route v2 | PostgreSQL 17 CI contract GREEN (`33579360870`) | exact seven-field route signature, `storage_format=1`, 세 allowed lifecycle, nullable imported hash, exact regprocedure identity, mud_writer-only execute 및 전체 fixture identity/receipt non-mutation을 disposable PostgreSQL 17에서 검증 |
-| Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
+| PG migration 110 / M3 startup probe | PostgreSQL 17 + 전체 matrix CI GREEN (`33636868773`) | `mud_writer_login LOGIN NOINHERIT`과 SET-only membership, exact `current_user`/`session_user`·timeouts·`search_path`, password hash replay 보존, safe conninfo file과 absent/OFF zero-I/O, opt-in Linux libpq link/startup probe를 검증. save/bank/route/publish 호출은 없음 |
+| Helm | 26/26 render + lint GREEN | testnet branch `ca2ee24`; M3 기본 OFF, memory-only conninfo, 090~110 migration replay를 로컬 검증. chart는 아직 cluster에 적용하지 않음 |
 
 ## 연구 근거
 
@@ -437,10 +444,16 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
   receipt, protocol recovery, acquire/renew/seal exact retry와 successor fence를
   검증했고 private CI `33628598496`도 GREEN이다. 실제 host power-loss/PVC 증적은
   아직 남아 있다.
-- production transport 권한·설정·호출·startup 연결은 아직 구현하지 않았으므로
-  091 전체는 미완료
-- production absent-head seed, `mud_writer` transport, PVC flock/fsync 증적과 retention은
-  승인 전 blocker
+- 093a는 dedicated `mud_writer_login` password login과 exact session assertion,
+  no-follow/owner/mode/nanosecond mutation 검사를 포함한 conninfo loader, 기본 OFF
+  zero-I/O와 opt-in startup readiness를 CI `33636868773`에서 GREEN으로 고정했다.
+  testnet chart도 probe를 기본 OFF로 두고 memory `emptyDir` credential과 제한된 DB
+  egress만 opt-in render한다.
+- production login/session과 startup readiness 경계는 구현됐지만 실제 route lookup·
+  receipt/epoch 네 RPC transport 및 live writer 호출은 연결하지 않았다. 따라서 091
+  전체와 `save_ply`/bank 연결은 여전히 미완료다.
+- production absent-head seed, 실제 RPC transport lifecycle, PVC flock/fsync 증적과
+  retention은 승인 전 blocker
 - shadow 관찰과 cutover 조건은 아직 시작하지 않음
 
 ### M4 room/social/timer 도메인 확장

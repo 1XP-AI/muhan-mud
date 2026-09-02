@@ -15,9 +15,11 @@ recovery-process 행은 26개 named durability cutpoint에서 fresh process를 S
 GNU CC 일반·ASan/UBSan 테스트가 로컬에서 GREEN이다. Actual PostgreSQL 17 조합도
 pre-send loss, post-commit outcome-unknown exact retry, protocol
 `LEGACY_PUBLISHED → DB_ACKED` 복구, acquire/renew/seal replay와 successor permanent
-fence를 로컬에서 검증했고 private CI `33628598496`도 GREEN이다. 이는 process crash
-증거이지 실제 PVC의 power-loss 동작 증명이 아니다. Production transport·호출·
-startup 연결은 미구현**
+fence를 로컬에서 검증했고 private CI `33628598496`도 GREEN이다. 093a의 dedicated
+`mud_writer_login`, 실제 password login/session assertion과 opt-in startup readiness
+probe는 private CI `33636868773`에서 GREEN이다. 이는 process crash와 startup
+capability 증거이지 실제 PVC의 power-loss 동작이나 live RPC 호출 증명이 아니다.
+Production route/receipt RPC transport와 live writer 호출은 미구현**
 (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
@@ -47,10 +49,14 @@ exact bytes·권한·link count·inode 관계를 검사하고 recovery도 fresh 
 다시 실행한다. Actual PostgreSQL 17 lane은 독립 connection이 SQL commit을 관찰한
 뒤 client process를 죽이고, 새 exec가 receipt/head 중복 전이 없이 수렴함을 검증한다.
 어느 lane도 storage-controller cache loss나 host power failure를 모사하지 않는다.
-production caller·DB login/impersonation 설정과 no-GC 운용은 아직 완료하지 않았으므로
-091 전체나 live 연결이 완료된 상태가 아니다. v2 모듈 모두
-`save_ply`, `file_player_store_save`, bank writer, Gateway/DB, production startup에는
-링크되지 않는다.
+093a는 dedicated `mud_writer_login LOGIN NOINHERIT` role, SET-only `mud_writer`
+membership, exact session defaults와 safe migration replay를 실제 PostgreSQL 17
+password login으로 검증한다. 별도 runtime은 strict conninfo file을 읽고 동일한 session
+assertion을 startup에서 실행하지만 명시적 opt-in build/probe일 때만 링크된다. absent/OFF는
+파일·DB I/O가 없고 READY는 기존 startup을 계속하며 FAILED만 종료한다. no-GC 운용과
+실제 route/receipt RPC caller는 아직 완료하지 않았으므로 091 전체나 live 연결이 완료된
+상태가 아니다. v2 save/publish/ACK 모듈은 계속 `save_ply`,
+`file_player_store_save`, bank writer와 Gateway 호출 경로에 링크되지 않는다.
 
 기존 `src/character_save_journal.*`와
 `tests/unit/character_save_journal_test.c`도 **v1 synthetic metadata journal뿐인
@@ -271,6 +277,7 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 092a process-local handoff mock — GREEN (`33615886826`) | `red_092_handoff_drain_then_successor` / deferred ACK, drained attestation, exact-A seal mock, B install | deferred backlog blocks attest/seal/install. After exact ACK drain, process-local mock order is attest → seal A → close A → install B → validate B, with a newer epoch and different writer instance. This is not an actual PostgreSQL lifecycle or live MUD handoff. |
 | 092a static boundary — GREEN (`33615886826`) | `red_092_static_no_live_writer_linkage` / production object, source and cross-platform link-map fixture | no `save_ply`, file writer, bank, Gateway, DB or test hook reaches the production probe; protocol remains absent from live MUD `OBJECTS`. Passing is not activation. |
 | **092b process-SIGKILL matrix — CI `33628598496` GREEN** | `red_092_crash_cutpoints_end_to_end` / 41 fresh save-process rows + 37 fresh recovery-process rows over 26 named durability cutpoints; actual PG17 pre-send/post-commit/protocol/RPC restart lanes | Exact local topology converges only to the approved recovered state, and actual SQL retry produces no duplicate receipt/head advance. Production symbols contain no crash runtime. This does not prove host power-loss/PVC semantics; storage-class evidence and production wiring remain blockers. |
+| **093a writer login/startup readiness — CI `33636868773` GREEN** | `red_093a_writer_login_and_startup_probe` / disposable PostgreSQL 17 password login + C unit/sanitizer/static-link/native integration + Linux opt-in full build | `mud_writer_login LOGIN NOINHERIT`은 SET-only membership과 exact `current_user=mud_writer`, `session_user=mud_writer_login`, timeouts, `search_path`를 강제하고 migration replay가 기존 password hash를 보존한다. Runtime은 no-follow/regular-file/owner/0600/size와 nanosecond mutation을 검사하고 conninfo를 즉시 지운다. absent/OFF는 zero-I/O이고 opt-in probe만 libpq를 링크한다. `save_ply`, bank, route, publish, ACK 호출은 여전히 없다. |
 
 이 gate의 TDD 반복에서 CI `33601098057`은 `expires_at`만 과거로 옮긴 fixture가
 `expiry_after_issue` 제약을 위반함을 드러냈고, `issued_at`과 `expires_at`을 함께
@@ -291,8 +298,10 @@ durability recovery without live linkage. 091b-3의 exact receipt callback과 lo
 `recover_one`은 CI `33591568569`에서 GREEN이고 bounded lexical backlog scanner는
 CI `33594859743`에서 GREEN이다. test-only native DB adapter의 actual PostgreSQL 17
 통합은 CI `33598858884`에서 GREEN이고 expired/offline exact-renew 및 successor
-permanent-fence 계약은 CI `33601547197`에서 GREEN이다. production transport
-권한·설정·호출·startup 연결은 남아 있으므로 091 전체는 아직 complete가 아니다.
+permanent-fence 계약은 CI `33601547197`에서 GREEN이다. 093a의 production login role,
+session assertion과 opt-in startup readiness는 CI `33636868773`에서 GREEN이다. 실제
+route/receipt RPC transport와 live caller 연결은 남아 있으므로 091 전체는 아직
+complete가 아니다.
 092a는 held-root save/recovery와 process-local handoff mock을 synthetic serializer로
 조합했고 CI `33615886826`에서 GREEN이다. 092b의 78개 fresh-process SIGKILL 행과 actual
 PostgreSQL 17 outcome-unknown/retry 조합은 로컬과 private CI `33628598496`에서
@@ -303,11 +312,11 @@ approval, independent review, and an explicit future live-wiring decision remain
 
 ## Unresolved approvals
 
-1. `mud_writer` production transport: test-only minimal C libpq bridge는 실제 PG17에서
-   검증됐지만 이를 승격할지 localhost sidecar를 채택할지는 미결정이다. production
-   transport는 route lookup과 네 RPC만 노출하고 credentials를 file/journal/log에 남기지
-   않아야 한다. 090의 capability role은 NOLOGIN/no-membership이며, 활성화 전에 auditable
-   login/impersonation role과 safe migration replay를 별도로 고정해야 한다.
+1. `mud_writer` production RPC transport: 110 migration의 audited login role과
+   startup session assertion은 실제 PG17에서 검증됐지만, test-only receipt adapter를
+   직접 승격할지 localhost sidecar를 채택할지는 미결정이다. production transport는
+   route lookup과 네 RPC만 노출하고 credentials를 file/journal/log/PVC에 남기지 않아야
+   한다. 실제 save/recovery caller를 연결하기 전 별도 TDD와 명시적 승인이 필요하다.
 2. Production retention watermark/duration and immutable backup destination. Until approved,
    automatic deletion remains disabled.
 3. Storage-class evidence for `flock`, file/directory fsync, and atomic rename on the PVC.
