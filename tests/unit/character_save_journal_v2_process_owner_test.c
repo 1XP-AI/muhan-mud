@@ -329,6 +329,7 @@ static int test_success_repeated_start_and_shutdown(void)
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
         !strcmp(test.trace, "DULBRPGS") && test.owner.state ==
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY && test.owner.player_store_installed &&
+        test.owner.live_ops.acquire_lease_expires_at == 0 &&
         test.global_store_installed && !strcmp(test.bootstrap_candidate,
         "20000000-0000-4000-8000-000000000002") && !strcmp(test.bootstrap_deadline,
         "2026-09-03T00:02:00Z") && test.bootstrap_root == test.configuration.root &&

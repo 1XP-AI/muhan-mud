@@ -139,6 +139,10 @@ character_save_journal_v2_process_owner_start(
         owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
         return owner->startup_result;
     }
+    /* live_ops borrows this stack deadline only for bootstrap acquire.  All
+     * later renewals receive a fresh caller-supplied deadline, so retain no
+     * pointer to the expired stack storage once bootstrap returns. */
+    owner->live_ops.acquire_lease_expires_at = 0;
     owner->writer_held = 1;
     owner->recovery_result = character_save_journal_v2_recovery_run(
         &owner->held_writer,
