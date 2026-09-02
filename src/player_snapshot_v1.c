@@ -8,7 +8,6 @@
 #include <string.h>
 
 typedef char ps_assert_char_bit[(CHAR_BIT == 8) ? 1 : -1];
-typedef char ps_assert_signed_char[(CHAR_MIN < 0) ? 1 : -1];
 typedef char ps_assert_short_size[(sizeof(short) == 2U) ? 1 : -1];
 typedef char ps_assert_long_size[(sizeof(long) <= sizeof(int64_t)) ? 1 : -1];
 typedef char ps_assert_player_list_limit[

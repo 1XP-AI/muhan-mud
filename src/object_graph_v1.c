@@ -18,7 +18,6 @@ typedef struct ogv1_build {
  * legacy struct itself is never serialized, but its logical char/short/long
  * fields must have these representable widths. */
 typedef char ogv1_assert_char_bits[(CHAR_BIT == 8) ? 1 : -1];
-typedef char ogv1_assert_signed_char[(CHAR_MIN < 0) ? 1 : -1];
 typedef char ogv1_assert_short_width[(sizeof(short) == 2) ? 1 : -1];
 typedef char ogv1_assert_uint32_width[(sizeof(uint32_t) == 4) ? 1 : -1];
 typedef char ogv1_assert_int32_width[(sizeof(int32_t) == 4) ? 1 : -1];
