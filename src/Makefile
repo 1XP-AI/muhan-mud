@@ -118,7 +118,7 @@ character-save-journal-v2-receipt-transport-sanitizer-test: character-save-journ
 character-save-journal-v2-protocol-prod-link-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_protocol.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_prod.o
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_protocol_prod_link_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -Wl,-map,/tmp/muhan-unit/character_save_journal_v2_protocol_prod.map -o /tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_protocol_prod_link_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c $(V2_LINK_MAP_OPTION)/tmp/muhan-unit/character_save_journal_v2_protocol_prod.map -o /tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test
 	/tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test
 
 character-save-journal-v2-protocol-static-test: character-save-journal-v2-protocol-prod-link-test
