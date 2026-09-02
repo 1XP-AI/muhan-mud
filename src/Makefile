@@ -92,6 +92,7 @@ unit-test:
 	$(MAKE) character-save-journal-test
 	$(MAKE) character-save-journal-v2-test
 	$(MAKE) character-save-journal-v2-writer-test
+	$(MAKE) character-save-journal-v2-route-test
 
 character-save-journal-test:
 	mkdir -p /tmp/muhan-unit
@@ -136,6 +137,21 @@ character-save-journal-v2-writer-sanitizer-test: character-save-journal-v2-write
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_writer_test.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_writer_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_writer_sanitizer_test
+
+character-save-journal-v2-route-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_route.c -o /tmp/muhan-unit/character_save_journal_v2_route_prod.o
+	python3 ../tests/unit/character_save_journal_v2_route_no_live_link_test.py --object /tmp/muhan-unit/character_save_journal_v2_route_prod.o --makefile Makefile --writer-header character_save_journal_v2_writer.h
+
+character-save-journal-v2-route-test: character-save-journal-v2-route-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. ../tests/unit/character_save_journal_v2_route_test.c character_save_journal_v2_route.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_route_test
+	/tmp/muhan-unit/character_save_journal_v2_route_test
+
+character-save-journal-v2-route-sanitizer-test: character-save-journal-v2-route-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_route_test.c character_save_journal_v2_route.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_route_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_route_sanitizer_test
 
 files1-decoder-test:
 	mkdir -p /tmp/muhan-unit

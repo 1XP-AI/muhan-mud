@@ -126,6 +126,7 @@ static int test_load_and_parser(root)
 char *root;
 {
   character_save_journal_v2_writer_context c;
+  character_save_journal_v2_writer_tuple tuple;
   char journal[PATH_MAX];
   char instance[PATH_MAX];
   static const char epoch_ok[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=7\n";
@@ -137,7 +138,12 @@ char *root;
   int n;
   int failed=0;
   memset(&c,0xa5,sizeof(c));
-  failed+=expect(character_save_journal_v2_writer_open(root,world_id,&c)==0&&c.writer_epoch==7&&!strcmp(c.writer_instance_id,instance_id),"exact persisted tuple must load under lifetime lock");
+  memset(&tuple,0,sizeof(tuple));
+  failed+=expect(character_save_journal_v2_writer_open(root,world_id,&c)==0&&
+                 character_save_journal_v2_writer_validate_held(&c,&tuple)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK&&
+                 tuple.writer_epoch==7&&!strcmp(tuple.writer_instance_id,instance_id),
+                 "exact persisted tuple must load under lifetime lock");
   failed+=expect(character_save_journal_v2_writer_close(&c)==0,"exact context close must release all ownership");
   failed+=expect(character_save_journal_v2_writer_open(root,"other-world",&c)<0,"requested world must exactly match persisted epoch tuple");
   failed+=expect(replace_epoch(root,trailing,sizeof(trailing)-1)==0&&character_save_journal_v2_writer_open(root,world_id,&c)<0,"trailing epoch bytes must reject");
@@ -162,12 +168,9 @@ const char *root;
   (void)root;
   memset(&context,0xa5,sizeof(context));
   memset(&zero,0,sizeof(zero));
-  zero.root_fd=-1;
-  zero.journal_fd=-1;
-  zero.lock_fd=-1;
   failed+=expect(character_save_journal_v2_writer_open(root,"M3-invalid",&context)<0&&
                  !memcmp(&context,&zero,sizeof(context)),
-                 "invalid world must reset every output context field before return");
+                 "invalid world must reset the opaque output handle before return");
   return failed;
 }
 
@@ -290,6 +293,115 @@ char *root;
   return failed;
 }
 
+static int test_owner_registry(root)
+char *root;
+{
+  character_save_journal_v2_writer_context owner,copied,zero,garbage;
+  character_save_journal_v2_writer_tuple before,after;
+  pid_t child;
+  int status;
+  int stdin_flags;
+  int failed=0;
+  if(character_save_journal_v2_writer_open(root,world_id,&owner)!=0) return 1;
+  copied=owner;
+  memset(&zero,0,sizeof(zero));
+  memset(&garbage,0xa5,sizeof(garbage));
+  memset(&before,0xa5,sizeof(before)); after=before;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&copied,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 !memcmp(&before,&after,sizeof(before)),
+                 "copied handle must fail registry validation without changing snapshot");
+  after=before;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&zero,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 !memcmp(&before,&after,sizeof(before)),
+                 "zero handle must fail registry validation without changing snapshot");
+  after=before;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&garbage,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 !memcmp(&before,&after,sizeof(before)),
+                 "garbage handle must fail before its state pointer is dereferenced");
+  child=fork();
+  if(child==0) {
+    character_save_journal_v2_writer_tuple child_tuple;
+    if(character_save_journal_v2_writer_validate_held(&owner,&child_tuple)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID||
+       character_save_journal_v2_writer_close(&owner)==0) _exit(2);
+    _exit(0);
+  }
+  if(child<0||waitpid(child,&status,0)!=child) return failed+1;
+  failed+=expect(WIFEXITED(status)&&WEXITSTATUS(status)==0,
+                 "fork-after-open child must neither validate nor close parent ownership");
+  stdin_flags=fcntl(0,F_GETFD);
+  failed+=expect(character_save_journal_v2_writer_close(&copied)<0&&
+                 character_save_journal_v2_writer_close(&zero)<0&&
+                 character_save_journal_v2_writer_close(&garbage)<0&&
+                 (stdin_flags<0||fcntl(0,F_GETFD)==stdin_flags),
+                 "foreign and zero close must not close fd zero or the active owner");
+  failed+=expect(character_save_journal_v2_writer_validate_held(&owner,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK&&
+                 after.writer_epoch==7&&
+                 character_save_journal_v2_writer_close(&owner)==0,
+                 "original owner must remain usable and close after foreign rejection");
+  return failed;
+}
+
+/* Handle storage is deliberately not a credential.  The registered object
+ * address, pid, and private generation carry all authority instead. */
+static int test_opaque_handle_boundaries(root)
+char *root;
+{
+  character_save_journal_v2_writer_context owner,copied,zero;
+  character_save_journal_v2_writer_tuple first,second,before,after;
+  int failed=0;
+  memset(&owner,0xa5,sizeof(owner));
+  memset(&zero,0,sizeof(zero));
+  memset(&before,0xa5,sizeof(before));
+  after=before;
+  failed+=expect(character_save_journal_v2_writer_open(root,world_id,0)<0&&
+                 character_save_journal_v2_writer_open(0,world_id,&owner)<0&&
+                 character_save_journal_v2_writer_open(root,0,&owner)<0&&
+                 !memcmp(&owner,&zero,sizeof(owner)),
+                 "NULL writer_open arguments must fail and leave no usable handle");
+  failed+=expect(character_save_journal_v2_writer_validate_held(0,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 !memcmp(&before,&after,sizeof(before)),
+                 "NULL context validation must not write a tuple");
+  if(character_save_journal_v2_writer_open(root,world_id,&owner)!=0) return failed+1;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&owner,0)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID,
+                 "NULL tuple validation must fail without creating authority");
+  failed+=expect(character_save_journal_v2_writer_validate_held(&owner,&first)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+                 "exact owner must validate before opaque byte corruption");
+  copied=owner;
+  memset(&owner,0x5a,sizeof(owner));
+  failed+=expect(character_save_journal_v2_writer_validate_held(&owner,&second)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK&&
+                 !strcmp(second.world_id,world_id)&&second.writer_epoch==7&&
+                 !memcmp(&first,&second,sizeof(first)),
+                 "owner handle byte corruption must not alter the immutable tuple snapshot");
+  first.writer_epoch=99;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&owner,&second)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK&&second.writer_epoch==7,
+                 "caller mutation of a returned tuple must not create authority");
+  failed+=expect(character_save_journal_v2_writer_close(&owner)==0&&
+                 character_save_journal_v2_writer_validate_held(&owner,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 character_save_journal_v2_writer_close(&owner)<0&&
+                 character_save_journal_v2_writer_close(&copied)<0,
+                 "post-close validate and exact or copied close must be invalid");
+  if(character_save_journal_v2_writer_open(root,world_id,&owner)!=0) return failed+1;
+  after=before;
+  failed+=expect(character_save_journal_v2_writer_validate_held(&copied,&after)==
+                 CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID&&
+                 !memcmp(&before,&after,sizeof(before))&&
+                 character_save_journal_v2_writer_close(&copied)<0&&
+                 character_save_journal_v2_writer_close(&owner)==0,
+                 "a stale pre-close copy must remain invalid across same-address reopen");
+  return failed;
+}
+
 static int test_leaf_contract_and_faults(root)
 char *root;
 {
@@ -388,7 +500,9 @@ int main(void)
   }
   character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());
   failed=test_load_and_parser(root)+test_invalid_world_resets_context(root)+
-         test_lock_lifetime(root)+test_existing_opener_syncs_created_lock(root)+
+         test_lock_lifetime(root)+test_owner_registry(root)+
+         test_opaque_handle_boundaries(root)+
+         test_existing_opener_syncs_created_lock(root)+
          test_leaf_contract_and_faults(root);
   failed+=expect(teardown(root)==0,"fixture teardown must remove only exact fixture leaves");
   puts(failed?"character_save_journal_v2_writer_test: failed":"character_save_journal_v2_writer_test: ok");

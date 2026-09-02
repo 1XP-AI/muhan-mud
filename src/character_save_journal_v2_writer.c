@@ -20,7 +20,20 @@
 #define V2_WRITER_RUNTIME_UID 10001
 #define V2_WRITER_TEXT_MAX 512
 
+typedef struct v2_writer_private_state {
+  int root_fd;
+  int journal_fd;
+  int lock_fd;
+  character_save_journal_v2_writer_tuple tuple;
+  const character_save_journal_v2_writer_context *owner_context;
+  pid_t owner_pid;
+  uint64_t generation;
+} v2_writer_private_state;
+
 static uid_t v2_writer_trusted_uid = V2_WRITER_RUNTIME_UID;
+static v2_writer_private_state v2_writer_active_state;
+static v2_writer_private_state *v2_writer_active;
+static uint64_t v2_writer_generation_sequence;
 
 #ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
 static int v2_writer_fail_lock_fsync;
@@ -79,6 +92,23 @@ const char *s;
   for(i=1;i<n;i++) {
     if(!((s[i]>='a'&&s[i]<='z')||(s[i]>='0'&&s[i]<='9')||
          s[i]=='_'||s[i]=='-')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int v2_writer_zero_tail(s, length, limit)
+const char *s;
+size_t length;
+size_t limit;
+{
+  size_t i;
+  if(!s||length>limit||s[length]) {
+    return 0;
+  }
+  for(i=length+1;i<=limit;i++) {
+    if(s[i]) {
       return 0;
     }
   }
@@ -242,9 +272,51 @@ static void v2_writer_context_reset(context)
 character_save_journal_v2_writer_context *context;
 {
   memset(context,0,sizeof(*context));
-  context->root_fd=-1;
-  context->journal_fd=-1;
-  context->lock_fd=-1;
+}
+
+static void v2_writer_state_reset(state)
+v2_writer_private_state *state;
+{
+  memset(state,0,sizeof(*state));
+  state->root_fd=-1;
+  state->journal_fd=-1;
+  state->lock_fd=-1;
+}
+
+/* Handle bytes are never read.  Only this private owner registry can grant
+ * authority, so copied, zeroed, and garbage handles stay unauthoritative. */
+static int v2_writer_owner_matches(context)
+const character_save_journal_v2_writer_context *context;
+{
+  return context&&v2_writer_active&&
+         context==v2_writer_active->owner_context&&
+         v2_writer_active->owner_pid==getpid()&&
+         v2_writer_active->generation!=0;
+}
+
+static uint64_t v2_writer_next_generation(void)
+{
+  if(v2_writer_generation_sequence==UINT64_MAX) {
+    return 0;
+  }
+  v2_writer_generation_sequence++;
+  return v2_writer_generation_sequence;
+}
+
+static int v2_writer_same_descriptor(parent, leaf, fd, file)
+int parent;
+const char *leaf;
+int fd;
+int file;
+{
+  struct stat from_parent;
+  struct stat from_fd;
+  if(fd<0||fstat(fd,&from_fd)!=0||
+     fstatat(parent,leaf,&from_parent,AT_SYMLINK_NOFOLLOW)!=0||
+     from_parent.st_dev!=from_fd.st_dev||from_parent.st_ino!=from_fd.st_ino) {
+    return 0;
+  }
+  return file?v2_writer_file_ok(fd):v2_writer_dir_ok(fd);
 }
 
 static int v2_writer_read_leaf(journal_fd, leaf, text, text_size)
@@ -452,15 +524,23 @@ const char *root;
 const char *world_id;
 character_save_journal_v2_writer_context *out;
 {
-  character_save_journal_v2_writer_context next;
+  v2_writer_private_state next;
   if(!out) {
+    return -1;
+  }
+  if(v2_writer_active) {
+    /* Never erase the active owner through a second open request. */
+    if(out!=v2_writer_active->owner_context) {
+      v2_writer_context_reset(out);
+    }
+    errno=EBUSY;
     return -1;
   }
   v2_writer_context_reset(out);
   if(!v2_writer_world(world_id)) {
     return -1;
   }
-  v2_writer_context_reset(&next);
+  v2_writer_state_reset(&next);
   next.root_fd=v2_writer_open_root(root);
   if(next.root_fd<0) {
     goto bad;
@@ -472,13 +552,22 @@ character_save_journal_v2_writer_context *out;
   if(v2_writer_open_lock(next.journal_fd,&next.lock_fd)!=0) {
     goto bad;
   }
-  if(v2_writer_load_instance(next.journal_fd,next.writer_instance_id)!=0||
-     v2_writer_load_epoch(next.journal_fd,world_id,next.writer_instance_id,
-                          &next.writer_epoch)!=0) {
+  if(v2_writer_load_instance(next.journal_fd,next.tuple.writer_instance_id)!=0||
+     v2_writer_load_epoch(next.journal_fd,world_id,next.tuple.writer_instance_id,
+                          &next.tuple.writer_epoch)!=0) {
     goto bad;
   }
-  strcpy(next.world_id,world_id);
-  *out=next;
+  strcpy(next.tuple.world_id,world_id);
+  next.generation=v2_writer_next_generation();
+  if(!next.generation) {
+    errno=EOVERFLOW;
+    goto bad;
+  }
+  v2_writer_active_state=next;
+  v2_writer_active_state.owner_context=out;
+  v2_writer_active_state.owner_pid=getpid();
+  v2_writer_active=&v2_writer_active_state;
+  v2_writer_state_reset(&next);
   return 0;
 bad:
   if(next.lock_fd>=0) {
@@ -490,32 +579,119 @@ bad:
   if(next.root_fd>=0) {
     close(next.root_fd);
   }
+  v2_writer_state_reset(&next);
   v2_writer_context_reset(out);
   return -1;
+}
+
+static character_save_journal_v2_writer_context_status
+v2_writer_validate_snapshot(context,tuple_out,generation_out)
+const character_save_journal_v2_writer_context *context;
+character_save_journal_v2_writer_tuple *tuple_out;
+uint64_t *generation_out;
+{
+  v2_writer_private_state *state;
+  character_save_journal_v2_writer_tuple next;
+  char instance[CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN + 1];
+  uint64_t epoch;
+  int lock_result;
+  if(!tuple_out||!v2_writer_owner_matches(context)) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  state=v2_writer_active;
+  if(!v2_writer_world(state->tuple.world_id)||
+     !v2_writer_zero_tail(state->tuple.world_id,
+                          v2_writer_bounded(state->tuple.world_id,
+                                            CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX),
+                          CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX)||
+     !v2_writer_uuid(state->tuple.writer_instance_id)||!state->tuple.writer_epoch||
+     state->tuple.writer_epoch>(uint64_t)INT64_MAX||!state->generation) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  if(!v2_writer_dir_ok(state->root_fd)||
+     !v2_writer_same_descriptor(state->root_fd,"character-save-journal",
+                                state->journal_fd,0)) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  if(!v2_writer_same_descriptor(state->journal_fd,".m3-writer.lock",
+                                state->lock_fd,1)) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_LOCK;
+  }
+  do {
+    lock_result=flock(state->lock_fd,LOCK_EX|LOCK_NB);
+  } while(lock_result<0&&errno==EINTR);
+  if(lock_result!=0) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_LOCK;
+  }
+  if(v2_writer_load_instance(state->journal_fd,instance)!=0||
+     strcmp(instance,state->tuple.writer_instance_id)!=0||
+     v2_writer_load_epoch(state->journal_fd,state->tuple.world_id,instance,&epoch)!=0||
+     epoch!=state->tuple.writer_epoch) {
+    memset(instance,0,sizeof(instance));
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_STALE;
+  }
+  memset(&next,0,sizeof(next));
+  memcpy(next.world_id,state->tuple.world_id,sizeof(next.world_id));
+  memcpy(next.writer_instance_id,state->tuple.writer_instance_id,
+         sizeof(next.writer_instance_id));
+  next.writer_epoch=state->tuple.writer_epoch;
+  *tuple_out=next;
+  if(generation_out) {
+    *generation_out=state->generation;
+  }
+  memset(&next,0,sizeof(next));
+  memset(instance,0,sizeof(instance));
+  return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK;
+}
+
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_validate_held(context,tuple_out)
+const character_save_journal_v2_writer_context *context;
+character_save_journal_v2_writer_tuple *tuple_out;
+{
+  return v2_writer_validate_snapshot(context,tuple_out,0);
+}
+
+/* This link-local seam is intentionally absent from the public header.  The
+ * route uses it only to compare a callback-held private generation; callers
+ * cannot supply a generation to gain authority. */
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_validate_held_for_route(context,tuple_out,
+                                                           generation_out)
+const character_save_journal_v2_writer_context *context;
+character_save_journal_v2_writer_tuple *tuple_out;
+uint64_t *generation_out;
+{
+  if(!generation_out) {
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+  }
+  return v2_writer_validate_snapshot(context,tuple_out,generation_out);
 }
 
 int character_save_journal_v2_writer_close(context)
 character_save_journal_v2_writer_context *context;
 {
+  v2_writer_private_state *state;
   int result=0;
-  if(!context) {
+  if(!v2_writer_owner_matches(context)) {
     return -1;
   }
-  if(context->lock_fd>=0&&v2_writer_close_once(context->lock_fd,1)!=0) {
+  state=v2_writer_active;
+  if(state->lock_fd>=0&&v2_writer_close_once(state->lock_fd,1)!=0) {
       result=-1;
   }
-  context->lock_fd=-1;
-  if(context->journal_fd>=0&&v2_writer_close_once(context->journal_fd,2)!=0) {
+  state->lock_fd=-1;
+  if(state->journal_fd>=0&&v2_writer_close_once(state->journal_fd,2)!=0) {
       result=-1;
   }
-  context->journal_fd=-1;
-  if(context->root_fd>=0&&v2_writer_close_once(context->root_fd,3)!=0) {
+  state->journal_fd=-1;
+  if(state->root_fd>=0&&v2_writer_close_once(state->root_fd,3)!=0) {
       result=-1;
   }
-  context->root_fd=-1;
-  memset(context->world_id,0,sizeof(context->world_id));
-  memset(context->writer_instance_id,0,sizeof(context->writer_instance_id));
-  context->writer_epoch=0;
+  state->root_fd=-1;
+  v2_writer_context_reset(context);
+  v2_writer_active=0;
+  v2_writer_state_reset(state);
   return result;
 }
 
