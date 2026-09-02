@@ -15,7 +15,7 @@ recovery-process 행은 26개 named durability cutpoint에서 fresh process를 S
 GNU CC 일반·ASan/UBSan 테스트가 로컬에서 GREEN이다. Actual PostgreSQL 17 조합도
 pre-send loss, post-commit outcome-unknown exact retry, protocol
 `LEGACY_PUBLISHED → DB_ACKED` 복구, acquire/renew/seal replay와 successor permanent
-fence를 로컬에서 검증했다. Private CI 증적은 아직 없다. 이는 process crash
+fence를 로컬에서 검증했고 private CI `33628598496`도 GREEN이다. 이는 process crash
 증거이지 실제 PVC의 power-loss 동작 증명이 아니다. Production transport·호출·
 startup 연결은 미구현**
 (2026-09-02).
@@ -270,7 +270,7 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 092a — GREEN (`33615886826`) | `red_092_exact_receipt_restart_and_local_incomplete` / COMMAND_A·COMMAND_B, fresh child, malformed/conflicting local ACK marker | initial save, PUBLISHED restart, DB_ACKED retry and COMMAND_B drain retry all compare the current command and the same complete receipt snapshot with durable PREPARED. A local marker repair failure preserves evidence and returns `DB_ACKED_LOCAL_INCOMPLETE`; the DB callback is still replayed exactly once per attempt without a second head advance. |
 | 092a process-local handoff mock — GREEN (`33615886826`) | `red_092_handoff_drain_then_successor` / deferred ACK, drained attestation, exact-A seal mock, B install | deferred backlog blocks attest/seal/install. After exact ACK drain, process-local mock order is attest → seal A → close A → install B → validate B, with a newer epoch and different writer instance. This is not an actual PostgreSQL lifecycle or live MUD handoff. |
 | 092a static boundary — GREEN (`33615886826`) | `red_092_static_no_live_writer_linkage` / production object, source and cross-platform link-map fixture | no `save_ply`, file writer, bank, Gateway, DB or test hook reaches the production probe; protocol remains absent from live MUD `OBJECTS`. Passing is not activation. |
-| **092b process-SIGKILL matrix — local GREEN, private CI pending** | `red_092_crash_cutpoints_end_to_end` / 41 fresh save-process rows + 37 fresh recovery-process rows over 26 named durability cutpoints; actual PG17 pre-send/post-commit/protocol/RPC restart lanes | Exact local topology converges only to the approved recovered state, and actual SQL retry produces no duplicate receipt/head advance. Production symbols contain no crash runtime. This does not prove host power-loss/PVC semantics; storage-class evidence and production wiring remain blockers. |
+| **092b process-SIGKILL matrix — CI `33628598496` GREEN** | `red_092_crash_cutpoints_end_to_end` / 41 fresh save-process rows + 37 fresh recovery-process rows over 26 named durability cutpoints; actual PG17 pre-send/post-commit/protocol/RPC restart lanes | Exact local topology converges only to the approved recovered state, and actual SQL retry produces no duplicate receipt/head advance. Production symbols contain no crash runtime. This does not prove host power-loss/PVC semantics; storage-class evidence and production wiring remain blockers. |
 
 이 gate의 TDD 반복에서 CI `33601098057`은 `expires_at`만 과거로 옮긴 fixture가
 `expiry_after_issue` 제약을 위반함을 드러냈고, `issued_at`과 `expires_at`을 함께
@@ -295,8 +295,8 @@ permanent-fence 계약은 CI `33601547197`에서 GREEN이다. production transpo
 권한·설정·호출·startup 연결은 남아 있으므로 091 전체는 아직 complete가 아니다.
 092a는 held-root save/recovery와 process-local handoff mock을 synthetic serializer로
 조합했고 CI `33615886826`에서 GREEN이다. 092b의 78개 fresh-process SIGKILL 행과 actual
-PostgreSQL 17 outcome-unknown/retry 조합은 로컬에서 GREEN이며 private CI 증적은 아직
-없다. 실제 host power loss와 PVC storage-class semantics는 별도 검증이 필요하다.
+PostgreSQL 17 outcome-unknown/retry 조합은 로컬과 private CI `33628598496`에서
+GREEN이다. 실제 host power loss와 PVC storage-class semantics는 별도 검증이 필요하다.
 Even green 092b process tests do **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.
