@@ -96,8 +96,9 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
 | C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
 | Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
 | M2 CDTO/Rust graph | pass, clone-only | ObjectGraph C unit/sanitizer, 12 Rust unit+2 differential, fixed/random corpus와 Linux LeakSanitizer |
-| M3 journal v1 / 090 SQL / 091a·091b-1a C | v1 test-only + 090 PG17 + 091a·091b-1a local pass | 091a stage/hash/parser와 091b-1a persisted tuple/PVC lifetime lock은 일반·ASan/UBSan, `-Werror`, fresh production object/`nm` static no-live-link gate가 GREEN. live writer와 미연결이며 새 091b-1a 원격 CI 및 091b-1b 이후는 미완료 |
+| M3 journal v1 / 090 SQL / 091a·091b-1b C | v1 test-only + 090 PG17 + 091a·091b-1a CI `33573456858` + 091b-1b local pass | 091a·091b-1a의 GNU GCC 원격 근거를 보존하고, 091b-1b는 opaque held-writer handle, exact DB identity route mock, same-shard/different-ID, 세 lifecycle, immutable failure output, ASan/UBSan 및 static no-live-link가 local GREEN. additive v2 route RPC의 PG17 및 091b-1b GNU GCC 원격 CI는 대기 중이고 live writer와 미연결이며 publish/recovery는 미완료 |
 | PG migration 090 | PostgreSQL 17 CI contract GREEN | bootstrap+020..090 두 번 적용, identity/onboarding/M3 SQL과 세 lock-expiry script 통과 |
+| PG migration 100 route v2 | contract authored, remote PG17 pending | exact seven-field route signature, `storage_format=1`, three allowed lifecycle, nullable imported hash, mud_writer-only execute 및 identity/receipt non-mutation을 원격 disposable DB에서 검증해야 함 |
 | Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
 
 ## 연구 근거
