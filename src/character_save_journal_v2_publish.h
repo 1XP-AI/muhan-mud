@@ -31,6 +31,15 @@ character_save_journal_v2_publish_result character_save_journal_v2_publish(
     character_save_journal_v2_route_lookup lookup, void *lookup_opaque,
     const char *command_uuid);
 
+/* Route-free, test-only recovery of one immutable PREPARED journal.  The
+ * held writer supplies the only root capability; journal identity supplies
+ * the canonical name, shard, expected preimage and staged payload.  No path,
+ * payload, route callback, or route bytes are accepted. */
+character_save_journal_v2_publish_result
+character_save_journal_v2_publish_recover(
+    const character_save_journal_v2_writer_context *writer,
+    const char *command_uuid);
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
 #include <sys/types.h>
 void character_save_journal_v2_publish_set_trusted_uid_for_test(uid_t uid);
@@ -48,6 +57,8 @@ void character_save_journal_v2_publish_pause_before_absent_link_for_test(
     int ready_fd, int release_fd);
 void character_save_journal_v2_publish_pause_before_marker_link_for_test(
     int ready_fd, int release_fd);
+void character_save_journal_v2_publish_reset_cleanup_close_failures_for_test(void);
+unsigned int character_save_journal_v2_publish_cleanup_close_failures_for_test(void);
 #endif
 
 #endif

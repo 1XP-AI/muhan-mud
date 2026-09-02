@@ -49,8 +49,9 @@ def main() -> None:
     if forbidden:
         raise SystemExit("publish object has live dependency: " + ", ".join(forbidden))
     globals_ = symbols(args.object, "-g")
-    if "character_save_journal_v2_publish" not in globals_:
-        raise SystemExit("publish production object did not expose publish API")
+    if "character_save_journal_v2_publish" not in globals_ or \
+       "character_save_journal_v2_publish_recover" not in globals_:
+        raise SystemExit("publish production object did not expose both test-only publish APIs")
     if any(symbol.endswith("_for_test") for symbol in globals_):
         raise SystemExit("publish production object leaked a test hook")
     if "character_save_journal_v2_publish.o" in objects(args.makefile):

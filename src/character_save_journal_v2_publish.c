@@ -37,6 +37,7 @@ static int v2_publish_live_close, v2_publish_journal_write_close;
 static int v2_publish_crash_after_live_promotion;
 static int v2_publish_link_ready_fd = -1, v2_publish_link_release_fd = -1;
 static int v2_publish_link_pause_kind;
+static unsigned int v2_publish_cleanup_close_failures;
 #endif
 
 static size_t pub_bounded(text, limit)
@@ -111,15 +112,27 @@ const char *name;
     return fd;
 }
 
+/* Cleanup owns every descriptor exactly once.  The test build records an
+ * unexpected cleanup close failure so ownership transfers stay observable. */
+static void pub_cleanup_close(fd)
+int fd;
+{
+    if(fd >= 0 && close(fd) != 0) {
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
+        v2_publish_cleanup_close_failures++;
+#endif
+    }
+}
+
 static void pub_tree_close(tree)
 v2_publish_tree *tree;
 {
     if(!tree) return;
-    if(tree->stage_fd >= 0) close(tree->stage_fd);
-    if(tree->journal_fd >= 0) close(tree->journal_fd);
-    if(tree->shard_fd >= 0) close(tree->shard_fd);
-    if(tree->player_fd >= 0) close(tree->player_fd);
-    if(tree->root_fd >= 0) close(tree->root_fd);
+    pub_cleanup_close(tree->stage_fd);
+    pub_cleanup_close(tree->journal_fd);
+    pub_cleanup_close(tree->shard_fd);
+    pub_cleanup_close(tree->player_fd);
+    pub_cleanup_close(tree->root_fd);
     memset(tree, 0, sizeof(*tree));
     tree->root_fd = tree->player_fd = tree->shard_fd = tree->journal_fd =
         tree->stage_fd = -1;
@@ -590,42 +603,63 @@ const character_save_journal_v2_wire *wire;
     return 0;
 }
 
+/* This phase reads only the immutable PREPARED record.  Route-free recovery
+ * uses it before it considers any marker reconciliation, so a mismatched
+ * held writer tuple cannot trigger a local marker mutation. */
+static int pub_read_prepared(tree, command_uuid, wire)
+v2_publish_tree *tree;
+const char *command_uuid;
+character_save_journal_v2_wire *wire;
+{
+    char leaf[64], text[V2_PUBLISH_TEXT_MAX];
+    int n, result, prepared_state;
+    if(!tree || !command_uuid || !wire) return -1;
+    n = snprintf(leaf, sizeof(leaf), "%s.prepared", command_uuid);
+    if(n < 0 || (size_t)n >= sizeof(leaf)) return -1;
+    result = pub_read_text(tree->journal_fd, leaf, text, sizeof(text));
+    if(!result) result = pub_parse(text, wire, &prepared_state) || prepared_state ||
+                          strcmp(wire->command_uuid, command_uuid);
+    memset(text, 0, sizeof(text));
+    return result ? -1 : 0;
+}
+
+static int pub_marker_state(tree, wire, published)
+v2_publish_tree *tree;
+const character_save_journal_v2_wire *wire;
+int *published;
+{
+    char published_leaf[64], temporary[64];
+    struct stat st;
+    int n;
+    if(!tree || !wire || !published) return -1;
+    *published = 0;
+    n = snprintf(published_leaf, sizeof(published_leaf), "%s.published", wire->command_uuid);
+    if(n < 0 || (size_t)n >= sizeof(published_leaf)) return -1;
+    n = snprintf(temporary, sizeof(temporary), "%s.published.tmp", wire->command_uuid);
+    if(n < 0 || (size_t)n >= sizeof(temporary)) return -1;
+    if(fstatat(tree->journal_fd, published_leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if(errno != ENOENT) return -1;
+        if(fstatat(tree->journal_fd, temporary, &st, AT_SYMLINK_NOFOLLOW) == 0)
+            return pub_marker_exact(tree, temporary, wire, 1, 0) ? -1 : 0;
+        return errno == ENOENT ? 0 : -1;
+    }
+    if(fstatat(tree->journal_fd, temporary, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        if(pub_reconcile_marker_temp(tree, published_leaf, temporary, wire)) return -1;
+    } else if(errno != ENOENT || pub_marker_exact(tree, published_leaf, wire, 1, 0)) {
+        return -1;
+    }
+    *published = 1;
+    return 0;
+}
+
 static int pub_read_record(tree, command_uuid, wire, published)
 v2_publish_tree *tree;
 const char *command_uuid;
 character_save_journal_v2_wire *wire;
 int *published;
 {
-    char leaf[64], published_leaf[64], temporary[64], text[V2_PUBLISH_TEXT_MAX];
-    struct stat st;
-    int n, result, prepared_state;
-    if(!tree || !command_uuid || !wire || !published) return -1;
-    *published = 0;
-    n = snprintf(leaf, sizeof(leaf), "%s.prepared", command_uuid);
-    if(n < 0 || (size_t)n >= sizeof(leaf)) return -1;
-    result = pub_read_text(tree->journal_fd, leaf, text, sizeof(text));
-    if(!result) result = pub_parse(text, wire, &prepared_state) || prepared_state ||
-                          strcmp(wire->command_uuid, command_uuid);
-    if(!result) {
-        n = snprintf(published_leaf, sizeof(published_leaf), "%s.published", command_uuid);
-        if(n < 0 || (size_t)n >= sizeof(published_leaf)) result = -1;
-        n = snprintf(temporary, sizeof(temporary), "%s.published.tmp", command_uuid);
-        if(n < 0 || (size_t)n >= sizeof(temporary)) result = -1;
-        else if(fstatat(tree->journal_fd, published_leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
-            if(errno != ENOENT) result = -1;
-            else if(fstatat(tree->journal_fd, temporary, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                if(pub_marker_exact(tree, temporary, wire, 1, 0)) result = -1;
-            } else if(errno != ENOENT) result = -1;
-            else *published = 0;
-        } else if(fstatat(tree->journal_fd, temporary, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-            if(pub_reconcile_marker_temp(tree, published_leaf, temporary, wire)) result = -1;
-            else *published = 1;
-        } else if(errno != ENOENT || pub_marker_exact(tree, published_leaf, wire, 1, 0)) {
-            result = -1;
-        } else *published = 1;
-    }
-    memset(text, 0, sizeof(text));
-    return result ? -1 : 0;
+    return pub_read_prepared(tree, command_uuid, wire) ||
+           pub_marker_state(tree, wire, published) ? -1 : 0;
 }
 
 static int pub_hash_leaf(parent, leaf, digest, missing, close_kind)
@@ -833,6 +867,196 @@ character_save_journal_v2_writer_context_status status;
     return CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_INVALID;
 }
 
+/* Both initial publish and route-free recovery arrive here only after their
+ * distinct authority checks have completed.  From this point forward every
+ * file name and byte is derived from the immutable PREPARED journal, never
+ * from a route response or recovery caller input. */
+static character_save_journal_v2_publish_result pub_local_publish(tree, wire,
+    name, stage_leaf, published)
+v2_publish_tree *tree;
+const character_save_journal_v2_wire *wire;
+const unsigned char *name;
+const char *stage_leaf;
+int published;
+{
+    char live_hash[65], stage_hash[65];
+    int stage_missing, live_missing;
+    character_save_journal_v2_publish_result result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+    if(!tree || !wire || !name || !stage_leaf) goto done;
+    if(published) {
+        if(pub_hash_leaf(tree->stage_fd, stage_leaf, stage_hash, &stage_missing, 2) ||
+           !stage_missing || pub_hash_leaf(tree->shard_fd, (const char *)name,
+                                           live_hash, &live_missing, 3) ||
+           live_missing || strcmp(live_hash, wire->post_sha256))
+            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+        else result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+        goto done;
+    }
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT) {
+        int recovered_link = pub_reconcile_absent_link(tree, stage_leaf,
+                                                        (const char *)name, wire);
+        if(recovered_link < 0) {
+            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+            goto done;
+        }
+        if(recovered_link > 0) {
+            result = pub_mark_published(tree, wire) ?
+                CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO : CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+            goto done;
+        }
+    }
+    if(pub_hash_leaf(tree->stage_fd, stage_leaf, stage_hash, &stage_missing, 2)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_STAGE;
+        goto done;
+    }
+    if(stage_missing) {
+        if(pub_hash_leaf(tree->shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
+           live_missing || strcmp(live_hash, wire->post_sha256) ||
+           pub_sync(tree->shard_fd, 2) || pub_sync(tree->stage_fd, 4) ||
+           pub_mark_published(tree, wire)) result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+        else result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+        goto done;
+    }
+    if(strcmp(stage_hash, wire->post_sha256)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_STAGE;
+        goto done;
+    }
+    if(pub_hash_leaf(tree->shard_fd, (const char *)name, live_hash, &live_missing, 3)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+        goto done;
+    }
+    if((wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT && !live_missing) ||
+       (wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
+        (live_missing || strcmp(live_hash, wire->expected_sha256)))) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+        goto done;
+    }
+    if((wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT &&
+        pub_promote_absent(tree, stage_leaf, (const char *)name)) ||
+       (wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
+        pub_rename(tree->stage_fd, stage_leaf, tree->shard_fd, (const char *)name))) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+        goto done;
+    }
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
+    /* Existing-state replacement retains its post-rename, pre-destination
+     * fsync crash boundary. */
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
+       v2_publish_crash_after_live_promotion) _exit(91);
+#endif
+    if(pub_sync(tree->shard_fd, 2) || pub_sync(tree->stage_fd, 4)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+        goto done;
+    }
+    if(pub_hash_leaf(tree->shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
+       live_missing || strcmp(live_hash, wire->post_sha256)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+        goto done;
+    }
+    result = pub_mark_published(tree, wire) ?
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO : CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+done:
+    memset(live_hash, 0, sizeof(live_hash));
+    memset(stage_hash, 0, sizeof(stage_hash));
+    return result;
+}
+
+character_save_journal_v2_publish_result
+character_save_journal_v2_publish_recover(writer, command_uuid)
+const character_save_journal_v2_writer_context *writer;
+const char *command_uuid;
+{
+    v2_publish_tree tree;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_wire wire, reread_wire;
+    character_save_journal_v2_writer_context_status context_status;
+    unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    char stage_leaf[44];
+    size_t name_length;
+    int published, root_fd = -1;
+    character_save_journal_v2_publish_result result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+    memset(&tree, 0, sizeof(tree));
+    tree.root_fd = tree.player_fd = tree.shard_fd = tree.journal_fd = tree.stage_fd = -1;
+    memset(&tuple, 0, sizeof(tuple));
+    memset(&wire, 0, sizeof(wire));
+    memset(&reread_wire, 0, sizeof(reread_wire));
+    memset(name, 0, sizeof(name));
+    if(!writer || !pub_uuid(command_uuid))
+        return CHARACTER_SAVE_JOURNAL_V2_PUBLISH_INVALID_ARGUMENT;
+    context_status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
+    if(context_status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return pub_context_result(context_status);
+    /* Read immutable journal identity through the held root before selecting
+     * its journal-owned shard.  Recovery receives no route or name input. */
+    if(pub_journal_open(root_fd, &tree)) {
+        root_fd = -1;
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    /* pub_journal_open now owns this duplicate on every later exit. */
+    root_fd = -1;
+    if(pub_read_prepared(&tree, command_uuid, &wire)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    context_status = character_save_journal_v2_writer_validate_held(writer, &tuple);
+    if(context_status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = pub_context_result(context_status);
+        goto done;
+    }
+    if(strcmp(tuple.world_id, wire.world_id) ||
+       strcmp(tuple.writer_instance_id, wire.writer_instance_id) ||
+       tuple.writer_epoch != wire.writer_epoch) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY;
+        goto done;
+    }
+    pub_tree_close(&tree);
+    context_status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
+    if(context_status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = pub_context_result(context_status);
+        goto done;
+    }
+    if(pub_tree_open(root_fd, wire.legacy_shard, &tree)) {
+        root_fd = -1;
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    /* pub_tree_open now owns this duplicate on every later exit. */
+    root_fd = -1;
+    if(pub_read_prepared(&tree, command_uuid, &reread_wire)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    context_status = character_save_journal_v2_writer_validate_held(writer, &tuple);
+    if(context_status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = pub_context_result(context_status);
+        goto done;
+    }
+    if(memcmp(&wire, &reread_wire, sizeof(wire)) ||
+       strcmp(tuple.world_id, wire.world_id) ||
+       strcmp(tuple.writer_instance_id, wire.writer_instance_id) ||
+       tuple.writer_epoch != wire.writer_epoch ||
+       pub_decode_name(&wire, name, &name_length) ||
+       character_save_journal_v2_stage_leaf(wire.command_uuid, stage_leaf,
+                                            sizeof(stage_leaf))) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY;
+        goto done;
+    }
+    if(pub_marker_state(&tree, &wire, &published)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    result = pub_local_publish(&tree, &wire, name, stage_leaf, published);
+done:
+    pub_cleanup_close(root_fd);
+    memset(&tuple, 0, sizeof(tuple));
+    memset(&wire, 0, sizeof(wire));
+    memset(&reread_wire, 0, sizeof(reread_wire));
+    memset(name, 0, sizeof(name));
+    pub_tree_close(&tree);
+    return result;
+}
+
 character_save_journal_v2_publish_result character_save_journal_v2_publish(
     writer, canonical_legacy_name, canonical_legacy_name_length, lookup,
     lookup_opaque, command_uuid)
@@ -848,10 +1072,10 @@ const char *command_uuid;
     character_save_journal_v2_wire wire;
     character_save_journal_v2_bound_route route;
     character_save_journal_v2_writer_context_status context_status;
-    char stage_leaf[44], live_hash[65], stage_hash[65];
+    char stage_leaf[44];
     unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
     size_t name_length;
-    int published, stage_missing, live_missing, root_fd = -1;
+    int published, root_fd = -1;
     character_save_journal_v2_publish_result result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
     memset(&tree, 0, sizeof(tree));
     tree.root_fd = tree.player_fd = tree.shard_fd = tree.journal_fd = tree.stage_fd = -1;
@@ -871,22 +1095,31 @@ const char *command_uuid;
         return pub_context_result(context_status);
     /* Journal first supplies the shard: no route string ever selects a file
      * descriptor.  Reopen its canonical tree before any file mutation. */
-    if(pub_journal_open(root_fd, &tree) ||
-       pub_read_record(&tree, command_uuid, &wire, &published)) {
+    if(pub_journal_open(root_fd, &tree)) {
         root_fd = -1;
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
         goto done;
     }
+    /* pub_journal_open now owns this duplicate on every later exit. */
     root_fd = -1;
+    if(pub_read_record(&tree, command_uuid, &wire, &published)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
     pub_tree_close(&tree);
     context_status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
     if(context_status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
         result = pub_context_result(context_status);
         goto done;
     }
-    if(pub_tree_open(root_fd, wire.legacy_shard, &tree) ||
-       pub_read_record(&tree, command_uuid, &wire, &published)) {
+    if(pub_tree_open(root_fd, wire.legacy_shard, &tree)) {
         root_fd = -1;
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    /* pub_tree_open now owns this duplicate on every later exit. */
+    root_fd = -1;
+    if(pub_read_record(&tree, command_uuid, &wire, &published)) {
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
         goto done;
     }
@@ -902,86 +1135,12 @@ const char *command_uuid;
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY;
         goto done;
     }
-    if(published) {
-        if(pub_hash_leaf(tree.stage_fd, stage_leaf, stage_hash, &stage_missing, 2) ||
-           !stage_missing || pub_hash_leaf(tree.shard_fd, (const char *)name,
-                                           live_hash, &live_missing, 3) ||
-           live_missing || strcmp(live_hash, wire.post_sha256))
-            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        else result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
-        goto done;
-    }
-    if(wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT) {
-        int recovered_link = pub_reconcile_absent_link(&tree, stage_leaf,
-                                                        (const char *)name, &wire);
-        if(recovered_link < 0) {
-            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-            goto done;
-        }
-        if(recovered_link > 0) {
-            result = pub_mark_published(&tree, &wire) ?
-                CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO : CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
-            goto done;
-        }
-    }
-    if(pub_hash_leaf(tree.stage_fd, stage_leaf, stage_hash, &stage_missing, 2)) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_STAGE;
-        goto done;
-    }
-    if(stage_missing) {
-        if(pub_hash_leaf(tree.shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
-           live_missing || strcmp(live_hash, wire.post_sha256) ||
-           pub_sync(tree.shard_fd, 2) ||
-           pub_sync(tree.stage_fd, 4) ||
-           pub_mark_published(&tree, &wire)) result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        else result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
-        goto done;
-    }
-    if(strcmp(stage_hash, wire.post_sha256)) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_STAGE;
-        goto done;
-    }
-    if(pub_hash_leaf(tree.shard_fd, (const char *)name, live_hash, &live_missing, 3)) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        goto done;
-    }
-    if((wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT && !live_missing) ||
-       (wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
-        (live_missing || strcmp(live_hash, wire.expected_sha256)))) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        goto done;
-    }
-    if((wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT &&
-        pub_promote_absent(&tree, stage_leaf, (const char *)name)) ||
-       (wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
-        pub_rename(tree.stage_fd, stage_leaf, tree.shard_fd, (const char *)name))) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
-        goto done;
-    }
-#ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
-    /* Existing-state replacement retains its post-rename, pre-destination
-     * fsync crash boundary. */
-    if(wire.expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
-       v2_publish_crash_after_live_promotion) _exit(91);
-#endif
-    if(pub_sync(tree.shard_fd, 2) || pub_sync(tree.stage_fd, 4)) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
-        goto done;
-    }
-    if(pub_hash_leaf(tree.shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
-       live_missing || strcmp(live_hash, wire.post_sha256)) {
-        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        goto done;
-    }
-    result = pub_mark_published(&tree, &wire) ?
-        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO : CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+    result = pub_local_publish(&tree, &wire, name, stage_leaf, published);
 done:
-    if(root_fd >= 0) close(root_fd);
+    pub_cleanup_close(root_fd);
     memset(&tuple, 0, sizeof(tuple));
     memset(&route, 0, sizeof(route));
     memset(&wire, 0, sizeof(wire));
-    memset(live_hash, 0, sizeof(live_hash));
-    memset(stage_hash, 0, sizeof(stage_hash));
     memset(name, 0, sizeof(name));
     pub_tree_close(&tree);
     return result;
@@ -1038,6 +1197,16 @@ void character_save_journal_v2_publish_crash_after_live_promotion_for_test(enabl
 int enabled;
 {
     v2_publish_crash_after_live_promotion = enabled != 0;
+}
+
+void character_save_journal_v2_publish_reset_cleanup_close_failures_for_test(void)
+{
+    v2_publish_cleanup_close_failures = 0;
+}
+
+unsigned int character_save_journal_v2_publish_cleanup_close_failures_for_test(void)
+{
+    return v2_publish_cleanup_close_failures;
 }
 
 void character_save_journal_v2_publish_pause_before_absent_link_for_test(ready_fd,

@@ -143,6 +143,28 @@ int existing;
     return prepare_bytes(root,command,existing,payload,sizeof(payload)-1);
 }
 
+static int prepare_writer_epoch(root,command,epoch)
+const char *root,*command;
+uint64_t epoch;
+{
+    character_save_journal_v2_wire wire;
+    memset(&wire,0,sizeof(wire));
+    wire.state=CHARACTER_SAVE_JOURNAL_V2_PREPARED;
+    strcpy(wire.writer_instance_id,instance);
+    strcpy(wire.character_id,character);
+    strcpy(wire.world_id,world);
+    strcpy(wire.legacy_name_key_hex,"4d336865726f");
+    strcpy(wire.legacy_shard,"11");
+    strcpy(wire.command_uuid,command);
+    wire.writer_epoch=epoch;
+    wire.writer_revision=1;
+    wire.expected_state=CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT;
+    wire.storage_format=1;
+    return hash(root,payload,sizeof(payload)-1,wire.post_sha256)||
+        character_save_journal_v2_request_sha256(&wire,wire.request_sha256)||
+        character_save_journal_v2_prepare(root,&wire,payload,sizeof(payload)-1)?-1:0;
+}
+
 static int exists(root,relative)
 const char *root,*relative;
 { char p[PATH_MAX];struct stat st;return !path(p,sizeof(p),root,relative)&&lstat(p,&st)==0; }
@@ -924,6 +946,143 @@ character_save_journal_v2_writer_context *context;
     return failed;
 }
 
+static int test_recovery_cleanup_ownership(root,context)
+char *root;
+character_save_journal_v2_writer_context *context;
+{
+    static const char identity[]="30000000-0000-0000-0000-000000000068";
+    static const char stale[]="30000000-0000-0000-0000-000000000069";
+    static const char epoch8[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=8\n";
+    static const char epoch7[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=7\n";
+    char target[96],temporary[96],full_target[PATH_MAX],full_temporary[PATH_MAX],marker[1600];
+    size_t marker_length;
+    struct stat target_before,target_after,temp_before,temp_after,live_before,live_after;
+    int failed=0;
+
+    if(remove_live(root)||prepare_writer_epoch(root,identity,8)) return 1;
+    character_save_journal_v2_publish_reset_cleanup_close_failures_for_test();
+    failed+=expect(character_save_journal_v2_publish_recover(context,identity)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY&&
+        character_save_journal_v2_publish_cleanup_close_failures_for_test()==0&&
+        prepared(root,identity)&&
+        exists(root,"character-save-stage/30000000-0000-0000-0000-000000000068.stage")&&
+        !exists(root,"player/11/M3hero"),
+        "route-free identity rejection transfers the journal-root duplicate exactly once");
+
+    if(remove_live(root)||prepare(root,stale,0)||publish_with_mock(context,stale)!=0||
+       snprintf(target,sizeof(target),"character-save-journal/%s.published",stale)<0||
+       snprintf(temporary,sizeof(temporary),"character-save-journal/%s.published.tmp",stale)<0||
+       path(full_target,sizeof(full_target),root,target)||
+       path(full_temporary,sizeof(full_temporary),root,temporary)||
+       link(full_target,full_temporary)!=0||read_leaf(root,target,marker,sizeof(marker),&marker_length)||
+       stat_leaf(root,target,&target_before)||stat_leaf(root,temporary,&temp_before)||
+       stat_leaf(root,"player/11/M3hero",&live_before)||
+       leaf(root,"character-save-journal/writer-epoch.v2",epoch8,sizeof(epoch8)-1)) return failed+1;
+    character_save_journal_v2_publish_reset_cleanup_close_failures_for_test();
+    failed+=expect(character_save_journal_v2_publish_recover(context,stale)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_STALE&&
+        character_save_journal_v2_publish_cleanup_close_failures_for_test()==0&&
+        prepared(root,stale)&&published(root,stale)&&published_temp(root,stale)&&
+        !exists(root,"character-save-stage/30000000-0000-0000-0000-000000000069.stage")&&
+        exact_leaf(root,"player/11/M3hero",payload,sizeof(payload)-1)&&
+        exact_leaf(root,target,marker,marker_length)&&
+        exact_leaf(root,temporary,marker,marker_length)&&
+        stat_leaf(root,target,&target_after)==0&&stat_leaf(root,temporary,&temp_after)==0&&
+        stat_leaf(root,"player/11/M3hero",&live_after)==0&&
+        target_before.st_nlink==2&&temp_before.st_nlink==2&&
+        target_before.st_dev==temp_before.st_dev&&target_before.st_ino==temp_before.st_ino&&
+        same_stat(&target_before,&target_after)&&same_stat(&temp_before,&temp_after)&&
+        same_stat(&live_before,&live_after),
+        "stale writer freezes exact completed marker pair before route-free reconciliation");
+    if(leaf(root,"character-save-journal/writer-epoch.v2",epoch7,sizeof(epoch7)-1)) return failed+1;
+    return failed;
+}
+
+static int test_route_free_recover_one(root,context)
+char *root;
+character_save_journal_v2_writer_context *context;
+{
+    static const char absent[]="30000000-0000-0000-0000-000000000060";
+    static const char existing[]="30000000-0000-0000-0000-000000000061";
+    static const char consumed[]="30000000-0000-0000-0000-000000000062";
+    static const char two_name[]="30000000-0000-0000-0000-000000000063";
+    static const char mismatch[]="30000000-0000-0000-0000-000000000064";
+    static const char malformed[]="30000000-0000-0000-0000-000000000065";
+    static const char unsafe[]="30000000-0000-0000-0000-000000000066";
+    static const char partial[]="30000000-0000-0000-0000-000000000067";
+    static const char epoch8[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=8\n";
+    static const char epoch7[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=7\n";
+    char full[PATH_MAX],stage[96],marker[96];
+    int failed=0;
+
+    if(remove_live(root)||prepare(root,absent,0)) return 1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,absent)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&published(root,absent)&&
+        !exists(root,"character-save-stage/30000000-0000-0000-0000-000000000060.stage")&&
+        exact_leaf(root,"player/11/M3hero",payload,sizeof(payload)-1),
+        "route-free absent PREPARED recovery publishes immutable staged bytes");
+
+    if(prepare(root,existing,1)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,existing)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&published(root,existing)&&
+        exact_leaf(root,"player/11/M3hero",payload,sizeof(payload)-1),
+        "route-free existing PREPARED recovery preserves exact precondition semantics");
+
+    if(remove_live(root)||prepare(root,consumed,0)||
+       snprintf(stage,sizeof(stage),"character-save-stage/%s.stage",consumed)<0||
+       path(full,sizeof(full),root,stage)||unlink(full)||
+       leaf(root,"player/11/M3hero",payload,sizeof(payload)-1)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,consumed)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&published(root,consumed)&&
+        !exists(root,stage),
+        "route-free consumed stage plus exact live post marks published");
+
+    if(remove_live(root)||prepare(root,two_name,0)||
+       snprintf(stage,sizeof(stage),"character-save-stage/%s.stage",two_name)<0||
+       path(full,sizeof(full),root,stage)||path(marker,sizeof(marker),root,"player/11/M3hero")||
+       link(full,marker)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,two_name)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&published(root,two_name)&&
+        !exists(root,stage)&&exact_leaf(root,"player/11/M3hero",payload,sizeof(payload)-1),
+        "route-free exact absent two-name recovery converges without a route seam");
+
+    if(remove_live(root)||prepare(root,mismatch,0)||
+       leaf(root,"character-save-journal/writer-epoch.v2",epoch8,sizeof(epoch8)-1)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,mismatch)!=
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&prepared(root,mismatch)&&
+        exists(root,"character-save-stage/30000000-0000-0000-0000-000000000064.stage")&&
+        !exists(root,"player/11/M3hero")&&!published(root,mismatch),
+        "tuple mismatch freezes PREPARED without live or marker mutation");
+    if(leaf(root,"character-save-journal/writer-epoch.v2",epoch7,sizeof(epoch7)-1)) return failed+1;
+
+    if(prepare(root,malformed,0)||
+       leaf(root,"character-save-journal/30000000-0000-0000-0000-000000000065.prepared","bad",3)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,malformed)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL&&prepared(root,malformed)&&
+        !exists(root,"player/11/M3hero")&&!published(root,malformed),
+        "malformed immutable journal freezes before any recovery mutation");
+
+    if(prepare(root,unsafe,0)||
+       snprintf(stage,sizeof(stage),"character-save-stage/%s.stage",unsafe)<0||
+       path(full,sizeof(full),root,stage)||unlink(full)||symlink("nowhere",full)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,unsafe)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_STAGE&&prepared(root,unsafe)&&
+        !exists(root,"player/11/M3hero")&&!published(root,unsafe),
+        "unsafe stage freezes without live or marker mutation");
+    if(unlink(full)) return failed+1;
+
+    if(prepare(root,partial,0)||
+       snprintf(marker,sizeof(marker),"character-save-journal/%s.published.tmp",partial)<0||
+       leaf(root,marker,"partial",7)) return failed+1;
+    failed+=expect(character_save_journal_v2_publish_recover(context,partial)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL&&prepared(root,partial)&&
+        exists(root,"character-save-stage/30000000-0000-0000-0000-000000000067.stage")&&
+        !exists(root,"player/11/M3hero")&&!published(root,partial)&&
+        exact_leaf(root,marker,"partial",7),
+        "partial marker freezes route-free recovery and preserves evidence");
+    return failed;
+}
+
 int main(void)
 {
     char a[PATH_MAX],b[PATH_MAX];
@@ -951,7 +1110,8 @@ int main(void)
         test_marker_destination_creation_race(a,&context)+
         test_route_generation_change_rejected(a,&context)+
         test_durability_fault_matrix(a,&context)+test_operation_fault_retries(a,&context)+
-        test_writer_handle_matrix(a,&context);
+        test_writer_handle_matrix(a,&context)+test_recovery_cleanup_ownership(a,&context)+
+        test_route_free_recover_one(a,&context);
     failed+=expect(character_save_journal_v2_writer_close(&context)==0,"writer close");
     failed+=expect(teardown(a)==0&&teardown(b)==0,"fixture teardown");
     puts(failed?"character_save_journal_v2_publish_test: failed":
