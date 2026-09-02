@@ -106,21 +106,29 @@ class PlayerWriterContractTest(unittest.TestCase):
         self.assertIn("fsync", file_source)
         self.assertIn("rename(temp, file)", file_source)
 
-        # A new direct serializer call is the regression this guard prevents.
+        # player_store.c is the one dispatch boundary allowed to select the
+        # default file backend.  All other callers must use save_ply/load_ply;
+        # file_player_store.c owns the backend implementation itself.
+        self.assertEqual(source.count("file_player_store_save("), 1)
+        self.assertEqual(source.count("file_player_store_load("), 1)
+
+        # A new direct serializer/backend call is the regression this guard
+        # prevents.  Keep the two allowlists separate so allowing the dispatch
+        # boundary cannot accidentally allow write_crt there as well.
         for path in c_sources():
-            if path in {PLAYER_FILE_STORE, SRC / "files1.c"}:
-                continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            self.assertNotRegex(
-                text,
-                r"\bfile_player_store_(?:save|load)\s*\(",
-                f"{path.relative_to(ROOT)} bypasses PlayerStore",
-            )
-            self.assertNotRegex(
-                text,
-                r"\bwrite_crt\s*\(",
-                f"{path.relative_to(ROOT)} directly serializes a player",
-            )
+            if path not in {PLAYER_STORE, PLAYER_FILE_STORE}:
+                self.assertNotRegex(
+                    text,
+                    r"\bfile_player_store_(?:save|load)\s*\(",
+                    f"{path.relative_to(ROOT)} bypasses PlayerStore",
+                )
+            if path not in {PLAYER_FILE_STORE, SRC / "files1.c"}:
+                self.assertNotRegex(
+                    text,
+                    r"\bwrite_crt\s*\(",
+                    f"{path.relative_to(ROOT)} directly serializes a player",
+                )
 
     def test_raw_canonical_player_mutations_are_explicit_baselines(self) -> None:
         findings = direct_player_path_mutations()
