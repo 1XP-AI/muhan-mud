@@ -25,13 +25,29 @@ docker run --detach --rm --name "$container" \
   --volume "$repo_root:/workspace:ro" \
   postgres:17-alpine >/dev/null
 
+# Do not accept the entrypoint's short-lived initialization server as the
+# final database.  Two consecutive real queries straddle that restart window
+# and make the migration harness deterministic on shared CI runners.
+ready_streak=0
 for _ in $(seq 1 60); do
-  if docker exec "$container" pg_isready --username=postgres --dbname=postgres >/dev/null 2>&1; then
-    break
+  if docker exec --env PGPASSWORD=contract-only-password "$container" \
+    psql --host=127.0.0.1 --username=postgres --dbname=postgres \
+      --no-psqlrc --tuples-only --no-align --command='select 1' \
+      >/dev/null 2>&1; then
+    ready_streak=$((ready_streak + 1))
+    if [[ "$ready_streak" -ge 2 ]]; then
+      break
+    fi
+  else
+    ready_streak=0
   fi
   sleep 1
 done
-docker exec "$container" pg_isready --username=postgres --dbname=postgres >/dev/null
+if [[ "$ready_streak" -lt 2 ]]; then
+  docker logs "$container" >&2 || true
+  echo "m3 provisioning head baseline PG17 integration did not reach stable readiness" >&2
+  exit 2
+fi
 
 run_super() {
   docker exec --env PGPASSWORD=contract-only-password "$container" \

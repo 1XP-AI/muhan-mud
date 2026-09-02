@@ -120,6 +120,8 @@ unit-test:
 	$(MAKE) character-save-journal-v2-rpc-transport-test
 	$(MAKE) character-save-journal-v2-live-ops-test
 	$(MAKE) character-save-journal-v2-player-store-test
+	$(MAKE) character-save-journal-v2-deadline-test
+	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
@@ -182,6 +184,45 @@ character-save-journal-v2-player-store-sanitizer-test: character-save-journal-v2
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
+
+character-save-journal-v2-deadline-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_deadline.c -o /tmp/muhan-unit/character_save_journal_v2_deadline_prod.o
+
+character-save-journal-v2-deadline-test: character-save-journal-v2-deadline-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_deadline_test.c character_save_journal_v2_deadline.c -o /tmp/muhan-unit/character_save_journal_v2_deadline_test
+	/tmp/muhan-unit/character_save_journal_v2_deadline_test
+
+character-save-journal-v2-deadline-sanitizer-test: character-save-journal-v2-deadline-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_deadline_test.c character_save_journal_v2_deadline.c -o /tmp/muhan-unit/character_save_journal_v2_deadline_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_deadline_sanitizer_test
+
+ifeq ($(shell uname -s),Linux)
+character-save-journal-v2-deadline-native-test: character-save-journal-v2-deadline-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_deadline_native.c -o /tmp/muhan-unit/character_save_journal_v2_deadline_native.o
+	printf '%s\n' '#include "character_save_journal_v2_deadline_native.h"' 'int main(void) { character_save_journal_v2_deadline_native native; char output[CHARACTER_SAVE_JOURNAL_V2_DEADLINE_OUTPUT_SIZE]; character_save_journal_v2_deadline_native_init(&native, 120); return character_save_journal_v2_deadline_native_callback(&native, output) != 0 || output[19] != '\''Z'\'' || output[20] != 0; }' | $(CC) $(V2_TEST_CFLAGS) -I. character_save_journal_v2_deadline.c /tmp/muhan-unit/character_save_journal_v2_deadline_native.o -x c - -o /tmp/muhan-unit/character_save_journal_v2_deadline_native_test
+	/tmp/muhan-unit/character_save_journal_v2_deadline_native_test
+else
+character-save-journal-v2-deadline-native-test:
+	@echo "character-save-journal-v2-deadline-native-test skipped (Linux CLOCK_REALTIME target)"
+endif
+
+character-save-journal-v2-process-owner-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_prod.o
+
+character-save-journal-v2-process-owner-test: character-save-journal-v2-process-owner-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_test
+	/tmp/muhan-unit/character_save_journal_v2_process_owner_test
+
+character-save-journal-v2-process-owner-sanitizer-test: character-save-journal-v2-process-owner-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_process_owner_sanitizer_test
 
 character-save-journal-v2-rpc-transport-native-compile: character-save-journal-v2-rpc-transport-static-test
 	mkdir -p /tmp/muhan-unit

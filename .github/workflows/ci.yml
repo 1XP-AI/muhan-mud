@@ -317,6 +317,7 @@ jobs:
           set -euo pipefail
           make -C src unit-test CC=gcc
           make -C src character-save-journal-v2-uuid-native-test CC=gcc
+          make -C src character-save-journal-v2-deadline-native-test CC=gcc
           python3 tests/unit/player_writer_contract_test.py
           python3 tests/unit/creature_object_layout_contract_test.py
 
@@ -375,6 +376,8 @@ jobs:
           make -C src character-save-journal-v2-rpc-transport-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-live-ops-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-player-store-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-deadline-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-process-owner-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
