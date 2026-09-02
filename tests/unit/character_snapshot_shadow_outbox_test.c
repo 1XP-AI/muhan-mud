@@ -392,7 +392,9 @@ int main(void)
     failed |= expect(character_snapshot_shadow_outbox_scan(directory_fd, visit, 0, &report) ==
         CHARACTER_SNAPSHOT_SHADOW_OUTBOX_IO_ERROR && seen_count == 0,
         "wrong file mode is unsafe and invokes no callback");
-    fchmodat(directory_fd, "22222222-2222-4222-8222-222222222222.manifest", 0600, 0);
+    failed |= expect(fchmodat(directory_fd,
+        "22222222-2222-4222-8222-222222222222.manifest", 0600, 0) == 0,
+        "mode fixture restoration");
     failed |= expect(linkat(directory_fd, "22222222-2222-4222-8222-222222222222.manifest",
         directory_fd, "hard.manifest", 0) == 0, "hardlink fixture creation");
     seen_count = 0;
