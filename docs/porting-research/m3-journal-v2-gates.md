@@ -4,7 +4,8 @@
 held-writer route binding C slice와 additive v2 route SQL은 CI `33579360870`에서
 GREEN이고, 091b-2 local publish 경계는 CI `33586412456`에서 GNU GCC·ASan/UBSan
 GREEN이다. 091b-3의 exact receipt callback과 local `DB_ACKED` marker slice는
-CI `33589685559`에서 GREEN이나 route-free recovery/backlog scanner와 092 이후는 미구현**
+CI `33589685559`에서 GREEN이고, immutable PREPARED 한 건을 route 없이 복구하는
+`recover_one`은 CI `33591568569`에서 GREEN이다. lexical backlog scanner와 092 이후는 미구현**
 (2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
@@ -18,7 +19,9 @@ ASan/UBSan·production static no-live-link 테스트와 additive route RPC의 Po
 rename과 expected-absent no-replace local publish/retry는 CI `33586412456`에서
 검증됐다. ACK 모듈은 exact 12-field receipt mock, DB-offline defer, post-callback
 재검증과 durable `DB_ACKED` marker retry만 local 검증하며 실제 DB transport는
-연결하지 않는다. route-free recovery/backlog scanner와 production no-GC 운용은 아직
+연결하지 않는다. publish 모듈의 route-free `recover_one`은 held writer와 command UUID만
+받고 PREPARED의 tuple·shard·name을 두 번 검증한 뒤에만 marker/live 복구를 수행한다.
+lexical backlog scanner와 production no-GC 운용은 아직
 완료하지 않았으므로 091 전체나 live 연결이 완료된 상태가 아니다. 다섯 v2 모듈 모두
 `save_ply`, `file_player_store_save`, bank writer, Gateway/DB, production startup에는
 링크되지 않는다.
@@ -232,7 +235,8 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | **091b-2 local publish/recovery, test-only — GREEN (`33586412456`)** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | exact stage+pre publishes through expected-existing rename or expected-absent loss-safe no-replace ordering; consumed-stage+exact-post and exact interrupted two-link pairs converge. Mismatch, alias, race, partial marker, close/fsync/unlink ambiguity freezes without DB calls. GNU GCC 일반·ASan/UBSan과 전체 unit도 GREEN. |
 | 091b-2 — GREEN (`33586412456`) | `red_091b_local_marker_retry_and_no_live_linkage` / exact·partial·conflicting `.published.tmp`, destination races, `nm`/Make | only an exact command-owned temporary is narrowly reusable; it is removed only after the exact target is proven durable. Partial, conflicting, aliased, or orphan evidence is retained. Publish test hooks are absent from its production object and the object remains outside live MUD `OBJECTS`. |
 | **091b-3 receipt ACK/local marker, test-only — GREEN (`33589685559`)** | `red_091b_exact_receipt_and_db_acked_marker_retry` / absent+existing receipt mocks, unavailable callback, every marker close/fsync/link/unlink cutpoint | only exact `LEGACY_PUBLISHED`, absent stage, exact live posthash and held writer tuple reach the exact 12-field callback. Deferred/invalid/rejected outcomes retain evidence. ACK then revalidates writer/live and fsyncs `DB_ACKED`; temp-only and exact two-name retries re-fsync and repeat the idempotent callback. Partial, conflicting, different-inode and nlink3 evidence remains byte-for-byte unchanged. ACK object stays outside live MUD `OBJECTS`. GNU GCC 일반·ASan/UBSan과 전체 CI도 GREEN. |
-| **091b-3 route-free recovery/backlog scan — BLOCKED** | `red_091b_published_recovery_db_offline_backlog` / lexical PREPARED scan + unavailable RPC mock | immutable PREPARED recovery must publish without another route lookup; ACK defers; changed live bytes never ACK; every lexical command is visited once. |
+| **091b-3 route-free single-record recovery, test-only — GREEN (`33591568569`)** | `red_091b_prepared_route_free_recover_one` / absent·existing·consumed-stage·two-name·tuple mismatch·malformed/unsafe evidence | held writer와 command UUID 외의 path, payload, name, route 입력 없이 immutable PREPARED가 정한 shard/name/precondition만 사용한다. 두 번의 tuple/wire 검증 전에 marker를 변경하지 않으며, FD 소유권은 모든 open/read/identity 종료 경로에서 정확히 한 번만 닫힌다. GNU GCC 일반·ASan/UBSan, production static no-live-link와 전체 CI가 GREEN. |
+| **091b-3 lexical recovery/backlog scan — BLOCKED** | `red_091b_published_recovery_db_offline_backlog` / lexical PREPARED scan + unavailable RPC mock | 각 lexical command를 한 번씩 route-free recover하고 published 건은 ACK에 넘긴다. ACK defer, changed-live freeze와 전체 방문 순서는 아직 미구현. |
 | 091b-3 — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
 | 091b-3 — BLOCKED | `red_091b_no_automatic_cleanup_of_unclassified_evidence` / all states + orphan stage | no partial, conflicting, aliased, or orphan evidence is automatically deleted; only exact transactional duplicate-name cleanup is permitted. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
@@ -244,8 +248,9 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 stage/hash/parser boundary, 091b-1a fixes the persisted writer tuple plus PVC lifetime lock
 boundary, 091b-1b adds the held-writer route binding seam, and 091b-2 adds local publish plus
 durability recovery without live linkage. 091b-3의 exact receipt callback과 local
-`DB_ACKED` marker retry는 CI `33589685559`에서 GREEN이지만 route-free recovery/backlog scanner와
-실제 DB adapter는 남아 있다. 이 경계까지 통과해야 091을 complete로 부를 수 있다.
+`DB_ACKED` marker retry는 CI `33589685559`에서 GREEN이고 route-free single-record
+`recover_one`은 CI `33591568569`에서 GREEN이다. lexical backlog scanner와 실제 DB
+adapter는 남아 있다. 이 경계까지 통과해야 091을 complete로 부를 수 있다.
 092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention

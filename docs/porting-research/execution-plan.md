@@ -32,7 +32,7 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 | legacy inventory importer | unit GREEN, PG17 retry 계약 GREEN | unit 16 pass·2 skip·0 fail. Linux + Node 22 + disposable PostgreSQL 17의 dry-run/apply, idempotent retry, atomic failure, concurrent serialization 및 SQLSTATE `40001` bounded retry 계약은 GREEN |
 | C bounded player decoder | sanitizer/unit GREEN | player-only bounded decoder의 depth 64·object 8192 예산, partial/EINTR·exact EOF·pointer scrub·문자열 NUL 경계와 allocation failure를 ASan/UBSan unit에서 GREEN; gameplay room loader는 변경하지 않음 |
 | M2 CDTO/Rust | ObjectV1+CreatureV1+ObjectGraphV1 clone-only GREEN | recursive preorder graph까지 C/Rust exact-byte differential, malformed taxonomy, depth 64/node 8192, allocation faults와 Linux LeakSanitizer가 GREEN. production read/write·gameplay 경로에는 연결하지 않음 |
-| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2 및 091b-3 ACK slice CI GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`에서 GREEN이나 route-free backlog scanner와 실제 PG adapter는 미구현. `save_ply`·bank·dual-write·shadow에는 연결하지 않음 |
+| M3 writer/inventory | 090 SQL + 091a + 091b-1a/1b/2 및 091b-3 ACK/recover_one slice CI GREEN | writer epoch/seal/permanent fence, immutable hash-only receipt, head CAS를 PostgreSQL 17에서 고정. 091a의 stage/hash/parser, 091b-1a의 persisted writer tuple·process-lifetime PVC lock·every-opener fsync, 091b-1b의 held-writer route binding과 route RPC가 CI `33579360870`에서 GREEN. 091b-2의 expected-existing rename, expected-absent loss-safe no-replace publish와 로컬 복구는 CI `33586412456`에서 GREEN. 091b-3의 exact receipt callback과 durable local `DB_ACKED` marker retry는 CI `33589685559`, route-free single-record `recover_one`은 CI `33591568569`에서 GREEN이나 lexical backlog scanner와 실제 PG adapter는 미구현. `save_ply`·bank·dual-write·shadow에는 연결하지 않음 |
 
 현재 branch의 코드는 실험적 기능을 포함하지만 기본 활성 경로가 아니다. 현재
 testnet에는 배포하지 않았으며, onboarding 및 legacy importer 기능 flag는 OFF이고
@@ -96,7 +96,7 @@ importer는 apply 없이 dry-run 기본값이다. 다음 gate를 별도로 통�
 | C bounded decoder | pass | `make -C src files1-decoder-test CC=gcc` (ASan/UBSan) 및 C unit |
 | Credential lifecycle | pass | `tests/unit/onboarding_credential_lifecycle_test.py` |
 | M2 CDTO/Rust graph | pass, clone-only | ObjectGraph C unit/sanitizer, 12 Rust unit+2 differential, fixed/random corpus와 Linux LeakSanitizer |
-| M3 journal v1 / 090 SQL / 091a·091b-3 ACK C | v1 test-only + 090/100 PG17 + 091a·091b-1a CI `33573456858` + 091b-1b CI `33579360870` + 091b-2 CI `33586412456` + 091b-3 ACK CI `33589685559` | 091b-1b의 opaque held-writer handle과 exact DB identity route mock은 GNU GCC/PostgreSQL 17에서 GREEN. 091b-2의 no-clobber local publish, exact two-name crash recovery, fsync/unlink 재시도와 immutable marker evidence는 전체 CI에서 GREEN. 091b-3 ACK slice는 exact absent/existing 12-field callback, offline defer, post-callback writer/live 재검증, marker cutpoint retry와 static no-live-link가 GNU GCC 일반·ASan/UBSan 및 전체 CI에서 GREEN. route-free scanner, 실제 PG adapter와 live writer 연결은 미완료 |
+| M3 journal v1 / 090 SQL / 091a·091b-3 C | v1 test-only + 090/100 PG17 + 091a·091b-1a CI `33573456858` + 091b-1b CI `33579360870` + 091b-2 CI `33586412456` + 091b-3 ACK CI `33589685559` + recover_one CI `33591568569` | 091b-1b의 opaque held-writer handle과 exact DB identity route mock은 GNU GCC/PostgreSQL 17에서 GREEN. 091b-2의 no-clobber local publish, exact two-name crash recovery, fsync/unlink 재시도와 immutable marker evidence는 전체 CI에서 GREEN. 091b-3 ACK slice는 exact absent/existing 12-field callback, offline defer, post-callback writer/live 재검증, marker cutpoint retry와 static no-live-link가 GREEN. route-free `recover_one`은 caller route/path/payload 없이 immutable PREPARED와 held tuple만으로 한 건을 복구하고 marker-before-identity 및 FD 단일 소유 회귀를 GNU GCC 일반·ASan/UBSan과 전체 CI에서 검증했다. lexical scanner, 실제 PG adapter와 live writer 연결은 미완료 |
 | PG migration 090 | PostgreSQL 17 CI contract GREEN | bootstrap+020..090 두 번 적용, identity/onboarding/M3 SQL과 세 lock-expiry script 통과 |
 | PG migration 100 route v2 | PostgreSQL 17 CI contract GREEN (`33579360870`) | exact seven-field route signature, `storage_format=1`, 세 allowed lifecycle, nullable imported hash, exact regprocedure identity, mud_writer-only execute 및 전체 fixture identity/receipt non-mutation을 disposable PostgreSQL 17에서 검증 |
 | Helm | 14/14 render + lint GREEN | 별도 인프라 chart 검증; chart/cluster는 이 저장소·실행 범위 밖 |
@@ -405,8 +405,11 @@ lane fixture를 동시에 갱신한다. 연구 에이전트의 문서를 곧바�
 - 091b-3의 exact absent/existing 12-field receipt callback, DB-offline defer, post-callback
   writer/live 재검증과 durable local `DB_ACKED` marker cutpoint retry는 test-only
   경계로 CI `33589685559`에서 GREEN이며 live MUD `OBJECTS` 밖에 유지
-- 091b-3의 route-free recovery/backlog scanner, 실제 PG adapter와 전체 no-GC 증거는
-  아직 구현하지 않았으므로 091 전체는 미완료
+- 091b-3의 route-free single-record `recover_one`은 held writer+command UUID만 받아
+  immutable PREPARED가 정한 shard/name/precondition으로 복구하며 CI `33591568569`에서
+  GNU GCC 일반·ASan/UBSan, Windows/ARM/macOS와 static no-live-link가 GREEN
+- lexical backlog scanner, 실제 PG adapter와 전체 no-GC 증거는 아직 구현하지
+  않았으므로 091 전체는 미완료
 - production absent-head seed, `mud_writer` transport, PVC flock/fsync 증적과 retention은
   승인 전 blocker
 - shadow 관찰과 cutover 조건은 아직 시작하지 않음
