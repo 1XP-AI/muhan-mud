@@ -53,6 +53,10 @@ typedef struct mock {
     char            receipt_prepared_root[PATH_MAX];
     char            receipt_expected_command[37];
     receipt_snapshot first_receipt;
+    character_save_journal_v2_route_head_state v3_head_state;
+    uint64_t        v3_head_revision;
+    char            v3_head_sha256[65];
+    int             v3_change_on_second;
 }               mock;
 
 typedef struct lifecycle {
@@ -295,6 +299,40 @@ character_save_journal_v2_route_reply *reply;
         }
     } return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
 }
+
+static character_save_journal_v2_route_lookup_result route_v3(opaque, world, name,
+                                                               name_length, reply)
+void *opaque;
+const char *world;
+const unsigned char *name;
+size_t name_length;
+character_save_journal_v2_route_reply_v3 *reply;
+{
+    mock *state=opaque;
+    state->route_calls++;
+    if(state->fail_route||strcmp(world,WORLD)||name_length!=sizeof(NAME)-1||
+       memcmp(name,NAME,sizeof(NAME)-1))
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    if(state->v3_change_on_second&&state->route_calls==2) {
+        state->v3_head_revision++;
+        state->v3_change_on_second=0;
+    }
+    memset(reply,0,sizeof(*reply));
+    reply->status=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
+    reply->row_count=1;
+    strcpy(reply->world_id,WORLD);
+    strcpy(reply->character_id,CHARACTER);
+    memcpy(reply->legacy_name,NAME,sizeof(NAME)-1);
+    reply->legacy_name_length=sizeof(NAME)-1;
+    strcpy(reply->legacy_shard,"66");
+    reply->storage_format=1;
+    reply->lifecycle=CHARACTER_SAVE_JOURNAL_V2_ROUTE_ACTIVE;
+    reply->head_state=state->v3_head_state;
+    reply->head_revision=state->v3_head_revision;
+    if(reply->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING)
+        strcpy(reply->head_sha256,state->v3_head_sha256);
+    return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
+}
 static int serialize(opaque, writer, bound, command, bytes_out, length_out)
     void           *opaque;
     const           character_save_journal_v2_writer_tuple *writer;
@@ -321,6 +359,24 @@ static int serialize(opaque, writer, bound, command, bytes_out, length_out)
         return -1;
     *bytes_out = state->payload;
     *length_out = state->payload_length;
+    return 0;
+}
+
+static int serialize_v3(opaque, writer, bound, command, bytes_out, length_out)
+void *opaque;
+const character_save_journal_v2_writer_tuple *writer;
+const character_save_journal_v2_bound_route_v3 *bound;
+const char *command;
+const unsigned char **bytes_out;
+size_t *length_out;
+{
+    mock *state=opaque;
+    state->serialize_calls++;
+    if(state->fail_serializer||strcmp(writer->world_id,WORLD)||
+       strcmp(bound->character_id,CHARACTER)||!command||!bytes_out||!length_out)
+        return -1;
+    *bytes_out=state->payload;
+    *length_out=state->payload_length;
     return 0;
 }
 
@@ -546,6 +602,19 @@ character_save_journal_v2_protocol_operations * operations;
     operations->serialize_opaque = state;
     operations->receipt = receipt;
     operations->receipt_opaque = state;
+}
+
+static void operations_v3_init(operations, state)
+character_save_journal_v2_protocol_operations_v3 *operations;
+mock *state;
+{
+    memset(operations,0,sizeof(*operations));
+    operations->route_lookup=route_v3;
+    operations->route_opaque=state;
+    operations->serialize=serialize_v3;
+    operations->serialize_opaque=state;
+    operations->receipt=receipt;
+    operations->receipt_opaque=state;
 }
 
 /*
@@ -1219,6 +1288,148 @@ static int test_drain_attestation_blocks_seal_and_install(void)
     return failed;
 }
 
+static void held_request_v3_init(request, command)
+character_save_journal_v2_protocol_held_request_v3 *request;
+const char *command;
+{
+    memset(request,0,sizeof(*request));
+    request->canonical_legacy_name=NAME;
+    request->canonical_legacy_name_length=sizeof(NAME)-1;
+    request->command_uuid=command;
+}
+
+static int test_held_v3_head_authority(void)
+{
+    char root[PATH_MAX], digest[65];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_protocol_held_request_v3 request;
+    character_save_journal_v2_protocol_operations_v3 operations;
+    character_save_journal_v2_protocol_report report;
+    character_save_journal_v2_wire wire;
+    mock state;
+    int failed=0;
+
+    if(setup(root,"held-v3-existing")||
+       leaf(root,"player/66/M3alpha","revision-seven",14)||
+       file_sha256(root,"player/66/M3alpha",digest)||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return 1;
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"revision-eight";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING;
+    state.v3_head_revision=7;
+    strcpy(state.v3_head_sha256,digest);
+    operations_v3_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_A)) return 1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK&&
+        report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED&&
+        state.route_calls==2&&state.serialize_calls==1&&state.receipt_exact&&
+        character_save_journal_v2_read_prepared(root,COMMAND_A,&wire)==0&&
+        wire.expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING&&
+        wire.writer_revision==8&&character_save_journal_v2_writer_validate_held(
+            &writer,&tuple)==CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "held v3 existing head 7 must produce exact ACK at revision 8 and retain writer");
+    if(file_sha256(root,"player/66/M3alpha",digest)) return failed+1;
+    state.v3_head_revision=8;
+    strcpy(state.v3_head_sha256,digest);
+    state.payload=(const unsigned char *)"revision-nine";
+    state.payload_length=strlen((const char *)state.payload);
+    state.receipt_command[0]=0;
+    memset(&state.first_receipt,0,sizeof(state.first_receipt));
+    held_request_v3_init(&request,COMMAND_B);
+    if(mock_receipt_expect(&state,root,COMMAND_B)) return failed+1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK&&
+        character_save_journal_v2_read_prepared(root,COMMAND_B,&wire)==0&&
+        wire.writer_revision==9&&state.receipt_exact&&
+        character_save_journal_v2_writer_validate_held(&writer,&tuple)==
+        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "a sequential held v3 save must derive revision 9 from returned head 8");
+    failed+=expect(character_save_journal_v2_writer_close(&writer)==0,
+                   "held v3 writer must remain caller-owned after success");
+    if(remove_tree(root)) return failed+1;
+    return failed;
+}
+
+static int test_held_v3_rejects_and_preserves_evidence(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_protocol_held_request_v3 request;
+    character_save_journal_v2_protocol_operations_v3 operations;
+    character_save_journal_v2_protocol_report report;
+    character_save_journal_v2_wire wire;
+    mock state;
+    int failed=0;
+
+    if(setup(root,"held-v3-rejections")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return 1;
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"must-not-serialize";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED;
+    operations_v3_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE&&
+        !state.serialize_calls&&!exists(root,"character-save-stage/10000000-0000-0000-0000-000000000001.stage")&&
+        !command_exists(root,COMMAND_A,"prepared")&&
+        character_save_journal_v2_writer_validate_held(&writer,&tuple)==
+        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "uninitialized head must reject before serializer or local mutation");
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.v3_head_revision=(uint64_t)INT64_MAX;
+    held_request_v3_init(&request,COMMAND_B);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE&&
+        !state.serialize_calls&&!exists(root,"character-save-stage/20000000-0000-0000-0000-000000000002.stage")&&
+        !command_exists(root,COMMAND_B,"prepared"),
+        "overflow head must reject before serializer or local mutation");
+    state.v3_head_revision=0;
+    state.v3_change_on_second=1;
+    state.payload=(const unsigned char *)"changed-head";
+    state.payload_length=strlen((const char *)state.payload);
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.route_calls=state.serialize_calls=0;
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH&&
+        command_exists(root,COMMAND_A,"prepared")&&!command_exists(root,COMMAND_A,"published")&&
+        !exists(root,"player/66/M3alpha")&&!state.receipt_calls&&
+        character_save_journal_v2_writer_validate_held(&writer,&tuple)==
+        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "changed pre-publish head must preserve PREPARED and never publish");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v3-absent")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"absent-one";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.v3_head_revision=0;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;
+    operations_v3_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_A)) return failed+1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v3(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_DEFERRED&&
+        character_save_journal_v2_read_prepared(root,COMMAND_A,&wire)==0&&
+        wire.expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT&&
+        wire.writer_revision==1&&command_exists(root,COMMAND_A,"prepared")&&
+        command_exists(root,COMMAND_A,"published")&&!command_exists(root,COMMAND_A,"acked")&&
+        character_save_journal_v2_writer_validate_held(&writer,&tuple)==
+        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK,
+        "absent head 0 must produce revision 1 and retain recoverable deferred evidence");
+    failed+=expect(character_save_journal_v2_writer_close(&writer)==0,
+                   "held v3 writer must remain caller-owned on every outcome");
+    if(remove_tree(root)) return failed+1;
+    return failed;
+}
+
 int main(void)
 {
     int             failed;
@@ -1237,6 +1448,8 @@ int main(void)
     failed += test_restart_and_cutover();
     failed += test_same_a_successor_rejects_install();
     failed += test_drain_attestation_blocks_seal_and_install();
+    failed += test_held_v3_head_authority();
+    failed += test_held_v3_rejects_and_preserves_evidence();
     if (failed)
         fprintf(stderr, "protocol failures: %d\n", failed);
     return failed ? 1 : 0;

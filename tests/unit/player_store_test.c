@@ -11,6 +11,10 @@ static int file_save_calls;
 static int file_load_calls;
 static int memory_save_calls;
 static int memory_load_calls;
+static int memory_save_opaque_calls;
+static int memory_load_opaque_calls;
+static int save_context;
+static int load_context;
 
 int file_player_store_save(char *name, struct creature *player)
 {
@@ -28,24 +32,27 @@ int file_player_store_load(char *name, struct creature **player)
     return 12;
 }
 
-static int memory_save(char *name, struct creature *player)
+static int memory_save(void *opaque, char *name, struct creature *player)
 {
     memory_save_calls++;
+    if(opaque == &save_context) memory_save_opaque_calls++;
     return (!strcmp(name, "memory") && player && player->marker == 7) ? 21 : -1;
 }
 
-static int memory_load(char *name, struct creature **player)
+static int memory_load(void *opaque, char *name, struct creature **player)
 {
     static struct creature loaded = { 9 };
     memory_load_calls++;
+    if(opaque == &save_context) memory_load_opaque_calls++;
     if(strcmp(name, "memory"))
         return -1;
     *player = &loaded;
     return 22;
 }
 
-static int failing_load(char *name, struct creature **player)
+static int failing_load(void *opaque, char *name, struct creature **player)
 {
+    (void)opaque;
     (void)name;
     (void)player;
     return PLAYER_STORE_CORRUPT;
@@ -63,9 +70,11 @@ int main(void)
 {
     struct creature input = { 7 };
     struct creature *output = 0;
-    player_store_ops memory_store = { memory_save, memory_load };
-    player_store_ops failing_store = { memory_save, failing_load };
-    player_store_ops invalid_store = { memory_save, 0 };
+    player_store_ops memory_store = { memory_save, memory_load,
+                                      &save_context };
+    player_store_ops failing_store = { memory_save, failing_load,
+                                       &save_context };
+    player_store_ops invalid_store = { memory_save, 0, &save_context };
     int failed = 0;
 
     failed += expect(PLAYER_STORE_OK == 0 &&
@@ -84,8 +93,7 @@ int main(void)
                      "incomplete repositories must be rejected");
     failed += expect(player_store_set(&memory_store) == 0,
                      "complete repository must be accepted");
-    memory_store.save = file_player_store_save;
-    memory_store.load = file_player_store_load;
+    memory_store.opaque = &load_context;
     output = 0;
     failed += expect(save_ply("memory", &input) == 21,
                      "injected save must use MemoryStore");
@@ -93,6 +101,11 @@ int main(void)
                      "injected load must use MemoryStore");
     failed += expect(memory_save_calls == 1 && memory_load_calls == 1,
                      "MemoryStore call counts must be exact");
+    failed += expect(memory_save_opaque_calls == 1 && memory_load_opaque_calls == 1,
+                     "callbacks must receive the copied opaque context");
+    failed += expect(player_store_set(&invalid_store) == -1 &&
+                     save_ply("memory", &input) == 21,
+                     "invalid repository must preserve the active store");
 
     failed += expect(player_store_set(&failing_store) == 0,
                      "failing repository must be injectable");

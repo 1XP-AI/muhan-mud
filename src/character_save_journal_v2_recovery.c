@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -19,6 +20,10 @@
 #define V2_RECOVERY_PREPARED_SUFFIX ".prepared"
 #define V2_RECOVERY_PREPARED_SUFFIX_LEN 9
 #define V2_RECOVERY_PREPARED_LEN 45
+
+typedef struct v2_recovery_entry {
+    character_save_journal_v2_wire wire;
+} v2_recovery_entry;
 
 #ifdef CHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING
 static unsigned int v2_recovery_entry_cap = CHARACTER_SAVE_JOURNAL_V2_RECOVERY_MAX_ENTRIES;
@@ -109,11 +114,89 @@ uid_t *uid_out;
     return 0;
 }
 
-static int rec_name_compare(left, right)
+static int rec_entry_compare(left, right)
 const void *left;
 const void *right;
 {
-    return memcmp(left, right, V2_RECOVERY_UUID_LEN);
+    const v2_recovery_entry *left_entry = left;
+    const v2_recovery_entry *right_entry = right;
+    int result;
+    result = memcmp(left_entry->wire.character_id, right_entry->wire.character_id,
+                    V2_RECOVERY_UUID_LEN);
+    if(result) return result;
+    if(left_entry->wire.writer_revision < right_entry->wire.writer_revision) return -1;
+    if(left_entry->wire.writer_revision > right_entry->wire.writer_revision) return 1;
+    return memcmp(left_entry->wire.command_uuid, right_entry->wire.command_uuid,
+                  V2_RECOVERY_UUID_LEN);
+}
+
+static int rec_snapshot_entry(root_fd, command_uuid, tuple, entry)
+int root_fd;
+const char *command_uuid;
+const character_save_journal_v2_writer_tuple *tuple;
+v2_recovery_entry *entry;
+{
+    character_save_journal_v2_wire wire;
+    if(!tuple || !entry ||
+       character_save_journal_v2_read_prepared_at(root_fd, command_uuid, &wire) != 0 ||
+       strcmp(wire.command_uuid, command_uuid) ||
+       strcmp(wire.world_id, tuple->world_id) ||
+       strcmp(wire.writer_instance_id, tuple->writer_instance_id) ||
+       wire.writer_epoch != tuple->writer_epoch || !wire.writer_revision) {
+        memset(&wire, 0, sizeof(wire));
+        return -1;
+    }
+    entry->wire = wire;
+    memset(&wire, 0, sizeof(wire));
+    return 0;
+}
+
+static int rec_same_character(left, right)
+const v2_recovery_entry *left;
+const v2_recovery_entry *right;
+{
+    return !memcmp(left->wire.character_id, right->wire.character_id,
+                   V2_RECOVERY_UUID_LEN);
+}
+
+static int rec_same_legacy_path(left, right)
+const v2_recovery_entry *left;
+const v2_recovery_entry *right;
+{
+    return !strcmp(left->wire.legacy_shard, right->wire.legacy_shard) &&
+        !strcmp(left->wire.legacy_name_key_hex, right->wire.legacy_name_key_hex);
+}
+
+/* A retained backlog is authoritative only when every later mutation is the
+ * exact next state of the same legacy leaf.  Validate all of it before the
+ * first publish or receipt so no prefix can become visible on a bad snapshot. */
+static int rec_snapshot_validate(entries, count)
+const v2_recovery_entry *entries;
+unsigned int count;
+{
+    unsigned int i, j;
+    for(i = 1; i < count; i++) {
+        const character_save_journal_v2_wire *previous = &entries[i - 1].wire;
+        const character_save_journal_v2_wire *current = &entries[i].wire;
+        if(!rec_same_character(&entries[i - 1], &entries[i])) continue;
+        if(strcmp(previous->legacy_name_key_hex, current->legacy_name_key_hex) ||
+           strcmp(previous->legacy_shard, current->legacy_shard) ||
+           previous->storage_format != current->storage_format ||
+           strcmp(previous->world_id, current->world_id) ||
+           strcmp(previous->writer_instance_id, current->writer_instance_id) ||
+           previous->writer_epoch != current->writer_epoch ||
+           current->writer_revision <= previous->writer_revision ||
+           current->writer_revision != previous->writer_revision + 1 ||
+           current->expected_state != CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ||
+           strcmp(current->expected_sha256, previous->post_sha256)) return -1;
+    }
+    for(i = 0; i < count; i++) {
+        for(j = i + 1; j < count; j++) {
+            if(!rec_same_character(&entries[i], &entries[j]) &&
+               rec_same_legacy_path(&entries[i], &entries[j])) return -1;
+        }
+    }
+    return 0;
 }
 
 static int rec_report_zero(report)
@@ -152,13 +235,14 @@ character_save_journal_v2_recovery_report *report_out;
 {
     character_save_journal_v2_recovery_report report;
     character_save_journal_v2_writer_context_status status;
-    char (*commands)[V2_RECOVERY_UUID_LEN + 1] = 0;
+    v2_recovery_entry *entries = 0;
     struct dirent *entry;
     unsigned int count = 0, cap = CHARACTER_SAVE_JOURNAL_V2_RECOVERY_MAX_ENTRIES;
     int root_fd = -1, journal_fd = -1, scan_fd = -1;
     DIR *directory = 0;
     uid_t trusted_uid;
-    int scan_error = 0, incomplete = 0, root_close_result;
+    int scan_error = 0, incomplete = 0, root_close_result, blocked_character = 0;
+    character_save_journal_v2_writer_tuple tuple;
     unsigned int i;
     if(!writer || !receipt_callback || !rec_report_zero(report_out))
         return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INVALID_ARGUMENT;
@@ -170,17 +254,12 @@ character_save_journal_v2_recovery_report *report_out;
         close(root_fd);
         return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_JOURNAL;
     }
-    root_close_result = close(root_fd);
-    root_fd = -1;
-#ifdef CHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING
-    if(v2_recovery_fail_root_close) {
-        v2_recovery_fail_root_close = 0;
-        root_close_result = -1;
-    }
-#endif
-    if(root_close_result != 0) {
+    memset(&tuple, 0, sizeof(tuple));
+    status = character_save_journal_v2_writer_validate_held(writer, &tuple);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
         close(journal_fd);
-        return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_JOURNAL;
+        close(root_fd);
+        return (character_save_journal_v2_recovery_result)rec_context_result(status);
     }
     scan_fd = fcntl(journal_fd, F_DUPFD_CLOEXEC, 0);
     if(scan_fd >= 0) {
@@ -191,6 +270,7 @@ character_save_journal_v2_recovery_report *report_out;
     if(scan_fd < 0 || !(directory = fdopendir(scan_fd))) {
         if(scan_fd >= 0) close(scan_fd);
         close(journal_fd);
+        close(root_fd);
         return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_JOURNAL;
     }
     scan_fd = -1;
@@ -205,8 +285,8 @@ character_save_journal_v2_recovery_report *report_out;
         scan_error = 1;
     } else
 #endif
-    commands = malloc((size_t)cap * sizeof(*commands));
-    if(!commands && cap) scan_error = 1;
+    entries = malloc((size_t)cap * sizeof(*entries));
+    if(!entries && cap) scan_error = 1;
     errno = 0;
     while(!scan_error && (entry = readdir(directory)) != 0) {
         size_t length = strlen(entry->d_name);
@@ -226,11 +306,11 @@ character_save_journal_v2_recovery_report *report_out;
             memcpy(uuid, entry->d_name, V2_RECOVERY_UUID_LEN);
             uuid[V2_RECOVERY_UUID_LEN] = 0;
             if(!rec_uuid(uuid) || rec_preflight_file(journal_fd, entry->d_name,
-                                                      trusted_uid) != 0 || count >= cap) {
+                                                      trusted_uid) != 0 || count >= cap ||
+               rec_snapshot_entry(root_fd, uuid, &tuple, &entries[count]) != 0) {
                 scan_error = 2;
                 break;
             }
-            memcpy(commands[count], uuid, sizeof(uuid));
             count++;
         }
     }
@@ -247,24 +327,44 @@ character_save_journal_v2_recovery_report *report_out;
     directory = 0;
     if(close(journal_fd) != 0) scan_error = 2;
     journal_fd = -1;
+    root_close_result = close(root_fd);
+    root_fd = -1;
+#ifdef CHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING
+    if(v2_recovery_fail_root_close) {
+        v2_recovery_fail_root_close = 0;
+        root_close_result = -1;
+    }
+#endif
+    if(root_close_result != 0) {
+        free(entries);
+        return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_JOURNAL;
+    }
     if(scan_error) {
-        free(commands);
+        free(entries);
         return scan_error == 1 ? CHARACTER_SAVE_JOURNAL_V2_RECOVERY_NOMEM :
             CHARACTER_SAVE_JOURNAL_V2_RECOVERY_STRUCTURE;
     }
-    if(count > 1) qsort(commands, count, sizeof(*commands), rec_name_compare);
+    if(count > 1) qsort(entries, count, sizeof(*entries), rec_entry_compare);
+    if(rec_snapshot_validate(entries, count) != 0) {
+        free(entries);
+        return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_STRUCTURE;
+    }
     report.discovered = count;
     for(i = 0; i < count; i++) {
         character_save_journal_v2_publish_result published;
         character_save_journal_v2_ack_result acknowledged;
+        int same_character = i && rec_same_character(&entries[i - 1], &entries[i]);
+        if(!same_character) blocked_character = 0;
+        if(blocked_character) continue;
         report.visited++;
         report.publish_attempted++;
-        published = character_save_journal_v2_publish_recover(writer, commands[i]);
+        published = character_save_journal_v2_publish_recover(writer,
+                                                                 entries[i].wire.command_uuid);
         rec_publish_count(&report, published);
         if(published == CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_INVALID ||
            published == CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_STALE ||
            published == CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_LOCK) {
-            free(commands); *report_out = report;
+            free(entries); *report_out = report;
             return published == CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_STALE ?
                 CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_STALE :
                 (published == CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_LOCK ?
@@ -273,30 +373,31 @@ character_save_journal_v2_recovery_report *report_out;
         }
         if(published != CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK) {
             incomplete = 1;
+            blocked_character = 1;
             continue;
         }
         report.ack_attempted++;
-        acknowledged = character_save_journal_v2_ack(writer, commands[i],
+        acknowledged = character_save_journal_v2_ack(writer, entries[i].wire.command_uuid,
                                                        receipt_callback, receipt_opaque);
         rec_ack_count(&report, acknowledged);
         if(acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_INVALID ||
            acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE ||
-           acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_LOCK ||
-           acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE) {
-            free(commands); *report_out = report;
+           acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_LOCK) {
+            free(entries); *report_out = report;
             if(acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE)
                 return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_STALE;
             if(acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_LOCK)
                 return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_LOCK;
             if(acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_INVALID)
                 return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_INVALID;
-            return acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE ?
-                CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE :
-                CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_INVALID;
+            return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_INVALID;
         }
-        if(acknowledged != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED) incomplete = 1;
+        if(acknowledged != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED) {
+            incomplete = 1;
+            blocked_character = 1;
+        }
     }
-    free(commands);
+    free(entries);
     *report_out = report;
     return incomplete ? CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE :
         CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK;

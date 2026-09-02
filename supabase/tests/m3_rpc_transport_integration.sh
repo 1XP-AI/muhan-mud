@@ -25,6 +25,10 @@ done
 [[ "$ready" == 1 ]] || { echo "m3 RPC transport integration: PostgreSQL was not ready after 60 attempts" >&2; exit 1; }
 cleanup
 run_super --command="insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format,imported_file_sha256) values('$character'::uuid,'$world','M3hero','M3hero','11','imported_unclaimed',1,repeat('e',64)); insert into private.game_character_legacy_heads(character_id,head_state,storage_format,revision) values('$character'::uuid,'absent',1,0);" >/dev/null
+if env -i PATH="$PATH" LANG=C PGPASSFILE=/dev/null PGSSLMODE=disable PGCONNECT_TIMEOUT=5 psql "$writer_url" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command="select * from private.game_character_legacy_heads limit 1" >/dev/null 2>&1; then
+  echo "mud_writer unexpectedly has direct private head SELECT" >&2
+  exit 1
+fi
 if ! M3_RPC_TRANSPORT_DATABASE_URL="$writer_url" \
   M3_RPC_TRANSPORT_SUPER_DATABASE_URL="$database_url" "$harness"; then
   echo "m3 RPC transport integration harness failed" >&2
@@ -33,6 +37,6 @@ fi
 [[ "$(run_super --command="select count(*) = 0 from private.game_character_writer_epochs where world_id='$bad_cast_world';")" == t ]] || { echo "bad timestamptz cast persisted a writer epoch" >&2; exit 1; }
 [[ "$(run_super --command="select count(*) = 0 from private.game_character_writer_epoch_fences where world_id='$bad_cast_world';")" == t ]] || { echo "bad timestamptz cast persisted a writer epoch fence" >&2; exit 1; }
 [[ "$(run_super --command="select count(*) = 0 from private.game_character_shadow_receipts where world_id='$bad_cast_world';")" == t ]] || { echo "bad timestamptz cast persisted a receipt" >&2; exit 1; }
-[[ "$(run_super --command="select h.revision=1 and h.head_sha256=repeat('a',64) and count(r.command_id)=1 from private.game_character_legacy_heads h left join private.game_character_shadow_receipts r on r.character_id=h.character_id where h.character_id='$character'::uuid group by h.revision,h.head_sha256;")" == t ]] || { echo "exact receipt retry or no-mutation controls failed" >&2; exit 1; }
+[[ "$(run_super --command="select h.revision=2 and h.head_sha256=repeat('b',64) and count(r.command_id)=2 from private.game_character_legacy_heads h left join private.game_character_shadow_receipts r on r.character_id=h.character_id where h.character_id='$character'::uuid group by h.revision,h.head_sha256;")" == t ]] || { echo "second save head revision or receipt controls failed" >&2; exit 1; }
 [[ "$(run_super --command="select writer_epoch=1 and sealed_at is not null from private.game_character_writer_epochs where world_id='$world';")" == t ]] || { echo "writer lease was not sealed exactly once" >&2; exit 1; }
-echo "m3 RPC transport PG17: BEGIN rejection, SET ROLE NONE drift, terminated backend no-retry, bad-cast no-mutation, route/acquire/renew/receipt retry/seal passed"
+echo "m3 RPC transport PG17: direct-head permissions, v2/v3 route lookup, second-save head revision, BEGIN rejection, role drift, terminated backend no-retry, bad-cast no-mutation, receipt retry, and seal passed"

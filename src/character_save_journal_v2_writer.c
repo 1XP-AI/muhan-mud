@@ -63,11 +63,19 @@ static uint64_t v2_writer_generation_sequence;
 #ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
 static int v2_writer_fail_lock_fsync;
 static int v2_writer_fail_journal_fsync;
+static int v2_writer_fail_epoch_create_once;
+static int v2_writer_fail_temp_cleanup_fsync_once;
+static int v2_writer_crash_after_instance_temp_create;
+static int v2_writer_crash_after_epoch_temp_create;
 static int v2_writer_fail_close_kind;
 static int v2_writer_pause_ready_fd = -1;
 static int v2_writer_pause_release_fd = -1;
 static unsigned int v2_writer_lock_fsync_count;
 static unsigned int v2_writer_journal_fsync_count;
+#endif
+#ifndef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
+#define v2_writer_crash_after_instance_temp_create 0
+#define v2_writer_crash_after_epoch_temp_create 0
 #endif
 
 static size_t v2_writer_bounded(s, limit)
@@ -267,7 +275,11 @@ int fd,kind;
       v2_writer_journal_fsync_count++;
   }
   if((kind==1&&v2_writer_fail_lock_fsync)||
-     (kind==2&&v2_writer_fail_journal_fsync)) {
+     (kind==2&&v2_writer_fail_journal_fsync)||
+     (kind==3&&v2_writer_fail_temp_cleanup_fsync_once)) {
+      if(kind==3) {
+        v2_writer_fail_temp_cleanup_fsync_once=0;
+      }
       errno=EIO;
       return -1;
   }
@@ -483,6 +495,245 @@ out:
   return result;
 }
 
+/* A deterministic same-directory temporary name makes incomplete installs
+ * visible and non-authoritative.  It is never recovered or promoted later. */
+static int v2_writer_temp_absent(journal_fd, leaf)
+int journal_fd;
+const char *leaf;
+{
+  struct stat st;
+  if(fstatat(journal_fd,leaf,&st,AT_SYMLINK_NOFOLLOW)==0) {
+    errno=EEXIST;
+    return -1;
+  }
+  return errno==ENOENT?0:-1;
+}
+
+/* These two exact names are non-authoritative installation scratch space.
+ * The lock serializes writers; unlinkat keeps every lookup beneath the held
+ * journal descriptor and never follows a temporary symlink. */
+static int v2_writer_remove_temp_leaf(journal_fd, leaf, removed)
+int journal_fd;
+const char *leaf;
+int *removed;
+{
+  if(!removed) {
+    return -1;
+  }
+  if(unlinkat(journal_fd,leaf,0)==0) {
+    *removed=1;
+    return 0;
+  }
+  return errno==ENOENT?0:-1;
+}
+
+static int v2_writer_cleanup_temps(journal_fd)
+int journal_fd;
+{
+  int removed=0;
+  if(v2_writer_remove_temp_leaf(journal_fd,".writer-instance.v2.tmp",
+                                &removed)!=0||
+     v2_writer_remove_temp_leaf(journal_fd,".writer-epoch.v2.tmp",
+                                &removed)!=0) {
+    return -1;
+  }
+  return removed?v2_writer_sync(journal_fd,3):0;
+}
+
+static int v2_writer_load_instance_optional(journal_fd, out, present)
+int journal_fd;
+char out[37];
+int *present;
+{
+  struct stat st;
+  if(!out||!present) {
+    return -1;
+  }
+  memset(out,0,37);
+  *present=0;
+  if(fstatat(journal_fd,"writer-instance.v2",&st,AT_SYMLINK_NOFOLLOW)!=0) {
+    return errno==ENOENT?0:-1;
+  }
+  if(!S_ISREG(st.st_mode)||st.st_uid!=v2_writer_trusted_uid||
+     (st.st_mode&07777)!=0600||st.st_nlink!=1) {
+    return -1;
+  }
+  if(v2_writer_load_instance(journal_fd,out)!=0) {
+    return -1;
+  }
+  *present=1;
+  return 0;
+}
+
+static int v2_writer_load_epoch_optional(journal_fd, expected_world,
+                                         expected_instance, epoch, present)
+int journal_fd;
+const char *expected_world;
+const char *expected_instance;
+uint64_t *epoch;
+int *present;
+{
+  struct stat st;
+  if(!epoch||!present) {
+    return -1;
+  }
+  *epoch=0;
+  *present=0;
+  if(fstatat(journal_fd,"writer-epoch.v2",&st,AT_SYMLINK_NOFOLLOW)!=0) {
+    return errno==ENOENT?0:-1;
+  }
+  if(!S_ISREG(st.st_mode)||st.st_uid!=v2_writer_trusted_uid||
+     (st.st_mode&07777)!=0600||st.st_nlink!=1) {
+    return -1;
+  }
+  if(v2_writer_load_epoch(journal_fd,expected_world,expected_instance,epoch)!=0) {
+    return -1;
+  }
+  *present=1;
+  return 0;
+}
+
+static int v2_writer_write_all(fd, bytes, length)
+int fd;
+const void *bytes;
+size_t length;
+{
+  const char *p=(const char *)bytes;
+  ssize_t n;
+  while(length) {
+    n=write(fd,p,length);
+    if(n<0&&errno==EINTR) {
+      continue;
+    }
+    if(n<=0) {
+      return -1;
+    }
+    p+=n;
+    length-=(size_t)n;
+  }
+  return 0;
+}
+
+/* linkat is the portable no-replace atomic install: it cannot overwrite an
+ * existing authority leaf, unlike rename(2).  The temp link is removed only
+ * after the final name is present. */
+static int v2_writer_install_new_leaf(journal_fd, leaf, temp, bytes, length,
+                                      crash_after_temp_create)
+int journal_fd;
+const char *leaf;
+const char *temp;
+const char *bytes;
+size_t length;
+int crash_after_temp_create;
+{
+  struct stat st;
+  int fd=-1;
+  int installed=0;
+  int result=-1;
+  if(v2_writer_temp_absent(journal_fd,temp)!=0||
+     fstatat(journal_fd,leaf,&st,AT_SYMLINK_NOFOLLOW)==0||
+     errno!=ENOENT) {
+    return -1;
+  }
+  fd=openat(journal_fd,temp,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if(fd<0||fchmod(fd,0600)!=0||!v2_writer_file_ok(fd)||
+     v2_writer_write_all(fd,bytes,length)!=0||v2_writer_sync(fd,0)!=0) {
+    goto out;
+  }
+  if(v2_writer_close_once(fd,0)!=0) {
+    fd=-1;
+    goto out;
+  }
+  fd=-1;
+#ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
+  if(crash_after_temp_create) {
+    (void)kill(getpid(),SIGKILL);
+    _exit(127);
+  }
+#else
+  (void)crash_after_temp_create;
+#endif
+  if(linkat(journal_fd,temp,journal_fd,leaf,0)!=0) {
+    goto out;
+  }
+  installed=1;
+  if(unlinkat(journal_fd,temp,0)!=0||v2_writer_sync(journal_fd,2)!=0) {
+    goto out;
+  }
+  result=0;
+out:
+  if(fd>=0) {
+    close(fd);
+  }
+  if(result!=0&&!installed) {
+    (void)unlinkat(journal_fd,temp,0);
+  }
+  return result;
+}
+
+static int v2_writer_create_instance(journal_fd, instance)
+int journal_fd;
+const char *instance;
+{
+  char text[V2_WRITER_TEXT_MAX];
+  int n;
+  n=snprintf(text,sizeof(text),"version=2\nkind=writer-instance\nwriter_instance_id=%s\n",
+             instance);
+  if(n<0||(size_t)n>=sizeof(text)) {
+    return -1;
+  }
+  return v2_writer_install_new_leaf(journal_fd,"writer-instance.v2",
+                                    ".writer-instance.v2.tmp",text,(size_t)n,
+                                    v2_writer_crash_after_instance_temp_create);
+}
+
+static int v2_writer_create_epoch(journal_fd, world, instance, epoch)
+int journal_fd;
+const char *world;
+const char *instance;
+uint64_t epoch;
+{
+  char text[V2_WRITER_TEXT_MAX];
+  int n;
+#ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
+  if(v2_writer_fail_epoch_create_once) {
+    v2_writer_fail_epoch_create_once=0;
+    errno=EIO;
+    return -1;
+  }
+#endif
+  n=snprintf(text,sizeof(text),"version=2\nkind=writer-epoch\nworld_id=%s\nwriter_instance_id=%s\nwriter_epoch=%" PRIu64 "\n",
+             world,instance,epoch);
+  if(n<0||(size_t)n>=sizeof(text)) {
+    return -1;
+  }
+  return v2_writer_install_new_leaf(journal_fd,"writer-epoch.v2",
+                                    ".writer-epoch.v2.tmp",text,(size_t)n,
+                                    v2_writer_crash_after_epoch_temp_create);
+}
+
+static int v2_writer_granted_tuple_matches(request, granted, existing_epoch)
+const character_save_journal_v2_writer_tuple *request;
+const character_save_journal_v2_writer_tuple *granted;
+int existing_epoch;
+{
+  size_t world_length;
+  if(!request||!granted||!v2_writer_world(granted->world_id)||
+     !v2_writer_uuid(granted->writer_instance_id)||!granted->writer_epoch||
+     granted->writer_epoch>(uint64_t)INT64_MAX||
+     strcmp(granted->world_id,request->world_id)!=0||
+     strcmp(granted->writer_instance_id,request->writer_instance_id)!=0) {
+    return 0;
+  }
+  world_length=v2_writer_bounded(granted->world_id,
+                                 CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX);
+  if(!v2_writer_zero_tail(granted->world_id,world_length,
+                          CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX)) {
+    return 0;
+  }
+  return !existing_epoch||granted->writer_epoch==request->writer_epoch;
+}
+
 static int v2_writer_open_lock(journal_fd, lock_out)
 int journal_fd;
 int *lock_out;
@@ -601,6 +852,120 @@ character_save_journal_v2_writer_context *out;
   v2_writer_state_reset(&next);
   return 0;
 bad:
+  if(next.lock_fd>=0) {
+    close(next.lock_fd);
+  }
+  if(next.journal_fd>=0) {
+    close(next.journal_fd);
+  }
+  if(next.root_fd>=0) {
+    close(next.root_fd);
+  }
+  v2_writer_state_reset(&next);
+  v2_writer_context_reset(out);
+  return -1;
+}
+
+int character_save_journal_v2_writer_bootstrap(root, world_id,
+                                                 writer_instance_candidate,
+                                                 acquire, acquire_argument, out)
+const char *root;
+const char *world_id;
+const char *writer_instance_candidate;
+character_save_journal_v2_writer_epoch_acquire acquire;
+void *acquire_argument;
+character_save_journal_v2_writer_context *out;
+{
+  v2_writer_private_state next;
+  character_save_journal_v2_writer_tuple request;
+  character_save_journal_v2_writer_tuple granted;
+  int instance_present;
+  int epoch_present;
+  int acquired;
+  if(!out) {
+    return -1;
+  }
+  if(v2_writer_active) {
+    if(out!=v2_writer_active->owner_context) {
+      v2_writer_context_reset(out);
+    }
+    errno=EBUSY;
+    return -1;
+  }
+  v2_writer_context_reset(out);
+  if(!v2_writer_world(world_id)||!v2_writer_uuid(writer_instance_candidate)||
+     !acquire) {
+    return -1;
+  }
+  v2_writer_state_reset(&next);
+  next.root_fd=v2_writer_open_root(root);
+  if(next.root_fd<0) {
+    goto bad;
+  }
+  next.journal_fd=v2_writer_open_component(next.root_fd,"character-save-journal");
+  if(next.journal_fd<0||v2_writer_open_lock(next.journal_fd,&next.lock_fd)!=0) {
+    goto bad;
+  }
+  if(v2_writer_cleanup_temps(next.journal_fd)!=0||
+     v2_writer_load_instance_optional(next.journal_fd,
+                                      next.tuple.writer_instance_id,
+                                      &instance_present)!=0) {
+    goto bad;
+  }
+  if(!instance_present) {
+    memcpy(next.tuple.writer_instance_id,writer_instance_candidate,
+           CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN+1);
+  }
+  strcpy(next.tuple.world_id,world_id);
+  if(v2_writer_load_epoch_optional(next.journal_fd,next.tuple.world_id,
+                                   next.tuple.writer_instance_id,
+                                   &next.tuple.writer_epoch,
+                                   &epoch_present)!=0) {
+    goto bad;
+  }
+  /* An epoch cannot exist without the instance that names it.  Check the
+   * complete authority state before creating anything or calling the DB. */
+  if(!instance_present&&epoch_present) {
+    errno=EINVAL;
+    goto bad;
+  }
+  if(!instance_present) {
+    if(v2_writer_create_instance(next.journal_fd,writer_instance_candidate)!=0) {
+      goto bad;
+    }
+  }
+  request=next.tuple;
+  memset(&granted,0,sizeof(granted));
+  acquired=acquire(acquire_argument,&request,&granted);
+  if(acquired!=0||!v2_writer_granted_tuple_matches(&request,&granted,
+                                                    epoch_present)) {
+    errno=EINVAL;
+    goto bad;
+  }
+  if(!epoch_present) {
+    if(v2_writer_create_epoch(next.journal_fd,request.world_id,
+                              request.writer_instance_id,
+                              granted.writer_epoch)!=0) {
+      goto bad;
+    }
+  }
+  next.tuple=granted;
+  next.generation=v2_writer_next_generation();
+  if(!next.generation) {
+    errno=EOVERFLOW;
+    goto bad;
+  }
+  v2_writer_active_state=next;
+  v2_writer_active_state.owner_context=out;
+  v2_writer_active_state.owner_pid=getpid();
+  v2_writer_active=&v2_writer_active_state;
+  memset(&request,0,sizeof(request));
+  memset(&granted,0,sizeof(granted));
+  v2_writer_state_reset(&next);
+  return 0;
+bad:
+  memset(&request,0,sizeof(request));
+  memset(&granted,0,sizeof(granted));
   if(next.lock_fd>=0) {
     close(next.lock_fd);
   }
@@ -763,6 +1128,21 @@ int lock_file,journal_dir;
 {
   v2_writer_fail_lock_fsync=lock_file!=0;
   v2_writer_fail_journal_fsync=journal_dir!=0;
+}
+void character_save_journal_v2_writer_fail_epoch_create_once_for_test(void)
+{
+  v2_writer_fail_epoch_create_once=1;
+}
+void character_save_journal_v2_writer_fail_temp_cleanup_fsync_once_for_test(void)
+{
+  v2_writer_fail_temp_cleanup_fsync_once=1;
+}
+void character_save_journal_v2_writer_crash_after_temp_create_for_test(instance_temp,
+                                                                         epoch_temp)
+int instance_temp,epoch_temp;
+{
+  v2_writer_crash_after_instance_temp_create=instance_temp!=0;
+  v2_writer_crash_after_epoch_temp_create=epoch_temp!=0;
 }
 void character_save_journal_v2_writer_fail_close_once_for_test(close_kind)
 int close_kind;

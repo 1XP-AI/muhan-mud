@@ -47,6 +47,17 @@ typedef struct character_save_journal_v2_rpc_route {
     unsigned int storage_format;
 } character_save_journal_v2_rpc_route;
 
+/* The additive v3 lookup deliberately has its own result shape/API: callers
+ * that use v2 retain its exact identity-only contract.  An empty head_sha256
+ * means the database NULL required by absent and uninitialized head states. */
+typedef struct character_save_journal_v2_rpc_route_v3 {
+    char world_id[65], character_id[37], legacy_name_key[15], legacy_shard[3];
+    char lifecycle[32], imported_file_sha256[65];
+    char head_state[14], head_sha256[65];
+    unsigned int storage_format;
+    unsigned long long head_revision;
+} character_save_journal_v2_rpc_route_v3;
+
 typedef struct character_save_journal_v2_rpc_transport {
     const character_save_journal_v2_rpc_transport_operations *operations;
     void *operations_opaque;
@@ -78,6 +89,10 @@ character_save_journal_v2_rpc_transport_outcome
 character_save_journal_v2_rpc_transport_lookup_route(
     character_save_journal_v2_rpc_transport *transport, const char *world_id,
     const char *legacy_name_key, character_save_journal_v2_rpc_route *route);
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_rpc_transport_lookup_route_v3(
+    character_save_journal_v2_rpc_transport *transport, const char *world_id,
+    const char *legacy_name_key, character_save_journal_v2_rpc_route_v3 *route);
 character_save_journal_v2_rpc_transport_outcome
 character_save_journal_v2_rpc_transport_acquire(
     character_save_journal_v2_rpc_transport *transport, const char *world_id,

@@ -24,10 +24,29 @@ typedef struct character_save_journal_v2_writer_context {
 
 /* validate_held copies this only after exact owner/state registry validation. */
 typedef struct character_save_journal_v2_writer_tuple {
-    char world_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX + 1];
-    char writer_instance_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN + 1];
-    uint64_t writer_epoch;
+  char world_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX + 1];
+  char writer_instance_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN + 1];
+  uint64_t writer_epoch;
 } character_save_journal_v2_writer_tuple;
+
+/* The live route injects this DB seam.  `request` contains the secured,
+ * lock-held world and writer instance and the already persisted epoch (or
+ * zero when only the instance survived a prior crash).  On success `granted`
+ * must echo that world and instance exactly and provide a positive epoch. */
+typedef int (*character_save_journal_v2_writer_epoch_acquire)(
+    void *argument,
+    const character_save_journal_v2_writer_tuple *request,
+    character_save_journal_v2_writer_tuple *granted);
+
+/* Production bootstrap for live M3 saves.  The candidate is supplied by the
+ * caller and must be a canonical lowercase UUID, but is used only when no
+ * durable instance exists; restarts always reuse that durable instance.
+ * Success returns the same already-held context as writer_open, so the caller
+ * must eventually close it. */
+int character_save_journal_v2_writer_bootstrap(
+    const char *root, const char *world_id, const char *writer_instance_candidate,
+    character_save_journal_v2_writer_epoch_acquire acquire, void *acquire_argument,
+    character_save_journal_v2_writer_context *out);
 
 /* Test-only local durability primitive.  It never contacts a DB or publishes
  * a player file.  `world_id` must match both immutable persisted tuple files. */
@@ -56,6 +75,10 @@ character_save_journal_v2_writer_dup_held_root_fd(
 void character_save_journal_v2_writer_set_trusted_uid_for_test(uid_t uid);
 void character_save_journal_v2_writer_fail_fsync_for_test(int lock_file,
                                                            int journal_dir);
+void character_save_journal_v2_writer_fail_epoch_create_once_for_test(void);
+void character_save_journal_v2_writer_fail_temp_cleanup_fsync_once_for_test(void);
+void character_save_journal_v2_writer_crash_after_temp_create_for_test(
+    int instance_temp, int epoch_temp);
 void character_save_journal_v2_writer_fail_close_once_for_test(int close_kind);
 void character_save_journal_v2_writer_pause_after_create_for_test(int ready_fd,
                                                                     int release_fd);

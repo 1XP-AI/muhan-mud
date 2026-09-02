@@ -58,6 +58,23 @@ static int rpc_lower_hex(const char *text, size_t length)
     return 1;
 }
 
+static int rpc_uint64(const char *text, unsigned long long *value)
+{
+    size_t i;
+    char *end;
+
+    if (!text || !text[0])
+        return 0;
+    for (i = 0; text[i]; i++) {
+        if (text[i] < '0' || text[i] > '9')
+            return 0;
+    }
+    errno = 0;
+    *value = strtoull(text, &end, 10);
+    return errno != ERANGE && end != text && !*end &&
+        *value <= (unsigned long long)LLONG_MAX;
+}
+
 static int rpc_uuid(const char *text)
 {
     size_t i;
@@ -430,6 +447,83 @@ character_save_journal_v2_rpc_transport_lookup_route(
             strcmp(route->lifecycle, "active")) ||
         (route->imported_file_sha256[0] &&
             !rpc_lower_hex(route->imported_file_sha256, 64))) {
+        t->operations->result_clear(r);
+        memset(route, 0, sizeof(*route));
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED;
+    }
+    errno = 0;
+    n = strtoul(storage, &end, 10);
+    if (errno == ERANGE || end == storage || *end || n != 1) {
+        t->operations->result_clear(r);
+        memset(route, 0, sizeof(*route));
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED;
+    }
+    route->storage_format = (unsigned int)n;
+    t->operations->result_clear(r);
+    return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
+}
+
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_rpc_transport_lookup_route_v3(
+    character_save_journal_v2_rpc_transport *t, const char *world,
+    const char *name, character_save_journal_v2_rpc_route_v3 *route)
+{
+    static const char sql[] =
+        "select world_id::text,character_id::text,legacy_name_key::text,"
+        "legacy_shard::text,storage_format::text,lifecycle::text,"
+        "coalesce(imported_file_sha256,'')::text,head_state::text,"
+        "coalesce(head_sha256,'')::text,head_revision::text from "
+        "private.resolve_game_character_writer_route_v3($1::text,$2::text)";
+    const char *values[2];
+    void *r;
+    char storage[12];
+    char revision[32];
+    char *end;
+    unsigned long n;
+    character_save_journal_v2_rpc_transport_outcome answer;
+
+    if (route)
+        memset(route, 0, sizeof(*route));
+    if (!route || !rpc_world(world) || !rpc_name_text(name))
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID;
+    values[0] = world;
+    values[1] = name;
+    answer = rpc_execute(t, sql, 2, rpc_types, values, &r);
+    if (answer != CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK)
+        return answer;
+    if (!rpc_tuples(t, r, 1, 10) ||
+        !rpc_copy(t, r, 0, route->world_id, sizeof(route->world_id)) ||
+        !rpc_copy(t, r, 1, route->character_id, sizeof(route->character_id)) ||
+        !rpc_copy(t, r, 2, route->legacy_name_key,
+            sizeof(route->legacy_name_key)) ||
+        !rpc_copy(t, r, 3, route->legacy_shard,
+            sizeof(route->legacy_shard)) ||
+        !rpc_copy(t, r, 4, storage, sizeof(storage)) ||
+        !rpc_copy(t, r, 5, route->lifecycle, sizeof(route->lifecycle)) ||
+        !rpc_copy(t, r, 6, route->imported_file_sha256,
+            sizeof(route->imported_file_sha256)) ||
+        !rpc_copy(t, r, 7, route->head_state, sizeof(route->head_state)) ||
+        !rpc_copy(t, r, 8, route->head_sha256, sizeof(route->head_sha256)) ||
+        !rpc_copy(t, r, 9, revision, sizeof(revision)) ||
+        strcmp(route->world_id, world) || strcmp(route->legacy_name_key, name) ||
+        !rpc_world(route->world_id) || !rpc_uuid(route->character_id) ||
+        !rpc_name_text(route->legacy_name_key) ||
+        !rpc_lower_hex(route->legacy_shard, 2) ||
+        !rpc_text(route->lifecycle, 31) ||
+        (strcmp(route->lifecycle, "imported_unclaimed") &&
+            strcmp(route->lifecycle, "provisioning") &&
+            strcmp(route->lifecycle, "active")) ||
+        (route->imported_file_sha256[0] &&
+            !rpc_lower_hex(route->imported_file_sha256, 64)) ||
+        (strcmp(route->head_state, "existing") &&
+            strcmp(route->head_state, "absent") &&
+            strcmp(route->head_state, "uninitialized")) ||
+        (strcmp(route->head_state, "existing") && route->head_sha256[0]) ||
+        (!strcmp(route->head_state, "existing") &&
+            !rpc_lower_hex(route->head_sha256, 64)) ||
+        !rpc_uint64(revision, &route->head_revision) ||
+        (!strcmp(route->head_state, "uninitialized") &&
+            route->head_revision != 0)) {
         t->operations->result_clear(r);
         memset(route, 0, sizeof(*route));
         return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED;

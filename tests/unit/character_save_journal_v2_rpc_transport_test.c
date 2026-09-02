@@ -9,6 +9,7 @@ typedef struct fake {
     int clear_order, close_order, sequence, assert_null;
     const char *sqlstate, *legacy_shard, *route_world, *route_name;
     const char *route_storage, *route_lifecycle, *epoch_value;
+    const char *v3_head_state, *v3_head_sha256, *v3_head_revision;
 } fake;
 
 static int expect(int yes, const char *what)
@@ -24,8 +25,8 @@ static void *f_exec(void *connection, const char *sql, int count,
     (void)result_format;
     f->execs++;
     f->kind=strstr(sql,"m3_assert_writer_session") ? 1 :
-        (strstr(sql,"resolve_game") ? 2 : (strstr(sql,"acquire_game") ? 3 :
-        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"seal_game") ? 5 : 6))));
+        (strstr(sql,"route_v3") ? 7 : (strstr(sql,"resolve_game") ? 2 : (strstr(sql,"acquire_game") ? 3 :
+        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"seal_game") ? 5 : 6)))));
     if(f->kind==1&&f->assert_null) return 0;
     return f;
 }
@@ -33,11 +34,12 @@ static int f_status(void *result)
 { fake *f=(fake *)result; return f->kind==1 ? 1 : (f->status ? f->status : 1); }
 static int f_rows(void *result) { fake *f=(fake *)result; return f->kind==1 ? 1 : f->rows; }
 static int f_columns(void *result)
-{ fake *f=(fake *)result; return f->kind==2 ? 7 : ((f->kind==3||f->kind==4) ? 2 : 1); }
+{ fake *f=(fake *)result; return f->kind==2 ? 7 : (f->kind==7 ? 10 : ((f->kind==3||f->kind==4) ? 2 : 1)); }
 static const char *f_value(void *result, int row, int column)
 {
     fake *f=(fake *)result;
     static const char *route[]={"m3-world","92000000-0000-0000-0000-000000000001","M3hero","11","1","imported_unclaimed",""};
+    static const char *route_v3[]={"m3-world","92000000-0000-0000-0000-000000000001","M3hero","11","1","imported_unclaimed","","absent","","0"};
     (void)row;
     if(f->kind==1) return "t";
     if(f->kind==2) {
@@ -46,6 +48,16 @@ static const char *f_value(void *result, int row, int column)
         if(column==4&&f->route_storage) return f->route_storage;
         if(column==5&&f->route_lifecycle) return f->route_lifecycle;
         return column==3&&f->legacy_shard ? f->legacy_shard : route[column];
+    }
+    if(f->kind==7) {
+        if(column==0&&f->route_world) return f->route_world;
+        if(column==2&&f->route_name) return f->route_name;
+        if(column==4&&f->route_storage) return f->route_storage;
+        if(column==5&&f->route_lifecycle) return f->route_lifecycle;
+        if(column==7&&f->v3_head_state) return f->v3_head_state;
+        if(column==8&&f->v3_head_sha256) return f->v3_head_sha256;
+        if(column==9&&f->v3_head_revision) return f->v3_head_revision;
+        return column==3&&f->legacy_shard ? f->legacy_shard : route_v3[column];
     }
     if(f->kind==3||f->kind==4) return column ? "2026-09-02T00:00:00Z" :
         (f->epoch_value ? f->epoch_value : "1");
@@ -132,7 +144,7 @@ static int test_transaction_and_error_order(void)
 
 static int test_total_mapping_and_outputs(void)
 {
-    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_receipt r; unsigned long long epoch=77; char expires[64]="stale"; unsigned char nul_name[]={'M','3',0,'x'}; int bad=0;
+    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_rpc_route_v3 route_v3; character_save_journal_v2_receipt r; unsigned long long epoch=77; char expires[64]="stale"; unsigned char nul_name[]={'M','3',0,'x'}; int bad=0;
     ready(&f); init_ready(&t,&f); f.status=2; f.sqlstate="22001";
     memset(&route,0x5a,sizeof(route));
     bad|=expect(character_save_journal_v2_rpc_transport_lookup_route(&t,"m3-world","M3hero",&route)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID,"class 22 maps invalid");
@@ -169,14 +181,32 @@ static int test_total_mapping_and_outputs(void)
     bad|=expect(character_save_journal_v2_rpc_transport_renew(&t,"m3-world","94000000-0000-0000-0000-000000000001",(unsigned long long)LLONG_MAX+1ULL,"2026-09-02T00:00:00Z",expires)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID&&expires[0]==0,"numeric overflow clears renew output");
     receipt(&r); r.legacy_name_key=nul_name; r.legacy_name_key_length=sizeof(nul_name);
     bad|=expect(character_save_journal_v2_rpc_transport_receipt(&t,&r)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID,"embedded NUL receipt name is rejected");
+    memset(&route_v3,0x5a,sizeof(route_v3)); f.rows=2;
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"malformed v3 row count defers and clears output");
+    f.rows=1; f.v3_head_state="existing"; f.v3_head_sha256=""; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 existing head requires a hash");
+    f.v3_head_state="absent"; f.v3_head_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 absent head rejects a hash");
+    f.v3_head_sha256=""; f.v3_head_revision="-1"; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 negative revision defers and clears output");
+    f.v3_head_revision="0"; f.v3_head_state="wrong"; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 unknown head state defers and clears output");
+    f.v3_head_state="uninitialized"; f.v3_head_revision="1"; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 uninitialized head requires revision zero");
+    f.v3_head_state=0; f.v3_head_revision=0; memset(&route_v3,0x5a,sizeof(route_v3));
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"Bad_world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID&&route_v3.world_id[0]==0,"v3 output is cleared before invalid input");
     return bad;
 }
 
 static int test_all_success_and_receipt_validation(void)
 {
-    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_receipt r; unsigned long long epoch=0; char expires[64]; int bad=0;
+    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_rpc_route_v3 route_v3; character_save_journal_v2_receipt r; unsigned long long epoch=0; char expires[64]; int bad=0;
     ready(&f); init_ready(&t,&f);
     bad|=expect(character_save_journal_v2_rpc_transport_lookup_route(&t,"m3-world","M3hero",&route)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"route success");
+    f.v3_head_state="existing";
+    f.v3_head_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    f.v3_head_revision="2";
+    bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK&&route_v3.head_revision==2&&!strcmp(route_v3.head_state,"existing")&&!strcmp(route_v3.head_sha256,f.v3_head_sha256),"v3 route returns a validated effective existing head");
     bad|=expect(character_save_journal_v2_rpc_transport_acquire(&t,"m3-world","94000000-0000-0000-0000-000000000001","2026-09-02T00:00:00Z",&epoch,expires)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK&&epoch==1,"acquire success");
     bad|=expect(character_save_journal_v2_rpc_transport_renew(&t,"m3-world","94000000-0000-0000-0000-000000000001",epoch,"2026-09-02T00:00:00Z",expires)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"renew success");
     bad|=expect(character_save_journal_v2_rpc_transport_seal(&t,"m3-world","94000000-0000-0000-0000-000000000001",epoch)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"seal success");

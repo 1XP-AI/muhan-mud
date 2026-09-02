@@ -272,6 +272,149 @@ const character_save_journal_v2_receipt *receipt;
 }
 
 character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v3(writer, request, operations,
+                                                 report_out)
+const character_save_journal_v2_writer_context *writer;
+const character_save_journal_v2_protocol_held_request_v3 *request;
+const character_save_journal_v2_protocol_operations_v3 *operations;
+character_save_journal_v2_protocol_report *report_out;
+{
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_bound_route_v3 route;
+    character_save_journal_v2_wire wire, reread;
+    character_save_journal_v2_route_error route_result;
+    const unsigned char *bytes=0;
+    size_t length=0;
+    character_save_journal_v2_publish_result published;
+    character_save_journal_v2_ack_result acknowledged;
+    character_save_journal_v2_protocol_result result;
+    int root_fd=-1;
+    protocol_report_zero(report_out);
+    if(!writer||!request||!operations||!report_out||
+       !request->canonical_legacy_name||!request->canonical_legacy_name_length||
+       !protocol_uuid(request->command_uuid)||!operations->route_lookup||
+       !operations->serialize||!operations->receipt)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    memset(&tuple,0,sizeof(tuple));
+    memset(&route,0,sizeof(route));
+    memset(&wire,0,sizeof(wire));
+    memset(&reread,0,sizeof(reread));
+    if(character_save_journal_v2_writer_validate_held(writer,&tuple)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_WRITER_LOCKED;
+    route_result=character_save_journal_v2_route_bind_v3(writer,
+        request->canonical_legacy_name,request->canonical_legacy_name_length,
+        operations->route_lookup,operations->route_opaque,&route);
+    if(route_result!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+        goto done;
+    }
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;
+    /* The route is the sole revision authority.  Do this before serializer
+     * invocation or descriptor duplication so rejected heads leave no local
+     * evidence or filesystem mutation. */
+    if(route.head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED||
+       route.head_revision>=(uint64_t)INT64_MAX) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+        goto done;
+    }
+    if(operations->serialize(operations->serialize_opaque,&tuple,&route,
+                             request->command_uuid,&bytes,&length)!=0||!bytes||
+       length>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER;
+        goto done;
+    }
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_SERIALIZED;
+    if(!protocol_writer_matches(writer,&tuple)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
+        goto done;
+    }
+    wire.state=CHARACTER_SAVE_JOURNAL_V2_PREPARED;
+    memcpy(wire.writer_instance_id,tuple.writer_instance_id,
+           sizeof(wire.writer_instance_id));
+    memcpy(wire.character_id,route.character_id,sizeof(wire.character_id));
+    memcpy(wire.world_id,tuple.world_id,sizeof(wire.world_id));
+    if(protocol_name_hex(request->canonical_legacy_name,
+                         request->canonical_legacy_name_length,
+                         wire.legacy_name_key_hex,sizeof(wire.legacy_name_key_hex))||
+       route.legacy_name_length!=request->canonical_legacy_name_length||
+       memcmp(route.legacy_name,request->canonical_legacy_name,
+              request->canonical_legacy_name_length)||
+       route.storage_format!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_STORAGE_LEGACY_C_ABI_V1||
+       snprintf(wire.legacy_shard,sizeof(wire.legacy_shard),"%s",
+                route.legacy_shard)!=2||
+       snprintf(wire.command_uuid,sizeof(wire.command_uuid),"%s",
+                request->command_uuid)!=CHARACTER_SAVE_JOURNAL_V2_UUID_LEN) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+        goto done;
+    }
+    wire.writer_epoch=tuple.writer_epoch;
+    wire.writer_revision=route.head_revision+1;
+    wire.expected_state=route.head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING?
+        CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING:
+        CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT;
+    if(route.head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING)
+        memcpy(wire.expected_sha256,route.head_sha256,sizeof(wire.expected_sha256));
+    wire.storage_format=(uint16_t)route.storage_format;
+    if(protocol_hash_bytes(bytes,length,wire.post_sha256)||
+       character_save_journal_v2_request_sha256(&wire,wire.request_sha256)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+        goto done;
+    }
+    if(character_save_journal_v2_writer_dup_held_root_fd(writer,&root_fd)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
+        goto done;
+    }
+    if(character_save_journal_v2_stage_at(root_fd,&wire,bytes,length)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+        goto done;
+    }
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_STAGED;
+    if(!protocol_writer_matches(writer,&tuple)||
+       character_save_journal_v2_live_precondition_at(root_fd,&wire)||
+       !protocol_writer_matches(writer,&tuple)||
+       character_save_journal_v2_commit_prepared_at(root_fd,&wire)||
+       character_save_journal_v2_read_prepared_at(root_fd,request->command_uuid,
+                                                   &reread)||
+       !protocol_wire_matches(&wire,&reread)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+        goto done;
+    }
+    if(close(root_fd)) {
+        root_fd=-1;
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+        goto done;
+    }
+    root_fd=-1;
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED;
+    published=character_save_journal_v2_publish_v3(writer,
+        request->canonical_legacy_name,request->canonical_legacy_name_length,
+        operations->route_lookup,operations->route_opaque,request->command_uuid);
+    report_out->publish_result=published;
+    if(published!=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH;
+        goto done;
+    }
+    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;
+    acknowledged=character_save_journal_v2_ack(writer,request->command_uuid,
+                                                operations->receipt,
+                                                operations->receipt_opaque);
+    report_out->ack_result=acknowledged;
+    result=protocol_ack_result(acknowledged);
+    if(result==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK)
+        report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED;
+done:
+    if(root_fd>=0) close(root_fd);
+    memset(&tuple,0,sizeof(tuple));
+    memset(&route,0,sizeof(route));
+    memset(&wire,0,sizeof(wire));
+    memset(&reread,0,sizeof(reread));
+    return result;
+}
+
+character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save(request, operations, report_out)
 const character_save_journal_v2_protocol_request *request;
 const character_save_journal_v2_protocol_operations *operations;

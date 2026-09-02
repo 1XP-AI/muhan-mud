@@ -31,6 +31,12 @@ typedef struct route_mock {
     int reopen_result;
 } route_mock;
 
+typedef struct route_mock_v3 {
+    int calls;
+    character_save_journal_v2_route_lookup_result result;
+    character_save_journal_v2_route_reply_v3 reply;
+} route_mock_v3;
+
 static int expect(condition, message)
 int condition;
 const char *message;
@@ -203,6 +209,42 @@ const char *character_id;
     strcpy(mock->reply.legacy_shard,shard);
     mock->reply.storage_format=CHARACTER_SAVE_JOURNAL_V2_ROUTE_STORAGE_LEGACY_C_ABI_V1;
     mock->reply.lifecycle=CHARACTER_SAVE_JOURNAL_V2_ROUTE_ACTIVE;
+}
+
+static character_save_journal_v2_route_lookup_result lookup_v3(opaque,
+    callback_world,input,input_length,reply)
+void *opaque;
+const char *callback_world;
+const unsigned char *input;
+size_t input_length;
+character_save_journal_v2_route_reply_v3 *reply;
+{
+    route_mock_v3 *mock=(route_mock_v3 *)opaque;
+    mock->calls++;
+    if(strcmp(callback_world,world_id)||input_length!=6||memcmp(input,"M3hero",6))
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    *reply=mock->reply;
+    return mock->result;
+}
+
+static void valid_reply_v3(mock)
+route_mock_v3 *mock;
+{
+    memset(mock,0,sizeof(*mock));
+    mock->result=CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
+    mock->reply.status=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
+    mock->reply.row_count=1;
+    strcpy(mock->reply.world_id,world_id);
+    strcpy(mock->reply.character_id,character_one);
+    memcpy(mock->reply.legacy_name,"M3hero",6);
+    mock->reply.legacy_name_length=6;
+    strcpy(mock->reply.legacy_shard,"11");
+    mock->reply.storage_format=1;
+    mock->reply.lifecycle=CHARACTER_SAVE_JOURNAL_V2_ROUTE_ACTIVE;
+    mock->reply.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING;
+    mock->reply.head_revision=7;
+    memset(mock->reply.head_sha256,'a',64);
+    mock->reply.head_sha256[64]=0;
 }
 
 static int unchanged(before, after)
@@ -516,6 +558,55 @@ char *root;
     return failed;
 }
 
+static int test_v3_head_binding(root)
+char *root;
+{
+    static const unsigned char name[]="M3hero";
+    character_save_journal_v2_writer_context held,copied;
+    character_save_journal_v2_bound_route_v3 out,before;
+    route_mock_v3 mock;
+    int failed=0;
+    if(character_save_journal_v2_writer_open(root,world_id,&held)) return 1;
+    valid_reply_v3(&mock);
+    failed+=expect(character_save_journal_v2_route_bind_v3(&held,name,sizeof(name)-1,
+        lookup_v3,&mock,&out)==CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK&&mock.calls==1&&
+        out.head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING&&
+        out.head_revision==7&&!strcmp(out.head_sha256,mock.reply.head_sha256),
+        "v3 existing route must bind exact validated head state");
+    valid_reply_v3(&mock);
+    mock.reply.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    memset(&before,0xa5,sizeof(before)); out=before;
+    failed+=expect(character_save_journal_v2_route_bind_v3(&held,name,sizeof(name)-1,
+        lookup_v3,&mock,&out)==CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_HASH&&
+        mock.calls==1&&!memcmp(&before,&out,sizeof(out)),
+        "v3 absent head with hash must reject after one callback and preserve output");
+    valid_reply_v3(&mock);
+    mock.reply.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED;
+    mock.reply.head_revision=1;
+    memset(&before,0xa5,sizeof(before)); out=before;
+    failed+=expect(character_save_journal_v2_route_bind_v3(&held,name,sizeof(name)-1,
+        lookup_v3,&mock,&out)==CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_HASH&&
+        mock.calls==1&&!memcmp(&before,&out,sizeof(out)),
+        "v3 uninitialized head must require zero revision and no hash");
+    valid_reply_v3(&mock);
+    mock.reply.head_revision=(uint64_t)INT64_MAX+1;
+    memset(&before,0xa5,sizeof(before)); out=before;
+    failed+=expect(character_save_journal_v2_route_bind_v3(&held,name,sizeof(name)-1,
+        lookup_v3,&mock,&out)==CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_REVISION&&
+        mock.calls==1&&!memcmp(&before,&out,sizeof(out)),
+        "v3 head revision outside signed-64 range must reject unchanged");
+    copied=held;
+    valid_reply_v3(&mock);
+    memset(&before,0xa5,sizeof(before)); out=before;
+    failed+=expect(character_save_journal_v2_route_bind_v3(&copied,name,sizeof(name)-1,
+        lookup_v3,&mock,&out)==CHARACTER_SAVE_JOURNAL_V2_ROUTE_CONTEXT_INVALID&&
+        mock.calls==0&&!memcmp(&before,&out,sizeof(out)),
+        "copied v3 held context must reject before callback");
+    failed+=expect(character_save_journal_v2_writer_close(&held)==0,
+                   "v3 route test must retain exact held owner");
+    return failed;
+}
+
 int main(void)
 {
     char root[PATH_MAX];
@@ -524,7 +615,7 @@ int main(void)
     strcat(root,"/character-save-journal-v2-route-test-XXXXXX");
     if(!mkdtemp(root)||fixture(root)!=0) return 1;
     character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());
-    failed=test_bind_and_same_shard(root)+test_rejections_and_immutable_output(root)+test_stale_tuple_and_lock_loser(root)+test_owner_only_handles(root)+test_callback_revalidates_exact_held_owner(root);
+    failed=test_bind_and_same_shard(root)+test_rejections_and_immutable_output(root)+test_stale_tuple_and_lock_loser(root)+test_owner_only_handles(root)+test_callback_revalidates_exact_held_owner(root)+test_v3_head_binding(root);
     failed+=expect(teardown(root)==0,"fixture teardown must remove only exact writer leaves");
     puts(failed?"character_save_journal_v2_route_test: failed":"character_save_journal_v2_route_test: ok");
     return failed?1:0;

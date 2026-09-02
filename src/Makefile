@@ -86,6 +86,7 @@ unit-test:
 	/tmp/muhan-unit/runtime_path_test
 	$(CC) -std=gnu89 -fcommon -I. -Dwrite=serializer_test_write ../tests/unit/files1_serializer_test.c files1.c -o /tmp/muhan-unit/files1_serializer_test
 	/tmp/muhan-unit/files1_serializer_test
+	$(MAKE) player-record-serializer-test
 	$(MAKE) files1-decoder-test
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/files2_load_obj_test.c files2.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files2_load_obj_test
 	/tmp/muhan-unit/files2_load_obj_test
@@ -109,12 +110,16 @@ unit-test:
 	$(MAKE) character-save-journal-test
 	$(MAKE) character-save-journal-v2-test
 	$(MAKE) character-save-journal-v2-writer-test
+	$(MAKE) character-save-journal-v2-writer-bootstrap-test
+	$(MAKE) character-save-journal-v2-uuid-test
 	$(MAKE) character-save-journal-v2-route-test
 	$(MAKE) character-save-journal-v2-publish-test
 	$(MAKE) character-save-journal-v2-ack-test
 	$(MAKE) character-save-journal-v2-recovery-test
 	$(MAKE) character-save-journal-v2-receipt-transport-test
 	$(MAKE) character-save-journal-v2-rpc-transport-test
+	$(MAKE) character-save-journal-v2-live-ops-test
+	$(MAKE) character-save-journal-v2-player-store-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
@@ -153,6 +158,30 @@ character-save-journal-v2-rpc-transport-sanitizer-test: character-save-journal-v
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_rpc_transport_test.c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_rpc_transport_sanitizer_test
+
+character-save-journal-v2-live-ops-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_live_ops_test.c character_save_journal_v2_live_ops.c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_live_ops_test
+	/tmp/muhan-unit/character_save_journal_v2_live_ops_test
+
+character-save-journal-v2-live-ops-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_live_ops_test.c character_save_journal_v2_live_ops.c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_live_ops_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_live_ops_sanitizer_test
+
+character-save-journal-v2-player-store-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_prod.o
+
+character-save-journal-v2-player-store-test: character-save-journal-v2-player-store-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_test
+	/tmp/muhan-unit/character_save_journal_v2_player_store_test
+
+character-save-journal-v2-player-store-sanitizer-test: character-save-journal-v2-player-store-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
 
 character-save-journal-v2-rpc-transport-native-compile: character-save-journal-v2-rpc-transport-static-test
 	mkdir -p /tmp/muhan-unit
@@ -321,6 +350,27 @@ character-save-journal-v2-sanitizer-test: character-save-journal-v2-static-test
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_test.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_sanitizer_test
 
+character-save-journal-v2-uuid-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_uuid_test.c character_save_journal_v2_uuid.c -o /tmp/muhan-unit/character_save_journal_v2_uuid_test
+	/tmp/muhan-unit/character_save_journal_v2_uuid_test
+
+character-save-journal-v2-uuid-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_uuid_test.c character_save_journal_v2_uuid.c -o /tmp/muhan-unit/character_save_journal_v2_uuid_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_uuid_sanitizer_test
+
+ifeq ($(shell uname -s),Linux)
+character-save-journal-v2-uuid-native-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -D_GNU_SOURCE -I. -c character_save_journal_v2_uuid_native.c -o /tmp/muhan-unit/character_save_journal_v2_uuid_native.o
+	printf '%s\n' '#include "character_save_journal_v2_uuid_native.h"' 'int main(void) { char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1]; return character_save_journal_v2_uuid_generate_native(output) != CHARACTER_SAVE_JOURNAL_V2_UUID_OK; }' | $(CC) $(V2_TEST_CFLAGS) -D_GNU_SOURCE -I. character_save_journal_v2_uuid.c /tmp/muhan-unit/character_save_journal_v2_uuid_native.o -x c - -o /tmp/muhan-unit/character_save_journal_v2_uuid_native_test
+	/tmp/muhan-unit/character_save_journal_v2_uuid_native_test
+else
+character-save-journal-v2-uuid-native-test:
+	@echo "character-save-journal-v2-uuid-native-test skipped (Linux getrandom target)"
+endif
+
 character-save-journal-v2-writer-static-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_writer_prod.o
@@ -335,6 +385,16 @@ character-save-journal-v2-writer-sanitizer-test: character-save-journal-v2-write
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_writer_test.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_writer_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_writer_sanitizer_test
+
+character-save-journal-v2-writer-bootstrap-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. ../tests/unit/character_save_journal_v2_writer_bootstrap_test.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_writer_bootstrap_test
+	/tmp/muhan-unit/character_save_journal_v2_writer_bootstrap_test
+
+character-save-journal-v2-writer-bootstrap-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_writer_bootstrap_test.c character_save_journal_v2_writer.c -o /tmp/muhan-unit/character_save_journal_v2_writer_bootstrap_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_writer_bootstrap_sanitizer_test
 
 character-save-journal-v2-route-static-test:
 	mkdir -p /tmp/muhan-unit
@@ -372,6 +432,16 @@ files1-decoder-test:
 	$(CC) -std=gnu89 -fcommon -I. -fsanitize=address,undefined -fno-omit-frame-pointer -c ../tests/unit/files1_decoder_test.c -o /tmp/muhan-unit/files1_decoder_test.o
 	$(CC) -fsanitize=address,undefined /tmp/muhan-unit/files1_decoder_files1.o /tmp/muhan-unit/files1_decoder_test.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files1_decoder_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/files1_decoder_test
+
+player-record-serializer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/player_record_serializer_test.c files1.c player_record_serializer.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/player_record_serializer_test
+	/tmp/muhan-unit/player_record_serializer_test
+
+player-record-serializer-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/player_record_serializer_test.c files1.c player_record_serializer.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/player_record_serializer_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/player_record_serializer_sanitizer_test
 
 cdto-v1-test:
 	mkdir -p /tmp/muhan-unit

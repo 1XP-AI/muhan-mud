@@ -73,6 +73,30 @@ typedef struct character_save_journal_v2_protocol_request {
     unsigned long long writer_revision;
 } character_save_journal_v2_protocol_request;
 
+typedef int (*character_save_journal_v2_protocol_serialize_v3)(
+    void *opaque, const character_save_journal_v2_writer_tuple *writer,
+    const character_save_journal_v2_bound_route_v3 *route,
+    const char *command_uuid, const unsigned char **bytes_out,
+    size_t *length_out);
+
+typedef struct character_save_journal_v2_protocol_operations_v3 {
+    character_save_journal_v2_route_lookup_v3 route_lookup;
+    void *route_opaque;
+    character_save_journal_v2_protocol_serialize_v3 serialize;
+    void *serialize_opaque;
+    character_save_journal_v2_receipt_callback receipt;
+    void *receipt_opaque;
+} character_save_journal_v2_protocol_operations_v3;
+
+/* There is intentionally no root, world, writer revision, or writer tuple in
+ * this request.  A caller that already holds the writer cannot manufacture
+ * any of those capabilities or revision authority. */
+typedef struct character_save_journal_v2_protocol_held_request_v3 {
+    const unsigned char *canonical_legacy_name;
+    size_t canonical_legacy_name_length;
+    const char *command_uuid;
+} character_save_journal_v2_protocol_held_request_v3;
+
 /* The ordered success path is held writer validation, route/epoch, serializer,
  * writer revalidation, stage/fsync/hash, live precondition through the same
  * held-root descriptor, tuple revalidation, PREPARED, publish, then ack. */
@@ -80,6 +104,16 @@ character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save(
     const character_save_journal_v2_protocol_request *request,
     const character_save_journal_v2_protocol_operations *operations,
+    character_save_journal_v2_protocol_report *report_out);
+
+/* Head-aware composition for an already-held writer.  It neither opens nor
+ * closes, rotates, seals, or installs that writer.  The v3 route supplies the
+ * only head revision and this primitive derives PREPARED revision as +1. */
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v3(
+    const character_save_journal_v2_writer_context *writer,
+    const character_save_journal_v2_protocol_held_request_v3 *request,
+    const character_save_journal_v2_protocol_operations_v3 *operations,
     character_save_journal_v2_protocol_report *report_out);
 
 /* Runs the real recovery engine under a writer lease.  The receipt callback

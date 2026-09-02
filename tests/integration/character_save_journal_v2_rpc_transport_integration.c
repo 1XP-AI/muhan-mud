@@ -12,10 +12,15 @@ static const char bad_cast_world[] = "m3-rpc-bad-cast";
 static const char character[] = "92000000-0000-0000-0000-000000000001";
 static const char writer[] = "94000000-0000-0000-0000-000000000001";
 static const char command[] = "93000000-0000-0000-0000-000000000001";
+static const char command_second[] = "93000000-0000-0000-0000-000000000002";
 static const char request[] =
     "0aa61468867b3da964d144350b287079c4bcffeec2a5938fb109a1cbe0902b4f";
 static const char hash[] =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+static const char request_second[] =
+    "278ae46f1aa952a7bd263b845ec981b3aa7dba8b8fb1208224f2da0b5f3b99ec";
+static const char hash_second[] =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 static int fail(const char *what)
 {
@@ -278,6 +283,7 @@ int main(void)
     PGconn *connection;
     character_save_journal_v2_rpc_transport_native native;
     character_save_journal_v2_rpc_route route;
+    character_save_journal_v2_rpc_route_v3 route_v3;
     character_save_journal_v2_receipt receipt;
     char until[64];
     char renewed[64];
@@ -310,6 +316,14 @@ int main(void)
         character_save_journal_v2_rpc_transport_close(&native.transport);
         return fail("writer route lookup failed");
     }
+    if (character_save_journal_v2_rpc_transport_lookup_route_v3(
+            &native.transport, world, "M3hero", &route_v3) ||
+        strcmp(route_v3.character_id, character) || route_v3.storage_format != 1 ||
+        strcmp(route_v3.head_state, "absent") || route_v3.head_sha256[0] ||
+        route_v3.head_revision != 0) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("initial v3 writer route head lookup failed");
+    }
     if (character_save_journal_v2_rpc_transport_acquire(&native.transport,
             world, writer, until, &epoch, renewed) || epoch != 1) {
         character_save_journal_v2_rpc_transport_close(&native.transport);
@@ -338,6 +352,31 @@ int main(void)
             &native.transport, &receipt)) {
         character_save_journal_v2_rpc_transport_close(&native.transport);
         return fail("receipt RPC or exact retry failed");
+    }
+    if (character_save_journal_v2_rpc_transport_lookup_route_v3(
+            &native.transport, world, "M3hero", &route_v3) ||
+        strcmp(route_v3.head_state, "existing") || strcmp(route_v3.head_sha256, hash) ||
+        route_v3.head_revision != 1) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("first save did not become v3 revision one");
+    }
+    receipt.command_id = command_second;
+    receipt.request_sha256 = request_second;
+    receipt.writer_revision = 2;
+    receipt.expected_state = "existing";
+    receipt.expected_sha256 = hash;
+    receipt.post_sha256 = hash_second;
+    if (character_save_journal_v2_rpc_transport_receipt(&native.transport,
+            &receipt)) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("second save receipt RPC failed");
+    }
+    if (character_save_journal_v2_rpc_transport_lookup_route_v3(
+            &native.transport, world, "M3hero", &route_v3) ||
+        strcmp(route_v3.head_state, "existing") ||
+        strcmp(route_v3.head_sha256, hash_second) || route_v3.head_revision != 2) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("second save did not become v3 revision two");
     }
     if (character_save_journal_v2_rpc_transport_seal(&native.transport,
             world, writer, epoch)) {

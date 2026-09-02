@@ -7,9 +7,9 @@
 /* Test-only recovery driver.  It deliberately has no production caller and
  * accepts only a held writer capability, the existing receipt seam, and a
  * zeroed report destination. */
-/* 1024 commands bounds a scan to under 40 KiB while covering a practical
- * restart backlog; installations with a tighter operational bound can test
- * it explicitly without changing recovery authority. */
+/* 1024 commands bounds a validated recovery snapshot while covering a
+ * practical restart backlog; installations with a tighter operational bound
+ * can test it explicitly without changing recovery authority. */
 #define CHARACTER_SAVE_JOURNAL_V2_RECOVERY_MAX_ENTRIES 1024
 
 typedef enum character_save_journal_v2_recovery_result {

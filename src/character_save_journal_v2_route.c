@@ -354,3 +354,134 @@ character_save_journal_v2_bound_route *out;
     memset(&tuple,0,sizeof(tuple));
     return CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK;
 }
+
+static int route_v3_head_valid(reply)
+const character_save_journal_v2_route_reply_v3 *reply;
+{
+    if(!reply || reply->head_revision > (uint64_t)INT64_MAX) return 0;
+    if(reply->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING)
+        return route_lower_hex(reply->head_sha256,
+                               CHARACTER_SAVE_JOURNAL_V2_ROUTE_HASH_HEX_LEN);
+    if(reply->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT)
+        return route_all_zero(reply->head_sha256,sizeof(reply->head_sha256));
+    if(reply->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED)
+        return reply->head_revision==0&&
+            route_all_zero(reply->head_sha256,sizeof(reply->head_sha256));
+    return 0;
+}
+
+static int route_v3_reply_name_valid(reply, name, name_length)
+const character_save_journal_v2_route_reply_v3 *reply;
+const unsigned char *name;
+size_t name_length;
+{
+    size_t i;
+    if(!reply||reply->legacy_name_length!=name_length||
+       reply->legacy_name_length>CHARACTER_SAVE_JOURNAL_V2_ROUTE_NAME_MAX||
+       !route_canonical_name(reply->legacy_name,reply->legacy_name_length)||
+       memcmp(reply->legacy_name,name,name_length)!=0) return 0;
+    for(i=reply->legacy_name_length;i<sizeof(reply->legacy_name);i++)
+        if(reply->legacy_name[i]) return 0;
+    return 1;
+}
+
+character_save_journal_v2_route_error character_save_journal_v2_route_bind_v3(
+    context, canonical_legacy_name, canonical_legacy_name_length, lookup,
+    lookup_opaque, out)
+const character_save_journal_v2_writer_context *context;
+const unsigned char *canonical_legacy_name;
+size_t canonical_legacy_name_length;
+character_save_journal_v2_route_lookup_v3 lookup;
+void *lookup_opaque;
+character_save_journal_v2_bound_route_v3 *out;
+{
+    character_save_journal_v2_writer_context_status context_status;
+    character_save_journal_v2_writer_tuple tuple, after_tuple;
+    character_save_journal_v2_route_reply_v3 reply;
+    character_save_journal_v2_bound_route_v3 next;
+    character_save_journal_v2_route_lookup_result lookup_result;
+    character_save_journal_v2_route_error error;
+    unsigned char sha1[20];
+    static const char hex[]="0123456789abcdef";
+    uint64_t held_generation, after_generation;
+    if(!out||!lookup||!route_canonical_name(canonical_legacy_name,
+                                             canonical_legacy_name_length))
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_INVALID_ARGUMENT;
+    context_status=character_save_journal_v2_writer_validate_held_for_route(
+        context,&tuple,&held_generation);
+    if(context_status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return route_context_status(context_status);
+    memset(&reply,0,sizeof(reply));
+    lookup_result=lookup(lookup_opaque,tuple.world_id,canonical_legacy_name,
+                         canonical_legacy_name_length,&reply);
+    memset(&after_tuple,0,sizeof(after_tuple));
+    context_status=character_save_journal_v2_writer_validate_held_for_route(
+        context,&after_tuple,&after_generation);
+    if(context_status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK||
+       after_generation!=held_generation||!route_tuple_same(&tuple,&after_tuple)) {
+        error=context_status==CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK?
+            CHARACTER_SAVE_JOURNAL_V2_ROUTE_CONTEXT_INVALID:
+            route_context_status(context_status);
+        memset(&after_tuple,0,sizeof(after_tuple));
+        memset(&reply,0,sizeof(reply));
+        memset(&tuple,0,sizeof(tuple));
+        return error;
+    }
+    memset(&after_tuple,0,sizeof(after_tuple));
+    if(lookup_result!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_FAILURE;
+    else if(reply.status!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS;
+    else if(reply.row_count!=1)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_CARDINALITY;
+    else if(route_bounded(reply.world_id,CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX)!=
+            strlen(tuple.world_id)||!route_zero_tail(reply.world_id,
+            strlen(tuple.world_id),CHARACTER_SAVE_JOURNAL_V2_WRITER_WORLD_MAX)||
+            strcmp(reply.world_id,tuple.world_id)!=0)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_WORLD;
+    else if(!route_uuid(reply.character_id))
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_CHARACTER_ID;
+    else if(!route_v3_reply_name_valid(&reply,canonical_legacy_name,
+                                       canonical_legacy_name_length))
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_NAME;
+    else if(!route_lower_hex(reply.legacy_shard,2))
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_SHARD;
+    else if(reply.storage_format!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_STORAGE_LEGACY_C_ABI_V1)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_FORMAT;
+    else if(!route_lifecycle_valid(reply.lifecycle))
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_LIFECYCLE;
+    else if(reply.head_state!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING&&
+            reply.head_state!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT&&
+            reply.head_state!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_STATE;
+    else if(reply.head_revision>(uint64_t)INT64_MAX)
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_REVISION;
+    else if(!route_v3_head_valid(&reply))
+        error=CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_HEAD_HASH;
+    else {
+        route_sha1(canonical_legacy_name,canonical_legacy_name_length,sha1);
+        error=reply.legacy_shard[0]!=hex[sha1[0]>>4]||
+              reply.legacy_shard[1]!=hex[sha1[0]&15]?
+            CHARACTER_SAVE_JOURNAL_V2_ROUTE_REPLY_SHARD:
+            CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK;
+    }
+    if(error==CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK) {
+        memset(&next,0,sizeof(next));
+        memcpy(next.world_id,reply.world_id,sizeof(next.world_id));
+        memcpy(next.character_id,reply.character_id,sizeof(next.character_id));
+        memcpy(next.legacy_name,reply.legacy_name,sizeof(next.legacy_name));
+        next.legacy_name_length=reply.legacy_name_length;
+        memcpy(next.legacy_shard,reply.legacy_shard,sizeof(next.legacy_shard));
+        next.storage_format=reply.storage_format;
+        next.lifecycle=reply.lifecycle;
+        next.head_state=reply.head_state;
+        next.head_revision=reply.head_revision;
+        memcpy(next.head_sha256,reply.head_sha256,sizeof(next.head_sha256));
+        *out=next;
+        memset(&next,0,sizeof(next));
+    }
+    memset(sha1,0,sizeof(sha1));
+    memset(&reply,0,sizeof(reply));
+    memset(&tuple,0,sizeof(tuple));
+    return error;
+}

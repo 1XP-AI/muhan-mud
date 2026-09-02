@@ -11,8 +11,9 @@ typedef enum player_store_result {
 } player_store_result;
 
 typedef struct player_store_ops {
-    int (*save)(char *name, struct creature *player);
-    int (*load)(char *name, struct creature **player);
+    int (*save)(void *opaque, char *name, struct creature *player);
+    int (*load)(void *opaque, char *name, struct creature **player);
+    void *opaque;
 } player_store_ops;
 
 int player_store_set(const player_store_ops *ops);

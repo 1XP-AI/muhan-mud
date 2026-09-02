@@ -1,0 +1,70 @@
+#include "character_save_journal_v2_player_store.h"
+#include "mstruct.h"
+
+#include <stdio.h>
+#include <string.h>
+
+typedef enum test_mode { TEST_NORMAL, TEST_SERIALIZER_FAILURE, TEST_ROUTE_DRIFT,
+    TEST_DEFERRED, TEST_INVALID_FREEZE, TEST_REJECTED_FREEZE,
+    TEST_LOCAL_INCOMPLETE, TEST_REENTRANT } test_mode;
+
+typedef struct fixture {
+    character_save_journal_v2_player_store store;
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_live_ops live_ops;
+    character_save_journal_v2_rpc_transport transport;
+    player_record_serializer_limits limits;
+    char buffer[256];
+    creature player;
+    int validate_calls,deadline_calls,renew_calls,uuid_calls,serializer_calls;
+    int protocol_calls,load_calls,serializer_failure,renew_failure,nested_result,revision;
+    test_mode mode;
+    char loaded_name[16];
+} fixture;
+
+static fixture *current;
+static int expect(int value,const char *what)
+{ if(value)return 0; fprintf(stderr,"character_save_journal_v2_player_store: %s\n",what); return 1; }
+static void tuple(character_save_journal_v2_writer_tuple *out)
+{ memset(out,0,sizeof(*out)); strcpy(out->world_id,"m3-world"); strcpy(out->writer_instance_id,"10000000-0000-4000-8000-000000000001"); out->writer_epoch=7; }
+
+character_save_journal_v2_writer_context_status character_save_journal_v2_writer_validate_held(const character_save_journal_v2_writer_context *writer,character_save_journal_v2_writer_tuple *out)
+{ if(!current||writer!=&current->writer||!out)return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID; current->validate_calls++; tuple(out); return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK; }
+character_save_journal_v2_rpc_transport_state character_save_journal_v2_rpc_transport_get_state(const character_save_journal_v2_rpc_transport *transport)
+{ return transport?transport->state:CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_CLOSED; }
+character_save_journal_v2_rpc_transport_outcome character_save_journal_v2_live_ops_writer_epoch_renew(void *opaque,const character_save_journal_v2_writer_tuple *held,const char *deadline)
+{ character_save_journal_v2_live_ops *ops=(character_save_journal_v2_live_ops *)opaque; if(!current||ops!=&current->live_ops||!held||!deadline||strcmp(held->world_id,"m3-world")||held->writer_epoch!=7)return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID; current->renew_calls++; if(strcmp(deadline,"2026-09-03T00:02:00Z"))return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID; return current->renew_failure?CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED:CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK; }
+character_save_journal_v2_route_lookup_result character_save_journal_v2_live_ops_route_lookup_v3(void *opaque,const char *world,const unsigned char *name,size_t length,character_save_journal_v2_route_reply_v3 *reply)
+{ (void)opaque;(void)world;(void)name;(void)length;(void)reply;return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE; }
+character_save_journal_v2_receipt_result character_save_journal_v2_live_ops_receipt_callback(void *opaque,const character_save_journal_v2_receipt *receipt)
+{ (void)opaque;(void)receipt;return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED; }
+int player_record_serialize_bounded(creature *player,char perm_only,char *buffer,unsigned long capacity,unsigned long *written,const player_record_serializer_limits *limits)
+{ static const char bytes[]="bounded-record"; if(!current||player!=&current->player||perm_only||!buffer||!written||!limits||capacity<sizeof(bytes))return PLAYER_RECORD_SERIALIZER_INVALID; current->serializer_calls++; if(current->serializer_failure){*written=0;return PLAYER_RECORD_SERIALIZER_NO_SPACE;} memcpy(buffer,bytes,sizeof(bytes));*written=sizeof(bytes);return PLAYER_RECORD_SERIALIZER_OK; }
+
+character_save_journal_v2_protocol_result character_save_journal_v2_protocol_save_held_v3(const character_save_journal_v2_writer_context *writer,const character_save_journal_v2_protocol_held_request_v3 *request,const character_save_journal_v2_protocol_operations_v3 *operations,character_save_journal_v2_protocol_report *report)
+{ const unsigned char *bytes=0;size_t length=0;int serialized; if(!current||writer!=&current->writer||!request||!operations||!report||current->renew_calls!=current->protocol_calls+1||current->uuid_calls!=current->protocol_calls+1||strcmp(request->command_uuid,"20000000-0000-4000-8000-000000000002")||operations->route_lookup!=character_save_journal_v2_live_ops_route_lookup_v3||operations->route_opaque!=&current->live_ops||operations->receipt!=character_save_journal_v2_live_ops_receipt_callback||operations->receipt_opaque!=&current->live_ops)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;current->protocol_calls++;memset(report,0,sizeof(*report));if(current->mode==TEST_ROUTE_DRIFT){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED;serialized=operations->serialize(operations->serialize_opaque,0,0,request->command_uuid,&bytes,&length);return serialized?CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER:CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH;}if(current->mode==TEST_REENTRANT){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;current->nested_result=character_save_journal_v2_player_store_save(operations->serialize_opaque,(char *)"M3hero",&current->player);if(report->reached!=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;}serialized=operations->serialize(operations->serialize_opaque,0,0,request->command_uuid,&bytes,&length);if(serialized||!bytes||!length){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER;}if(current->mode==TEST_DEFERRED){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;report->ack_result=CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_DEFERRED;}if(current->mode==TEST_INVALID_FREEZE){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;report->ack_result=CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_FREEZE;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_FROZEN;}if(current->mode==TEST_REJECTED_FREEZE){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;report->ack_result=CHARACTER_SAVE_JOURNAL_V2_ACK_REJECTED_FREEZE;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_FROZEN;}if(current->mode==TEST_LOCAL_INCOMPLETE){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;report->ack_result=CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK;}report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED;current->revision++;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK; }
+
+static int deadline(void *opaque,char output[64])
+{ fixture *test=(fixture *)opaque;test->deadline_calls++;strcpy(output,"2026-09-03T00:02:00Z");return 0; }
+static int command_uuid(void *opaque,char output[37])
+{ fixture *test=(fixture *)opaque;test->uuid_calls++;strcpy(output,"20000000-0000-4000-8000-000000000002");return 0; }
+static int delegated_load(void *opaque,char *name,creature **player)
+{ fixture *test=(fixture *)opaque;test->load_calls++;strcpy(test->loaded_name,name);*player=&test->player;return PLAYER_STORE_NOT_FOUND; }
+static void setup(fixture *test,test_mode mode)
+{ memset(test,0,sizeof(*test));current=test;test->mode=mode;test->transport.state=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_READY;test->live_ops.transport=&test->transport;test->limits.max_depth=64;test->limits.max_objects=8192;strcpy(test->player.name,"M3hero");character_save_journal_v2_player_store_init(&test->store,&test->writer,&test->live_ops,test->buffer,sizeof(test->buffer),&test->limits,deadline,test,command_uuid,test,delegated_load,test); }
+static int clean(const fixture *test)
+{ return test->store.state==CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE&&test->store.buffer_length==0&&test->store.active_player==0; }
+
+static int test_normal_and_name_rejection(void)
+{ fixture test;player_store_ops ops;int failed=0;setup(&test,TEST_NORMAL);ops=character_save_journal_v2_player_store_build(&test.store);failed+=expect(ops.opaque==&test.store&&ops.save&&ops.load,"build returns a by-value opaque PlayerStore dispatch");failed+=expect(ops.save(ops.opaque,"M3other",&test.player)==PLAYER_STORE_IO_ERROR&&!test.validate_calls&&!test.deadline_calls&&!test.protocol_calls&&test.store.last_report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_NONE&&clean(&test),"name/player mismatch rejects before writer or callbacks with a fresh report");failed+=expect(ops.save(ops.opaque,"M3hero",&test.player)==PLAYER_STORE_OK&&test.validate_calls==1&&test.deadline_calls==1&&test.renew_calls==1&&test.uuid_calls==1&&test.serializer_calls==1&&test.protocol_calls==1&&test.revision==1&&clean(&test),"normal save validates, renews, serializes, and publishes without owning writer");failed+=expect(ops.save(ops.opaque,"M3other",&test.player)==PLAYER_STORE_IO_ERROR&&test.store.last_report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_NONE&&test.protocol_calls==1&&clean(&test),"idle pre-dispatch rejection clears the prior save report");return failed; }
+static int test_pre_renew_failure(void)
+{ fixture test;setup(&test,TEST_NORMAL);test.renew_failure=1;return expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&test.validate_calls==1&&test.deadline_calls==1&&test.renew_calls==1&&!test.uuid_calls&&!test.serializer_calls&&!test.protocol_calls&&clean(&test),"pre-renew failure makes no protocol or serialization mutation"); }
+static int test_serializer_failure_and_route_drift(void)
+{ fixture test;int failed=0;setup(&test,TEST_SERIALIZER_FAILURE);test.serializer_failure=1;failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&test.serializer_calls==1&&!test.protocol_calls&&test.store.last_report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_NONE&&clean(&test),"serializer failure clears caller transient state before protocol mutation");setup(&test,TEST_ROUTE_DRIFT);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&test.serializer_calls==1&&test.store.last_report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED&&clean(&test),"pre-publish route drift remains a PlayerStore I/O error");return failed; }
+static int test_post_publish_outcomes_and_sequential_revision(void)
+{ fixture test;int failed=0;setup(&test,TEST_DEFERRED);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.store.last_report.ack_result==CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED&&clean(&test),"published deferred receipt maps to successful legacy save and journal recovery");setup(&test,TEST_INVALID_FREEZE);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.store.last_report.ack_result==CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_FREEZE&&clean(&test),"published malformed-receipt freeze remains a durable legacy save");setup(&test,TEST_REJECTED_FREEZE);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.store.last_report.ack_result==CHARACTER_SAVE_JOURNAL_V2_ACK_REJECTED_FREEZE&&clean(&test),"published fence or CAS freeze remains a durable legacy save");setup(&test,TEST_LOCAL_INCOMPLETE);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.store.last_report.ack_result==CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE&&clean(&test),"published DB_ACKED-local-incomplete receipt maps to journal recovery success");setup(&test,TEST_NORMAL);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.revision==2&&test.protocol_calls==2&&clean(&test),"sequential saves retain held ownership and delegate consecutive revisions to v3");return failed; }
+static int test_load_and_reentrant_rejection(void)
+{ fixture test;creature *loaded=0;int failed=0;setup(&test,TEST_NORMAL);failed+=expect(character_save_journal_v2_player_store_load(&test.store,"M3hero",&loaded)==PLAYER_STORE_NOT_FOUND&&loaded==&test.player&&test.load_calls==1&&!strcmp(test.loaded_name,"M3hero"),"load delegates unchanged to caller file store");setup(&test,TEST_REENTRANT);failed+=expect(character_save_journal_v2_player_store_save(&test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.nested_result==PLAYER_STORE_IO_ERROR&&test.validate_calls==1&&test.renew_calls==1&&test.protocol_calls==1&&clean(&test),"reentrant save rejects before a second validation or renewal");return failed; }
+
+int main(void)
+{ return test_normal_and_name_rejection()|test_pre_renew_failure()|test_serializer_failure_and_route_drift()|test_post_publish_outcomes_and_sequential_revision()|test_load_and_reentrant_rejection(); }

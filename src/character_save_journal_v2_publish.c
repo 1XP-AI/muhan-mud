@@ -1212,6 +1212,129 @@ done:
     return result;
 }
 
+static int pub_route_v3_matches(route, tuple, wire)
+const character_save_journal_v2_bound_route_v3 *route;
+const character_save_journal_v2_writer_tuple *tuple;
+const character_save_journal_v2_wire *wire;
+{
+    unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    size_t length, i;
+    int expected_existing;
+    if(!route||!tuple||!wire||wire->writer_revision==0||
+       wire->writer_revision>(uint64_t)INT64_MAX||
+       route->head_revision>(uint64_t)INT64_MAX||
+       pub_decode_name(wire,name,&length)||
+       strcmp(tuple->world_id,wire->world_id)||
+       strcmp(tuple->writer_instance_id,wire->writer_instance_id)||
+       tuple->writer_epoch!=wire->writer_epoch||
+       strcmp(route->world_id,wire->world_id)||
+       strcmp(route->character_id,wire->character_id)||
+       route->legacy_name_length!=length||memcmp(route->legacy_name,name,length)||
+       strcmp(route->legacy_shard,wire->legacy_shard)||
+       route->storage_format!=wire->storage_format||
+       (route->lifecycle!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_IMPORTED_UNCLAIMED&&
+        route->lifecycle!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_PROVISIONING&&
+        route->lifecycle!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_ACTIVE)||
+       route->head_revision+1!=wire->writer_revision) return 0;
+    for(i=length;i<sizeof(route->legacy_name);i++) if(route->legacy_name[i]) return 0;
+    expected_existing=wire->expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING;
+    if(expected_existing)
+        return route->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING&&
+            !strcmp(route->head_sha256,wire->expected_sha256);
+    return wire->expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT&&
+        route->head_state==CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT&&
+        !route->head_sha256[0];
+}
+
+character_save_journal_v2_publish_result character_save_journal_v2_publish_v3(
+    writer, canonical_legacy_name, canonical_legacy_name_length, lookup,
+    lookup_opaque, command_uuid)
+const character_save_journal_v2_writer_context *writer;
+const unsigned char *canonical_legacy_name;
+size_t canonical_legacy_name_length;
+character_save_journal_v2_route_lookup_v3 lookup;
+void *lookup_opaque;
+const char *command_uuid;
+{
+    v2_publish_tree tree;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_wire wire;
+    character_save_journal_v2_bound_route_v3 route;
+    character_save_journal_v2_writer_context_status context_status;
+    char stage_leaf[44];
+    unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    size_t name_length;
+    int published, root_fd=-1;
+    character_save_journal_v2_publish_result result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+    memset(&tree,0,sizeof(tree));
+    tree.root_fd=tree.player_fd=tree.shard_fd=tree.journal_fd=tree.stage_fd=-1;
+    memset(&tuple,0,sizeof(tuple));
+    memset(&wire,0,sizeof(wire));
+    memset(&route,0,sizeof(route));
+    if(!writer||!canonical_legacy_name||!canonical_legacy_name_length||!lookup||
+       !pub_uuid(command_uuid))
+        return CHARACTER_SAVE_JOURNAL_V2_PUBLISH_INVALID_ARGUMENT;
+    context_status=character_save_journal_v2_writer_dup_held_root_fd(writer,&root_fd);
+    if(context_status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return pub_context_result(context_status);
+    if(pub_journal_open(root_fd,&tree)) {
+        root_fd=-1;
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    root_fd=-1;
+    if(pub_read_record(&tree,command_uuid,&wire,&published)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    pub_tree_close(&tree);
+    context_status=character_save_journal_v2_writer_dup_held_root_fd(writer,&root_fd);
+    if(context_status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result=pub_context_result(context_status);
+        goto done;
+    }
+    if(pub_tree_open(root_fd,wire.legacy_shard,&tree)) {
+        root_fd=-1;
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    root_fd=-1;
+    if(pub_read_record(&tree,command_uuid,&wire,&published)) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_JOURNAL;
+        goto done;
+    }
+    /* No local mutation has happened.  Re-resolve here, not at entry, so
+     * the callback proves the head still matches this exact PREPARED wire. */
+    if(character_save_journal_v2_route_bind_v3(writer,canonical_legacy_name,
+                                                canonical_legacy_name_length,
+                                                lookup,lookup_opaque,&route)!=
+       CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY;
+        goto done;
+    }
+    context_status=character_save_journal_v2_writer_validate_held(writer,&tuple);
+    if(context_status!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result=pub_context_result(context_status);
+        goto done;
+    }
+    if(!pub_route_v3_matches(&route,&tuple,&wire)||
+       pub_decode_name(&wire,name,&name_length)||
+       character_save_journal_v2_stage_leaf(wire.command_uuid,stage_leaf,
+                                            sizeof(stage_leaf))) {
+        result=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IDENTITY;
+        goto done;
+    }
+    result=pub_local_publish(&tree,&wire,name,stage_leaf,published);
+done:
+    pub_cleanup_close(root_fd);
+    memset(&tuple,0,sizeof(tuple));
+    memset(&route,0,sizeof(route));
+    memset(&wire,0,sizeof(wire));
+    memset(name,0,sizeof(name));
+    pub_tree_close(&tree);
+    return result;
+}
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
 void character_save_journal_v2_publish_set_trusted_uid_for_test(uid)
 uid_t uid;

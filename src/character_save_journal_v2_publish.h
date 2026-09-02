@@ -31,6 +31,17 @@ character_save_journal_v2_publish_result character_save_journal_v2_publish(
     character_save_journal_v2_route_lookup lookup, void *lookup_opaque,
     const char *command_uuid);
 
+/* v3 repeats the authoritative head-aware route lookup after immutable
+ * PREPARED evidence is reread and immediately before any local promotion.
+ * The route must prove the PREPARED identity, expected preimage, and the
+ * predecessor revision; neither caller input nor reply fields select files. */
+character_save_journal_v2_publish_result character_save_journal_v2_publish_v3(
+    const character_save_journal_v2_writer_context *writer,
+    const unsigned char *canonical_legacy_name,
+    size_t canonical_legacy_name_length,
+    character_save_journal_v2_route_lookup_v3 lookup, void *lookup_opaque,
+    const char *command_uuid);
+
 /* Route-free, test-only recovery of one immutable PREPARED journal.  The
  * held writer supplies the only root capability; journal identity supplies
  * the canonical name, shard, expected preimage and staged payload.  No path,
