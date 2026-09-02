@@ -98,6 +98,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-ack-test
 	$(MAKE) character-save-journal-v2-recovery-test
 	$(MAKE) character-save-journal-v2-receipt-transport-test
+	$(MAKE) character-save-journal-v2-protocol-test
 
 character-save-journal-v2-receipt-transport-static-test:
 	mkdir -p /tmp/muhan-unit
@@ -113,6 +114,25 @@ character-save-journal-v2-receipt-transport-sanitizer-test: character-save-journ
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_receipt_transport_test.c character_save_journal_v2_receipt_transport.c -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_receipt_transport_sanitizer_test
+
+character-save-journal-v2-protocol-prod-link-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_protocol.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_protocol_prod_link_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -Wl,-map,/tmp/muhan-unit/character_save_journal_v2_protocol_prod.map -o /tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test
+	/tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test
+
+character-save-journal-v2-protocol-static-test: character-save-journal-v2-protocol-prod-link-test
+	python3 ../tests/unit/character_save_journal_v2_protocol_no_live_link_test.py --binary /tmp/muhan-unit/character_save_journal_v2_protocol_prod_link_test --object /tmp/muhan-unit/character_save_journal_v2_protocol_prod.o --map /tmp/muhan-unit/character_save_journal_v2_protocol_prod.map --source character_save_journal_v2_protocol.c --header character_save_journal_v2_protocol.h --makefile Makefile
+
+character-save-journal-v2-protocol-test: character-save-journal-v2-protocol-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. ../tests/unit/character_save_journal_v2_protocol_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_test
+	/tmp/muhan-unit/character_save_journal_v2_protocol_test
+
+character-save-journal-v2-protocol-sanitizer-test: character-save-journal-v2-protocol-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_protocol_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_protocol_sanitizer_test
 
 character-save-journal-v2-receipt-transport-native-compile:
 	mkdir -p /tmp/muhan-unit

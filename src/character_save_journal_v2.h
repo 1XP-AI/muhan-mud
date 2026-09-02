@@ -48,8 +48,26 @@ int character_save_journal_v2_request_sha256(const character_save_journal_v2_wir
 int character_save_journal_v2_prepare(const char *root,
                                       const character_save_journal_v2_wire *wire,
                                       const void *stage_bytes, size_t stage_length);
+/* Descriptor-capability variants used while a writer lease is held.  `root_fd`
+ * is borrowed: these calls never close it or re-open a root pathname.  Stage
+ * first, observe the live precondition next, and only then commit PREPARED. */
+int character_save_journal_v2_stage_at(int root_fd,
+                                       const character_save_journal_v2_wire *wire,
+                                       const void *stage_bytes,
+                                       size_t stage_length);
+int character_save_journal_v2_live_precondition_at(
+    int root_fd, const character_save_journal_v2_wire *wire);
+int character_save_journal_v2_commit_prepared_at(
+    int root_fd, const character_save_journal_v2_wire *wire);
+int character_save_journal_v2_prepare_at(int root_fd,
+                                         const character_save_journal_v2_wire *wire,
+                                         const void *stage_bytes,
+                                         size_t stage_length);
 int character_save_journal_v2_read_prepared(const char *root, const char *command_uuid,
                                             character_save_journal_v2_wire *out);
+int character_save_journal_v2_read_prepared_at(int root_fd,
+                                               const char *command_uuid,
+                                               character_save_journal_v2_wire *out);
 int character_save_journal_v2_hash_fd(int fd,
                                       char out[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN + 1]);
 /* Recovery-only hash for the exact two-name absent-link promotion state. */
@@ -67,6 +85,8 @@ void character_save_journal_v2_fsync_counts_for_test(unsigned int *stage_file,
                                                       unsigned int *journal_dir);
 void character_save_journal_v2_pause_hash_after_fstat_for_test(int ready_fd,
                                                                 int release_fd);
+void character_save_journal_v2_pause_live_precondition_after_open_for_test(
+    int ready_fd, int release_fd);
 void character_save_journal_v2_pause_component_after_lstat_for_test(
     const char *component, int ready_fd, int release_fd);
 void character_save_journal_v2_write_faults_for_test(int eintr_once,

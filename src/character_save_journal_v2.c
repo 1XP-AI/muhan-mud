@@ -37,6 +37,7 @@ static uid_t v2_trusted_uid = V2_RUNTIME_UID;
 static int v2_fail_stage_file, v2_fail_stage_dir, v2_fail_journal_file, v2_fail_journal_dir;
 static unsigned int v2_stage_file_syncs, v2_stage_dir_syncs, v2_journal_file_syncs, v2_journal_dir_syncs;
 static int v2_hash_ready_fd = -1, v2_hash_release_fd = -1;
+static int v2_live_ready_fd = -1, v2_live_release_fd = -1;
 static char v2_pause_component[64];
 static int v2_component_ready_fd = -1, v2_component_release_fd = -1;
 static int v2_write_eintr_once, v2_write_short_once;
@@ -341,12 +342,24 @@ const char *path;
 static void v2_tree_close(t)
 v2_tree *t;
 { if(t->stage_fd>=0)close(t->stage_fd); if(t->journal_fd>=0)close(t->journal_fd); if(t->shard_fd>=0)close(t->shard_fd); if(t->player_fd>=0)close(t->player_fd); if(t->root_fd>=0)close(t->root_fd); memset(t,0,sizeof(*t)); t->root_fd=t->player_fd=t->shard_fd=t->journal_fd=t->stage_fd=-1; }
-static int v2_tree_open(root,shard,t)
-const char *root; const char *shard; v2_tree *t;
-{ memset(t,0,sizeof(*t)); t->root_fd=t->player_fd=t->shard_fd=t->journal_fd=t->stage_fd=-1; t->root_fd=v2_open_root(root); if(t->root_fd<0)goto bad; t->player_fd=v2_open_component(t->root_fd,"player"); if(t->player_fd<0)goto bad; t->shard_fd=v2_open_component(t->player_fd,shard); if(t->shard_fd<0)goto bad; t->journal_fd=v2_open_component(t->root_fd,"character-save-journal"); if(t->journal_fd<0)goto bad; t->stage_fd=v2_open_component(t->root_fd,"character-save-stage"); if(t->stage_fd<0)goto bad; return 0; bad:v2_tree_close(t);return -1; }
-static int v2_journal_tree_open(root,t)
-const char *root; v2_tree *t;
-{ memset(t,0,sizeof(*t));t->root_fd=t->player_fd=t->shard_fd=t->journal_fd=t->stage_fd=-1;t->root_fd=v2_open_root(root);if(t->root_fd<0)goto bad;t->journal_fd=v2_open_component(t->root_fd,"character-save-journal");if(t->journal_fd<0)goto bad;return 0;bad:v2_tree_close(t);return -1; }
+/* The descriptor forms are capability boundaries: callers retain their held
+ * root descriptor and this slice owns only an atomic CLOEXEC duplicate. */
+static int v2_tree_open_fd(root_fd,shard,t)
+int root_fd; const char *shard; v2_tree *t;
+{ memset(t,0,sizeof(*t)); t->root_fd=t->player_fd=t->shard_fd=t->journal_fd=t->stage_fd=-1;
+  if(root_fd<0 || (t->root_fd=fcntl(root_fd,F_DUPFD_CLOEXEC,0))<0 || !v2_dir_ok(t->root_fd))goto bad;
+  t->player_fd=v2_open_component(t->root_fd,"player"); if(t->player_fd<0)goto bad;
+  t->shard_fd=v2_open_component(t->player_fd,shard); if(t->shard_fd<0)goto bad;
+  t->journal_fd=v2_open_component(t->root_fd,"character-save-journal"); if(t->journal_fd<0)goto bad;
+  t->stage_fd=v2_open_component(t->root_fd,"character-save-stage"); if(t->stage_fd<0)goto bad;
+  return 0;
+bad:v2_tree_close(t);return -1; }
+static int v2_journal_tree_open_fd(root_fd,t)
+int root_fd; v2_tree *t;
+{ memset(t,0,sizeof(*t));t->root_fd=t->player_fd=t->shard_fd=t->journal_fd=t->stage_fd=-1;
+  if(root_fd<0 || (t->root_fd=fcntl(root_fd,F_DUPFD_CLOEXEC,0))<0 || !v2_dir_ok(t->root_fd))goto bad;
+  t->journal_fd=v2_open_component(t->root_fd,"character-save-journal");if(t->journal_fd<0)goto bad;return 0;
+bad:v2_tree_close(t);return -1; }
 
 static ssize_t v2_write_operation(fd, bytes, length)
 int fd;
@@ -424,22 +437,216 @@ int character_save_journal_v2_hash_fd_two_links(fd,out)
 int fd; char out[65];
 { return v2_hash_fd_links(fd,out,2); }
 
+/* This is deliberately shared by the path and held-descriptor preparation
+ * paths.  A PREPARED record is evidence of an observed live precondition,
+ * not merely a later publish-time hope. */
+static int v2_decode_live_leaf(wire, leaf)
+const character_save_journal_v2_wire *wire;
+char leaf[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+{
+    size_t i, count;
+    unsigned int high, low;
+    if(!wire || !leaf || !v2_name_hex(wire)) return -1;
+    count = strlen(wire->legacy_name_key_hex) / 2;
+    for(i = 0; i < count; i++) {
+        high = wire->legacy_name_key_hex[i * 2] <= '9' ?
+            (unsigned int)(wire->legacy_name_key_hex[i * 2] - '0') :
+            (unsigned int)(wire->legacy_name_key_hex[i * 2] - 'a' + 10);
+        low = wire->legacy_name_key_hex[i * 2 + 1] <= '9' ?
+            (unsigned int)(wire->legacy_name_key_hex[i * 2 + 1] - '0') :
+            (unsigned int)(wire->legacy_name_key_hex[i * 2 + 1] - 'a' + 10);
+        leaf[i] = (char)((high << 4) | low);
+    }
+    leaf[count] = 0;
+    return 0;
+}
+
+static int v2_live_precondition(tree, wire)
+v2_tree *tree;
+const character_save_journal_v2_wire *wire;
+{
+    char leaf[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    char digest[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN + 1];
+    int fd = -1, result = -1;
+    if(!tree || !wire || v2_decode_live_leaf(wire, leaf) != 0) goto done;
+    fd = openat(tree->shard_fd, leaf,
+                O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if(fd < 0) {
+        if(errno == ENOENT &&
+           wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT)
+            result = 0;
+        goto done;
+    }
+#ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
+    if(v2_live_ready_fd >= 0) {
+        char signal;
+        ssize_t count;
+        do count = write(v2_live_ready_fd, "x", 1);
+        while(count < 0 && errno == EINTR);
+        if(count != 1) goto done;
+        do count = read(v2_live_release_fd, &signal, 1);
+        while(count < 0 && errno == EINTR);
+        v2_live_ready_fd = -1;
+        if(count != 1) goto done;
+    }
+#endif
+    if(wire->expected_state != CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ||
+       character_save_journal_v2_hash_fd(fd, digest) != 0 ||
+       strcmp(digest, wire->expected_sha256) != 0) goto done;
+    if(v2_close_file(fd, 2) != 0) {
+        fd = -1;
+        goto done;
+    }
+    fd = -1;
+    result = 0;
+done:
+    if(fd >= 0) close(fd);
+    memset(leaf, 0, sizeof(leaf));
+    memset(digest, 0, sizeof(digest));
+    return result;
+}
+
 static int v2_format(w,out,out_size)
 const character_save_journal_v2_wire *w; char *out; size_t out_size;
 { char leaf[44]; int n; if(character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf))!=0)return -1; n=snprintf(out,out_size,"version=2\nstate=PREPARED\nwriter_instance_id=%s\ncharacter_id=%s\nrequest_sha256=%s\nworld_id=%s\nlegacy_name_key_hex=%s\nlegacy_shard=%s\ncommand_uuid=%s\nwriter_epoch=%" PRIu64 "\nwriter_revision=%" PRIu64 "\nexpected_state=%s\nexpected_sha256=%s\npost_sha256=%s\nstorage_format=%u\nstaged_leaf=%s\n",w->writer_instance_id,w->character_id,w->request_sha256,w->world_id,w->legacy_name_key_hex,w->legacy_shard,w->command_uuid,w->writer_epoch,w->writer_revision,v2_expected_name(w->expected_state),w->expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT?"-":w->expected_sha256,w->post_sha256,(unsigned int)w->storage_format,leaf);return n<0||(size_t)n>=out_size?-1:n; }
 
+int character_save_journal_v2_stage_at(root_fd,w,stage_bytes,stage_length)
+int root_fd; const character_save_journal_v2_wire *w; const void *stage_bytes;
+size_t stage_length;
+{
+    v2_tree t;
+    char request[65], leaf[44], digest[65];
+    int stage_fd = -1, result = -1;
+    if(!stage_bytes || stage_length > CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES ||
+       !v2_wire_valid(w,1) ||
+       character_save_journal_v2_request_sha256(w,request) != 0 ||
+       strcmp(request,w->request_sha256) ||
+       character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf)) != 0 ||
+       v2_tree_open_fd(root_fd,w->legacy_shard,&t) != 0) return -1;
+    stage_fd = openat(t.stage_fd,leaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|
+                      O_NONBLOCK|O_CLOEXEC,0600);
+    if(!v2_file_ok(stage_fd) || v2_write_all(stage_fd,stage_bytes,stage_length) != 0 ||
+       v2_sync(stage_fd,1) != 0) goto out;
+    if(v2_close_file(stage_fd,1) != 0) {
+        stage_fd = -1;
+        goto out;
+    }
+    stage_fd = -1;
+    if(v2_sync(t.stage_fd,2) != 0) goto out;
+    stage_fd = openat(t.stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
+    if(character_save_journal_v2_hash_fd(stage_fd,digest) != 0 ||
+       strcmp(digest,w->post_sha256)) goto out;
+    if(v2_close_file(stage_fd,2) != 0) {
+        stage_fd = -1;
+        goto out;
+    }
+    stage_fd = -1;
+    result = 0;
+out:
+    if(stage_fd >= 0) close(stage_fd);
+    memset(request,0,sizeof(request));
+    memset(leaf,0,sizeof(leaf));
+    memset(digest,0,sizeof(digest));
+    v2_tree_close(&t);
+    return result;
+}
+
+int character_save_journal_v2_live_precondition_at(root_fd,w)
+int root_fd; const character_save_journal_v2_wire *w;
+{
+    v2_tree t;
+    int result;
+    if(!v2_wire_valid(w,1) || v2_tree_open_fd(root_fd,w->legacy_shard,&t) != 0)
+        return -1;
+    result = v2_live_precondition(&t,w);
+    v2_tree_close(&t);
+    return result;
+}
+
+static int v2_staged_bytes_match(tree,w)
+v2_tree *tree;
+const character_save_journal_v2_wire *w;
+{
+    char leaf[44], digest[65];
+    int fd = -1, result = -1;
+    if(!tree || !w ||
+       character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf)) != 0)
+        goto out;
+    fd = openat(tree->stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
+    if(character_save_journal_v2_hash_fd(fd,digest) != 0 ||
+       strcmp(digest,w->post_sha256)) goto out;
+    if(v2_close_file(fd,2) != 0) {
+        fd = -1;
+        goto out;
+    }
+    fd = -1;
+    result = 0;
+out:
+    if(fd >= 0) close(fd);
+    memset(leaf,0,sizeof(leaf));
+    memset(digest,0,sizeof(digest));
+    return result;
+}
+
+int character_save_journal_v2_commit_prepared_at(root_fd,w)
+int root_fd; const character_save_journal_v2_wire *w;
+{
+    v2_tree t;
+    char request[65], jleaf[48], text[V2_TEXT_MAX];
+    int journal_fd = -1, result = -1, n;
+    if(!v2_wire_valid(w,1) ||
+       character_save_journal_v2_request_sha256(w,request) != 0 ||
+       strcmp(request,w->request_sha256) ||
+       v2_tree_open_fd(root_fd,w->legacy_shard,&t) != 0) return -1;
+    /* The stage was made durable before the live observation.  Re-read it at
+     * the commit boundary so a replaced or altered stage can never acquire a
+     * PREPARED record after that observation. */
+    if(v2_staged_bytes_match(&t,w) != 0) goto out;
+    n = snprintf(jleaf,sizeof(jleaf),"%s.prepared",w->command_uuid);
+    if(n < 0 || (size_t)n >= sizeof(jleaf) || v2_format(w,text,sizeof(text)) < 0)
+        goto out;
+    journal_fd = openat(t.journal_fd,jleaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|
+                        O_NONBLOCK|O_CLOEXEC,0600);
+    if(!v2_file_ok(journal_fd) ||
+       v2_write_all(journal_fd,text,strlen(text)) != 0 ||
+       v2_sync(journal_fd,3) != 0) goto out;
+    if(v2_close_file(journal_fd,3) != 0) {
+        journal_fd = -1;
+        goto out;
+    }
+    journal_fd = -1;
+    if(v2_sync(t.journal_fd,4) != 0) goto out;
+    result = 0;
+out:
+    if(journal_fd >= 0) close(journal_fd);
+    memset(request,0,sizeof(request));
+    memset(jleaf,0,sizeof(jleaf));
+    memset(text,0,sizeof(text));
+    v2_tree_close(&t);
+    return result;
+}
+
+int character_save_journal_v2_prepare_at(root_fd,w,stage_bytes,stage_length)
+int root_fd; const character_save_journal_v2_wire *w; const void *stage_bytes;
+size_t stage_length;
+{
+    if(character_save_journal_v2_stage_at(root_fd,w,stage_bytes,stage_length) != 0 ||
+       character_save_journal_v2_live_precondition_at(root_fd,w) != 0 ||
+       character_save_journal_v2_commit_prepared_at(root_fd,w) != 0) return -1;
+    return 0;
+}
+
 int character_save_journal_v2_prepare(root,w,stage_bytes,stage_length)
 const char *root; const character_save_journal_v2_wire *w; const void *stage_bytes; size_t stage_length;
-{ v2_tree t; char request[65], leaf[44], jleaf[48], digest[65], text[V2_TEXT_MAX]; int stage_fd=-1,journal_fd=-1,result=-1,n;
-  if(!stage_bytes||stage_length>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES||!v2_wire_valid(w,1)||character_save_journal_v2_request_sha256(w,request)!=0||strcmp(request,w->request_sha256)||character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf))!=0||v2_tree_open(root,w->legacy_shard,&t)!=0)return -1;
-  stage_fd=openat(t.stage_fd,leaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC,0600); if(!v2_file_ok(stage_fd)||v2_write_all(stage_fd,stage_bytes,stage_length)!=0||v2_sync(stage_fd,1)!=0)goto out; if(v2_close_file(stage_fd,1)!=0){stage_fd=-1;goto out;}stage_fd=-1;
-  if(v2_sync(t.stage_fd,2)!=0)goto out;
-  stage_fd=openat(t.stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
-  if(character_save_journal_v2_hash_fd(stage_fd,digest)!=0||strcmp(digest,w->post_sha256))goto out;
-  if(v2_close_file(stage_fd,2)!=0){stage_fd=-1;goto out;}
-  stage_fd=-1;
-  n=snprintf(jleaf,sizeof(jleaf),"%s.prepared",w->command_uuid); if(n<0||(size_t)n>=sizeof(jleaf)||v2_format(w,text,sizeof(text))<0)goto out; journal_fd=openat(t.journal_fd,jleaf,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC,0600); if(!v2_file_ok(journal_fd)||v2_write_all(journal_fd,text,strlen(text))!=0||v2_sync(journal_fd,3)!=0)goto out; if(v2_close_file(journal_fd,3)!=0){journal_fd=-1;goto out;}journal_fd=-1;if(v2_sync(t.journal_fd,4)!=0)goto out;result=0;
- out:if(stage_fd>=0)close(stage_fd);if(journal_fd>=0)close(journal_fd);memset(text,0,sizeof(text));v2_tree_close(&t);return result; }
+{
+    int root_fd, result;
+    root_fd = v2_open_root(root);
+    if(root_fd < 0) return -1;
+    result = character_save_journal_v2_prepare_at(root_fd, w, stage_bytes,
+                                                   stage_length);
+    if(close(root_fd) != 0) result = -1;
+    return result;
+}
 
 static int v2_parse_u64(s,out)
 const char *s; uint64_t *out;
@@ -536,8 +743,8 @@ bad:
     return -1;
 }
 
-int character_save_journal_v2_read_prepared(root,command_uuid,out)
-const char *root; const char *command_uuid; character_save_journal_v2_wire *out;
+int character_save_journal_v2_read_prepared_at(root_fd,command_uuid,out)
+int root_fd; const char *command_uuid; character_save_journal_v2_wire *out;
 {
     v2_tree tree, verify;
     character_save_journal_v2_wire parsed;
@@ -552,7 +759,7 @@ const char *root; const char *command_uuid; character_save_journal_v2_wire *out;
     fd = -1;
     result = -1;
     count = 0;
-    if(!v2_uuid(command_uuid) || v2_journal_tree_open(root, &tree) != 0)
+    if(!v2_uuid(command_uuid) || v2_journal_tree_open_fd(root_fd, &tree) != 0)
         return -1;
     formatted = snprintf(leaf, sizeof(leaf), "%s.prepared", command_uuid);
     if(formatted < 0 || (size_t)formatted >= sizeof(leaf)) goto out;
@@ -581,7 +788,7 @@ const char *root; const char *command_uuid; character_save_journal_v2_wire *out;
         goto out;
     }
     fd = -1;
-    if(v2_tree_open(root, parsed.legacy_shard, &verify) != 0) goto out;
+    if(v2_tree_open_fd(root_fd, parsed.legacy_shard, &verify) != 0) goto out;
     v2_tree_close(&verify);
     *out = parsed;
     result = 0;
@@ -594,11 +801,27 @@ out:
     return result;
 }
 
+int character_save_journal_v2_read_prepared(root,command_uuid,out)
+const char *root; const char *command_uuid; character_save_journal_v2_wire *out;
+{
+    int root_fd, result;
+    if(out) memset(out, 0, sizeof(*out));
+    root_fd = v2_open_root(root);
+    if(root_fd < 0) return -1;
+    result = character_save_journal_v2_read_prepared_at(root_fd, command_uuid, out);
+    if(close(root_fd) != 0) {
+        if(out) memset(out, 0, sizeof(*out));
+        result = -1;
+    }
+    return result;
+}
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
 void character_save_journal_v2_set_trusted_uid_for_test(uid_t uid){v2_trusted_uid=uid;}
 void character_save_journal_v2_fail_fsync_for_test(int a,int b,int c,int d){v2_fail_stage_file=a!=0;v2_fail_stage_dir=b!=0;v2_fail_journal_file=c!=0;v2_fail_journal_dir=d!=0;}
 void character_save_journal_v2_fsync_counts_for_test(unsigned int *a,unsigned int *b,unsigned int *c,unsigned int *d){if(a)*a=v2_stage_file_syncs;if(b)*b=v2_stage_dir_syncs;if(c)*c=v2_journal_file_syncs;if(d)*d=v2_journal_dir_syncs;}
 void character_save_journal_v2_pause_hash_after_fstat_for_test(int ready,int release){v2_hash_ready_fd=ready;v2_hash_release_fd=release;}
+void character_save_journal_v2_pause_live_precondition_after_open_for_test(int ready,int release){v2_live_ready_fd=ready;v2_live_release_fd=release;}
 void character_save_journal_v2_pause_component_after_lstat_for_test(component,ready,release)
 const char *component; int ready,release;
 { size_t length=component?strlen(component):0;memset(v2_pause_component,0,sizeof(v2_pause_component));if(length&&length<sizeof(v2_pause_component))memcpy(v2_pause_component,component,length+1);v2_component_ready_fd=ready;v2_component_release_fd=release; }

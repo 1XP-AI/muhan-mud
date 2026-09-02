@@ -146,5 +146,37 @@ static int test_structure_and_non_authority(void)
 static int test_scan_failures_and_writer_reopen(void)
 { char root[PATH_MAX],relative[128];character_save_journal_v2_writer_context writer;character_save_journal_v2_recovery_report report;evidence_snapshot before,after;mock state;int failed=0;if(setup(root,"scan-failures",&writer)||prepare(root,COMMAND_A,"M3alpha","A",1)||journal_relative(relative,sizeof(relative),COMMAND_A,"prepared")||snapshot(root,relative,&before))return 1;memset(&state,0,sizeof(state));character_save_journal_v2_recovery_fail_root_close_for_test(1);memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_JOURNAL&&!state.calls&&report_zero(&report)&&snapshot(root,relative,&after)==0&&same_snapshot(&before,&after),"root descriptor close failure leaves report and evidence unchanged");character_save_journal_v2_recovery_fail_allocation_for_test(1);memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_NOMEM&&!state.calls&&report_zero(&report)&&snapshot(root,relative,&after)==0&&same_snapshot(&before,&after),"OOM leaves report and evidence unchanged");character_save_journal_v2_recovery_set_entry_cap_for_test(0);memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_STRUCTURE&&!state.calls&&report_zero(&report)&&snapshot(root,relative,&after)==0&&same_snapshot(&before,&after),"entry cap leaves report and evidence unchanged");character_save_journal_v2_recovery_set_entry_cap_for_test(CHARACTER_SAVE_JOURNAL_V2_RECOVERY_MAX_ENTRIES);character_save_journal_v2_recovery_fail_closedir_for_test(1);memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_STRUCTURE&&!state.calls&&report_zero(&report)&&snapshot(root,relative,&after)==0&&same_snapshot(&before,&after)&&character_save_journal_v2_recovery_scan_fd_cloexec_for_test(),"closedir failure leaves report and evidence unchanged, scan fd is CLOEXEC");if(character_save_journal_v2_writer_close(&writer)||remove_tree(root))return failed+1;if(setup(root,"context-stop",&writer)||prepare(root,COMMAND_A,"M3alpha","A",1)||prepare(root,COMMAND_B,"M3beta","B",1))return failed+1;memset(&state,0,sizeof(state));state.writer=&writer;state.close_writer=1;state.results[0]=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_CONTEXT_INVALID&&state.calls==1&&report.visited==2&&report.publish_attempted==2&&report.publish_results[CHARACTER_SAVE_JOURNAL_V2_PUBLISH_CONTEXT_INVALID]==1&&report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED]==1&&report_totals_match(&report),"a later publish context failure stops traversal with the exact mapped result");if(remove_tree(root))return failed+1;if(setup(root,"reopen",&writer)||prepare(root,COMMAND_A,"M3alpha","A",1)||prepare(root,COMMAND_B,"M3beta","B",1))return failed+1;memset(&state,0,sizeof(state));state.root=root;state.writer=&writer;state.reopen_writer=1;memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE&&state.calls==1&&!strcmp(state.order[0],COMMAND_A)&&!command_exists(root,COMMAND_B,"published")&&report.visited==1&&report.ack_attempted==1&&report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE]==1&&report_totals_match(&report),"callback writer close/reopen stops immediately after local-incomplete DB ACK");if(character_save_journal_v2_writer_close(&writer)||remove_tree(root))return failed+1;return failed; }
 
+static int test_malformed_marker_callback_replay(void)
+{
+    char root[PATH_MAX], relative[128];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_recovery_report report;
+    evidence_snapshot before, after;
+    mock state;
+    int failed = 0;
+
+    if(setup(root, "malformed-marker-replay", &writer) ||
+       prepare(root, COMMAND_A, NAME_A, "A", 1) ||
+       journal_relative(relative, sizeof(relative), COMMAND_A, "acked.tmp") ||
+       leaf(root, relative, "malformed", 9) || snapshot(root, relative, &before))
+        return 1;
+    memset(&state, 0, sizeof(state));
+    memset(&report, 0, sizeof(report));
+    failed += bad(character_save_journal_v2_recovery_run(&writer, receipt, &state,
+                                                          &report) ==
+                  CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE &&
+                  state.calls == 1 && !strcmp(state.order[0], COMMAND_A) &&
+                  report.discovered == 1 && report.ack_attempted == 1 &&
+                  report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE] == 1 &&
+                  snapshot(root, relative, &after) == 0 &&
+                  same_snapshot(&before, &after) &&
+                  command_exists(root, COMMAND_A, "published") &&
+                  !command_exists(root, COMMAND_A, "acked") &&
+                  report_totals_match(&report),
+                  "malformed local marker replays the exact receipt and preserves evidence");
+    if(teardown(&writer, root)) return failed + 1;
+    return failed;
+}
+
 int main(void)
-{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }
+{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }

@@ -623,7 +623,7 @@ void *callback_opaque;
     char prepared[64], published[64], acked[64], stage_leaf[44];
     unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
     size_t name_length;
-    int root_fd = -1, n, pair;
+    int root_fd = -1, n, pair, local_repair_incomplete = 0;
     struct stat stage_st, marker_st;
     uint64_t held_generation, after_generation;
     character_save_journal_v2_ack_result result = CHARACTER_SAVE_JOURNAL_V2_ACK_IO;
@@ -668,17 +668,18 @@ void *callback_opaque;
         n = snprintf(temporary, sizeof(temporary), "%s.acked.tmp", command_id);
         if(n < 0 || (size_t)n >= sizeof(temporary)) { result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL; goto done; }
         pair = ack_reconcile_marker_pair(&tree, acked, temporary, &wire, 0);
-        if(pair < 0) { result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL; goto done; }
+        /* A bad local ACK marker is incident evidence, not an authority
+         * failure.  All prepared/published/live/writer checks above still
+         * fail closed, but an exact idempotent DB receipt must be replayed
+         * before we report that the local repair remains incomplete. */
+        if(pair < 0) local_repair_incomplete = 1;
         if(pair == 0) {
             if(fstatat(tree.journal_fd, acked, &marker_st,
                        AT_SYMLINK_NOFOLLOW) == 0) {
-                if(ack_exact_marker(&tree, acked, &wire, "DB_ACKED")) {
-                    result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
-                    goto done;
-                }
+                if(ack_exact_marker(&tree, acked, &wire, "DB_ACKED"))
+                    local_repair_incomplete = 1;
             } else if(errno != ENOENT) {
-                result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
-                goto done;
+                local_repair_incomplete = 1;
             }
         }
     }
@@ -707,6 +708,10 @@ void *callback_opaque;
     }
     if(after_generation != held_generation || !ack_tuple_matches(&tuple, &wire) ||
        ack_live_post(&tree, &wire, name)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE;
+        goto done;
+    }
+    if(local_repair_incomplete) {
         result = CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE;
         goto done;
     }
