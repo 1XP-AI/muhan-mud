@@ -83,6 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           make -C src character-save-journal-v2-receipt-transport-integration CC=gcc PG_CONFIG=pg_config
+          make -C src character-save-journal-v2-receipt-transport-restart-integration CC=gcc PG_CONFIG=pg_config
 
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
@@ -317,6 +318,7 @@ jobs:
           make -C src character-save-journal-v2-ack-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-recovery-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-receipt-transport-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc
           make -C src object-graph-v1-sanitizer-test CC=gcc

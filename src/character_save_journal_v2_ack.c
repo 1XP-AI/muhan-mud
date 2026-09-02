@@ -7,12 +7,33 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
+#include <signal.h>
+#endif
 
 #ifndef O_NOFOLLOW
 #error "v2 ack requires O_NOFOLLOW"
+#endif
+
+#ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
+static void ack_crash_after(event)
+character_save_journal_v2_crash_cutpoint event;
+{
+    const char *text = getenv("M3_V2_CRASH_CUTPOINT");
+    char *end;
+    unsigned long selected;
+    if(!text || !*text) return;
+    selected = strtoul(text, &end, 10);
+    if(*end || selected != (unsigned long)event) return;
+    (void)kill(getpid(), SIGKILL);
+    _exit(127);
+}
+#else
+#define ack_crash_after(event) ((void)0)
 #endif
 #ifndef O_DIRECTORY
 #error "v2 ack requires O_DIRECTORY"
@@ -406,7 +427,9 @@ nlink_t links;
     if(ack_format(wire, state, expected, sizeof(expected))) goto done;
     fd = openat(tree->journal_fd, leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if(!ack_file_links_ok(fd, links) || ack_read_fd(fd, actual, sizeof(actual)) ||
-       strcmp(actual, expected) || ack_marker_file_sync(fd) ||
+       strcmp(actual, expected) || ack_marker_file_sync(fd)) goto done;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_TEMP_FILE_FSYNC);
+    if(
        ack_close_consume(&fd, 3)) goto done;
     result = 0;
 done:
@@ -553,10 +576,13 @@ int repair;
        ack_exact_marker_links(tree, target, wire, "DB_ACKED", 2) ||
        ack_exact_marker_links(tree, temporary, wire, "DB_ACKED", 2)) return -1;
     if(!repair) return 1;
-    if(ack_exact_marker_sync_links(tree, temporary, wire, "DB_ACKED", 2) ||
-       ack_parent_sync(tree->journal_fd, 1) ||
-       ack_temp_unlink(tree->journal_fd, temporary) ||
-       ack_parent_sync(tree->journal_fd, 2)) return -1;
+    if(ack_exact_marker_sync_links(tree, temporary, wire, "DB_ACKED", 2)) return -1;
+    if(ack_parent_sync(tree->journal_fd, 1)) return -1;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_FIRST_JOURNAL_FSYNC);
+    if(ack_temp_unlink(tree->journal_fd, temporary)) return -1;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_TEMP_UNLINKAT);
+    if(ack_parent_sync(tree->journal_fd, 2)) return -1;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_FINAL_JOURNAL_FSYNC);
     return 1;
 }
 
@@ -584,8 +610,10 @@ const character_save_journal_v2_wire *wire;
     } else if(errno == ENOENT) {
         fd = openat(tree->journal_fd, temporary, O_WRONLY | O_CREAT | O_EXCL |
                     O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
-        if(!ack_file_ok(fd) || ack_write_all(fd, text, strlen(text)) || ack_marker_file_sync(fd) ||
-           ack_close_consume(&fd, 3)) goto done;
+        if(!ack_file_ok(fd) || ack_write_all(fd, text, strlen(text)) ||
+           ack_marker_file_sync(fd)) goto done;
+        ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_TEMP_FILE_FSYNC);
+        if(ack_close_consume(&fd, 3)) goto done;
     } else goto done;
 #ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
     if(v2_ack_fail_after_temp) {
@@ -594,12 +622,16 @@ const character_save_journal_v2_wire *wire;
     }
 #endif
     if(linkat(tree->journal_fd, temporary, tree->journal_fd, target, 0)) goto done;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_MARKER_LINKAT);
 #ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
     if(v2_ack_post_link) { v2_ack_post_link = 0; goto done; }
 #endif
-    if(ack_parent_sync(tree->journal_fd, 1) ||
-       ack_temp_unlink(tree->journal_fd, temporary) ||
-       ack_parent_sync(tree->journal_fd, 2)) goto done;
+    if(ack_parent_sync(tree->journal_fd, 1)) goto done;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_FIRST_JOURNAL_FSYNC);
+    if(ack_temp_unlink(tree->journal_fd, temporary)) goto done;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_TEMP_UNLINKAT);
+    if(ack_parent_sync(tree->journal_fd, 2)) goto done;
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ACKED_FINAL_JOURNAL_FSYNC);
     result = 0;
 done:
     if(fd >= 0) close(fd);
@@ -697,6 +729,7 @@ void *callback_opaque;
     receipt.post_sha256 = wire.post_sha256;
     receipt.storage_format = wire.storage_format;
     callback_result = callback(callback_opaque, &receipt);
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_RECEIPT_RETURNED);
     if(callback_result == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED) { result = CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED; goto done; }
     if(callback_result == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE) { result = CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_FREEZE; goto done; }
     if(callback_result == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE ||

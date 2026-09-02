@@ -41,6 +41,7 @@ FORBIDDEN_OBJECTS = {
     "resource_path.o",
     "trusted_admission.o",
 }
+CRASH_TEST_RUNTIME = {"getenv", "kill", "strtoul", "exit"}
 
 
 def normalize_symbol(raw: str) -> str:
@@ -111,6 +112,12 @@ def main() -> None:
         raise SystemExit(
             "v2 production object has forbidden live symbols: "
             + ", ".join(forbidden)
+        )
+    crash_runtime = sorted(undefined & CRASH_TEST_RUNTIME)
+    if crash_runtime:
+        raise SystemExit(
+            "v2 production object references crash-test runtime: "
+            + ", ".join(crash_runtime)
         )
 
     globals_ = nm_symbols(args.object, "-g")

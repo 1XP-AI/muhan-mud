@@ -5,12 +5,33 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
+#include <signal.h>
+#endif
 
 #ifndef O_NOFOLLOW
 #error "v2 publish requires O_NOFOLLOW"
+#endif
+
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
+static void pub_crash_after(event)
+character_save_journal_v2_crash_cutpoint event;
+{
+    const char *text = getenv("M3_V2_CRASH_CUTPOINT");
+    char *end;
+    unsigned long selected;
+    if(!text || !*text) return;
+    selected = strtoul(text, &end, 10);
+    if(*end || selected != (unsigned long)event) return;
+    (void)kill(getpid(), SIGKILL);
+    _exit(127);
+}
+#else
+#define pub_crash_after(event) ((void)0)
 #endif
 #ifndef O_DIRECTORY
 #error "v2 publish requires O_DIRECTORY"
@@ -554,6 +575,7 @@ int sync_file;
     if(pub_read_fd_text(fd, text, sizeof(text)) ||
        strcmp(text, expected) || pub_parse(text, &parsed, &state) || !state ||
        memcmp(&parsed, wire, sizeof(parsed)) || pub_sync(fd, 1)) goto done;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_TEMP_FILE_FSYNC);
     if(pub_close(fd, 4) != 0) {
         fd = -1;
         goto done;
@@ -596,10 +618,14 @@ const character_save_journal_v2_wire *wire;
         target_st.st_dev != temporary_st.st_dev ||
         target_st.st_ino != temporary_st.st_ino)) return -1;
     if(pub_marker_exact(tree, target, wire, 2, 0) ||
-       pub_marker_exact(tree, temporary, wire, 2, 1) ||
-       /* Persist target creation before removing the only other name. */
-       pub_sync(tree->journal_fd, 3) || pub_unlink(tree->journal_fd, temporary, 2) ||
-       pub_sync(tree->journal_fd, 3)) return -1;
+       pub_marker_exact(tree, temporary, wire, 2, 1)) return -1;
+    /* Persist target creation before removing the only other name. */
+    if(pub_sync(tree->journal_fd, 3)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_FIRST_JOURNAL_FSYNC);
+    if(pub_unlink(tree->journal_fd, temporary, 2)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_TEMP_UNLINKAT);
+    if(pub_sync(tree->journal_fd, 3)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_FINAL_JOURNAL_FSYNC);
     return 0;
 }
 
@@ -739,11 +765,18 @@ const character_save_journal_v2_wire *wire;
     /* Reject corrupt shared evidence before its names can be made less
      * inspectable.  The later strict one-link hash remains defense in depth. */
     if(pub_hash_two_link_leaf(tree->stage_fd, stage_leaf, digest, 2) ||
-       strcmp(digest, wire->post_sha256) ||
-       /* The live name must be durable before its stage name can be removed. */
-       pub_sync(tree->shard_fd, 2) || pub_unlink(tree->stage_fd, stage_leaf, 1) ||
-       pub_sync(tree->stage_fd, 4) ||
-       pub_hash_leaf(tree->shard_fd, live_leaf, digest, &missing, 3) || missing ||
+       strcmp(digest, wire->post_sha256)) {
+        memset(digest, 0, sizeof(digest));
+        return -1;
+    }
+    /* The live name must be durable before its stage name can be removed. */
+    if(pub_sync(tree->shard_fd, 2)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_LIVE_PARENT_FSYNC);
+    if(pub_unlink(tree->stage_fd, stage_leaf, 1)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_STAGE_UNLINKAT);
+    if(pub_sync(tree->stage_fd, 4)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_STAGE_PARENT_FSYNC);
+    if(pub_hash_leaf(tree->shard_fd, live_leaf, digest, &missing, 3) || missing ||
        strcmp(digest, wire->post_sha256)) {
         memset(digest, 0, sizeof(digest));
         return -1;
@@ -761,12 +794,17 @@ const char *live_leaf;
      * never replaced.  The ordered directory fsyncs make the two-name state
      * recoverable across a crash. */
     if(pub_link(tree->stage_fd, stage_leaf, tree->shard_fd, live_leaf, 1)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_LINKAT);
 #ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
     /* linkat and unlink are not an atomic move: expose the recoverable pair. */
     if(v2_publish_crash_after_live_promotion) _exit(91);
 #endif
-    if(pub_sync(tree->shard_fd, 2) || pub_unlink(tree->stage_fd, stage_leaf, 1) ||
-       pub_sync(tree->stage_fd, 4)) return -1;
+    if(pub_sync(tree->shard_fd, 2)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_LIVE_PARENT_FSYNC);
+    if(pub_unlink(tree->stage_fd, stage_leaf, 1)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_STAGE_UNLINKAT);
+    if(pub_sync(tree->stage_fd, 4)) return -1;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_ABSENT_STAGE_PARENT_FSYNC);
     return 0;
 }
 
@@ -839,6 +877,7 @@ const character_save_journal_v2_wire *wire;
                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
         if(!pub_file_ok(fd) || pub_write_all(fd, text, strlen(text)) || pub_sync(fd, 1))
             goto done;
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_TEMP_FILE_FSYNC);
         if(pub_close(fd, 4) != 0) {
             fd = -1;
             goto done;
@@ -847,9 +886,14 @@ const character_save_journal_v2_wire *wire;
     }
     /* linkat is the portable no-replace promotion primitive.  EEXIST leaves
      * both command evidence and a competing target untouched for inspection. */
-    if(pub_link(tree->journal_fd, temporary, tree->journal_fd, target, 2) ||
-       pub_sync(tree->journal_fd, 3) || pub_unlink(tree->journal_fd, temporary, 2) ||
-       pub_sync(tree->journal_fd, 3)) goto done;
+    if(pub_link(tree->journal_fd, temporary, tree->journal_fd, target, 2)) goto done;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_MARKER_LINKAT);
+    if(pub_sync(tree->journal_fd, 3)) goto done;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_FIRST_JOURNAL_FSYNC);
+    if(pub_unlink(tree->journal_fd, temporary, 2)) goto done;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_TEMP_UNLINKAT);
+    if(pub_sync(tree->journal_fd, 3)) goto done;
+    pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PUBLISHED_FINAL_JOURNAL_FSYNC);
     result = 0;
 done:
     if(fd >= 0) close(fd);
@@ -911,10 +955,22 @@ int published;
     }
     if(stage_missing) {
         if(pub_hash_leaf(tree->shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
-           live_missing || strcmp(live_hash, wire->post_sha256) ||
-           pub_sync(tree->shard_fd, 2) || pub_sync(tree->stage_fd, 4) ||
-           pub_mark_published(tree, wire)) result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
-        else result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
+           live_missing || strcmp(live_hash, wire->post_sha256)) {
+            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+            goto done;
+        }
+        if(pub_sync(tree->shard_fd, 2)) {
+            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+            goto done;
+        }
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_RECOVERY_LIVE_PARENT_FSYNC);
+        if(pub_sync(tree->stage_fd, 4)) {
+            result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;
+            goto done;
+        }
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_RECOVERY_STAGE_PARENT_FSYNC);
+        result = pub_mark_published(tree, wire) ?
+            CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE : CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK;
         goto done;
     }
     if(strcmp(stage_hash, wire->post_sha256)) {
@@ -938,16 +994,26 @@ int published;
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
         goto done;
     }
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING)
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_EXISTING_RENAMEAT);
 #ifdef CHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING
     /* Existing-state replacement retains its post-rename, pre-destination
      * fsync crash boundary. */
     if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING &&
        v2_publish_crash_after_live_promotion) _exit(91);
 #endif
-    if(pub_sync(tree->shard_fd, 2) || pub_sync(tree->stage_fd, 4)) {
+    if(pub_sync(tree->shard_fd, 2)) {
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
         goto done;
     }
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING)
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_EXISTING_LIVE_PARENT_FSYNC);
+    if(pub_sync(tree->stage_fd, 4)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;
+        goto done;
+    }
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING)
+        pub_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_EXISTING_STAGE_PARENT_FSYNC);
     if(pub_hash_leaf(tree->shard_fd, (const char *)name, live_hash, &live_missing, 3) ||
        live_missing || strcmp(live_hash, wire->post_sha256)) {
         result = CHARACTER_SAVE_JOURNAL_V2_PUBLISH_LIVE;

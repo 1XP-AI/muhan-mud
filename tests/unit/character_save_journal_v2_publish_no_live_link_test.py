@@ -12,6 +12,7 @@ FORBIDDEN = (
     "player_store_", "file_player_store_", "player_path_", "onboarding_",
     "db_", "postgres_", "supabase_", "pq", "savegame",
 )
+CRASH_TEST_RUNTIME = {"getenv", "kill", "strtoul", "exit"}
 
 
 def symbols(path: Path, *flags: str) -> set[str]:
@@ -48,6 +49,12 @@ def main() -> None:
     forbidden = sorted(symbol for symbol in undefined if any(symbol == item or symbol.startswith(item) for item in FORBIDDEN))
     if forbidden:
         raise SystemExit("publish object has live dependency: " + ", ".join(forbidden))
+    crash_runtime = sorted(undefined & CRASH_TEST_RUNTIME)
+    if crash_runtime:
+        raise SystemExit(
+            "publish production object references crash-test runtime: "
+            + ", ".join(crash_runtime)
+        )
     globals_ = symbols(args.object, "-g")
     if "character_save_journal_v2_publish" not in globals_ or \
        "character_save_journal_v2_publish_recover" not in globals_:

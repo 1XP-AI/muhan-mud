@@ -1,14 +1,36 @@
 #include "character_save_journal_v2_writer.h"
+#ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
+#include "character_save_journal_v2.h"
+#include <signal.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef CHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING
+static void v2_writer_crash_after(event)
+character_save_journal_v2_crash_cutpoint event;
+{
+  const char *text=getenv("M3_V2_CRASH_CUTPOINT");
+  char *end;
+  unsigned long selected;
+  if(!text||!*text) return;
+  selected=strtoul(text,&end,10);
+  if(*end||selected!=(unsigned long)event) return;
+  (void)kill(getpid(),SIGKILL);
+  _exit(127);
+}
+#else
+#define v2_writer_crash_after(event) ((void)0)
+#endif
 
 #ifndef O_NOFOLLOW
 #error "v2 writer lock requires O_NOFOLLOW"
@@ -514,10 +536,16 @@ int *lock_out;
       close(fd);
       return -1;
   }
-  if(v2_writer_sync(fd,1)!=0||v2_writer_sync(journal_fd,2)!=0) {
+  if(v2_writer_sync(fd,1)!=0) {
       close(fd);
       return -1;
   }
+  v2_writer_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_WRITER_LOCK_FILE_FSYNC);
+  if(v2_writer_sync(journal_fd,2)!=0) {
+      close(fd);
+      return -1;
+  }
+  v2_writer_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_WRITER_JOURNAL_DIR_FSYNC);
   *lock_out=fd;
   return 0;
 }

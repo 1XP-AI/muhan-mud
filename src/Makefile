@@ -99,6 +99,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-recovery-test
 	$(MAKE) character-save-journal-v2-receipt-transport-test
 	$(MAKE) character-save-journal-v2-protocol-test
+	$(MAKE) character-save-journal-v2-crash-test
 
 character-save-journal-v2-receipt-transport-static-test:
 	mkdir -p /tmp/muhan-unit
@@ -129,6 +130,16 @@ character-save-journal-v2-protocol-test: character-save-journal-v2-protocol-stat
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. ../tests/unit/character_save_journal_v2_protocol_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_test
 	/tmp/muhan-unit/character_save_journal_v2_protocol_test
 
+character-save-journal-v2-crash-test: character-save-journal-v2-protocol-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. ../tests/unit/character_save_journal_v2_crash_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_crash_test
+	/tmp/muhan-unit/character_save_journal_v2_crash_test
+
+character-save-journal-v2-crash-sanitizer-test: character-save-journal-v2-protocol-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_crash_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_crash_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_crash_sanitizer_test
+
 character-save-journal-v2-protocol-sanitizer-test: character-save-journal-v2-protocol-static-test
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_protocol_test.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_protocol_sanitizer_test
@@ -146,9 +157,18 @@ character-save-journal-v2-receipt-transport-integration:
 	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-receipt-transport-integration: PG_CONFIG unavailable" >&2; exit 2; }
 	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_receipt_transport_integration.c character_save_journal_v2_receipt_transport.c character_save_journal_v2_receipt_transport_native.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_receipt_transport_integration
 	bash ../supabase/tests/m3_receipt_transport_integration.sh /tmp/muhan-unit/character_save_journal_v2_receipt_transport_integration
+
+character-save-journal-v2-receipt-transport-restart-integration: character-save-journal-v2-protocol-static-test character-save-journal-v2-receipt-transport-static-test
+	mkdir -p /tmp/muhan-unit
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "character-save-journal-v2-receipt-transport-restart-integration: PG_CONFIG unavailable" >&2; exit 2; }
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -DCHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/integration/character_save_journal_v2_rpc_restart_integration.c character_save_journal_v2_receipt_transport.c character_save_journal_v2_receipt_transport_native.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -L"$$($(PG_CONFIG) --libdir)" -lpq -o /tmp/muhan-unit/character_save_journal_v2_rpc_restart_integration
+	bash ../supabase/tests/m3_receipt_transport_restart_integration.sh /tmp/muhan-unit/character_save_journal_v2_rpc_restart_integration
 else
 character-save-journal-v2-receipt-transport-integration:
 	@echo "m3 receipt transport integration skipped (set M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE=1)"
+
+character-save-journal-v2-receipt-transport-restart-integration:
+	@echo "m3 receipt transport restart integration skipped (set M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE=1)"
 endif
 
 character-save-journal-v2-recovery-static-test:

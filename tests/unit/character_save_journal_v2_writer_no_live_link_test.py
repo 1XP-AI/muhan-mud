@@ -25,6 +25,7 @@ FORBIDDEN_PREFIXES = (
     "bank_",
     "onboarding_",
 )
+CRASH_TEST_RUNTIME = {"getenv", "kill", "strtoul", "exit"}
 
 
 def symbols(path: Path, *flags: str) -> set[str]:
@@ -74,6 +75,12 @@ def main() -> None:
     )
     if forbidden:
         raise SystemExit("writer object has live dependency: " + ", ".join(forbidden))
+    crash_runtime = sorted(undefined & CRASH_TEST_RUNTIME)
+    if crash_runtime:
+        raise SystemExit(
+            "writer production object references crash-test runtime: "
+            + ", ".join(crash_runtime)
+        )
 
     globals_ = symbols(args.object, "-g")
     if "character_save_journal_v2_writer_open" not in globals_:

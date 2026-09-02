@@ -10,9 +10,29 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
+#include <signal.h>
+#endif
 
 #ifndef O_NOFOLLOW
 #error "v2 staged journal requires O_NOFOLLOW"
+#endif
+
+#ifdef CHARACTER_SAVE_JOURNAL_V2_TESTING
+static void v2_crash_after(event)
+character_save_journal_v2_crash_cutpoint event;
+{
+    const char *text = getenv("M3_V2_CRASH_CUTPOINT");
+    char *end;
+    unsigned long selected;
+    if(!text || !*text) return;
+    selected = strtoul(text, &end, 10);
+    if(*end || selected != (unsigned long)event) return;
+    (void)kill(getpid(), SIGKILL);
+    _exit(127);
+}
+#else
+#define v2_crash_after(event) ((void)0)
 #endif
 #ifndef O_DIRECTORY
 #error "v2 staged journal requires O_DIRECTORY"
@@ -527,12 +547,14 @@ size_t stage_length;
                       O_NONBLOCK|O_CLOEXEC,0600);
     if(!v2_file_ok(stage_fd) || v2_write_all(stage_fd,stage_bytes,stage_length) != 0 ||
        v2_sync(stage_fd,1) != 0) goto out;
+    v2_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_STAGE_FILE_FSYNC);
     if(v2_close_file(stage_fd,1) != 0) {
         stage_fd = -1;
         goto out;
     }
     stage_fd = -1;
     if(v2_sync(t.stage_fd,2) != 0) goto out;
+    v2_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_STAGE_DIR_FSYNC);
     stage_fd = openat(t.stage_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
     if(character_save_journal_v2_hash_fd(stage_fd,digest) != 0 ||
        strcmp(digest,w->post_sha256)) goto out;
@@ -610,12 +632,14 @@ int root_fd; const character_save_journal_v2_wire *w;
     if(!v2_file_ok(journal_fd) ||
        v2_write_all(journal_fd,text,strlen(text)) != 0 ||
        v2_sync(journal_fd,3) != 0) goto out;
+    v2_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PREPARED_FILE_FSYNC);
     if(v2_close_file(journal_fd,3) != 0) {
         journal_fd = -1;
         goto out;
     }
     journal_fd = -1;
     if(v2_sync(t.journal_fd,4) != 0) goto out;
+    v2_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_PREPARED_JOURNAL_DIR_FSYNC);
     result = 0;
 out:
     if(journal_fd >= 0) close(journal_fd);
