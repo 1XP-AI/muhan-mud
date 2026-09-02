@@ -2,8 +2,10 @@
 
 상태: **091a stage/hash/parser, 091b-1a PVC writer 잠금/tuple, 091b-1b
 held-writer route binding C slice와 additive v2 route SQL은 CI `33579360870`에서
-GNU GCC·PostgreSQL 17 GREEN이고, 091b-2 local publish 경계는 test-only local
-GREEN, 091b-3 DB ACK/recovery 이후는 미구현** (2026-09-02).
+GREEN이고, 091b-2 local publish 경계는 CI `33586412456`에서 GNU GCC·ASan/UBSan
+GREEN이다. 091b-3의 exact receipt callback과 local `DB_ACKED` marker slice는
+test-only local GREEN이나 route-free recovery/backlog scanner와 092 이후는 미구현**
+(2026-09-02).
 `src/character_save_journal_v2.*`는 derived stage leaf, canonical v2 wire/request
 digest, descriptor walk, 누적 64 MiB hash cap, immutable `PREPARED` 생성·읽기만
 검증한다. 별도 `src/character_save_journal_v2_writer.*`는 descriptor-relative PVC
@@ -12,11 +14,14 @@ root에서 exact persisted `(world_id, writer_instance_id, writer_epoch)`를 읽
 검증한다. `src/character_save_journal_v2_route.*`는 exact held writer handle을 다시
 검증한 뒤 mock lookup 한 번으로 DB 권위 identity/storage tuple을 묶는다. 일반·
 ASan/UBSan·production static no-live-link 테스트와 additive route RPC의 PostgreSQL
-17 계약은 CI `33579360870`에서 GREEN이다. 별도 publish 모듈은 expected-existing
-rename과 expected-absent no-replace local publish/retry만 test-only로 검증하며, DB ACK
-backlog와 route-free recovery 및 production no-GC 운용은 아직 완료하지 않았다. 따라서
-091 전체나 live 연결이 완료된 상태가 아니다. 네 v2 모듈 모두 `save_ply`, `file_player_store_save`, bank writer,
-Gateway/DB, production startup에는 링크되지 않는다.
+17 계약은 CI `33579360870`에서 GREEN이다. 별도 publish 모듈의 expected-existing
+rename과 expected-absent no-replace local publish/retry는 CI `33586412456`에서
+검증됐다. ACK 모듈은 exact 12-field receipt mock, DB-offline defer, post-callback
+재검증과 durable `DB_ACKED` marker retry만 local 검증하며 실제 DB transport는
+연결하지 않는다. route-free recovery/backlog scanner와 production no-GC 운용은 아직
+완료하지 않았으므로 091 전체나 live 연결이 완료된 상태가 아니다. 다섯 v2 모듈 모두
+`save_ply`, `file_player_store_save`, bank writer, Gateway/DB, production startup에는
+링크되지 않는다.
 
 기존 `src/character_save_journal.*`와
 `tests/unit/character_save_journal_test.c`도 **v1 synthetic metadata journal뿐인
@@ -224,9 +229,10 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 | 091b-1a — GREEN | `red_091b_first_create_sync_race_and_retry` / creator paused after `O_EXCL`, existing opener, injected fsync failure | every successful opener fsyncs the lock file and journal directory while holding `flock`; a failed creator followed by retry repeats both durability operations. |
 | 091b-1a — GREEN | `red_091b_writer_static_no_live_linkage` / fresh production object, `nm`, Make `OBJECTS` | no player writer, bank, onboarding, Gateway or DB dependency; test hooks absent and the writer object remains outside live MUD objects. |
 | **091b-1b held-writer route binding, test-only — GREEN (`33579360870`)** | `red_091b_bound_route_owner_and_identity` / opaque held writer handle + route mock + additive route RPC | forged, copied, zero, garbage and fork-child handles cannot validate, close, or reach the callback; the exact owner gets one lookup and binds only the DB-returned UUID/name/shard/format/lifecycle/imported hash. Same-shard names retain distinct character IDs and all failures preserve output. GNU GCC sanitizer와 PostgreSQL 17 migration replay/contract도 GREEN. |
-| **091b-2 local publish/recovery, test-only — local GREEN** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | exact stage+pre publishes through expected-existing rename or expected-absent loss-safe no-replace ordering; consumed-stage+exact-post and exact interrupted two-link pairs converge. Mismatch, alias, race, partial marker, close/fsync/unlink ambiguity freezes without DB calls. |
-| 091b-2 — local GREEN | `red_091b_local_marker_retry_and_no_live_linkage` / exact·partial·conflicting `.published.tmp`, destination races, `nm`/Make | only an exact command-owned temporary is narrowly reusable; it is removed only after the exact target is proven durable. Partial, conflicting, aliased, or orphan evidence is retained. Publish test hooks are absent from its production object and the object remains outside live MUD `OBJECTS`. |
-| **091b-3 DB ACK/recovery — BLOCKED** | `red_091b_published_recovery_db_offline_backlog` / unavailable RPC mock + posthash | local publish reaches `LEGACY_PUBLISHED`; ACK defers; changed live bytes never ACK. |
+| **091b-2 local publish/recovery, test-only — GREEN (`33586412456`)** | `red_091b_prepared_recovery_matrix` / stage/live pre/post/corrupt combinations | exact stage+pre publishes through expected-existing rename or expected-absent loss-safe no-replace ordering; consumed-stage+exact-post and exact interrupted two-link pairs converge. Mismatch, alias, race, partial marker, close/fsync/unlink ambiguity freezes without DB calls. GNU GCC 일반·ASan/UBSan과 전체 unit도 GREEN. |
+| 091b-2 — GREEN (`33586412456`) | `red_091b_local_marker_retry_and_no_live_linkage` / exact·partial·conflicting `.published.tmp`, destination races, `nm`/Make | only an exact command-owned temporary is narrowly reusable; it is removed only after the exact target is proven durable. Partial, conflicting, aliased, or orphan evidence is retained. Publish test hooks are absent from its production object and the object remains outside live MUD `OBJECTS`. |
+| **091b-3 receipt ACK/local marker, test-only — local GREEN** | `red_091b_exact_receipt_and_db_acked_marker_retry` / absent+existing receipt mocks, unavailable callback, every marker close/fsync/link/unlink cutpoint | only exact `LEGACY_PUBLISHED`, absent stage, exact live posthash and held writer tuple reach the exact 12-field callback. Deferred/invalid/rejected outcomes retain evidence. ACK then revalidates writer/live and fsyncs `DB_ACKED`; temp-only and exact two-name retries re-fsync and repeat the idempotent callback. Partial, conflicting, different-inode and nlink3 evidence remains byte-for-byte unchanged. ACK object stays outside live MUD `OBJECTS`. |
+| **091b-3 route-free recovery/backlog scan — BLOCKED** | `red_091b_published_recovery_db_offline_backlog` / lexical PREPARED scan + unavailable RPC mock | immutable PREPARED recovery must publish without another route lookup; ACK defers; changed live bytes never ACK; every lexical command is visited once. |
 | 091b-3 — BLOCKED | `red_091b_expired_offline_then_successor_fence` / A tuple, offline→renew→B mock | offline backlog needs no DB permission; successor makes A permanently freeze. |
 | 091b-3 — BLOCKED | `red_091b_no_automatic_cleanup_of_unclassified_evidence` / all states + orphan stage | no partial, conflicting, aliased, or orphan evidence is automatically deleted; only exact transactional duplicate-name cleanup is permitted. |
 | **092 mock integration only** | `red_092_synthetic_playerstore_protocol_order` / test serializer + route/epoch/receipt mocks | trace is lock → route/epoch → stage/fsync/hash → PREPARED → rename/fsync/posthash → receipt → DB_ACKED. Reordering fails. |
@@ -237,8 +243,10 @@ fixtures only. No fixture contains player payload, password, JWT, ticket, or pro
 090 is additive private schema/role/RPC plus SQL RED tests only. 091a fixes the test-only
 stage/hash/parser boundary, 091b-1a fixes the persisted writer tuple plus PVC lifetime lock
 boundary, 091b-1b adds the held-writer route binding seam, and 091b-2 adds local publish plus
-durability recovery without live linkage. 091b-3 must add route-free recovery, DB ACK and
-offline backlog mocks before 091 can be called complete. 092 composes those mocks with
+durability recovery without live linkage. 091b-3의 exact receipt callback과 local
+`DB_ACKED` marker retry는 test-only local GREEN이지만 route-free recovery/backlog scanner와
+실제 DB adapter는 남아 있다. 이 경계까지 통과해야 091을 complete로 부를 수 있다.
+092 composes those mocks with
 a synthetic serializer. Even green 092 does **not** authorize live wiring: bank aggregate
 facade, production route-cache lifecycle, PV capability evidence, divergence runbook, retention
 approval, independent review, and an explicit future live-wiring decision remain blockers.
