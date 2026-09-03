@@ -40,6 +40,8 @@ typedef struct receipt_snapshot {
 
 typedef struct mock {
     int             route_calls, serialize_calls, receipt_calls;
+    int             observer_calls, observer_result, observer_writer_valid;
+    int             sequence, observer_sequence, receipt_sequence;
     int             fail_route, fail_serializer, swap_root_after_serialize,
                     route_existing, lose_writer_after_serialize;
     int             head_advances, receipt_exact;
@@ -486,6 +488,7 @@ void           *opaque;
 const           character_save_journal_v2_receipt *value;
 {
     mock           *state = opaque;
+    state->receipt_sequence = ++state->sequence;
     state->receipt_calls++;
     if (!exact_receipt(state->receipt_prepared_root,
                        state->receipt_expected_command, value) ||
@@ -500,6 +503,33 @@ const           character_save_journal_v2_receipt *value;
         } else if (strcmp(state->receipt_command, value->command_id))
             return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE;
     } return state->receipt_result;
+}
+
+static int observe_prepared_stage(opaque, writer, command_uuid)
+void *opaque;
+const character_save_journal_v2_writer_context *writer;
+const char *command_uuid;
+{
+    mock *state = opaque;
+    character_save_journal_v2_writer_tuple tuple;
+    int durable;
+
+    memset(&tuple, 0, sizeof(tuple));
+    state->observer_calls++;
+    state->observer_sequence = ++state->sequence;
+    state->observer_writer_valid =
+        character_save_journal_v2_writer_validate_held(writer, &tuple) ==
+            CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK;
+    durable = command_exists(state->receipt_prepared_root, command_uuid,
+                             "prepared") &&
+        !command_exists(state->receipt_prepared_root, command_uuid,
+                        "published") &&
+        stage_equals(state->receipt_prepared_root, command_uuid,
+                     state->payload, state->payload_length) &&
+        !exists(state->receipt_prepared_root, "player/66/M3alpha");
+    memset(&tuple, 0, sizeof(tuple));
+    if(!durable) return -99;
+    return state->observer_result;
 }
 
 static character_save_journal_v2_receipt_result restart_receipt_callback(opaque,
@@ -1367,6 +1397,69 @@ static int test_held_v3_head_authority(void)
     return failed;
 }
 
+static int test_held_v3_stage_observer_is_non_authoritative(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_protocol_held_request_v3 request;
+    character_save_journal_v2_protocol_operations_v3 operations;
+    character_save_journal_v2_protocol_report report;
+    mock state;
+    int failed = 0;
+
+    if(setup(root, "held-v3-observer-ok") ||
+       character_save_journal_v2_writer_open(root, WORLD, &writer)) return 1;
+    memset(&state, 0, sizeof(state));
+    state.payload = (const unsigned char *)"observer-success";
+    state.payload_length = strlen((const char *)state.payload);
+    state.v3_head_state = CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result = CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    operations_v3_init(&operations, &state);
+    operations.observe_prepared_stage = observe_prepared_stage;
+    operations.observe_prepared_stage_opaque = &state;
+    held_request_v3_init(&request, COMMAND_A);
+    if(mock_receipt_expect(&state, root, COMMAND_A)) return 1;
+    failed += expect(character_save_journal_v2_protocol_save_held_v3(
+        &writer, &request, &operations, &report) ==
+            CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK &&
+        state.observer_calls == 1 && state.observer_writer_valid &&
+        state.observer_sequence > 0 &&
+        state.receipt_sequence > state.observer_sequence &&
+        report.snapshot_attempted == 1 && report.snapshot_result == 0 &&
+        command_exists(root, COMMAND_A, "acked"),
+        "stage observer must run after durable PREPARED and before publish/ACK");
+    if(character_save_journal_v2_writer_close(&writer) || remove_tree(root))
+        return failed + 1;
+
+    if(setup(root, "held-v3-observer-fail") ||
+       character_save_journal_v2_writer_open(root, WORLD, &writer))
+        return failed + 1;
+    memset(&state, 0, sizeof(state));
+    state.payload = (const unsigned char *)"observer-failure";
+    state.payload_length = strlen((const char *)state.payload);
+    state.v3_head_state = CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result = CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.observer_result = -73;
+    operations_v3_init(&operations, &state);
+    operations.observe_prepared_stage = observe_prepared_stage;
+    operations.observe_prepared_stage_opaque = &state;
+    held_request_v3_init(&request, COMMAND_A);
+    if(mock_receipt_expect(&state, root, COMMAND_A)) return failed + 1;
+    failed += expect(character_save_journal_v2_protocol_save_held_v3(
+        &writer, &request, &operations, &report) ==
+            CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK &&
+        state.observer_calls == 1 && state.receipt_calls == 1 &&
+        report.snapshot_attempted == 1 && report.snapshot_result == -73 &&
+        report.reached == CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED &&
+        command_exists(root, COMMAND_A, "published") &&
+        command_exists(root, COMMAND_A, "acked") &&
+        exists(root, "player/66/M3alpha"),
+        "stage observer failure must remain diagnostic and never gate M3");
+    if(character_save_journal_v2_writer_close(&writer) || remove_tree(root))
+        return failed + 1;
+    return failed;
+}
+
 static int test_held_v3_rejects_and_preserves_evidence(void)
 {
     char root[PATH_MAX];
@@ -1462,6 +1555,7 @@ int main(void)
     failed += test_same_a_successor_rejects_install();
     failed += test_drain_attestation_blocks_seal_and_install();
     failed += test_held_v3_head_authority();
+    failed += test_held_v3_stage_observer_is_non_authoritative();
     failed += test_held_v3_rejects_and_preserves_evidence();
     if (failed)
         fprintf(stderr, "protocol failures: %d\n", failed);

@@ -47,6 +47,9 @@ typedef struct character_save_journal_v2_protocol_report {
     character_save_journal_v2_publish_result publish_result;
     character_save_journal_v2_ack_result ack_result;
     character_save_journal_v2_recovery_result recovery_result;
+    /* A best-effort snapshot observer is diagnostic only. */
+    int snapshot_attempted;
+    int snapshot_result;
 } character_save_journal_v2_protocol_report;
 
 typedef int (*character_save_journal_v2_protocol_serialize)(
@@ -86,6 +89,8 @@ typedef struct character_save_journal_v2_protocol_operations_v3 {
     void *serialize_opaque;
     character_save_journal_v2_receipt_callback receipt;
     void *receipt_opaque;
+    character_save_journal_v2_prepared_stage_observer observe_prepared_stage;
+    void *observe_prepared_stage_opaque;
 } character_save_journal_v2_protocol_operations_v3;
 
 /* There is intentionally no root, world, writer revision, or writer tuple in

@@ -44,6 +44,8 @@ typedef struct character_save_journal_v2_player_store {
     void *command_uuid_opaque;
     character_save_journal_v2_player_store_file_load file_load;
     void *file_load_opaque;
+    character_save_journal_v2_prepared_stage_observer stage_observer;
+    void *stage_observer_opaque;
 
     /* Observable caller-owned state.  Transient references are reset after
      * every dispatched save.  last_report is reset before each non-reentrant
@@ -71,6 +73,14 @@ void character_save_journal_v2_player_store_init(
     void *command_uuid_opaque,
     character_save_journal_v2_player_store_file_load file_load,
     void *file_load_opaque);
+
+/* Installs one optional best-effort observer while the store is idle.  The
+ * observer is forwarded unchanged to both protocol reporting and the held
+ * writer capability; its result never becomes PlayerStore authority. */
+int character_save_journal_v2_player_store_set_stage_observer(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_prepared_stage_observer observer,
+    void *observer_opaque);
 
 /* Produces an opaque PlayerStore dispatch value.  No heap allocation, global
  * registration, connection ownership, or libpq dependency is involved. */

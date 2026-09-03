@@ -48,6 +48,9 @@ typedef struct character_save_journal_v2_process_owner_configuration {
     void *candidate_uuid_opaque;
     character_save_journal_v2_player_store_file_load file_load;
     void *file_load_opaque;
+    /* Optional shadow-only capture, shared by cold recovery and live saves. */
+    character_save_journal_v2_prepared_stage_observer stage_observer;
+    void *stage_observer_opaque;
 } character_save_journal_v2_process_owner_configuration;
 
 typedef struct character_save_journal_v2_process_owner {

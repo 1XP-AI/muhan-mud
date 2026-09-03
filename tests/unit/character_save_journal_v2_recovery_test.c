@@ -40,6 +40,16 @@ typedef struct evidence_snapshot {
     size_t length;
 } evidence_snapshot;
 
+typedef struct observed_recovery {
+    mock receipts;
+    const char *root;
+    int observer_result;
+    int observer_calls;
+    int observer_saw_stage;
+    unsigned int event_count;
+    char events[8];
+} observed_recovery;
+
 static int bad(condition, message)
 int condition;
 const char *message;
@@ -155,6 +165,75 @@ const character_save_journal_v2_recovery_report *report;
 static character_save_journal_v2_receipt_result receipt(opaque, value)
 void *opaque; const character_save_journal_v2_receipt *value;
 { mock *state=opaque;int index=state->calls;if(index<(int)(sizeof(state->order)/sizeof(state->order[0])))strcpy(state->order[index],value->command_id);state->calls++;if(state->add_prepared){state->add_prepared=0;if(!state->root||prepare(state->root,COMMAND_C,NAME_C,"C",1))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}if(state->reopen_writer){state->reopen_writer=0;if(!state->root||!state->writer||character_save_journal_v2_writer_close(state->writer)||character_save_journal_v2_writer_open(state->root,WORLD,state->writer))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}if(state->close_writer){state->close_writer=0;if(!state->writer||character_save_journal_v2_writer_close(state->writer))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}return index>=(int)(sizeof(state->results)/sizeof(state->results[0]))?CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE:state->results[index]; }
+
+static character_save_journal_v2_receipt_result observed_receipt(opaque, value)
+void *opaque;
+const character_save_journal_v2_receipt *value;
+{
+    observed_recovery *state = opaque;
+    if(state->event_count < sizeof(state->events))
+        state->events[state->event_count++] = 'R';
+    return receipt(&state->receipts, value);
+}
+
+static int observe_stage(opaque, writer, command_uuid)
+void *opaque;
+const character_save_journal_v2_writer_context *writer;
+const char *command_uuid;
+{
+    observed_recovery *state = opaque;
+    character_save_journal_v2_writer_tuple tuple;
+    char relative[128];
+    int visible;
+
+    memset(&tuple, 0, sizeof(tuple));
+    if(state->event_count < sizeof(state->events))
+        state->events[state->event_count++] = 'O';
+    state->observer_calls++;
+    visible = state->root &&
+        character_save_journal_v2_writer_validate_held(writer, &tuple) ==
+            CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK &&
+        !journal_relative(relative, sizeof(relative), command_uuid, "prepared") &&
+        exists(state->root, relative) &&
+        snprintf(relative, sizeof(relative), "character-save-stage/%s.stage",
+                 command_uuid) > 0 && exists(state->root, relative);
+    if(visible) state->observer_saw_stage++;
+    memset(&tuple, 0, sizeof(tuple));
+    return visible ? state->observer_result : -99;
+}
+
+static int test_stage_observer_is_pre_publish_and_non_authoritative(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_recovery_report report;
+    observed_recovery state;
+    int failed = 0;
+
+    if(setup(root, "stage-observer", &writer) ||
+       prepare(root, COMMAND_A, NAME_A, "A", 1) ||
+       prepare(root, COMMAND_B, NAME_B, "B", 1)) return 1;
+    memset(&state, 0, sizeof(state));
+    state.root = root;
+    state.observer_result = -73;
+    memset(&report, 0, sizeof(report));
+    failed += bad(character_save_journal_v2_recovery_run_with_stage_observer(
+        &writer, observed_receipt, &state, observe_stage, &state, &report) ==
+            CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK &&
+        state.observer_calls == 2 && state.observer_saw_stage == 2 &&
+        state.receipts.calls == 2 && state.event_count == 4 &&
+        state.events[0] == 'O' && state.events[1] == 'R' &&
+        state.events[2] == 'O' && state.events[3] == 'R' &&
+        report.snapshot_attempted == 2 &&
+        report.snapshot_succeeded == 0 && report.snapshot_failed == 2 &&
+        report.publish_attempted == 2 && report.ack_attempted == 2 &&
+        command_exists(root, COMMAND_A, "acked") &&
+        command_exists(root, COMMAND_B, "acked") &&
+        report_totals_match(&report),
+        "observer failures must be reported before each publish without changing recovery");
+    if(teardown(&writer, root)) return failed + 1;
+    return failed;
+}
 
 static int test_lexical_retry_and_totals(void)
 { char root[PATH_MAX];character_save_journal_v2_writer_context writer;character_save_journal_v2_recovery_report report;mock state;int failed=0;if(setup(root,"lexical",&writer)||prepare(root,COMMAND_B,NAME_B,"B",1)||prepare(root,COMMAND_A,NAME_A,"A",1))return 1;memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_A)&&!strcmp(state.order[1],COMMAND_B)&&report.discovered==2&&report.visited==2&&report.publish_attempted==2&&report.ack_attempted==2&&report.publish_results[CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK]==2&&report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED]==2&&report_totals_match(&report),"scrambled creation is visited lexically with exact enum totals");memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_A)&&!strcmp(state.order[1],COMMAND_B)&&report_totals_match(&report),"already published and acked commands retry exactly");if(teardown(&writer,root))return failed+1;return failed; }
@@ -383,4 +462,4 @@ static int test_malformed_marker_callback_replay(void)
 }
 
 int main(void)
-{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }
+{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();failed+=test_stage_observer_is_pre_publish_and_non_authoritative();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }

@@ -120,6 +120,18 @@ void character_save_journal_v2_player_store_init(
     store->state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
 }
 
+int character_save_journal_v2_player_store_set_stage_observer(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_prepared_stage_observer observer,
+    void *observer_opaque)
+{
+    if(!store||store->state!=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE)
+        return -1;
+    store->stage_observer=observer;
+    store->stage_observer_opaque=observer_opaque;
+    return 0;
+}
+
 player_store_ops character_save_journal_v2_player_store_build(
     character_save_journal_v2_player_store *store)
 {
@@ -189,6 +201,8 @@ int character_save_journal_v2_player_store_save(
     operations.serialize_opaque=store;
     operations.receipt=character_save_journal_v2_live_ops_receipt_callback;
     operations.receipt_opaque=store->live_ops;
+    operations.observe_prepared_stage=store->stage_observer;
+    operations.observe_prepared_stage_opaque=store->stage_observer_opaque;
     result=character_save_journal_v2_protocol_save_held_v3(store->held_writer,
         &request,&operations,&store->last_report);
     (void)result;

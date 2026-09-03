@@ -19,13 +19,17 @@ typedef struct fixture {
     int shutdown_during_deadline, shutdown_during_recovery;
     int close_fail, finish_calls, deadline_calls, uuid_calls, live_init_calls;
     int bootstrap_calls, recovery_calls, store_init_calls, build_calls, set_calls;
-    int reset_calls, close_calls, global_store_installed;
+    int observer_set_calls, reset_calls, close_calls, global_store_installed;
     int bound_previous_store, binding_current;
     char trace[32];
     unsigned int trace_length;
     char bootstrap_candidate[37];
     char bootstrap_deadline[64];
     const char *bootstrap_root, *bootstrap_world;
+    character_save_journal_v2_prepared_stage_observer recovery_observer;
+    void *recovery_observer_opaque;
+    character_save_journal_v2_prepared_stage_observer store_observer;
+    void *store_observer_opaque;
     character_save_journal_v2_writer_context writer;
 } fixture;
 
@@ -157,9 +161,11 @@ character_save_journal_v2_live_ops_receipt_callback(void *opaque,
 }
 
 character_save_journal_v2_recovery_result
-character_save_journal_v2_recovery_run(
+character_save_journal_v2_recovery_run_with_stage_observer(
     const character_save_journal_v2_writer_context *writer,
     character_save_journal_v2_receipt_callback receipt, void *opaque,
+    character_save_journal_v2_prepared_stage_observer stage_observer,
+    void *stage_observer_opaque,
     character_save_journal_v2_recovery_report *report)
 {
     current->recovery_calls++;
@@ -172,6 +178,8 @@ character_save_journal_v2_recovery_run(
        receipt != character_save_journal_v2_live_ops_receipt_callback ||
        opaque != &current->owner.live_ops || !report)
         return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INVALID_ARGUMENT;
+    current->recovery_observer = stage_observer;
+    current->recovery_observer_opaque = stage_observer_opaque;
     report->discovered = 2;
     report->visited = 2;
     return current->recovery_fail ? CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE :
@@ -196,6 +204,18 @@ void character_save_journal_v2_player_store_init(
        deadline == fake_deadline && deadline_opaque == current && uuid == fake_uuid &&
        uuid_opaque == current && load == fake_load && load_opaque == current)
         store->held_writer = writer;
+}
+
+int character_save_journal_v2_player_store_set_stage_observer(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_prepared_stage_observer observer,
+    void *observer_opaque)
+{
+    current->observer_set_calls++;
+    if(store != &current->owner.player_store) return -1;
+    current->store_observer = observer;
+    current->store_observer_opaque = observer_opaque;
+    return 0;
 }
 
 static int fake_save(void *opaque, char *name, struct creature *player)
@@ -292,11 +312,22 @@ static void setup(fixture *test)
         &test->configuration);
 }
 
+static int fake_stage_observer(void *opaque,
+    const character_save_journal_v2_writer_context *writer,
+    const char *command_uuid)
+{
+    (void)opaque;
+    (void)writer;
+    (void)command_uuid;
+    return -73;
+}
+
 static int no_later_calls(const fixture *test)
 {
     return !test->live_init_calls && !test->bootstrap_calls &&
         !test->recovery_calls && !test->store_init_calls && !test->build_calls &&
-        !test->set_calls && !test->reset_calls && !test->close_calls;
+        !test->observer_set_calls && !test->set_calls && !test->reset_calls &&
+        !test->close_calls;
 }
 
 static int test_validate_and_early_cutpoints(void)
@@ -475,6 +506,28 @@ static int test_reentrant_startup_shutdown_is_deferred(void)
     return failed;
 }
 
+static int test_stage_observer_reaches_recovery_and_player_store(void)
+{
+    fixture test;
+    int failed = 0;
+
+    setup(&test);
+    test.configuration.stage_observer = fake_stage_observer;
+    test.configuration.stage_observer_opaque = &test;
+    character_save_journal_v2_process_owner_init(&test.owner,
+        &test.configuration);
+    failed += expect(character_save_journal_v2_process_owner_start(&test.owner) ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
+        test.recovery_observer == fake_stage_observer &&
+        test.recovery_observer_opaque == &test &&
+        test.observer_set_calls == 1 &&
+        test.store_observer == fake_stage_observer &&
+        test.store_observer_opaque == &test,
+        "one optional stage observer must cover restart recovery and live saves");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+    return failed;
+}
+
 int main(void)
 {
     return test_validate_and_early_cutpoints() |
@@ -482,5 +535,6 @@ int main(void)
         test_success_repeated_start_and_shutdown() |
         test_close_failure_and_restart() |
         test_prior_store_restore_and_external_takeover() |
-        test_reentrant_startup_shutdown_is_deferred();
+        test_reentrant_startup_shutdown_is_deferred() |
+        test_stage_observer_reaches_recovery_and_player_store();
 }

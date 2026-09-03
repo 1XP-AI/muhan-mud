@@ -226,11 +226,14 @@ character_save_journal_v2_ack_result result;
 }
 
 character_save_journal_v2_recovery_result
-character_save_journal_v2_recovery_run(writer, receipt_callback, receipt_opaque,
-                                        report_out)
+character_save_journal_v2_recovery_run_with_stage_observer(writer,
+    receipt_callback, receipt_opaque, stage_observer, stage_observer_opaque,
+    report_out)
 const character_save_journal_v2_writer_context *writer;
 character_save_journal_v2_receipt_callback receipt_callback;
 void *receipt_opaque;
+character_save_journal_v2_prepared_stage_observer stage_observer;
+void *stage_observer_opaque;
 character_save_journal_v2_recovery_report *report_out;
 {
     character_save_journal_v2_recovery_report report;
@@ -357,6 +360,16 @@ character_save_journal_v2_recovery_report *report_out;
         if(!same_character) blocked_character = 0;
         if(blocked_character) continue;
         report.visited++;
+        if(stage_observer) {
+            int observed;
+            report.snapshot_attempted++;
+            observed = stage_observer(stage_observer_opaque, writer,
+                                      entries[i].wire.command_uuid);
+            if(observed)
+                report.snapshot_failed++;
+            else
+                report.snapshot_succeeded++;
+        }
         report.publish_attempted++;
         published = character_save_journal_v2_publish_recover(writer,
                                                                  entries[i].wire.command_uuid);
@@ -401,6 +414,18 @@ character_save_journal_v2_recovery_report *report_out;
     *report_out = report;
     return incomplete ? CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE :
         CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK;
+}
+
+character_save_journal_v2_recovery_result
+character_save_journal_v2_recovery_run(writer, receipt_callback, receipt_opaque,
+                                        report_out)
+const character_save_journal_v2_writer_context *writer;
+character_save_journal_v2_receipt_callback receipt_callback;
+void *receipt_opaque;
+character_save_journal_v2_recovery_report *report_out;
+{
+    return character_save_journal_v2_recovery_run_with_stage_observer(
+        writer, receipt_callback, receipt_opaque, 0, 0, report_out);
 }
 
 #ifdef CHARACTER_SAVE_JOURNAL_V2_RECOVERY_TESTING

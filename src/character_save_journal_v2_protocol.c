@@ -399,6 +399,12 @@ character_save_journal_v2_protocol_report *report_out;
     }
     root_fd=-1;
     report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED;
+    if(operations->observe_prepared_stage) {
+        report_out->snapshot_attempted=1;
+        report_out->snapshot_result=operations->observe_prepared_stage(
+            operations->observe_prepared_stage_opaque,writer,
+            request->command_uuid);
+    }
     published=character_save_journal_v2_publish_v3(writer,
         request->canonical_legacy_name,request->canonical_legacy_name_length,
         operations->route_lookup,operations->route_opaque,request->command_uuid);

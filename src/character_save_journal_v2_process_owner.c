@@ -182,10 +182,11 @@ character_save_journal_v2_process_owner_start(
         return process_owner_stop_start(owner,
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_BOOTSTRAP, 0);
     }
-    owner->recovery_result = character_save_journal_v2_recovery_run(
+    owner->recovery_result = character_save_journal_v2_recovery_run_with_stage_observer(
         &owner->held_writer,
         character_save_journal_v2_live_ops_receipt_callback,
-        &owner->live_ops, &owner->recovery_report);
+        &owner->live_ops, configuration->stage_observer,
+        configuration->stage_observer_opaque, &owner->recovery_report);
     if(owner->shutdown_requested) return process_owner_cancel_start(owner);
     if(owner->recovery_result != CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK) {
         return process_owner_stop_start(owner,
@@ -198,6 +199,11 @@ character_save_journal_v2_process_owner_start(
         configuration->acquire_deadline, configuration->acquire_deadline_opaque,
         configuration->candidate_uuid, configuration->candidate_uuid_opaque,
         configuration->file_load, configuration->file_load_opaque);
+    if(character_save_journal_v2_player_store_set_stage_observer(
+       &owner->player_store, configuration->stage_observer,
+       configuration->stage_observer_opaque))
+        return process_owner_stop_start(owner,
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_PLAYER_STORE, 1);
     if(owner->shutdown_requested) return process_owner_cancel_start(owner);
     store_ops = character_save_journal_v2_player_store_build(&owner->player_store);
     if(owner->shutdown_requested) return process_owner_cancel_start(owner);

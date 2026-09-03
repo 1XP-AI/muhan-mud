@@ -50,6 +50,22 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
+  services/m4-file-snapshot-manifest-relay:
+    dependencies:
+      pg:
+        specifier: ^8.16.3
+        version: 8.23.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.3
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.3
+        version: 4.23.13
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   services/onboarding-reconciler:
     devDependencies:
       '@types/node':
