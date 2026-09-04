@@ -267,12 +267,12 @@ async function main(): Promise<void> {
     const initialFiles = await evidenceState(outboxPath)
     const legacyBefore = await legacyAuthorityState(superClient)
     assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
-      visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+      visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
     })
     assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'the first relay must not alter test-owned receipt or artifact files')
     assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'the first relay must not alter legacy authority')
     assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
-      visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+      visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
     })
     assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'the exact retry must not alter test-owned receipt or artifact files')
     assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'the exact retry must not alter legacy authority')
@@ -281,7 +281,7 @@ async function main(): Promise<void> {
     await chmod(artifactPath, 0o600)
     const malformedFiles = await evidenceState(outboxPath)
     assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
-      visited: 1, valid: 1, delivered: 0, recorded: 0, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+      visited: 1, valid: 1, delivered: 0, recorded: 0, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
     })
     assert.deepEqual(await evidenceState(outboxPath), malformedFiles, 'the rejected relay must not alter test-owned receipt or artifact files')
     assert.equal(await authorityState(superClient), before, 'malformed CDTO must not change artifact, receipt, head, or legacy snapshot bytes')

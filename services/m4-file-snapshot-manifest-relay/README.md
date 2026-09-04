@@ -28,3 +28,11 @@ adapter issues `SET ROLE mud_writer` and then only the parameterized M4
 function call. SQLSTATE `22023` is counted as invalid, `P0001` as conflict,
 and class `08`/transport failures as retryable. The JSON output is aggregate
 only and contains no paths, names, hashes, payloads, or credentials.
+
+The dedicated `player-snapshot-v1-artifact-cli` image builds the pinned Rust
+`player_snapshot_v1_replay_verify` binary and injects its absolute path through
+`M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`. The artifact relay sends only the
+already-parsed CDTO payload to that binary; `replayObserved` and
+`replayDisabled` are aggregate observation counters only, and neither result
+changes database recording or legacy M4 headers. A missing runner, an invalid
+path, execution failure, or invalid report is counted as `replayDisabled`.

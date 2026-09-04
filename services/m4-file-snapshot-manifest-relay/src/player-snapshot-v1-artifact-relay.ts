@@ -3,6 +3,7 @@ import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX, comm
 import { MAX_MANIFEST_BYTES, isManifestFilename } from './manifest.js'
 import { scanImmutableOutboxFiles } from './relay.js'
 import { classifyDatabaseError, type PlayerSnapshotV1ArtifactStore } from './store.js'
+import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver as PlayerSnapshotV1ReplayObserverContract } from './player-snapshot-v1-replay-observer.js'
 
 export interface PlayerSnapshotV1ArtifactRelaySummary {
   visited: number
@@ -15,6 +16,8 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   retryable: number
   unknown: number
   ioError: number
+  replayObserved: number
+  replayDisabled: number
 }
 
 export interface PlayerSnapshotV1ArtifactFilesystem {
@@ -60,7 +63,10 @@ export class NodePlayerSnapshotV1ArtifactFilesystem implements PlayerSnapshotV1A
 }
 
 function summary(): PlayerSnapshotV1ArtifactRelaySummary {
-  return { visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0 }
+  return {
+    visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    replayObserved: 0, replayDisabled: 0,
+  }
 }
 
 /**
@@ -72,6 +78,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   outboxPath: string,
   store: PlayerSnapshotV1ArtifactStore,
   filesystem: PlayerSnapshotV1ArtifactFilesystem = new NodePlayerSnapshotV1ArtifactFilesystem(),
+  replayObserver: PlayerSnapshotV1ReplayObserverContract = new PlayerSnapshotV1ReplayObserver(undefined),
 ): Promise<PlayerSnapshotV1ArtifactRelaySummary> {
   const result = summary()
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>
@@ -89,6 +96,10 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     try { artifact = parsePlayerSnapshotV1Artifact(file.name, file.bytes, receipt) }
     catch { result.invalid++; continue }
     result.valid++
+    try {
+      if (await replayObserver.observe(artifact.payload) === 'observed') result.replayObserved++
+      else result.replayDisabled++
+    } catch { result.replayDisabled++ }
     try {
       const outcome = await store.recordPlayerSnapshotV1Artifact(artifact)
       if (outcome === 'RECORDED') { result.recorded++; result.delivered++ }

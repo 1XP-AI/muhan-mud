@@ -9,6 +9,7 @@ import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesy
 import { parseManifest } from '../src/manifest.js'
 import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../src/relay.js'
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
+import type { PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
@@ -212,10 +213,10 @@ test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy 
     return 'EXACT_RETRY'
   } }
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
-    visited: 2, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    visited: 2, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
   })
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
-    visited: 2, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    visited: 2, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
   })
   assert.deepEqual(calls, [first, first])
   assert.equal(rows.size, 1)
@@ -224,6 +225,65 @@ test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy 
   assert.deepEqual(manifest, originalManifest)
   assert.deepEqual(legacyEvidence, originalLegacyEvidence)
   assert.throws(() => parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, Buffer.from('bad'), parseManifest(manifest)))
+})
+
+test('replay observation is payload-only and never changes PlayerSnapshotV1 recording', async () => {
+  const manifest = body(first)
+  const payload = playerSnapshotV1()
+  const artifact = playerSnapshotV1Artifact(payload)
+  const observed: Uint8Array[] = []
+  const observer: PlayerSnapshotV1ReplayObserver = {
+    observe: async (value) => { observed.push(Buffer.from(value)); throw new Error('untrusted runner failure') },
+  }
+  let records = 0
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => { records++; return 'RECORDED' },
+  }
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }],
+  }
+
+  assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, observer), {
+    visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    replayObserved: 0, replayDisabled: 1,
+  })
+  assert.equal(records, 1)
+  assert.deepEqual(observed, [payload])
+})
+
+test('a successful replay observation preserves recorder input and established relay aggregates', async () => {
+  const manifest = body(first)
+  const payload = playerSnapshotV1()
+  const artifact = playerSnapshotV1Artifact(payload)
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }],
+  }
+  const recordedArtifacts: ReturnType<typeof parsePlayerSnapshotV1Artifact>[] = []
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async (value) => {
+      recordedArtifacts.push(value)
+      return 'RECORDED'
+    },
+  }
+  const observer: PlayerSnapshotV1ReplayObserver = { observe: async (value) => {
+    assert.deepEqual(value, payload)
+    return 'observed'
+  } }
+
+  const baseline = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem)
+  const observed = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, observer)
+
+  assert.deepEqual(recordedArtifacts, [
+    parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, artifact, parseManifest(manifest)),
+    parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, artifact, parseManifest(manifest)),
+  ])
+  const { replayObserved: baselineObserved, replayDisabled: baselineDisabled, ...baselineAggregate } = baseline
+  const { replayObserved: observedCount, replayDisabled: observedDisabled, ...observedAggregate } = observed
+  assert.deepEqual(observedAggregate, baselineAggregate)
+  assert.deepEqual({ baselineObserved, baselineDisabled, observedCount, observedDisabled }, {
+    baselineObserved: 0, baselineDisabled: 1, observedCount: 1, observedDisabled: 0,
+  })
+  assert.deepEqual(artifact, playerSnapshotV1Artifact(payload))
 })
 
 test('PlayerSnapshotV1 artifact requires the exact native header and receipt agreement', () => {
