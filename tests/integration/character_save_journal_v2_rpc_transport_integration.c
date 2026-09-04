@@ -152,8 +152,13 @@ static int expire_sealed_predecessor(const char *conninfo)
 
     if (!connection)
         return 0;
+    /* This fixture needs a sealed predecessor that is already expired, while
+     * the persisted epoch invariant still requires expires_at > issued_at.
+     * Rebase both timestamps in one statement instead of making expiry depend
+     * on how long the preceding transport assertions happened to take. */
     result = command_exec(connection,
-        "update private.game_character_writer_epochs set expires_at="
+        "update private.game_character_writer_epochs set issued_at="
+        "clock_timestamp()-interval '2 seconds', expires_at="
         "clock_timestamp()-interval '1 second' where world_id='m3-rpc-contract'",
         "expire sealed predecessor");
     answer = result != 0;
