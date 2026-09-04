@@ -18,8 +18,9 @@
 #include "character_save_journal_v2_runtime.h"
 #include "character_save_journal_v2_runtime_native.h"
 #include "character_save_journal_v2_writer.h"
-#include "mstruct.h"
+#include "character_player_snapshot_v1_artifact.h"
 #include "player_record_serializer.h"
+#include "player_snapshot_v1.h"
 #include "player_store.h"
 
 #include <dirent.h>
@@ -55,20 +56,13 @@ int file_player_store_load(char *name, creature **player)
     return PLAYER_STORE_NOT_FOUND;
 }
 
-/* The handoff remains disabled in this runtime-shadow fixture, but the
- * production runtime owns the native decoder callback at link time.  These
- * isolated fallbacks make any unexpected decode fail safely without pulling
- * the legacy loader's unrelated full link closure into this opt-in harness. */
-int read_crt_player(int descriptor, creature *player)
+/* free_crt retains this legacy monster-only branch.  The real decoder must
+ * never reach it for a normalized player, so make any accidental reach fail
+ * loudly while keeping the isolated files1.c link closure narrow. */
+void del_active(creature *player)
 {
-    (void)descriptor;
     (void)player;
-    return -1;
-}
-
-void free_crt(creature *player)
-{
-    free(player);
+    abort();
 }
 
 static int fail(const char *message)
@@ -106,6 +100,32 @@ static int journal_markers(const char *root, const char *marker)
     return count;
 }
 
+static int artifact_files(const char *root)
+{
+    char path[1024];
+    DIR *directory;
+    struct dirent *entry;
+    struct stat status;
+    int count=0;
+
+    if(!root||snprintf(path,sizeof(path),"%s/%s",root,
+       CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)>=(int)sizeof(path))
+        return -1;
+    directory=opendir(path);
+    if(!directory) return -1;
+    while((entry=readdir(directory))!=0) {
+        if(!strcmp(entry->d_name,".")||!strcmp(entry->d_name,".."))continue;
+        if(fstatat(dirfd(directory),entry->d_name,&status,AT_SYMLINK_NOFOLLOW)||
+           !S_ISREG(status.st_mode)) {
+            closedir(directory);
+            return -1;
+        }
+        count++;
+    }
+    if(closedir(directory)) return -1;
+    return count;
+}
+
 static int regular_0600(const char *path)
 {
     struct stat status;
@@ -137,6 +157,57 @@ static int live_matches_serializer(const char *root, const creature *player)
     if(close(descriptor)!=0) return 0;
     return length==(ssize_t)expected_length&&
         !memcmp(actual,expected,expected_length);
+}
+
+static int snapshot_artifact_matches(const char *root,
+    const character_save_journal_v2_runtime_native *native,
+    const creature *player)
+{
+    character_save_journal_v2_wire prepared;
+    character_player_snapshot_v1_artifact_metadata key,metadata;
+    creature *decoded=0;
+    uint8_t *snapshot=0;
+    size_t snapshot_length=0;
+    struct stat live_status;
+    char artifact_path[1024],live[1024];
+    int artifact_directory=-1,result=0;
+
+    if(!root||!native||!player||!native->snapshot_handoff.report.last_command_id[0]||
+       character_save_journal_v2_read_prepared(root,
+       native->snapshot_handoff.report.last_command_id,&prepared)||
+       strcmp(prepared.command_uuid,native->snapshot_handoff.report.last_command_id)||
+       snprintf(artifact_path,sizeof(artifact_path),"%s/%s",root,
+       CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)>=(int)sizeof(artifact_path)||
+       snprintf(live,sizeof(live),"%s/player/d2/%s",root,player_name)>=
+       (int)sizeof(live)||stat(live,&live_status)||live_status.st_size<=0)
+        goto done;
+    memset(&key,0,sizeof(key));
+    strcpy(key.command_id,prepared.command_uuid);
+    artifact_directory=open(artifact_path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(artifact_directory<0||character_player_snapshot_v1_artifact_load(
+       artifact_directory,&key,&metadata,&snapshot,&snapshot_length)!=
+       CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK||!snapshot||!snapshot_length||
+       player_snapshot_v1_decode_clone(snapshot,snapshot_length,&decoded)!=0||
+       !decoded||!player_snapshot_v1_equal_persisted(player,decoded)||
+       strcmp(metadata.world_id,prepared.world_id)||
+       strcmp(metadata.character_id,prepared.character_id)||
+       strcmp(metadata.command_id,prepared.command_uuid)||
+       strcmp(metadata.canonical_name_hex,prepared.legacy_name_key_hex)||
+       strcmp(metadata.request_sha256,prepared.request_sha256)||
+       strcmp(metadata.source_post_sha256,prepared.post_sha256)||
+       strcmp(metadata.writer_instance_id,prepared.writer_instance_id)||
+       strcmp(metadata.snapshot_format,CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_FORMAT)||
+       metadata.writer_epoch!=prepared.writer_epoch||
+       metadata.writer_revision!=prepared.writer_revision||
+       metadata.source_octets!=(uint64_t)live_status.st_size||
+       metadata.storage_format!=(int16_t)prepared.storage_format||
+       metadata.snapshot_octets!=(uint64_t)snapshot_length) goto done;
+    result=1;
+done:
+    if(decoded) player_snapshot_v1_free_clone(decoded);
+    character_player_snapshot_v1_artifact_free(snapshot);
+    if(artifact_directory>=0&&close(artifact_directory)) result=0;
+    return result;
 }
 
 static int runtime_conninfo_wiped(const character_save_journal_v2_runtime *runtime)
@@ -227,6 +298,44 @@ static int stop_safely(character_save_journal_v2_runtime *runtime,
     return fallback_result==PLAYER_STORE_CORRUPT&&fallback_save_calls==1 ? 0 : -1;
 }
 
+static int handoff_save_and_tick(const char *root,
+    character_save_journal_v2_runtime *runtime,
+    character_save_journal_v2_runtime_native *native)
+{
+    creature player;
+    int first_count,second_count;
+
+    if(!native->snapshot_handoff_enabled||artifact_files(root)!=-1)return -1;
+    init_player(&player);
+    if(save_ply((char *)player_name,&player)!=PLAYER_STORE_OK||
+       native->process_owner.player_store.last_report.reached!=
+         CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED||
+       !native->process_owner.player_store.last_report.snapshot_attempted||
+       native->process_owner.player_store.last_report.snapshot_result!=
+         CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK||
+       native->snapshot_handoff.report.enqueued!=1||
+       native->snapshot_handoff.report.consumed!=0||
+       native->snapshot_capture.report.attempted!=0||!live_matches_serializer(root,&player)||
+       character_save_journal_v2_runtime_native_snapshot_tick(native,1)!=
+         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
+       native->snapshot_handoff.report.consumed!=1||
+       native->snapshot_capture.report.attempted!=1||
+       native->snapshot_capture.report.recorded!=1||
+       native->snapshot_capture.report.failed!=0||
+       artifact_files(root)!=(first_count=1)||
+       !snapshot_artifact_matches(root,native,&player)||!live_matches_serializer(root,&player))
+        return -1;
+    if(character_save_journal_v2_runtime_native_snapshot_tick(native,1)!=
+       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
+       artifact_files(root)!=(second_count=first_count)||
+       native->snapshot_handoff.report.consumed!=1||
+       native->snapshot_capture.report.attempted!=1||
+       native->snapshot_capture.report.recorded!=1||
+       !live_matches_serializer(root,&player)) return -1;
+    (void)runtime;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *root = getenv("MUHAN_HOME");
@@ -239,7 +348,8 @@ int main(int argc, char **argv)
 
     if(argc != 2 || !root || !root[0]) return 2;
     mode = argv[1];
-    if(strcmp(mode, "fault") && strcmp(mode, "recover")) return 2;
+    if(strcmp(mode, "fault") && strcmp(mode, "recover") && strcmp(mode,"handoff"))
+        return 2;
 
     trust_disposable_home();
     character_save_journal_v2_runtime_native_init(&native);
@@ -251,6 +361,12 @@ int main(int argc, char **argv)
     }
 
     init_player(&player);
+    if(!strcmp(mode,"handoff")) {
+        if(handoff_save_and_tick(root,&runtime,&native)||stop_safely(&runtime,&native))
+            return fail("real native decoder handoff did not create one immutable snapshot");
+        puts("m3 runtime shadow PG17 native PlayerSnapshotV1 handoff: ok");
+        return 0;
+    }
     if(!strcmp(mode, "fault")) {
         save_result = save_ply((char *)player_name, &player);
         if(snprintf(live, sizeof(live), "%s/player/d2/%s", root, player_name) >=

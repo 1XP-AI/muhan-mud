@@ -44,14 +44,21 @@ trap cleanup EXIT
 
 if [[ -z "$harness" ]]; then
   harness="$tmp/character_save_journal_v2_runtime_shadow_pg17_integration"
+  files1_object="$tmp/character_player_snapshot_v1_capture_files1.o"
   compiler="${CC:-cc}"
   flags=(-std=gnu89 -fcommon -Wall -Wextra -Werror)
+  files1_flags=(-std=gnu89 -fcommon -I"$repo_root/src" -ffunction-sections -fdata-sections)
   if "$compiler" --version 2>/dev/null | head -1 | grep -qi clang; then
     flags+=(-Wno-deprecated-non-prototype)
   fi
   if [[ "${M3_RUNTIME_SHADOW_PG17_SANITIZE:-1}" != 0 ]]; then
     flags+=(-O1 -fno-omit-frame-pointer -fsanitize=address,undefined)
+    files1_flags+=(-O1 -fno-omit-frame-pointer -fsanitize=address,undefined)
   fi
+  # Match Makefile's native capture test: compile legacy files1.c into
+  # function/data sections, then retain only read_crt_player/free_crt's real
+  # decoder closure at link time.  The harness must not shadow these symbols.
+  "$compiler" "${files1_flags[@]}" -c "$repo_root/src/files1.c" -o "$files1_object"
   "$compiler" "${flags[@]}" \
     -DCHARACTER_SAVE_JOURNAL_V2_TESTING \
     -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING \
@@ -84,7 +91,9 @@ if [[ -z "$harness" ]]; then
     "$repo_root/src/player_snapshot_v1.c" \
     "$repo_root/src/object_graph_v1.c" "$repo_root/src/cdto_v1.c" \
     "$repo_root/src/player_record_serializer.c" "$repo_root/src/player_store.c" \
-    "$repo_root/src/utf8_text.c" -L"$(${PG_CONFIG:-pg_config} --libdir)" -lpq \
+    "$repo_root/src/utf8_text.c" "$files1_object" \
+    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -L"$(${PG_CONFIG:-pg_config} --libdir)" -lpq \
     -o "$harness"
 fi
 [[ -x "$harness" ]] || {
@@ -215,4 +224,23 @@ env -i PATH="$PATH" LANG=C PGPASSFILE=/dev/null PGSSLMODE=disable \
   echo "native runtime recovery did not durably acknowledge its published journal" >&2
   exit 1
 }
-echo "GREEN PostgreSQL 17: native shadow runtime persisted, crash-recovered, and safely shut down"
+[[ ! -e "$home/character-player-snapshot-v1-outbox" && \
+   ! -e "$home/character-player-snapshot-v1-handoff" ]] || {
+  echo "default-off runtime recovery unexpectedly created PlayerSnapshotV1 evidence" >&2
+  exit 1
+}
+
+# This opt-in run uses the production save_ply callback, then the explicit
+# bounded native tick.  The C harness loads and decodes the immutable artifact
+# through production APIs and asserts the prepared/source identity itself.
+env -i PATH="$PATH" LANG=C PGPASSFILE=/dev/null PGSSLMODE=disable \
+  ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  MUHAN_HOME="$home" MUD_M3_MODE=shadow MUD_M3_WORLD_ID=m3-runtime-shadow \
+  MUD_M3_CONNINFO_FILE="$conninfo_file" MUD_M3_PLAYER_SNAPSHOT_V1=handoff \
+  "$harness" handoff
+
+[[ "$(scalar "select (select count(*)=2 from private.game_character_shadow_receipts where character_id='c9600000-0000-4000-8000-000000000001'::uuid) and (select head_state='existing' and revision=2 and writer_epoch>0 from private.game_character_legacy_heads where character_id='c9600000-0000-4000-8000-000000000001'::uuid) and (select writer_revision=2 and writer_epoch=(select writer_epoch from private.game_character_legacy_heads where character_id='c9600000-0000-4000-8000-000000000001'::uuid) from private.game_character_shadow_receipts where character_id='c9600000-0000-4000-8000-000000000001'::uuid order by writer_revision desc limit 1);")" == t ]] || {
+  echo "native snapshot tick changed receipt/head authority instead of leaving the save receipt intact" >&2
+  exit 1
+}
+echo "GREEN PostgreSQL 17: native shadow runtime persisted, crash-recovered, emitted one PlayerSnapshotV1 artifact, and safely shut down"
