@@ -350,6 +350,25 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - 이 slice는 testnet 배포를 변경하지 않았다. `m3.mode=off`와 legacy file authority는
   그대로다.
 
+### M3 wake supervisor 계약 기반 `8e8d09e`
+
+- `m3_wake_supervisor.*`에는 injected operations만 사용하는 test-only 감독 계약을
+  추가했다. default `OBJECTS`와 `M3_RUNTIME_OBJECTS`, `main.c`, `io.c`, native runtime,
+  Helm chart는 바꾸지 않았다.
+- supervisor는 `m3_wake_v1`의 canonical 16-byte frame만 best-effort로 전송한다. durable
+  queue/outbox, game save, DB/RPC를 소유하거나 수정하지 않으며, OFF 상태에서는 callback과
+  I/O를 수행하지 않는다.
+- `EAGAIN`/`EWOULDBLOCK`은 현재 wake만 버리고 owner를 유지한다. short/unclassified/fatal
+  send 및 성공한 reap은 owner를 정확히 한 번 release하고 deterministic backoff로 전환하며,
+  shutdown도 one-shot·nonblocking이다.
+- TDD RED→GREEN, focused C/ASan·UBSan, default-link static audit, C↔Rust wake differential을
+  통과했다. private GitHub Actions도
+  <https://github.com/1XP-Inc/muhan-mud/actions/runs/33924942926>에서 모든 job이 GREEN이다.
+- 실제 Linux child, Unix socket, helper executable/identity, credentials, runtime hook,
+  endpoint policy, deployment 및 feature flag는 의도적으로 이 slice 밖에 있다. 이는 별도
+  승인과 Linux restart/reconciliation 증명 없이는 연결하지 않는다. testnet의 `m3.mode=off`와
+  legacy file authority는 그대로다.
+
 ## Kubernetes 현황
 
 - context: `testnet-1xp`
@@ -371,9 +390,11 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 
 1. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
    smoke로 검증한다. game account와 Auth account의 분리는 유지한다.
-2. 다음 M3 slice는 helper transport/process supervision 또는 shadow reconciliation 중
-   하나만 선택해 RED→GREEN으로 시작한다. wake protocol 자체에는 runtime transport를
-   덧붙이지 않는다.
+2. 다음 M3 slice는 실제 Linux helper transport/process supervision의 endpoint, helper
+   identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
+   Linux fake-ops/FD hygiene RED gate를 추가하거나, shadow reconciliation 중 하나만
+   선택해 RED→GREEN으로 시작한다. wake protocol 자체에는 identity/path/credential/payload/
+   ack/authority field를 덧붙이지 않는다.
 3. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
    모두 쌓인 뒤에만 별도 승인으로 M3 opt-in을 검토한다. DB authority 전환은 그 이후다.
 
