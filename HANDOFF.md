@@ -383,6 +383,20 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
   모든 job이 GREEN이다. default object graph, runtime wiring, MUD save path, DB/Auth,
   deployment와 testnet 상태에는 변화가 없다.
 
+### Replay journal regular-file boundary `10969b1`
+
+- offline `PlayerSnapshotV1` replay differential의 default journal reader는
+  `entry.json`이 regular file일 때만 읽는다. symlink/non-regular entry와 metadata read
+  error는 `JOURNAL_INVALID`로 기록하고 artifact reader/DB query를 수행하지 않는다.
+- RED→GREEN test는 valid JSON target을 향하는 `entry.json` symlink가 기존에는 `MATCH`와
+  one reader query를 만들었음을 재현했고, 수정 후 `JOURNAL_INVALID`와 zero query를
+  고정했다. symlink fixture를 만들 수 없는 platform만 이유와 함께 skip한다.
+- relay test 50 pass/3 expected skip, typecheck/build 및 private GitHub Actions
+  <https://github.com/1XP-Inc/muhan-mud/actions/runs/33927246345>의 모든 job이 GREEN이다.
+  injected-reader, lexical/256 bound, metadata-only semantics는 유지했다.
+- 이 변경은 offline reconciliation read boundary만 다룬다. M3 runtime, MUD save,
+  DB state/schema, Auth, deployment, testnet 데이터는 바꾸지 않았다.
+
 ## Kubernetes 현황
 
 - context: `testnet-1xp`
@@ -403,7 +417,9 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 ## 다음 완료 순서
 
 1. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
-   smoke로 검증한다. game account와 Auth account의 분리는 유지한다.
+   smoke로 검증한다. 먼저 default-skipped harness와 guard test를 완성하고, 그 뒤에만
+   명시 승인된 disposable web users·provision name·imported unclaimed character fixture로
+   실행한다. game account와 Auth account의 분리는 유지한다.
 2. 다음 M3 slice는 실제 Linux helper transport/process supervision의 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
    Linux fake-ops/FD hygiene RED gate를 추가하거나, shadow reconciliation 중 하나만
