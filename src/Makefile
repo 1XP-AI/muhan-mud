@@ -144,6 +144,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-deadline-test
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
+	$(MAKE) m3-feature-off-legacy-authority-test
 	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) m3-wake-v1-test
 	$(MAKE) m3-wake-supervisor-test
@@ -155,6 +156,16 @@ unit-test:
 	$(MAKE) character-player-snapshot-v1-capture-test
 	$(MAKE) character-player-snapshot-v1-capture-native-test
 	$(MAKE) character-player-snapshot-v1-handoff-test
+
+m3-feature-off-legacy-authority-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/m3_feature_off_legacy_authority_test.c character_save_journal_v2_runtime.c player_store.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/m3_feature_off_legacy_authority_test
+	/tmp/muhan-unit/m3_feature_off_legacy_authority_test
+
+m3-feature-off-legacy-authority-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_feature_off_legacy_authority_test.c character_save_journal_v2_runtime.c player_store.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/m3_feature_off_legacy_authority_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_feature_off_legacy_authority_sanitizer_test
 
 character-snapshot-shadow-outbox-test:
 	mkdir -p /tmp/muhan-unit
