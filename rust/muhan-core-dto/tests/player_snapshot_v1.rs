@@ -77,15 +77,21 @@ fn fixture() -> PlayerSnapshotV1 {
 }
 
 fn canonical_c_fixture() -> Vec<u8> {
-    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_canonical.hex"))
+    fixture_hex(include_str!(
+        "../../../tests/fixtures/player_snapshot_v1_canonical.hex"
+    ))
 }
 
 fn canonical_c_inventory_fixture() -> Vec<u8> {
-    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_one_inventory_item.hex"))
+    fixture_hex(include_str!(
+        "../../../tests/fixtures/player_snapshot_v1_one_inventory_item.hex"
+    ))
 }
 
 fn canonical_c_tree_inventory_fixture() -> Vec<u8> {
-    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_tree_inventory.hex"))
+    fixture_hex(include_str!(
+        "../../../tests/fixtures/player_snapshot_v1_tree_inventory.hex"
+    ))
 }
 
 fn fixture_hex(source: &str) -> Vec<u8> {
@@ -136,7 +142,13 @@ fn canonical_c_tree_inventory_fixture_rereads_to_identical_rust_cdto_bytes() {
         .collect();
     assert_eq!(
         topology,
-        vec![(None, 0), (Some(0), 0), (Some(1), 0), (Some(0), 1), (None, 1)],
+        vec![
+            (None, 0),
+            (Some(0), 0),
+            (Some(1), 0),
+            (Some(0), 1),
+            (None, 1)
+        ],
         "C preorder parent/sibling topology survives Rust decoding"
     );
     assert_eq!(
