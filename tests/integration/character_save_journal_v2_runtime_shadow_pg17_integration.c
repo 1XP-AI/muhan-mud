@@ -25,6 +25,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -303,35 +304,93 @@ static int handoff_save_and_tick(const char *root,
     character_save_journal_v2_runtime_native *native)
 {
     creature player;
-    int first_count,second_count;
+    int first_count,second_count=-2;
+    int initial_count,save_result,tick_result,artifact_loaded,save_live_matches;
 
-    if(!native->snapshot_handoff_enabled||artifact_files(root)!=-1)return -1;
+    initial_count=artifact_files(root);
+    if(!native->snapshot_handoff_enabled||initial_count!=-1) {
+        fprintf(stderr,"m3 handoff phase=startup enabled=%d artifact_count=%d\n",
+            native->snapshot_handoff_enabled,initial_count);
+        return -1;
+    }
     init_player(&player);
-    if(save_ply((char *)player_name,&player)!=PLAYER_STORE_OK||
-       native->process_owner.player_store.last_report.reached!=
+    save_result=save_ply((char *)player_name,&player);
+    if(save_result!=PLAYER_STORE_OK||
+       native->process_owner.player_store.last_report.reached<
          CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED||
        !native->process_owner.player_store.last_report.snapshot_attempted||
        native->process_owner.player_store.last_report.snapshot_result!=
          CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK||
        native->snapshot_handoff.report.enqueued!=1||
        native->snapshot_handoff.report.consumed!=0||
-       native->snapshot_capture.report.attempted!=0||!live_matches_serializer(root,&player)||
-       character_save_journal_v2_runtime_native_snapshot_tick(native,1)!=
-         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
-       native->snapshot_handoff.report.consumed!=1||
-       native->snapshot_capture.report.attempted!=1||
-       native->snapshot_capture.report.recorded!=1||
-       native->snapshot_capture.report.failed!=0||
-       artifact_files(root)!=(first_count=1)||
-       !snapshot_artifact_matches(root,native,&player)||!live_matches_serializer(root,&player))
+       native->snapshot_capture.report.attempted!=0) {
+        fprintf(stderr,"m3 handoff phase=save result=%d reached=%d snapshot_attempted=%d snapshot_result=%d enqueued=%" PRIu64 " consumed=%" PRIu64 " capture_attempted=%" PRIu64 " checks=save_ok:%d,published_or_later:%d,snapshot_attempted:%d,snapshot_ok:%d,enqueued_one:%d,consumed_zero:%d,capture_idle:%d live_serializer=unreached\n",
+            save_result,native->process_owner.player_store.last_report.reached,
+            native->process_owner.player_store.last_report.snapshot_attempted,
+            native->process_owner.player_store.last_report.snapshot_result,
+            native->snapshot_handoff.report.enqueued,
+            native->snapshot_handoff.report.consumed,
+            native->snapshot_capture.report.attempted,
+            save_result==PLAYER_STORE_OK,
+            native->process_owner.player_store.last_report.reached>=
+              CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED,
+            native->process_owner.player_store.last_report.snapshot_attempted!=0,
+            native->process_owner.player_store.last_report.snapshot_result==
+              CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK,
+            native->snapshot_handoff.report.enqueued==1,
+            native->snapshot_handoff.report.consumed==0,
+            native->snapshot_capture.report.attempted==0);
         return -1;
+    }
+    save_live_matches=live_matches_serializer(root,&player);
+    if(!save_live_matches) {
+        fprintf(stderr,"m3 handoff phase=save result=%d reached=%d snapshot_attempted=%d snapshot_result=%d enqueued=%" PRIu64 " consumed=%" PRIu64 " capture_attempted=%" PRIu64 " live_serializer=%d\n",
+            save_result,native->process_owner.player_store.last_report.reached,
+            native->process_owner.player_store.last_report.snapshot_attempted,
+            native->process_owner.player_store.last_report.snapshot_result,
+            native->snapshot_handoff.report.enqueued,
+            native->snapshot_handoff.report.consumed,
+            native->snapshot_capture.report.attempted,save_live_matches);
+        return -1;
+    }
+    tick_result=character_save_journal_v2_runtime_native_snapshot_tick(native,1);
+    if(tick_result!=CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
+       native->snapshot_handoff.report.consumed!=1) {
+        fprintf(stderr,"m3 handoff phase=tick result=%d enqueued=%" PRIu64 " consumed=%" PRIu64 "\n",
+            tick_result,native->snapshot_handoff.report.enqueued,
+            native->snapshot_handoff.report.consumed);
+        return -1;
+    }
+    if(native->snapshot_capture.report.attempted!=1||
+       native->snapshot_capture.report.recorded!=1||
+       native->snapshot_capture.report.failed!=0) {
+        fprintf(stderr,"m3 handoff phase=capture attempted=%" PRIu64 " recorded=%" PRIu64 " failed=%" PRIu64 "\n",
+            native->snapshot_capture.report.attempted,
+            native->snapshot_capture.report.recorded,
+            native->snapshot_capture.report.failed);
+        return -1;
+    }
+    first_count=artifact_files(root);
+    artifact_loaded=snapshot_artifact_matches(root,native,&player);
+    if(first_count!=1||!artifact_loaded||!live_matches_serializer(root,&player)) {
+        fprintf(stderr,"m3 handoff phase=artifact count=%d load=%d\n",
+            first_count,artifact_loaded);
+        return -1;
+    }
     if(character_save_journal_v2_runtime_native_snapshot_tick(native,1)!=
-       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
+         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
        artifact_files(root)!=(second_count=first_count)||
        native->snapshot_handoff.report.consumed!=1||
        native->snapshot_capture.report.attempted!=1||
        native->snapshot_capture.report.recorded!=1||
-       !live_matches_serializer(root,&player)) return -1;
+       !live_matches_serializer(root,&player)) {
+        fprintf(stderr,"m3 handoff phase=repeat-tick enqueued=%" PRIu64 " consumed=%" PRIu64 " capture_attempted=%" PRIu64 " capture_recorded=%" PRIu64 " artifact_count=%d\n",
+            native->snapshot_handoff.report.enqueued,
+            native->snapshot_handoff.report.consumed,
+            native->snapshot_capture.report.attempted,
+            native->snapshot_capture.report.recorded,second_count);
+        return -1;
+    }
     (void)runtime;
     return 0;
 }

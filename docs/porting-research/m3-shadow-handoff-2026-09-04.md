@@ -18,9 +18,7 @@
 - M3 native runtime은 opt-in handoff를 idle turn에서 초당 최대 한 건씩
   drain한다. 저장·publish·ACK 경로는 이 drain을 기다리지 않는다.
 
-## 이번 ABI 경계
-
-다음 변경은 아직 커밋 전이다.
+## ABI 경계
 
 - `player_snapshot_v1_native_abi_supported()`가 durable handoff가 요구하는
   ABI를 명시한다: 8-bit char, 16-bit short, signed i64 전체를 담는 64-bit
@@ -67,9 +65,21 @@ seam으로 포함하여 opt-in 및 ABI mismatch 경로를 실행한다.
 evidence다. 이 slice는 artifact upload, DB readback, bank, reconnect,
 ownership/lifecycle 전환을 하지 않는다.
 
+## 최신 재검증 (2026-09-04)
+
+- runtime-shadow handoff E2E의 성공 저장은 ACK까지 완료되므로 protocol
+  cutpoint가 `PUBLISHED`(6)가 아니라 `DB_ACKED`(8)까지 진행할 수 있다.
+  테스트는 정확히 `PUBLISHED`와 같아야 한다는 잘못된 기대를
+  `PUBLISHED` 이상으로 바꾸되, receipt/head, artifact, 두 번째 tick의
+  불변성 검증은 그대로 유지한다.
+- disposable Linux/PostgreSQL 17 재현에서 fault/recover, real `files1.c`
+  decoder, one-save handoff, artifact load/clone decode, second-tick
+  idempotency가 모두 GREEN이었다.
+
 ## 다음 수직 단계
 
-Linux CI에서 위 disposable PostgreSQL 17 harness의 full GREEN을 확인한 뒤,
+이 변경을 private branch에 올린 뒤 Linux CI에서 위 disposable PostgreSQL
+17 harness의 full GREEN을 재확인한 다음,
 별도 M4 relay 경계에서 이 immutable artifact를 PostgreSQL validator로
 전달하는 단일-record 계약을 추가한다. relay는 snapshot을 gameplay read
 source로 승격하지 않으며, upload 실패는 artifact를 남긴 채 재시도 가능한
