@@ -2,7 +2,8 @@
 
 - 최종 갱신: 2026-09-04 KST
 - 브랜치: `codex/mud-identity-foundation`
-WIP 기준 커밋: `68100aa685ed3ee2626aadcc6f788c9f0a860e0e`
+- 현재 코드 기준 커밋: `9f7bf247700759c64e6362dc9054dcca41806690`
+- M4 WIP 기준 커밋: `68100aa685ed3ee2626aadcc6f788c9f0a860e0e`
 
 ## 먼저 알아야 할 상태
 
@@ -10,6 +11,10 @@ WIP 기준 커밋: `68100aa685ed3ee2626aadcc6f788c9f0a860e0e`
 이전하고, Rust가 검증 가능한 canonical CDTO 경계만 사용하도록 포팅하는 작업이다.
 M1부터 M3 기반과 `PlayerSnapshotV1` C/Rust 경계는 private CI를 통과했다. 현재 M4
 코드는 다른 에이전트가 이어서 수정할 수 있도록 WIP 기준점으로 커밋되어 있다.
+
+macOS의 case-insensitive filesystem에서 일반 clone을 막던
+`objmon/Celduin_sign`/`objmon/celduin_sign` 충돌은 `9f7bf24`에서 해결됐다.
+새 clone은 충돌 경고 없이 clean checkout되고, 서로 다른 두 역사적 blob도 보존된다.
 
 **현재 M4 코드는 배포 가능한 완료본이 아니다.** 단위·sanitizer·PostgreSQL 17
 계약 테스트는 통과하지만, 독립 리뷰에서 P1 두 건과 P2 한 건이 확인됐다. 아래
@@ -29,6 +34,13 @@ DB 이관, 웹 xterm 연결을 안전하게 리팩터링하는 일반 소프트�
 - 커밋 메시지와 PR 설명은 한국어로 작성한다.
 - 로컬의 `src/frp.new`는 사용자 소유 dirty file이다. 열기, 수정, stage, commit,
   revert하지 않는다. 원격 WIP 커밋에는 포함되지 않았다.
+
+새 디렉터리에 받을 때는 이제 sparse checkout 없이 일반 clone을 사용해도 된다.
+
+```sh
+git clone --branch codex/mud-identity-foundation --single-branch \
+  https://github.com/1XP-Inc/muhan-mud.git muhan-mud.nosync
+```
 
 다른 checkout에서 시작할 때:
 
@@ -52,6 +64,25 @@ Rust 포팅 경계를 구축한다. TDD, 결정론적 differential test, dual-wr
 
 웹 로그인 계정과 게임 캐릭터는 별도 identity다. Auth 로그인만으로 기존 MUD
 캐릭터가 자동 연결되지 않는다. 명시적인 claim/link 절차가 필요하다.
+
+## macOS casefold 리소스 리팩터링 `9f7bf24`
+
+- `objmon/Celduin_sign`은 원본 blob
+  `49b3a1975def2762e68f2663351ee55ffb387e61`로 복구했다.
+- 기존 소문자 리소스의 원본 blob
+  `4eb75435475df4df6d4cb20050754c1ab09baefe`는 casefold-safe 물리 경로
+  `objmon/celduin_sign__4eb75435`로 이동했다.
+- 레거시 논리 경로 `objmon/celduin_sign`은
+  `tools/revive/path-relocations.v1.tsv`와 기존 manifest에 보존된다. 이 raw 소문자
+  물리 경로를 다시 만들면 macOS clone 충돌이 재발하므로 만들지 않는다.
+- `tools/revive/extract-legacy-blobs.sh`는 relocation source path, legacy path, canonical
+  path와 Git blob을 함께 검증한다. 누락 relocation이나 중복 legacy path는 fail한다.
+- C/Rust 경로 해석기는 이름이 실제로 바뀐 alias만 canonical-first로 연다. 동일 경로
+  alias는 mutable raw file 우선순위를 유지한다. renamed canonical target이 없으면 다른
+  대소문자 raw file을 잘못 여는 대신 `ENOENT`로 fail-closed한다.
+- `tests/unit/resource_tree_manifest_test.py`는 전체 Git index의 NFD+casefold 유일성,
+  두 manifest의 일치, canonical blob과 최소 재생성 계약을 검사한다. `src/Makefile`의
+  `unit-test`에 연결돼 Ubuntu CI에서도 실행된다.
 
 ## 고정된 설계 결정
 
@@ -166,6 +197,23 @@ Linux는 `/proc/self/fd/<root-fd>/<leaf>`를 사용하지만 macOS fallback은 r
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
 
 ## 현재 검증 증거
+
+### 리소스 경로 리팩터링 `9f7bf24`
+
+2026-09-04 KST에 다음 로컬 검증이 통과했다.
+
+```sh
+python3 tests/unit/resource_tree_manifest_test.py
+make -C src unit-test CC=cc
+cargo test --workspace --manifest-path rust/Cargo.toml
+```
+
+- manifest 검사: Git index 7,877개 경로, alias 3,824개, NFD+casefold 충돌 0건.
+- C-only와 `USE_RUST_RESOLVER` runtime alias 회귀 테스트 모두 통과.
+- fresh macOS 일반 clone: 충돌 warning 0건, dirty path 0건, 두 canonical blob 일치.
+- private GitHub Actions: <https://github.com/1XP-Inc/muhan-mud/actions/runs/33828127616>
+  (`macOS`, `Windows`, `Ubuntu ARM`, `Ubuntu`, `Supabase ownership contract` 모두 GREEN)
+- staged credential scan: HIGH/MEDIUM/LOW/WARN 모두 0건.
 
 2026-09-04 KST, WIP 커밋 직전에 다음이 통과했다.
 
