@@ -141,7 +141,8 @@ select private.record_legacy_published_receipt(
 );
 
 select octet_length(payload) as snapshot_octets,
-  encode(public.digest(payload, 'sha256'), 'hex') as snapshot_sha256
+  encode(public.digest(payload, 'sha256'), 'hex') as snapshot_sha256,
+  encode(payload, 'hex') as snapshot_payload_hex
 from pvl_level_payload
 \gset pvl_
 
@@ -164,7 +165,7 @@ select pg_temp.assert_true(
        'c9900000-0000-0000-0000-000000000001'::uuid,
        :'pvl_first_request_sha256', repeat('a', 64), 9, 'player-snapshot-v1',
        :'pvl_snapshot_sha256', :'pvl_snapshot_octets',
-       (select payload from pvl_level_payload))),
+       decode(:'pvl_snapshot_payload_hex', 'hex'))),
   'the validated receipt/source-octet-bound artifact records before projection'
 );
 
