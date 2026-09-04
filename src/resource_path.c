@@ -3,6 +3,7 @@
 #include "resource_path.h"
 
 #include <errno.h>
+#include <stdarg.h>
 
 #define RP_MAX_LINE 8192
 #define RP_RESOLVE_CANONICAL_MISSING -2
@@ -22,6 +23,25 @@ extern int mr_resolve_legacy_path(const char *legacy_path, char *out, unsigned l
 static int g_rust_manifest_loaded = 0;
 #endif
 
+static int rp_format_path(char *out, unsigned long out_sz, const char *format, ...)
+{
+    va_list ap;
+    int n;
+
+    if(!out || out_sz == 0 || !format)
+        return -1;
+
+    va_start(ap, format);
+    n = vsnprintf(out, out_sz, format, ap);
+    va_end(ap);
+    if(n < 0 || (unsigned long)n >= out_sz) {
+        out[0] = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
 static char *rp_strdup(const char *s)
 {
     unsigned long n;
@@ -39,20 +59,18 @@ static char *rp_strdup(const char *s)
     return p;
 }
 
-static void rp_get_runtime_root(char *out, unsigned long out_sz)
+static int rp_get_runtime_root(char *out, unsigned long out_sz)
 {
     char *env_root;
 
     if(!out || out_sz == 0)
-        return;
+        return -1;
 
     env_root = getenv("MUHAN_HOME");
-    if(env_root && env_root[0]) {
-        snprintf(out, out_sz, "%s", env_root);
-        return;
-    }
+    if(env_root && env_root[0])
+        return rp_format_path(out, out_sz, "%s", env_root);
 
-    snprintf(out, out_sz, "%s", MUDHOME);
+    return rp_format_path(out, out_sz, "%s", MUDHOME);
 }
 
 static int rp_path_exists(const char *path)
@@ -113,7 +131,10 @@ int resolve_runtime_path(const char *legacy_path, char *out, unsigned long out_s
     if(!legacy_path || !out || out_sz == 0)
         return -1;
 
-    rp_get_runtime_root(root, sizeof(root));
+    if(rp_get_runtime_root(root, sizeof(root)) < 0) {
+        out[0] = 0;
+        return -1;
+    }
     if(rp_is_mudhome_path(legacy_path) &&
        strcmp(root, MUDHOME) != 0)
         n = snprintf(out, out_sz, "%s%s", root, legacy_path + strlen(MUDHOME));
@@ -128,21 +149,26 @@ int resolve_runtime_path(const char *legacy_path, char *out, unsigned long out_s
     return 0;
 }
 
-static void rp_bytes_to_hex(const unsigned char *in, char *out, unsigned long out_sz)
+static int rp_bytes_to_hex(const unsigned char *in, char *out, unsigned long out_sz)
 {
     static const char hex[] = "0123456789ABCDEF";
     unsigned long i, j, n;
 
     if(!in || !out || out_sz == 0)
-        return;
+        return -1;
 
+    out[0] = 0;
     n = (unsigned long)strlen((const char *)in);
+    if(n > (out_sz - 1) / 2)
+        return -1;
+
     j = 0;
-    for(i = 0; i < n && (j + 2) < out_sz; i++) {
+    for(i = 0; i < n; i++) {
         out[j++] = hex[(in[i] >> 4) & 0x0f];
         out[j++] = hex[in[i] & 0x0f];
     }
     out[j] = 0;
+    return 0;
 }
 
 static int rp_is_read_mode(const char *mode)
@@ -165,8 +191,11 @@ static void rp_load_aliases(void)
         return;
     g_alias_loaded = 1;
 
-    rp_get_runtime_root(root, sizeof(root));
-    snprintf(alias_file, sizeof(alias_file), "%s/resources_manifest/path-alias.v1.tsv", root);
+    if(rp_get_runtime_root(root, sizeof(root)) < 0)
+        return;
+    if(rp_format_path(alias_file, sizeof(alias_file),
+                      "%s/resources_manifest/path-alias.v1.tsv", root) < 0)
+        return;
 
     fp = fopen(alias_file, "r");
     if(!fp)
@@ -235,7 +264,8 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
 
     out[0] = 0;
 
-    rp_get_runtime_root(root, sizeof(root));
+    if(rp_get_runtime_root(root, sizeof(root)) < 0)
+        return -1;
     root_len = (unsigned long)strlen(root);
 
     if(rp_starts_with(legacy_path, MUDHOME "/"))
@@ -256,7 +286,9 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
 #ifdef USE_RUST_RESOLVER
         if(!g_rust_manifest_loaded) {
             char manifest_path[1024];
-            snprintf(manifest_path, sizeof(manifest_path), "%s/resources_manifest/path-alias.v1.tsv", root);
+            if(rp_format_path(manifest_path, sizeof(manifest_path),
+                              "%s/resources_manifest/path-alias.v1.tsv", root) < 0)
+                return -1;
             g_rust_manifest_loaded = (mr_manifest_load(manifest_path) == 0) ? 1 : -1;
         }
 
@@ -268,8 +300,10 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
                             return -1;
                     } else {
                         char rust_joined[2048];
-                        snprintf(rust_joined, sizeof(rust_joined), "%s/resources_utf8/%s", root, candidate);
-                        snprintf(out, out_sz, "%s", rust_joined);
+                        if(rp_format_path(rust_joined, sizeof(rust_joined),
+                                          "%s/resources_utf8/%s", root, candidate) < 0 ||
+                           rp_format_path(out, out_sz, "%s", rust_joined) < 0)
+                            return -1;
                     }
                     if(rp_path_exists(out))
                         return 0;
@@ -279,12 +313,18 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
         }
 #endif
 
-        rp_bytes_to_hex((const unsigned char *)rel, hexbuf, sizeof(hexbuf));
+        if(rp_bytes_to_hex((const unsigned char *)rel, hexbuf, sizeof(hexbuf)) < 0) {
+            out[0] = 0;
+            return -1;
+        }
         alias = rp_find_alias(hexbuf);
         if(alias && alias[0] && strcmp(alias, rel) != 0) {
-            snprintf(candidate, sizeof(candidate), "%s/resources_utf8/%s", root, alias);
+            if(rp_format_path(candidate, sizeof(candidate),
+                              "%s/resources_utf8/%s", root, alias) < 0)
+                return -1;
             if(rp_path_exists(candidate)) {
-                snprintf(out, out_sz, "%s", candidate);
+                if(rp_format_path(out, out_sz, "%s", candidate) < 0)
+                    return -1;
                 return 0;
             }
             return RP_RESOLVE_CANONICAL_MISSING;
@@ -300,7 +340,8 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
     if(resolve_runtime_path(legacy_path, adjusted, sizeof(adjusted)) == 0 &&
        strcmp(adjusted, legacy_path) != 0 &&
        rp_path_exists(adjusted)) {
-        snprintf(out, out_sz, "%s", adjusted);
+        if(rp_format_path(out, out_sz, "%s", adjusted) < 0)
+            return -1;
         return 0;
     }
 
@@ -311,40 +352,52 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
      */
     if((!adjusted[0] || strcmp(adjusted, legacy_path) == 0) &&
        rp_path_exists(legacy_path)) {
-        snprintf(out, out_sz, "%s", legacy_path);
+        if(rp_format_path(out, out_sz, "%s", legacy_path) < 0)
+            return -1;
         return 0;
     }
 
     if(rp_is_mudhome_path(legacy_path) && strcmp(root, MUDHOME) != 0) {
-        snprintf(adjusted, sizeof(adjusted), "%s%s", root, legacy_path + strlen(MUDHOME));
+        if(rp_format_path(adjusted, sizeof(adjusted), "%s%s", root,
+                          legacy_path + strlen(MUDHOME)) < 0)
+            return -1;
         if(rp_path_exists(adjusted)) {
-            snprintf(out, out_sz, "%s", adjusted);
+            if(rp_format_path(out, out_sz, "%s", adjusted) < 0)
+                return -1;
             return 0;
         }
     }
 
     if(rel && rel[0]) {
         if(alias && alias[0] && strcmp(alias, rel) != 0) {
-            snprintf(candidate, sizeof(candidate), "%s/resources_utf8/%s", root, alias);
+            if(rp_format_path(candidate, sizeof(candidate),
+                              "%s/resources_utf8/%s", root, alias) < 0)
+                return -1;
             if(rp_path_exists(candidate)) {
-                snprintf(out, out_sz, "%s", candidate);
+                if(rp_format_path(out, out_sz, "%s", candidate) < 0)
+                    return -1;
                 return 0;
             }
         }
 
-        snprintf(candidate, sizeof(candidate), "%s/resources_utf8/%s", root, rel);
+        if(rp_format_path(candidate, sizeof(candidate),
+                          "%s/resources_utf8/%s", root, rel) < 0)
+            return -1;
         if(rp_path_exists(candidate)) {
-            snprintf(out, out_sz, "%s", candidate);
+            if(rp_format_path(out, out_sz, "%s", candidate) < 0)
+                return -1;
             return 0;
         }
     }
 
     if(adjusted[0]) {
-        snprintf(out, out_sz, "%s", adjusted);
+        if(rp_format_path(out, out_sz, "%s", adjusted) < 0)
+            return -1;
         return rp_path_exists(adjusted) ? 0 : -1;
     }
 
-    snprintf(out, out_sz, "%s", legacy_path);
+    if(rp_format_path(out, out_sz, "%s", legacy_path) < 0)
+        return -1;
     return rp_path_exists(legacy_path) ? 0 : -1;
 }
 

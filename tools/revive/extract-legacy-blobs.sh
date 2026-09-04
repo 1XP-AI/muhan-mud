@@ -140,6 +140,10 @@ for entry in entries:
 
     # macOS default filesystems are case-insensitive + Unicode-normalized.
     # Reserve path keys in that view as well to avoid silent overwrite.
+    # Derive every retry from the original path: a shared blob SHA must not
+    # repeatedly append the same suffix when three or more paths collide.
+    original_candidate = candidate
+    collision_ordinal = 1
     while True:
         fs_key = unicodedata.normalize("NFD", candidate).casefold()
         exact_conflict = candidate in used_paths and used_paths[candidate] != path_b
@@ -152,12 +156,14 @@ for entry in entries:
                 f"relocation target {candidate!r} conflicts with an existing normalized path"
             )
 
-        p = pathlib.PurePosixPath(candidate)
+        p = pathlib.PurePosixPath(original_candidate)
         stem = p.stem if p.stem else p.name
         suffix = p.suffix if p.suffix else ""
         parent = str(p.parent)
-        alt_name = f"{stem}__{sha[:8]}{suffix}"
+        ordinal_suffix = "" if collision_ordinal == 1 else f"_{collision_ordinal}"
+        alt_name = f"{stem}__{sha[:8]}{ordinal_suffix}{suffix}"
         candidate = f"{parent}/{alt_name}" if parent != "." else alt_name
+        collision_ordinal += 1
 
     used_paths[candidate] = path_b
     used_fs_keys[unicodedata.normalize("NFD", candidate).casefold()] = path_b
