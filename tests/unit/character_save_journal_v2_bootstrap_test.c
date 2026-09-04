@@ -19,8 +19,13 @@ typedef enum bootstrap_mode {
     BOOTSTRAP_BAD_LIFECYCLE
 } bootstrap_mode;
 
+#define BOOTSTRAP_TEST_ROOT_CAP 128
+
 typedef struct fixture {
-    char root[PATH_MAX];
+    /* The fixture root is deliberately short so each derived test path fits
+     * PATH_MAX independently.  This keeps the GCC -Wformat-truncation build
+     * contract explicit instead of relying on a chained snprintf proof. */
+    char root[BOOTSTRAP_TEST_ROOT_CAP];
     int root_fd, route_calls, validate_calls, seed_calls;
     bootstrap_mode mode;
 } fixture;
@@ -136,13 +141,13 @@ static int setup(fixture *test, bootstrap_mode mode, int create_live)
     strcpy(test->root,"/tmp/m3-bootstrap.XXXXXX");
     if(!mkdtemp(test->root)||chmod(test->root,0700) ||
        snprintf(player,sizeof(player),"%s/player",test->root)>=(int)sizeof(player) ||
-       snprintf(shard,sizeof(shard),"%s/11",player)>=(int)sizeof(shard) ||
+       snprintf(shard,sizeof(shard),"%s/player/11",test->root)>=(int)sizeof(shard) ||
        snprintf(journal,sizeof(journal),"%s/character-save-journal",test->root)>=(int)sizeof(journal) ||
        snprintf(stage,sizeof(stage),"%s/character-save-stage",test->root)>=(int)sizeof(stage) ||
        mkdir(player,0700)||mkdir(shard,0700)||mkdir(journal,0700)||mkdir(stage,0700)) return -1;
     if(mode==BOOTSTRAP_BAD_TREE&&chmod(stage,0755)) return -1;
     if(create_live) {
-        if(snprintf(live,sizeof(live),"%s/M3hero",shard)>=(int)sizeof(live)) return -1;
+        if(snprintf(live,sizeof(live),"%s/player/11/M3hero",test->root)>=(int)sizeof(live)) return -1;
         descriptor=open(live,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
         if(descriptor<0||close(descriptor)) return -1;
     }
@@ -156,10 +161,10 @@ static void teardown(fixture *test)
     char player[PATH_MAX], shard[PATH_MAX], journal[PATH_MAX], stage[PATH_MAX], live[PATH_MAX];
     if(test->root_fd>=0) (void)close(test->root_fd);
     snprintf(player,sizeof(player),"%s/player",test->root);
-    snprintf(shard,sizeof(shard),"%s/11",player);
+    snprintf(shard,sizeof(shard),"%s/player/11",test->root);
     snprintf(journal,sizeof(journal),"%s/character-save-journal",test->root);
     snprintf(stage,sizeof(stage),"%s/character-save-stage",test->root);
-    snprintf(live,sizeof(live),"%s/M3hero",shard);
+    snprintf(live,sizeof(live),"%s/player/11/M3hero",test->root);
     (void)unlink(live); (void)chmod(stage,0700); (void)rmdir(stage); (void)rmdir(journal);
     (void)rmdir(shard); (void)rmdir(player); (void)rmdir(test->root);
     current=0;

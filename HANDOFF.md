@@ -1,27 +1,27 @@
 # Muhan MUD 포팅 핸드오프
 
-- 최종 갱신: 2026-09-04 KST
+- 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 현재 코드 기준 커밋: `d2910bd3055db480acde60f1fa42664ded5b27be`
-- M4 WIP 기준 커밋: `68100aa685ed3ee2626aadcc6f788c9f0a860e0e`
+- 포팅 기능 기준 커밋: `dfcaacec541015dc1c0a42d4ec87e2da1e400394`
 
 ## 먼저 알아야 할 상태
 
 이 브랜치는 레거시 C MUD의 파일 영속 상태를 Supabase/PostgreSQL로 단계적으로
 이전하고, Rust가 검증 가능한 canonical CDTO 경계만 사용하도록 포팅하는 작업이다.
-M1부터 M3 기반과 `PlayerSnapshotV1` C/Rust 경계는 private CI를 통과했다. M4
-코드는 다른 에이전트가 이어서 수정할 수 있도록 WIP 기준점으로 커밋되어 있다.
+현재 branch에는 M3 observer/durable handoff, `PlayerSnapshotV1`의 C/Rust/PG17
+검증 경계, M4 manifest relay, 그리고 C↔Rust helper wake 프로토콜의 첫 계약이
+들어 있다.
 
 macOS의 case-insensitive filesystem에서 일반 clone을 막던
 `objmon/Celduin_sign`/`objmon/celduin_sign` 충돌은 `9f7bf24`에서 해결됐다.
 새 clone은 충돌 경고 없이 clean checkout되고, 서로 다른 두 역사적 blob도 보존된다.
 
-**현재 M4 코드는 배포 가능한 완료본이 아니다.** `372b5e8`과 `d2910bd`에서
-non-blocking PlayerSnapshot durable handoff, Linux PG17 링크 경계, relay의
-non-Linux fail-closed 경계를 해결했고 private CI도 통과했다. 하지만 durable
-consumer를 실제 게임 유휴 루프에서 호출하는 TDD 작업과 PostgreSQL의 full
-PlayerSnapshot validation이 아직 남아 있으므로 live runtime 연결이나 testnet 배포를
-승인하지 않는다.
+**현재 코드는 DB 권위 전환 완료본이 아니다.** PostgreSQL full
+`PlayerSnapshotV1` validation과 opt-in idle consumer는 구현·계약 검증이 끝났지만,
+기본 경로는 여전히 OFF이고 legacy player file이 authority다. Rust helper wake는
+전송·helper process·DB 작업·배포를 전혀 포함하지 않는 16-byte 무상태 신호 계약일
+뿐이다. 별도 TDD/PG17/운영 gate 없이 M3 runtime을 켜거나 game save를 DB 권위로
+바꾸지 않는다.
 
 이 작업은 보안 침해나 사이버 시큐리티 작업이 아니다. MUD의 계정, 캐릭터 저장,
 DB 이관, 웹 xterm 연결을 안전하게 리팩터링하는 일반 소프트웨어 개발 작업이다.
@@ -35,7 +35,7 @@ DB 이관, 웹 xterm 연결을 안전하게 리팩터링하는 일반 소프트�
 - remote `origin`은 `1XP-AI/muhan-mud`이다. 이 작업을 `origin`에 push하지 않는다.
 - 커밋 메시지와 PR 설명은 한국어로 작성한다.
 - 로컬의 `src/frp.new`는 사용자 소유 dirty file이다. 열기, 수정, stage, commit,
-  revert하지 않는다. 원격 WIP 커밋에는 포함되지 않았다.
+  revert하지 않는다. 원격 branch에는 포함되지 않았다.
 
 새 디렉터리에 받을 때는 이제 sparse checkout 없이 일반 clone을 사용해도 된다.
 
@@ -102,7 +102,7 @@ Rust 포팅 경계를 구축한다. TDD, 결정론적 differential test, dual-wr
 - `replicas: 1`과 Kubernetes `Recreate`는 writer fence가 아니다. PVC process lock,
   DB epoch, journal/reconciliation gate가 별도로 필요하다.
 
-## WIP 커밋 `68100aa`에 포함된 범위
+## 현재 포팅 경계
 
 ### 1. M3 observer 연결
 
@@ -127,14 +127,18 @@ bytes를 검증한다. capture는 held writer, PREPARED, stage owner/mode/link/i
 다시 확인한다. native bridge는 bounded `read_crt_player`를 사용하며 게임 비밀번호를
 snapshot payload에 포함하지 않는다.
 
-### 3. PostgreSQL artifact 계약
+### 3. PostgreSQL full artifact 계약
 
 - `supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql`
 - `supabase/tests/player_snapshot_v1_artifact_contract.sql`
 - `supabase/tests/player_snapshot_v1_artifact_pg17_integration.sh`
 
 immutable artifact table, receipt anchor, record/reconciliation RPC와 role 경계가 있다.
-현재 SQL validation은 아래 P1 때문에 완료된 계약이 아니다.
+`20260915000000`은 canonical envelope, 정확히 40개 field의 id/type/고정 길이,
+`PLAYER`, HP/MP 범위, fixed string과 `ObjectGraphV1`의 node/depth/list 예산을
+PostgreSQL에서 검사한다. `20260916000000`은 source octets를 acknowledged receipt에
+정확히 묶는다. PG17 계약은 migration 140의 RPC 부재를 RED로 확인한 뒤 150/160 적용과
+C/Rust exact-byte 재읽기를 GREEN으로 고정한다.
 
 ### 4. M4 manifest relay
 
@@ -143,40 +147,34 @@ immutable artifact table, receipt anchor, record/reconciliation RPC와 role 경�
 strict 13-line manifest를 lexical order로 읽고 direct PostgreSQL RPC를 호출하는 one-shot
 Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수정하지 않는다.
 
+### 5. Durable handoff consumer의 idle lifecycle
+
+`USE_M3_RUNTIME` build에서만 `main.c`가 optional native runtime을 시작한다. exact
+`MUD_M3_PLAYER_SNAPSHOT_V1=handoff` opt-in일 때 `io.c`의 serialized game loop가
+`output_buf`·command 처리·`update_game` 뒤에 idle hook을 호출한다. cadence는 1초마다
+최대 한 token이고 OFF/BUSY/NOT_READY는 no-op이며 실패 진단은 rate-limited다. 일반 종료는
+idempotent teardown을 거치고 SIGKILL은 기존 durable recovery 경계로 남는다. 기본 build와
+기본 환경은 runtime symbol을 link하거나 I/O를 하지 않는다.
+
+### 6. M3 helper wake protocol v1
+
+`dfcaace`의 `m3_wake_v1.*`와 `rust/muhan-m3-wake-protocol/`은 identity나 durable-state
+참조가 전혀 없는 exact 16-byte wake frame을 C/Rust differential test로 고정한다. 이는
+미래 helper가 durable artifact/outbox를 다시 스캔하라는 best-effort 힌트일 뿐이며,
+loss/duplicate/reorder에 의존하지 않는다. production transport, Unix socket, helper
+process, database work, chart와 MUD runtime linkage는 이 slice에 포함되지 않는다.
+
 ## 남은 선행 작업
 
-### P1: PostgreSQL이 임의 kind-7 CDTO를 영구 저장할 수 있다
-
-`supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql`은 CDTO의
-magic/version/kind/length/digest만 검사한다. 현재 contract가 사용하는 48-byte 빈
-kind-7 envelope도 `RECORDED`되지만 C artifact store는 이를 거부한다. 잘못된 immutable
-row가 먼저 삽입되면 같은 character/command의 올바른 payload가 conflict로 막힌다.
-
-필수 TDD 순서:
-
-1. empty kind-7과 field count/type/length 변형을 거부하는 PG RED를 추가한다.
-2. DB validation을 C `PlayerSnapshotV1` schema와 동등하게 만들거나, DB가 전체 구조를
-   검증할 수 없다면 검증된 native relay만 RPC를 실행하도록 role과 deployment
-   topology를 더 좁게 강제한다.
-3. 실제 C fixture를 record한 뒤 C와 Rust가 exact-byte로 다시 읽는 integration을 만든다.
-
-### P1: durable handoff consumer의 실제 유휴 lifecycle 연결
-
-`MUD_M3_PLAYER_SNAPSHOT_V1=handoff`는 default OFF인 명시적 opt-in이다. enabled일 때
-startup recovery와 live save는 immutable private handoff를 남기지만,
-`character_save_journal_v2_runtime_native_snapshot_tick()`을 실제 게임 프로세스가 아직
-호출하지 않으므로 artifact consumer는 자동으로 drain되지 않는다. legacy save/publish/ACK
-authority와 결과는 바꾸지 않지만, 이 상태를 실사용 기능으로 선언하거나 배포하면 안 된다.
-
-필수 TDD 순서:
-
-1. `USE_M3_RUNTIME` guarded main-to-`sock_loop()` idle hook을 만들고, 한 게임 turn의
-   `output_buf`·command 처리·`update_game` 뒤에만 호출한다.
-2. 1초마다 최대 1 token만 소비하고 OFF/BUSY/NOT_READY는 no-op, handoff 오류는
-   rate-limited diagnostic으로 처리한다.
-3. default OFF, synchronous save/publish/ACK/startup/shutdown 경로에서 tick이 호출되지
-   않는 테스트와 idle ordering·busy suppression·retry 테스트를 먼저 만든다.
-4. SIGKILL은 final drain 대상이 아니라 existing durable recovery boundary로 유지한다.
+1. 이 handoff와 함께 push되는 Linux GCC fixture 경고 수정이 GitHub CI 전체 matrix에서
+   GREEN인지 확인한다. 이것은 test fixture의 bounded pathname 증명만 바꾸며 게임 동작이나
+   영속 포맷을 바꾸지 않는다.
+2. helper transport/process supervision은 별도 설계와 RED 테스트로 시작한다. wake frame은
+   identity, path, credential, payload, acknowledgement 또는 authority 신호로 확장하지
+   않는다.
+3. M3 shadow opt-in을 검토하려면 feature-OFF testnet 배포, PVC/restart/rollback, PG17
+   reconciliation과 실제 browser/xterm smoke를 별도 증거로 축적한다. DB authority 전환은
+   그보다 뒤의 명시적 gate다.
 
 ### 해결된 scoped 항목 (다시 열지 말 것)
 
@@ -193,15 +191,17 @@ authority와 결과는 바꾸지 않지만, 이 상태를 실사용 기능으로
   handoff/capture closure와 fail-closed fixture decoder를 더했다. default legacy Makefile
   graph에는 handoff/libpq가 추가되지 않았다.
 
-## 병렬 위임 권장안
+## 다음 위임 권장안
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** `sock_loop()` idle pump의 TDD 구현, opt-in/idle/Busy/shutdown lifecycle
-   경계와 deterministic cadence 검증.
-2. **Terra/고난도:** PostgreSQL full PlayerSnapshot validation과 C/Rust/PG fixture 연동.
-3. **Luna/중간 난도:** Linux PG17 harness와 idle-pump diff의 독립 리뷰, default-off 및
-   legacy link graph 회귀 검사.
+1. **Terra/고난도:** 미래 helper transport/process supervision의 설계·RED 테스트만 맡긴다.
+   wake가 유실돼도 durable scan/recovery가 독립적으로 정확한지 증명하고, DB authority와
+   legacy save 결과는 바꾸지 않는다.
+2. **Terra/고난도:** M3 shadow opt-in 전의 PG17/PVC/restart/reconciliation E2E gate를
+   별도 worktree에서 보강한다. 활성화·배포는 이 작업의 권한이 아니다.
+3. **Luna/중간 난도:** Linux CI, C↔Rust differential, feature-OFF chart 값과 browser/xterm
+   smoke의 독립 재현을 맡긴다.
 
 각 에이전트는 자기 묶음만 수정하고, 커밋하지 않은 다른 에이전트 파일을 정리하거나
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
@@ -281,47 +281,68 @@ bash -n supabase/tests/m3_process_owner_pg17_integration.sh \
   named-volume restart까지 통과했다. macOS의 native lifecycle target은 Linux-only이므로
   local에서 skip되는 것이 정상이다.
 
-아직 필요한 검증:
+### 2026-09-05 현재 검증
 
-- idle pump P1의 RED/GREEN과 full Linux CI
-- PostgreSQL full PlayerSnapshot schema validation P1
-- live runtime opt-in, PVC, rollback 및 browser smoke
+다음은 `dfcaace` 기준으로 로컬에서 다시 확인했다.
+
+```sh
+make -C src character-save-journal-v2-bootstrap-test CC=cc
+make -C src unit-test CC=cc
+./scripts/run-m3-wake-differential.sh
+pnpm --filter @muhan/m4-file-snapshot-manifest-relay test
+pnpm --filter @muhan/m4-file-snapshot-manifest-relay typecheck
+pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
+```
+
+- focused bootstrap과 전체 C unit: pass.
+- C ASan/UBSan wake oracle, Rust unit, C↔Rust malformed corpus differential: pass.
+- relay: 49 pass, 3 expected skip; typecheck/build: pass.
+- `PlayerSnapshotV1` full DB contract의 독립 Terra 검토는 P0/P1 구현 누락 없음으로
+  판정했다. 선택적 P2 negative fixture 증강은 다음 별도 slice다.
+- 이 handoff와 함께 들어가는 bounded bootstrap fixture 수정은 GitHub Ubuntu GCC의
+  `-Werror=format-truncation` 경고를 해소하기 위한 것이다. 정확한 Linux matrix GREEN은
+  push 뒤 CI 결과로만 확정한다.
 
 ## Kubernetes 현황
 
 - context: `testnet-1xp`
 - release: `muhan-mud-testnet`
 - URL: <https://muhan.1xp.vc>
-- chart label: `muhan-mud-0.1.5`
-- web, gateway, MUD, Auth, PostgREST, Realtime와 PostgreSQL은 2026-09-04 확인 시
-  모두 Ready 1/1이었다.
+- Helm revision: `9` (`deployed`, 2026-09-05 KST 확인)
+- web, gateway, MUD, Auth, PostgREST, Realtime와 PostgreSQL은 모두 Ready였다.
 - running app digest:
-  `sha256:117baa939a909f5005a872a355f9e714a5c6cde692af16dff0652f97c7218c70`
+  `sha256:5f025ee1732981b2cd6d9aaef18ffc858b90905f6cc1e80a9bbf8d141ce174ec`
 - chart repo: sibling checkout `../tesnet-1xp.nosync/muhan-mud/charts`
-- live image에는 `d2910bd` durable handoff/CI 복구나 `68100aa`의 M4 WIP가 포함되지 않았다.
-- 현재 웹 로그인은 가능하지만 연결된 캐릭터가 없으면 게임 진입이 막힌다. 신규 가입과
-  기존 캐릭터 claim/link 흐름은 아직 사용자에게 열지 않았다.
+- onboarding과 reconciler는 enabled다. `m3.mode=off`, replay differential도 OFF다.
+- 웹 Auth 계정은 MUD 캐릭터를 자동 생성하거나 자동 연결하지 않는다. 연결된 캐릭터가
+  없는 계정이 게임 진입 전 안내를 보는 것은 정상이며, 실제 신규 가입/기존 캐릭터 link는
+  xterm의 원래 wizard/claim 흐름으로 검증해야 한다.
+- 영속 QA 계정이나 캐릭터는 아직 만들지 않았다. 사용자 데이터가 생기는 실제 smoke는
+  명시적으로 기록하고 정리 가능한 test account만 사용한다.
 
 ## 다음 완료 순서
 
-1. P1 idle pump를 RED 테스트부터 구현한다. runtime flag는 exact
-   `MUD_M3_PLAYER_SNAPSHOT_V1=handoff`만 허용하며 absent/OFF는 기존 startup을 유지한다.
-2. PostgreSQL full PlayerSnapshot schema validation을 C/Rust fixture와 동등하게 만든다.
-3. targeted/full unit, sanitizer, PG17, workspace test/typecheck/build와 fresh private CI를
-   다시 실행한다.
-4. `src/frp.new`를 제외한 의도된 파일만 stage한다. `git add -A`를 쓰지 않는다.
-5. `private`에만 push하고 CI 완료까지 확인한다.
-6. CI GREEN 뒤에만 testnet chart를 별도 커밋한다. feature OFF 배포와 rollback/smoke를
-   먼저 확인한 뒤 shadow 기능만 opt-in한다.
-7. reconciliation 증거가 안정된 뒤에만 xterm 신규 가입과 기존 계정 claim/link를 연다.
+1. `HANDOFF.md`와 Linux GCC bootstrap fixture 수정만 stage하여 `private`에 push하고,
+   GitHub CI 전체 matrix를 GREEN으로 확인한다. 사용자 소유 `src/frp.new`는 절대 포함하지
+   않는다.
+2. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
+   smoke로 검증한다. game account와 Auth account의 분리는 유지한다.
+3. 다음 M3 slice는 helper transport/process supervision 또는 shadow reconciliation 중
+   하나만 선택해 RED→GREEN으로 시작한다. wake protocol 자체에는 runtime transport를
+   덧붙이지 않는다.
+4. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
+   모두 쌓인 뒤에만 별도 승인으로 M3 opt-in을 검토한다. DB authority 전환은 그 이후다.
 
 ## 먼저 읽을 문서
 
 - `docs/porting-research/execution-plan.md`
+- `docs/porting-research/m3-helper-wake-protocol-v1.md`
 - `docs/porting-research/m3-journal-v2-gates.md`
 - `docs/porting-research/persistence-supabase.md`
 - `docs/porting-research/rust-differential.md`
 - `docs/web-mud/game-identity-refactor.md`
 - `docs/web-mud/trusted-admission.md`
 
-완료율을 과장하지 않는다. 검증된 gate와 아직 검증하지 않은 경계를 분리해 보고한다.
+`execution-plan.md`의 날짜가 있는 snapshot은 당시의 역사적 근거다. 현재 상태는 이
+handoff와 이후 GitHub CI 결과를 우선한다. 완료율을 과장하지 않고, 검증된 gate와 아직
+검증하지 않은 경계를 분리해 보고한다.
