@@ -41,6 +41,7 @@ void test_free(void *memory);
 #define character_player_snapshot_v1_capture_native_init test_snapshot_capture_native_init
 #define character_player_snapshot_v1_handoff_init test_snapshot_handoff_init
 #define character_player_snapshot_v1_handoff_enable_receipt_pair test_snapshot_handoff_enable_receipt_pair
+#define character_player_snapshot_v1_receipt_pair_commit test_snapshot_receipt_pair_commit
 #define player_snapshot_v1_native_abi_supported test_snapshot_native_abi_supported
 
 #include "character_save_journal_v2_runtime_native.c"
@@ -70,6 +71,7 @@ void test_free(void *memory);
 #undef character_player_snapshot_v1_capture_native_init
 #undef character_player_snapshot_v1_handoff_init
 #undef character_player_snapshot_v1_handoff_enable_receipt_pair
+#undef character_player_snapshot_v1_receipt_pair_commit
 #undef player_snapshot_v1_native_abi_supported
 #undef malloc
 #undef free
@@ -95,6 +97,7 @@ static int default_load_calls;
 static int snapshot_capture_native_init_calls;
 static int snapshot_handoff_init_calls;
 static int snapshot_handoff_enable_receipt_pair_calls;
+static int snapshot_receipt_pair_commit_calls;
 static int snapshot_native_abi_supported;
 static int snapshot_native_abi_calls;
 static size_t snapshot_native_abi_char_bits;
@@ -107,6 +110,13 @@ static character_save_journal_v2_process_owner_startup_result
 static character_save_journal_v2_rpc_transport_outcome
     supplied_transport_start_result;
 static character_player_snapshot_v1_capture *snapshot_handoff_capture;
+static character_player_snapshot_v1_handoff_receipt_pair
+    snapshot_handoff_receipt_pair;
+static const character_save_journal_v2_writer_context *
+    snapshot_receipt_pair_writer;
+static int snapshot_receipt_pair_artifact_directory_fd;
+static const character_player_snapshot_v1_artifact_metadata *
+    snapshot_receipt_pair_artifact_key;
 static character_save_journal_v2_process_owner *snapshot_tick_owner;
 static unsigned int snapshot_tick_limit;
 static character_save_journal_v2_process_owner_snapshot_tick_result
@@ -295,8 +305,21 @@ void test_snapshot_handoff_enable_receipt_pair(
     character_player_snapshot_v1_handoff_receipt_pair pair)
 {
     snapshot_handoff_enable_receipt_pair_calls++;
-    (void)handoff;
-    (void)pair;
+    snapshot_handoff_receipt_pair=pair;
+    if(handoff) handoff->receipt_pair=pair;
+}
+
+character_player_snapshot_v1_receipt_pair_result
+test_snapshot_receipt_pair_commit(
+    const character_save_journal_v2_writer_context *writer,
+    int artifact_directory_fd,
+    const character_player_snapshot_v1_artifact_metadata *artifact_key)
+{
+    snapshot_receipt_pair_commit_calls++;
+    snapshot_receipt_pair_writer=writer;
+    snapshot_receipt_pair_artifact_directory_fd=artifact_directory_fd;
+    snapshot_receipt_pair_artifact_key=artifact_key;
+    return CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK;
 }
 
 int test_snapshot_native_abi_supported(size_t char_bits, size_t short_bits,
@@ -383,6 +406,7 @@ static void reset_fakes(void)
     snapshot_capture_native_init_calls=0;
     snapshot_handoff_init_calls=0;
     snapshot_handoff_enable_receipt_pair_calls=0;
+    snapshot_receipt_pair_commit_calls=0;
     snapshot_native_abi_supported=1;
     snapshot_native_abi_calls=0;
     snapshot_native_abi_char_bits=0U;
@@ -394,6 +418,10 @@ static void reset_fakes(void)
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK;
     supplied_transport_start_result=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
     snapshot_handoff_capture=0;
+    snapshot_handoff_receipt_pair=0;
+    snapshot_receipt_pair_writer=0;
+    snapshot_receipt_pair_artifact_directory_fd=-1;
+    snapshot_receipt_pair_artifact_key=0;
     snapshot_tick_owner=0;
     snapshot_tick_limit=0;
     supplied_snapshot_tick_result=
@@ -481,6 +509,9 @@ static int test_native_snapshot_handoff_opt_in_has_only_explicit_tick(void)
         native.process_owner.configuration.snapshot_handoff==&native.snapshot_handoff&&
         snapshot_capture_native_init_calls==1&&snapshot_handoff_init_calls==1&&
         snapshot_handoff_enable_receipt_pair_calls==1&&
+        snapshot_handoff_receipt_pair!=0&&
+        snapshot_handoff_receipt_pair==test_snapshot_receipt_pair_commit&&
+        native.snapshot_handoff.receipt_pair==test_snapshot_receipt_pair_commit&&
         snapshot_native_abi_calls==1&&snapshot_native_abi_char_bits==CHAR_BIT&&
         snapshot_native_abi_short_bits==16U&&snapshot_native_abi_long_bits==64U&&
         snapshot_native_abi_long_covers_i64&&
@@ -489,6 +520,14 @@ static int test_native_snapshot_handoff_opt_in_has_only_explicit_tick(void)
         native.snapshot_handoff.capture==&native.snapshot_capture&&
         !process_owner_snapshot_tick_calls,
         "native owner must own the handoff observer but never drain it during startup");
+    failed|=expect(native.snapshot_handoff.receipt_pair&&
+        native.snapshot_handoff.receipt_pair(0,37,0)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK&&
+        snapshot_receipt_pair_commit_calls==1&&
+        !snapshot_receipt_pair_writer&&
+        snapshot_receipt_pair_artifact_directory_fd==37&&
+        !snapshot_receipt_pair_artifact_key,
+        "opt-in must retain the receipt-pair callback ABI and test behavior");
     failed|=expect(character_save_journal_v2_runtime_native_snapshot_tick(&native,7)==
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK&&
         process_owner_snapshot_tick_calls==1&&snapshot_tick_owner==

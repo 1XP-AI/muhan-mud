@@ -4,9 +4,9 @@
 #include "character_player_snapshot_v1_artifact.h"
 #include "character_save_journal_v2_writer.h"
 
-/* Detached, opt-in/test-only bridge from a durable PlayerSnapshotV1 artifact
- * to the legacy manifest.  It never runs a receipt callback or selects a
- * pathname; the held writer and artifact-directory descriptors are its only
+/* Detached, opt-in M3 bridge from a durable PlayerSnapshotV1 artifact to the
+ * legacy manifest.  It never runs a receipt callback or selects a pathname;
+ * the held writer and artifact-directory descriptors are its only
  * capabilities. */
 typedef enum character_player_snapshot_v1_receipt_pair_result {
     CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK = 0,
