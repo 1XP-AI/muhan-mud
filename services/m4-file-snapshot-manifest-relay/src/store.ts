@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
+import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
 
 export type StoreOutcome = 'RECORDED' | 'EXACT_RETRY'
 
@@ -97,6 +98,91 @@ export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1Ar
   async close(): Promise<void> { await this.pool.end() }
 }
 
+/**
+ * Dedicated read boundary for replay reconciliation.  It intentionally does
+ * not share a relay store, set a role, or expose any mutation operation.
+ */
+export class PostgresPlayerSnapshotV1ArtifactDifferentialReader implements PlayerSnapshotV1ReplayArtifactDifferentialReader {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertReplayDifferentialDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async findByCommandId(commandId: string): Promise<readonly PlayerSnapshotV1ReplayArtifactEvidence[]> {
+    const client = await this.pool.connect()
+    try {
+      await assertReplayDifferentialConnectionContract(client)
+      const result = await client.query<Record<string, unknown>>(
+        `select command_id::text as "commandId", character_id::text as "characterId",
+          receipt_request_sha256 as "receiptRequestSha256", source_post_sha256 as "sourcePostSha256",
+          snapshot_format as "snapshotFormat", snapshot_sha256 as "snapshotSha256",
+          snapshot_octets::text as "snapshotOctets"
+         from private.game_character_player_snapshot_v1_artifacts
+         where command_id = $1::uuid
+         order by character_id`,
+        [commandId],
+      )
+      return result.rows.map(parseReplayDifferentialArtifactEvidence)
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+interface ReplayDifferentialConnectionCheck {
+  currentUser: unknown
+  sessionUser: unknown
+  defaultTransactionReadOnly: unknown
+  transactionReadOnly: unknown
+  canInsert: unknown
+  canUpdate: unknown
+  canDelete: unknown
+  canTruncate: unknown
+  canReferences: unknown
+  canTrigger: unknown
+}
+
+/**
+ * The URL starts each session read-only; this SELECT-only check rejects a
+ * different login, changed role/state, or any artifact mutation privilege.
+ */
+async function assertReplayDifferentialConnectionContract(client: PgClient): Promise<void> {
+  const result = await client.query<ReplayDifferentialConnectionCheck>(
+    `select current_user as "currentUser", session_user as "sessionUser",
+      current_setting('default_transaction_read_only', true) as "defaultTransactionReadOnly",
+      current_setting('transaction_read_only', true) as "transactionReadOnly",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'INSERT') as "canInsert",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'UPDATE') as "canUpdate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'DELETE') as "canDelete",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'TRUNCATE') as "canTruncate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'REFERENCES') as "canReferences",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'TRIGGER') as "canTrigger"`,
+  )
+  const check = result.rows[0]
+  if (!check
+    || check.currentUser !== 'mud_replay_reader_login' || check.sessionUser !== 'mud_replay_reader_login'
+    || check.defaultTransactionReadOnly !== 'on' || check.transactionReadOnly !== 'on'
+    || check.canInsert !== false || check.canUpdate !== false || check.canDelete !== false
+    || check.canTruncate !== false || check.canReferences !== false || check.canTrigger !== false) {
+    throw new Error('invalid replay differential database connection')
+  }
+}
+
+function parseReplayDifferentialArtifactEvidence(value: Record<string, unknown>): PlayerSnapshotV1ReplayArtifactEvidence {
+  const octets = typeof value.snapshotOctets === 'string' && /^\d+$/.test(value.snapshotOctets) ? Number(value.snapshotOctets) : NaN
+  if (typeof value.commandId !== 'string' || typeof value.characterId !== 'string'
+    || typeof value.receiptRequestSha256 !== 'string' || typeof value.sourcePostSha256 !== 'string'
+    || typeof value.snapshotFormat !== 'string' || typeof value.snapshotSha256 !== 'string'
+    || !Number.isSafeInteger(octets) || octets < 0) throw new Error('invalid replay differential database result')
+  return {
+    commandId: value.commandId, characterId: value.characterId,
+    receiptRequestSha256: value.receiptRequestSha256, sourcePostSha256: value.sourcePostSha256,
+    snapshotFormat: value.snapshotFormat, snapshotSha256: value.snapshotSha256, snapshotOctets: octets,
+  }
+}
+
 /** Reject REST/Supabase credentials and require the dedicated direct-DB login. */
 export function assertDatabaseUrl(value: string | undefined): string {
   if (!value) throw new Error('invalid relay configuration')
@@ -107,5 +193,20 @@ export function assertDatabaseUrl(value: string | undefined): string {
     || /service_role|anon|authenticated/i.test(url.username)
     || /service_role|apikey|authorization|access_token|jwt/i.test(url.search)
     || /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(value)) throw new Error('invalid relay configuration')
+  return value
+}
+
+/** A comparison connection must use the dedicated login and start read-only. */
+export function assertReplayDifferentialDatabaseUrl(value: string | undefined): string {
+  if (!value) throw new Error('invalid replay differential configuration')
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('invalid replay differential configuration') }
+  const options = url.searchParams.getAll('options')
+  if ((url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') || !url.hostname
+    || url.username !== 'mud_replay_reader_login'
+    || options.length !== 1 || options[0]!.trim() !== '-c default_transaction_read_only=on'
+    || /service_role|anon|authenticated/i.test(url.username)
+    || /service_role|apikey|authorization|access_token|jwt/i.test(url.search)
+    || /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(value)) throw new Error('invalid replay differential configuration')
   return value
 }

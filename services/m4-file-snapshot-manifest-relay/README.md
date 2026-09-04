@@ -36,3 +36,22 @@ already-parsed CDTO payload to that binary; `replayObserved` and
 `replayDisabled` are aggregate observation counters only, and neither result
 changes database recording or legacy M4 headers. A missing runner, an invalid
 path, execution failure, or invalid report is counted as `replayDisabled`.
+
+## Replay shadow-journal differential
+
+The separate replay differential command reads only journal JSON metadata and
+the immutable PlayerSnapshotV1 artifact relation. It is explicitly opt-in and
+requires independent absolute-path and read-only connection settings; it never
+uses `DATABASE_URL` or any relay writer configuration.
+
+```sh
+M4_PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_JOURNAL_PATH=/absolute/journal/path \
+M4_PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_DATABASE_URL="$MUD_REPLAY_READER_DATABASE_URL" \
+  pnpm --filter @muhan/m4-file-snapshot-manifest-relay replay-differential -- --once
+```
+
+The supplied connection must not use `mud_writer_login`. The command performs
+only one parameterized `SELECT` per valid journal record and emits stable JSON
+with fixed metadata evidence only: it never emits payloads, game state, paths,
+parse errors, or credentials. Every result other than `MATCH` (including an
+invalid journal entry or database read error) exits nonzero.

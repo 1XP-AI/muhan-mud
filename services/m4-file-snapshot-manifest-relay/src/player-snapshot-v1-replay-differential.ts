@@ -1,0 +1,141 @@
+import { readdir, readFile } from 'node:fs/promises'
+import { isAbsolute, join } from 'node:path'
+import type { PlayerSnapshotV1ReplayJournalEntry } from './player-snapshot-v1-replay-shadow-journal.js'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const HASH_RE = /^[0-9a-f]{64}$/
+const JOURNAL_FIELDS = ['characterId', 'commandId', 'format', 'receiptRequestSha256', 'sourcePostSha256', 'verification', 'version']
+const VERIFICATION_FIELDS = ['algorithm', 'canonicalDigest', 'canonicalOctets', 'format', 'inputDigest', 'inventoryNodeCount', 'version']
+
+export type PlayerSnapshotV1ReplayDifferentialClassification =
+  | 'MATCH' | 'MISSING_DB_ARTIFACT' | 'IDENTITY_MISMATCH' | 'DIGEST_MISMATCH' | 'OCTETS_MISMATCH'
+  | 'JOURNAL_INVALID' | 'DB_READ_ERROR' | 'UNEXPECTED_DUPLICATE'
+
+/** Metadata copied from the immutable artifact relation; it deliberately excludes payload bytes. */
+export interface PlayerSnapshotV1ReplayArtifactEvidence {
+  commandId: string
+  characterId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  snapshotFormat: string
+  snapshotSha256: string
+  snapshotOctets: number
+}
+
+/** A read boundary separate from relay stores: implementations may issue SELECT statements only. */
+export interface PlayerSnapshotV1ReplayArtifactDifferentialReader {
+  findByCommandId(commandId: string): Promise<readonly PlayerSnapshotV1ReplayArtifactEvidence[]>
+}
+
+export interface PlayerSnapshotV1ReplayDifferentialJournalEvidence {
+  commandId: string
+  characterId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  verificationFormat: string
+  verificationVersion: string
+  verificationAlgorithm: string
+  snapshotSha256: string
+  snapshotOctets: number
+}
+
+export interface PlayerSnapshotV1ReplayDifferentialRecord {
+  index: number
+  classification: PlayerSnapshotV1ReplayDifferentialClassification
+  evidence?: {
+    journal: PlayerSnapshotV1ReplayDifferentialJournalEvidence
+    artifact?: PlayerSnapshotV1ReplayArtifactEvidence
+  }
+}
+
+export interface PlayerSnapshotV1ReplayDifferentialResult {
+  format: 'player-snapshot-v1-replay-differential'
+  version: '1'
+  records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]
+}
+
+function hasExactlyKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function isJournalEntry(value: unknown): value is PlayerSnapshotV1ReplayJournalEntry {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  if (!hasExactlyKeys(entry, JOURNAL_FIELDS) || typeof entry.verification !== 'object' || entry.verification === null || Array.isArray(entry.verification)) return false
+  const verification = entry.verification as Record<string, unknown>
+  return hasExactlyKeys(verification, VERIFICATION_FIELDS)
+    && entry.format === 'player-snapshot-v1-replay-shadow-journal' && entry.version === '1'
+    && typeof entry.commandId === 'string' && UUID_RE.test(entry.commandId)
+    && typeof entry.characterId === 'string' && UUID_RE.test(entry.characterId)
+    && typeof entry.receiptRequestSha256 === 'string' && HASH_RE.test(entry.receiptRequestSha256)
+    && typeof entry.sourcePostSha256 === 'string' && HASH_RE.test(entry.sourcePostSha256)
+    && verification.format === 'player-snapshot-v1-replay-verification' && verification.version === '1' && verification.algorithm === 'sha-256'
+    && typeof verification.inputDigest === 'string' && HASH_RE.test(verification.inputDigest)
+    && typeof verification.canonicalDigest === 'string' && HASH_RE.test(verification.canonicalDigest)
+    && verification.inputDigest === verification.canonicalDigest
+    && typeof verification.canonicalOctets === 'number' && Number.isSafeInteger(verification.canonicalOctets) && verification.canonicalOctets >= 0
+    && typeof verification.inventoryNodeCount === 'number' && Number.isSafeInteger(verification.inventoryNodeCount) && verification.inventoryNodeCount >= 0
+}
+
+function journalEvidence(entry: PlayerSnapshotV1ReplayJournalEntry): PlayerSnapshotV1ReplayDifferentialJournalEvidence {
+  return {
+    commandId: entry.commandId, characterId: entry.characterId,
+    receiptRequestSha256: entry.receiptRequestSha256, sourcePostSha256: entry.sourcePostSha256,
+    verificationFormat: entry.verification.format, verificationVersion: entry.verification.version,
+    verificationAlgorithm: entry.verification.algorithm, snapshotSha256: entry.verification.canonicalDigest,
+    snapshotOctets: entry.verification.canonicalOctets,
+  }
+}
+
+function classify(entry: PlayerSnapshotV1ReplayJournalEntry, artifact: PlayerSnapshotV1ReplayArtifactEvidence): PlayerSnapshotV1ReplayDifferentialClassification {
+  if (artifact.commandId !== entry.commandId || artifact.characterId !== entry.characterId
+    || artifact.receiptRequestSha256 !== entry.receiptRequestSha256 || artifact.sourcePostSha256 !== entry.sourcePostSha256
+    || artifact.snapshotFormat !== 'player-snapshot-v1') return 'IDENTITY_MISMATCH'
+  if (artifact.snapshotSha256 !== entry.verification.canonicalDigest) return 'DIGEST_MISMATCH'
+  if (artifact.snapshotOctets !== entry.verification.canonicalOctets) return 'OCTETS_MISMATCH'
+  return 'MATCH'
+}
+
+function configuredAbsoluteDirectory(directory: string): string | undefined {
+  return directory.length > 0 && !directory.includes('\0') && isAbsolute(directory) ? directory : undefined
+}
+
+/**
+ * Reads immutable journal JSON entries in bytewise lexical filename order. The
+ * returned result contains only fixed metadata and never file paths, payloads, or parse errors.
+ */
+export async function comparePlayerSnapshotV1ReplayShadowJournal(
+  directory: string,
+  reader: PlayerSnapshotV1ReplayArtifactDifferentialReader,
+): Promise<PlayerSnapshotV1ReplayDifferentialResult> {
+  const configured = configuredAbsoluteDirectory(directory)
+  if (!configured) throw new Error('invalid replay differential configuration')
+  let names: Buffer[]
+  try {
+    names = (await readdir(configured, { encoding: 'buffer' }))
+      .filter((name) => name.subarray(-5).equals(Buffer.from('.json')))
+      .sort(Buffer.compare)
+  } catch {
+    return { format: 'player-snapshot-v1-replay-differential', version: '1', records: [{ index: 0, classification: 'JOURNAL_INVALID' }] }
+  }
+  const records: PlayerSnapshotV1ReplayDifferentialRecord[] = []
+  for (const [index, name] of names.entries()) {
+    let parsed: unknown
+    try { parsed = JSON.parse((await readFile(join(configured, name.toString('utf8')), 'utf8'))) }
+    catch { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
+    if (!isJournalEntry(parsed)) { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
+    const evidence = journalEvidence(parsed)
+    try {
+      const artifacts = await reader.findByCommandId(parsed.commandId)
+      if (artifacts.length === 0) records.push({ index, classification: 'MISSING_DB_ARTIFACT', evidence: { journal: evidence } })
+      else if (artifacts.length !== 1) records.push({ index, classification: 'UNEXPECTED_DUPLICATE', evidence: { journal: evidence } })
+      else records.push({ index, classification: classify(parsed, artifacts[0]!), evidence: { journal: evidence, artifact: artifacts[0]! } })
+    } catch { records.push({ index, classification: 'DB_READ_ERROR', evidence: { journal: evidence } }) }
+  }
+  return { format: 'player-snapshot-v1-replay-differential', version: '1', records }
+}
+
+export function replayDifferentialHasNonMatch(result: PlayerSnapshotV1ReplayDifferentialResult): boolean {
+  return result.records.some((record) => record.classification !== 'MATCH')
+}
