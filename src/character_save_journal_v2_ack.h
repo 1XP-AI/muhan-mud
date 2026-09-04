@@ -1,6 +1,7 @@
 #ifndef CHARACTER_SAVE_JOURNAL_V2_ACK_H
 #define CHARACTER_SAVE_JOURNAL_V2_ACK_H
 
+#include "character_save_journal_v2.h"
 #include "character_save_journal_v2_writer.h"
 
 #include <stddef.h>
@@ -55,6 +56,25 @@ typedef enum character_save_journal_v2_ack_result {
      * evidence is retained; a later exact callback retry is required. */
     CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE = 11
 } character_save_journal_v2_ack_result;
+
+/* A descriptor-rooted read-only proof for detached consumers.  ACKED is
+ * returned only for a one-link, canonical DB_ACKED marker and no retained
+ * marker temporary; callback outcomes are intentionally not accepted here. */
+typedef enum character_save_journal_v2_ack_marker_result {
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_ACKED = 0,
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_NOT_ACKED = 1,
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_LOCAL_INCOMPLETE = 2,
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_INVALID_ARGUMENT = 3,
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_CONTEXT = 4,
+    CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_JOURNAL = 5
+} character_save_journal_v2_ack_marker_result;
+
+/* `wire_out` receives the immutable PREPARED tuple only on ACKED.  The
+ * caller supplies no pathname: the held writer capability selects the root. */
+character_save_journal_v2_ack_marker_result
+character_save_journal_v2_ack_marker_verify(
+    const character_save_journal_v2_writer_context *writer,
+    const char *command_id, character_save_journal_v2_wire *wire_out);
 
 /* Acknowledge only an already durable LEGACY_PUBLISHED journal.  The command
  * identity is read from descriptor-relative immutable evidence; `command_id`

@@ -639,6 +639,79 @@ done:
     return result;
 }
 
+character_save_journal_v2_ack_marker_result
+character_save_journal_v2_ack_marker_verify(writer, command_id, wire_out)
+const character_save_journal_v2_writer_context *writer;
+const char *command_id;
+character_save_journal_v2_wire *wire_out;
+{
+    v2_ack_tree tree;
+    character_save_journal_v2_wire wire;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_writer_context_status status;
+    char prepared[64], acked[64], temporary[64], text[V2_ACK_TEXT_MAX];
+    int root_fd = -1, count;
+    struct stat marker;
+    character_save_journal_v2_ack_marker_result result =
+        CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_JOURNAL;
+
+    memset(&tree, 0, sizeof(tree));
+    tree.root_fd = tree.player_fd = tree.shard_fd = tree.journal_fd = tree.stage_fd = -1;
+    memset(&wire, 0, sizeof(wire));
+    memset(&tuple, 0, sizeof(tuple));
+    memset(text, 0, sizeof(text));
+    if(wire_out) memset(wire_out, 0, sizeof(*wire_out));
+    if(!writer || !wire_out || !ack_uuid(command_id))
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_INVALID_ARGUMENT;
+    status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_CONTEXT;
+        goto done;
+    }
+    if(ack_tree_open(root_fd, 0, 0, &tree)) {
+        root_fd = -1;
+        goto done;
+    }
+    root_fd = -1;
+    count = snprintf(prepared, sizeof(prepared), "%s.prepared", command_id);
+    if(count < 0 || (size_t)count >= sizeof(prepared) ||
+       ack_read_text(tree.journal_fd, prepared, text, sizeof(text)) ||
+       ack_parse_prepared(text, &wire) || strcmp(wire.command_uuid, command_id))
+        goto done;
+    status = character_save_journal_v2_writer_validate_held(writer, &tuple);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK ||
+       !ack_tuple_matches(&tuple, &wire)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_CONTEXT;
+        goto done;
+    }
+    count = snprintf(acked, sizeof(acked), "%s.acked", command_id);
+    if(count < 0 || (size_t)count >= sizeof(acked)) goto done;
+    count = snprintf(temporary, sizeof(temporary), "%s.acked.tmp", command_id);
+    if(count < 0 || (size_t)count >= sizeof(temporary)) goto done;
+    if(fstatat(tree.journal_fd, temporary, &marker, AT_SYMLINK_NOFOLLOW) == 0) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_LOCAL_INCOMPLETE;
+        goto done;
+    }
+    if(errno != ENOENT) goto done;
+    if(fstatat(tree.journal_fd, acked, &marker, AT_SYMLINK_NOFOLLOW)) {
+        if(errno == ENOENT) result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_NOT_ACKED;
+        goto done;
+    }
+    if(ack_exact_marker(&tree, acked, &wire, "DB_ACKED")) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_LOCAL_INCOMPLETE;
+        goto done;
+    }
+    *wire_out = wire;
+    result = CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_ACKED;
+done:
+    if(tree.root_fd >= 0) ack_tree_close(&tree);
+    else if(root_fd >= 0) close(root_fd);
+    memset(&wire, 0, sizeof(wire));
+    memset(&tuple, 0, sizeof(tuple));
+    memset(text, 0, sizeof(text));
+    return result;
+}
+
 character_save_journal_v2_ack_result character_save_journal_v2_ack(
     writer, command_id, callback, callback_opaque)
 const character_save_journal_v2_writer_context *writer;

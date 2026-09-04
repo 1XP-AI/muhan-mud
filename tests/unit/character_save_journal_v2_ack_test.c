@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 static const char W[]="m3-contract", I[]="11111111-1111-4111-8111-111111111111", C[]="22222222-2222-4222-8222-222222222222", CMD[]="40000000-0000-0000-0000-000000000001", BYTES[]="091b-3 exact published bytes\n";
+static const char EPOCH_EIGHT[]="version=2\nkind=writer-epoch\nworld_id=m3-contract\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=8\n";
 static const unsigned char NAME[]="M3hero";
 static const char GOLDEN_POST[]="604219f87e7a86f7ac2b8435e6d291f316193ccc0076428425ceb0c1ec87b135";
 static const char GOLDEN_EXPECTED[]="a60c95de8a968a1ff5623101317e9893c745a22b9146ab4e24a692b22c05a30d";
@@ -101,6 +102,7 @@ int main(void)
 {
     char root[PATH_MAX];
     character_save_journal_v2_writer_context ctx;
+    character_save_journal_v2_wire verified;
     mock m;
     int failed = 0, result;
     if(!realpath("/tmp",root)||strlen(root)+32>=sizeof(root)) return 1;
@@ -167,6 +169,11 @@ int main(void)
     failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&m.calls==1,"two-name retry repeats exact DB receipt before local repair");
     m.calls=0;
     failed+=bad(character_save_journal_v2_ack(&ctx,CMD,receipt,&m)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&m.calls==1,"durable DB_ACKED retry remains an exact DB retry");
+    memset(&verified,0,sizeof(verified));
+    failed+=bad(character_save_journal_v2_ack_marker_verify(&ctx,CMD,&verified)==CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_ACKED&&verified.writer_epoch==7&&!strcmp(verified.writer_instance_id,I),"marker verification accepts only the matching held writer tuple");
+    if(character_save_journal_v2_writer_close(&ctx)||leaf(root,"character-save-journal/writer-epoch.v2",EPOCH_EIGHT,sizeof(EPOCH_EIGHT)-1)||character_save_journal_v2_writer_open(root,W,&ctx)) return failed+1;
+    memset(&verified,0xff,sizeof(verified));
+    failed+=bad(character_save_journal_v2_ack_marker_verify(&ctx,CMD,&verified)==CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_CONTEXT&&!verified.command_uuid[0],"marker verification rejects ACKED wire whose tuple differs from the held writer");
     if(character_save_journal_v2_writer_close(&ctx)||down(root)) return failed+1;
     failed+=fault_matrix();
     failed+=negative_marker_evidence();
