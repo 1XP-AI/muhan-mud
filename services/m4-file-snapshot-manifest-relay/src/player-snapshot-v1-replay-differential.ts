@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { lstat, readdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import type { PlayerSnapshotV1ReplayJournalEntry } from './player-snapshot-v1-replay-shadow-journal.js'
 
@@ -41,7 +41,10 @@ export interface PlayerSnapshotV1ReplayDifferentialJournalFileReader {
 
 const defaultJournalFileReader: PlayerSnapshotV1ReplayDifferentialJournalFileReader = {
   readDirectory: async (directory) => readdir(directory, { encoding: 'buffer' }),
-  readEntry: async (path) => readFile(path, 'utf8'),
+  readEntry: async (path) => {
+    if (!(await lstat(path)).isFile()) throw new Error('invalid journal entry')
+    return readFile(path, 'utf8')
+  },
 }
 
 export interface PlayerSnapshotV1ReplayDifferentialJournalEvidence {

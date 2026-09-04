@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -96,6 +96,29 @@ test('differential default filesystem reader returns EXACT for one valid journal
     assert.equal(await readFile(entryPath, 'utf8'), before)
     assert.deepEqual(await readdir(path, { encoding: 'buffer' }), namesBefore)
   })
+})
+
+test('differential default filesystem reader rejects a symlinked journal entry before database access', async (t) => {
+  const path = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-differential-symlink-'))
+  try {
+    const targetPath = join(path, 'entry-target')
+    const entryPath = join(path, 'entry.json')
+    await writeFile(targetPath, journal(), { mode: 0o600 })
+    try {
+      await symlink(targetPath, entryPath)
+    } catch (error) {
+      t.skip(`symlink fixture unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+
+    let metadataReads = 0
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, {
+      findByCommandId: async () => { metadataReads++; return [artifact()] },
+    })
+
+    assert.deepEqual(result.records, [{ index: 0, classification: 'JOURNAL_INVALID' }])
+    assert.equal(metadataReads, 0)
+  } finally { await rm(path, { recursive: true, force: true }) }
 })
 
 test('differential processes journal entries in deterministic lexical order', async () => {
