@@ -92,3 +92,19 @@ run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$invento
   --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql
 run_super --file=/workspace/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
 echo "GREEN PostgreSQL 17: PlayerSnapshotV1 artifact receipt-octets contract and idempotent replay passed"
+
+# The level projection must remain unavailable until its own forward-only
+# migration. It consumes only the receipt/source-octet-bound artifact above.
+run_super --file=/workspace/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
+if run_super --set="pvl_payload=$fixture_sql" \
+  --file=/workspace/supabase/tests/player_snapshot_v1_level_projection_contract.sql >/dev/null 2>&1; then
+  echo "RED unexpectedly passed before PlayerSnapshotV1 level projection migration" >&2; exit 1
+fi
+echo "RED PostgreSQL 17: PlayerSnapshotV1 raw-U8 level projection is absent through migration 170"
+run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
+run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
+run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+run_super --set="pvl_payload=$fixture_sql" \
+  --file=/workspace/supabase/tests/player_snapshot_v1_level_projection_contract.sql
+echo "GREEN PostgreSQL 17: PlayerSnapshotV1 receipt-bound raw-U8 level projection passed"
