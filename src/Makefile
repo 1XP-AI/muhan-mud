@@ -141,6 +141,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-deadline-test
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
+	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
 	$(MAKE) character-snapshot-shadow-outbox-test
@@ -415,6 +416,33 @@ character-save-journal-v2-runtime-native-test: character-save-journal-v2-runtime
 else
 character-save-journal-v2-runtime-native-test:
 	@echo "character-save-journal-v2-runtime-native-test skipped (Linux native lifecycle target)"
+endif
+
+m3-runtime-idle-hook-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(CFLAGS) -I. -c io.c -o /tmp/muhan-unit/io_default_p1f.o
+	python3 ../tests/unit/m3_runtime_idle_hook_static_test.py --main-source main.c --io-source io.c --native-source character_save_journal_v2_runtime_native.c --default-io-object /tmp/muhan-unit/io_default_p1f.o
+
+p1f-runtime-idle-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(CFLAGS) -DUSE_M3_RUNTIME -DM3_RUNTIME_IDLE_HOOK_TESTING -I. -ffunction-sections -fdata-sections -c io.c -o /tmp/muhan-unit/io_p1f_idle_test.o
+	$(CC) $(CFLAGS) -I. -ffunction-sections -fdata-sections ../tests/unit/m3_runtime_idle_hook_test.c /tmp/muhan-unit/io_p1f_idle_test.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_runtime_idle_hook_test
+	/tmp/muhan-unit/m3_runtime_idle_hook_test
+	$(CC) $(CFLAGS) -DUSE_M3_RUNTIME -DM3_RUNTIME_IDLE_HOOK_TESTING -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -c io.c -o /tmp/muhan-unit/io_p1f_idle_sanitizer.o
+	$(CC) $(CFLAGS) -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_runtime_idle_hook_test.c /tmp/muhan-unit/io_p1f_idle_sanitizer.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_runtime_idle_hook_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_runtime_idle_hook_sanitizer_test
+
+ifeq ($(shell uname -s),Linux)
+p1f-runtime-native-test:
+	@command -v "$(PG_CONFIG)" >/dev/null 2>&1 || { echo "p1f native lifecycle test requires PG_CONFIG" >&2; exit 2; }
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/unit/character_save_journal_v2_runtime_native_test.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native_p1f_test
+	/tmp/muhan-unit/character_save_journal_v2_runtime_native_p1f_test
+	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_runtime_native_test.c -o /tmp/muhan-unit/character_save_journal_v2_runtime_native_p1f_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_runtime_native_p1f_sanitizer_test
+else
+p1f-runtime-native-test:
+	@echo "p1f native lifecycle test skipped (Linux M3 runtime target)"
 endif
 
 ifeq ($(M3_RUNTIME_ALLOW_DISPOSABLE),1)

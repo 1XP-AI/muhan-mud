@@ -8,6 +8,14 @@
  * boundaries.  That exercises the real private start/shutdown operations
  * without opening a database connection or replacing the production APIs.
  */
+#include <stddef.h>
+#include <stdlib.h>
+
+void *test_malloc(size_t size);
+void test_free(void *memory);
+
+#define malloc test_malloc
+#define free test_free
 #define PQconnectdb test_PQconnectdb
 #define PQstatus test_PQstatus
 #define PQexec test_PQexec
@@ -59,8 +67,11 @@
 #undef character_save_journal_v2_deadline_native_callback
 #undef character_player_snapshot_v1_capture_native_init
 #undef character_player_snapshot_v1_handoff_init
+#undef malloc
+#undef free
 
 #include <stdio.h>
+#include <limits.h>
 
 static union {
     long alignment;
@@ -68,6 +79,9 @@ static union {
 } fake_connection_storage, fake_result_storage;
 
 static int connect_calls;
+static int malloc_calls;
+static int free_calls;
+static int fail_malloc;
 static int process_owner_init_calls;
 static int process_owner_start_calls;
 static int process_owner_shutdown_calls;
@@ -76,9 +90,18 @@ static int transport_close_calls;
 static int default_load_calls;
 static int snapshot_capture_native_init_calls;
 static int snapshot_handoff_init_calls;
+static character_save_journal_v2_process_owner_startup_result
+    supplied_process_owner_start_result;
+static character_save_journal_v2_rpc_transport_outcome
+    supplied_transport_start_result;
 static character_player_snapshot_v1_capture *snapshot_handoff_capture;
 static character_save_journal_v2_process_owner *snapshot_tick_owner;
 static unsigned int snapshot_tick_limit;
+static character_save_journal_v2_process_owner_snapshot_tick_result
+    supplied_snapshot_tick_result;
+static long supplied_idle_time;
+static int idle_diagnostic_calls;
+static char idle_diagnostic[128];
 static char supplied_conninfo[64];
 
 static int expect(int condition, const char *message)
@@ -201,6 +224,9 @@ character_save_journal_v2_process_owner_startup_result
 test_process_owner_start(character_save_journal_v2_process_owner *owner)
 {
     process_owner_start_calls++;
+    if(supplied_process_owner_start_result!=
+       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK)
+        return supplied_process_owner_start_result;
     owner->state=CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY;
     return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK;
 }
@@ -220,7 +246,20 @@ test_process_owner_snapshot_tick(character_save_journal_v2_process_owner *owner,
     process_owner_snapshot_tick_calls++;
     snapshot_tick_owner=owner;
     snapshot_tick_limit=limit;
-    return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK;
+    return supplied_snapshot_tick_result;
+}
+
+static long test_idle_clock(void *opaque)
+{
+    (void)opaque;
+    return supplied_idle_time;
+}
+
+static void test_idle_diagnostic(void *opaque, const char *message)
+{
+    (void)opaque;
+    idle_diagnostic_calls++;
+    (void)snprintf(idle_diagnostic,sizeof(idle_diagnostic),"%s",message);
 }
 
 void test_snapshot_capture_native_init(
@@ -239,6 +278,19 @@ void test_snapshot_handoff_init(character_player_snapshot_v1_handoff *handoff,
     handoff->capture=capture;
 }
 
+void *test_malloc(size_t size)
+{
+    malloc_calls++;
+    if(fail_malloc) return 0;
+    return malloc(size);
+}
+
+void test_free(void *memory)
+{
+    if(memory) free_calls++;
+    free(memory);
+}
+
 void test_rpc_transport_native_init(
     character_save_journal_v2_rpc_transport_native *native)
 {
@@ -252,6 +304,8 @@ test_rpc_transport_native_start(
 {
     if(!native||connection!=(void *)&fake_connection_storage)
         return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_UNAVAILABLE;
+    if(supplied_transport_start_result!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK)
+        return supplied_transport_start_result;
     native->transport.connection=connection;
     native->transport.state=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_READY;
     return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
@@ -284,6 +338,9 @@ int test_deadline_native_callback(void *opaque,
 static void reset_fakes(void)
 {
     connect_calls=0;
+    malloc_calls=0;
+    free_calls=0;
+    fail_malloc=0;
     process_owner_init_calls=0;
     process_owner_start_calls=0;
     process_owner_shutdown_calls=0;
@@ -292,9 +349,17 @@ static void reset_fakes(void)
     default_load_calls=0;
     snapshot_capture_native_init_calls=0;
     snapshot_handoff_init_calls=0;
+    supplied_process_owner_start_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK;
+    supplied_transport_start_result=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
     snapshot_handoff_capture=0;
     snapshot_tick_owner=0;
     snapshot_tick_limit=0;
+    supplied_snapshot_tick_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK;
+    supplied_idle_time=0;
+    idle_diagnostic_calls=0;
+    memset(idle_diagnostic,0,sizeof(idle_diagnostic));
     memset(supplied_conninfo,0,sizeof(supplied_conninfo));
     (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
 }
@@ -454,6 +519,220 @@ static int test_active_native_reinitialization_is_non_destructive(void)
     return failed;
 }
 
+static int test_native_start_failures_shutdown_and_remain_retryable(void)
+{
+    character_save_journal_v2_runtime_native native;
+    const character_save_journal_v2_runtime_shadow_operations *operations;
+    char overlong_world[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_WORLD_ID_MAX+2];
+    int failed=0;
+
+    memset(overlong_world,'a',sizeof(overlong_world));
+    overlong_world[sizeof(overlong_world)-1]=0;
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    operations=native.dependencies.shadow_operations;
+    failed|=expect(operations&&operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned",overlong_world,"dbname=muhan")!=0,
+        "copy failure fixture must reject an overlong world id");
+    failed|=expect(!native.shadow_active&&!native.serializer_buffer&&
+        !native.serializer_buffer_capacity&&
+        bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
+        bytes_are_zero(native.world_id,sizeof(native.world_id)),
+        "copy failure must clear all partially constructed native state");
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")==0,
+        "copy failure must release the native owner for a retry");
+    operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    operations=native.dependencies.shadow_operations;
+    fail_malloc=1;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")!=0,
+        "allocation failure fixture must reject serializer allocation");
+    failed|=expect(malloc_calls==1&&!connect_calls&&!free_calls&&
+        !native.shadow_active&&!native.serializer_buffer&&
+        bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
+        bytes_are_zero(native.world_id,sizeof(native.world_id)),
+        "allocation failure must clear copied state without leaking a buffer");
+    fail_malloc=0;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")==0,
+        "allocation failure must release the native owner for a retry");
+    operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    operations=native.dependencies.shadow_operations;
+    supplied_transport_start_result=
+        CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_UNAVAILABLE;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")!=0,
+        "transport-start failure fixture must fail native startup");
+    failed|=expect(connect_calls==1&&transport_close_calls==1&&free_calls==1&&
+        !native.shadow_active&&!native.serializer_buffer&&
+        !native.serializer_buffer_capacity&&
+        bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
+        bytes_are_zero(native.world_id,sizeof(native.world_id)),
+        "transport-start failure must close and clear all native resources");
+    supplied_transport_start_result=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")==0,
+        "transport-start failure must release the native owner for a retry");
+    operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    operations=native.dependencies.shadow_operations;
+    supplied_process_owner_start_result=
+        (character_save_journal_v2_process_owner_startup_result)1;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")!=0,
+        "process-owner startup failure fixture must fail native startup");
+    failed|=expect(process_owner_init_calls==1&&process_owner_start_calls==1&&
+        process_owner_shutdown_calls==1&&transport_close_calls==1&&free_calls==1&&
+        !native.shadow_active&&!native.serializer_buffer&&
+        !native.serializer_buffer_capacity&&
+        bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
+        bytes_are_zero(native.world_id,sizeof(native.world_id)),
+        "process-owner startup failure must unwind owner, transport, and buffer");
+    supplied_process_owner_start_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK;
+    failed|=expect(operations->start(native.dependencies.shadow_opaque,
+        "/tmp/muhan-runtime-owned","world-a","dbname=muhan")==0,
+        "process-owner failure must release the native owner for a retry");
+    operations->shutdown(native.dependencies.shadow_opaque);
+    return failed;
+}
+
+static int test_native_idle_tick_is_cadenced_bounded_and_silent_when_off(void)
+{
+    character_save_journal_v2_runtime_native native;
+    int failed=0;
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    character_save_journal_v2_runtime_native_snapshot_idle_configure(&native,
+        test_idle_clock,0,test_idle_diagnostic,0);
+    supplied_idle_time=100;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(!process_owner_snapshot_tick_calls&&!idle_diagnostic_calls,
+        "default-off native idle hook must not schedule or diagnose a tick");
+
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must enable the explicit native snapshot opt-in");
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,"/tmp/muhan-runtime-owned",
+        "world-a","dbname=muhan")==0,
+        "idle tick fixture must start its native owner");
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==1&&snapshot_tick_limit==1,
+        "idle hook must consume at most one durable handoff per cadence");
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==1,
+        "same clock token must not schedule a second handoff tick");
+    supplied_idle_time=101;
+    supplied_snapshot_tick_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_BUSY;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==2&&!idle_diagnostic_calls,
+        "BUSY must stay a silent cadence-limited no-op");
+    supplied_idle_time=102;
+    supplied_snapshot_tick_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_NOT_READY;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==3&&!idle_diagnostic_calls,
+        "NOT_READY must stay a silent cadence-limited no-op");
+    native.dependencies.shadow_operations->shutdown(
+        native.dependencies.shadow_opaque);
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    return failed;
+}
+
+static int test_native_idle_tick_retries_handoff_failure_with_throttled_log(void)
+{
+    character_save_journal_v2_runtime_native native;
+    int failed=0;
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must enable the explicit native snapshot opt-in");
+    character_save_journal_v2_runtime_native_init(&native);
+    character_save_journal_v2_runtime_native_snapshot_idle_configure(&native,
+        test_idle_clock,0,test_idle_diagnostic,0);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,"/tmp/muhan-runtime-owned",
+        "world-a","dbname=muhan")==0,
+        "handoff retry fixture must start its native owner");
+    supplied_snapshot_tick_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED;
+    supplied_idle_time=200;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==1&&idle_diagnostic_calls==1&&
+        strstr(idle_diagnostic,"handoff")!=0,
+        "first handoff failure must retain legacy authority and log once");
+    supplied_idle_time=201;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==2&&idle_diagnostic_calls==1,
+        "handoff failure must retry on the next cadence without log spam");
+    supplied_idle_time=260;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==3&&idle_diagnostic_calls==2,
+        "throttled handoff failure diagnostics must resume after their interval");
+    native.dependencies.shadow_operations->shutdown(
+        native.dependencies.shadow_opaque);
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    return failed;
+}
+
+static int test_native_idle_tick_survives_clock_failures_rollbacks_and_limits(void)
+{
+    character_save_journal_v2_runtime_native native;
+    int failed=0;
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must enable the explicit native snapshot opt-in");
+    character_save_journal_v2_runtime_native_init(&native);
+    character_save_journal_v2_runtime_native_snapshot_idle_configure(&native,
+        test_idle_clock,0,test_idle_diagnostic,0);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,"/tmp/muhan-runtime-owned",
+        "world-a","dbname=muhan")==0,
+        "clock edge fixture must start its native owner");
+    supplied_snapshot_tick_result=
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED;
+    supplied_idle_time=LONG_MAX;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==1&&idle_diagnostic_calls==1,
+        "LONG_MAX must schedule one bounded tick and diagnostic without overflow");
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==1&&idle_diagnostic_calls==1,
+        "LONG_MAX must not wrap cadence into repeated ticks");
+    supplied_idle_time=10;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==2&&idle_diagnostic_calls==2,
+        "clock rollback must reset cadence and diagnostic throttle once");
+    supplied_idle_time=11;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==3&&idle_diagnostic_calls==2,
+        "rollback epoch must preserve one-second cadence and throttling");
+    supplied_idle_time=-1;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==3&&idle_diagnostic_calls==2,
+        "negative or failed wall-clock reads must leave the idle state unchanged");
+    supplied_idle_time=70;
+    character_save_journal_v2_runtime_native_snapshot_idle_tick(&native);
+    failed|=expect(process_owner_snapshot_tick_calls==4&&idle_diagnostic_calls==3,
+        "throttle must resume after a rollback-safe sixty-second interval");
+    native.dependencies.shadow_operations->shutdown(
+        native.dependencies.shadow_opaque);
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    return failed;
+}
+
 int main(void)
 {
     int failed=0;
@@ -461,6 +740,10 @@ int main(void)
     failed|=test_native_snapshot_handoff_opt_in_has_only_explicit_tick();
     failed|=test_native_rejects_unbounded_borrowed_strings_before_connect();
     failed|=test_active_native_reinitialization_is_non_destructive();
+    failed|=test_native_start_failures_shutdown_and_remain_retryable();
+    failed|=test_native_idle_tick_is_cadenced_bounded_and_silent_when_off();
+    failed|=test_native_idle_tick_retries_handoff_failure_with_throttled_log();
+    failed|=test_native_idle_tick_survives_clock_failures_rollbacks_and_limits();
     if(failed) return 1;
     printf("character_save_journal_v2_runtime_native_test: ok\n");
     return 0;

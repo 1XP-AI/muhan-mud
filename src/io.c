@@ -74,6 +74,13 @@ int sig;
 }
 #endif
 
+void install_graceful_shutdown_handler(void)
+{
+#ifndef WIN32
+	signal(SIGTERM, request_graceful_shutdown);
+#endif
+}
+
 static int graceful_shutdown_pending()
 {
 #ifndef WIN32
@@ -82,6 +89,153 @@ static int graceful_shutdown_pending()
 	return(0);
 #endif
 }
+
+#ifdef USE_M3_RUNTIME
+/* Installed by main only after startup has completed.  Keeping this seam in
+ * io.c makes the durable consumer run on the serialized game-loop thread,
+ * while default builds neither export nor link an M3 runtime symbol. */
+static void (*m3_runtime_idle_hook)(void);
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+static int m3_runtime_idle_hook_test_sigterm_pending=-1;
+static int m3_runtime_idle_hook_test_sigprocmask_failure;
+static int m3_runtime_idle_hook_test_sigprocmask_restore_failure;
+static int m3_runtime_idle_hook_test_sigterm_observation_failure;
+#endif
+
+#ifndef WIN32
+static int m3_runtime_sigterm_is_pending(void)
+{
+	sigset_t pending;
+	int member;
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(m3_runtime_idle_hook_test_sigterm_observation_failure)
+		return -1;
+	if(m3_runtime_idle_hook_test_sigterm_pending>=0)
+		return m3_runtime_idle_hook_test_sigterm_pending;
+#endif
+	if(sigpending(&pending)!=0) return -1;
+	member=sigismember(&pending,SIGTERM);
+	if(member<0) return -1;
+	return member==1;
+}
+#endif
+
+/* SIGTERM is blocked while this decision is made.  A request already
+ * delivered to the handler or waiting in the blocked signal set belongs to
+ * shutdown, not to a new native tick. */
+static int m3_runtime_idle_start_allowed(void)
+{
+	if(graceful_shutdown_pending()) return 0;
+#ifndef WIN32
+	/* A failed pending-set observation is indistinguishable from a pending
+	 * SIGTERM at this boundary, so do not begin an unprotected tick. */
+	if(m3_runtime_sigterm_is_pending()!=0) return 0;
+#endif
+	return 1;
+}
+
+void m3_runtime_install_idle_hook(void (*hook)(void))
+{
+	m3_runtime_idle_hook=hook;
+}
+
+void m3_runtime_remove_idle_hook(void)
+{
+	m3_runtime_idle_hook=0;
+}
+
+#ifndef WIN32
+static int m3_runtime_restore_signal_mask(previous)
+sigset_t *previous;
+{
+	int result;
+
+	result=sigprocmask(SIG_SETMASK,previous,0);
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(result==0&&m3_runtime_idle_hook_test_sigprocmask_restore_failure)
+		return -1;
+#endif
+	return result;
+}
+#endif
+
+static void m3_runtime_run_idle_hook(void)
+{
+#ifndef WIN32
+	sigset_t blocked,previous;
+
+	if(!m3_runtime_idle_hook) return;
+	sigemptyset(&blocked);
+	sigaddset(&blocked,SIGTERM);
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(m3_runtime_idle_hook_test_sigprocmask_failure) return;
+#endif
+	/* There is no POSIX fallback: a tick can begin only while SIGTERM is
+	 * blocked and its pending state has been observed. */
+	if(sigprocmask(SIG_BLOCK,&blocked,&previous)!=0) return;
+	if(m3_runtime_idle_start_allowed()) (*m3_runtime_idle_hook)();
+	if(m3_runtime_restore_signal_mask(&previous)!=0)
+		Graceful_shutdown_requested=1;
+#else
+	if(m3_runtime_idle_hook&&m3_runtime_idle_start_allowed())
+		(*m3_runtime_idle_hook)();
+#endif
+}
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+void m3_runtime_idle_hook_test_set_shutdown_requested(int requested)
+{
+#ifndef WIN32
+	Graceful_shutdown_requested=requested ? 1 : 0;
+#else
+	(void)requested;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigterm_pending(int pending)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigterm_pending=pending<0 ? -1 : (pending ? 1 : 0);
+#else
+	(void)pending;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigprocmask_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigprocmask_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigprocmask_restore_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigprocmask_restore_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigterm_observation_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigterm_observation_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_run(void)
+{
+	m3_runtime_run_idle_hook();
+}
+#endif
+#endif
 
 static void stop_accepting_connections()
 {
@@ -214,7 +368,7 @@ int	debug;
 	}
 #ifndef WIN32
 	signal(SIGPIPE, SIG_IGN);
-	signal(SIGTERM, request_graceful_shutdown);
+	install_graceful_shutdown_handler();
 	signal(SIGCHLD, child_died);
 
 	Tablesize = getdtablesize();
@@ -275,6 +429,11 @@ void sock_loop()
 		output_buf();
 		handle_commands();
 		update_game();
+#ifdef USE_M3_RUNTIME
+		/* Never cross a requested shutdown boundary; the next loop turn owns
+		 * graceful persistence before another socket poll. */
+		m3_runtime_run_idle_hook();
+#endif
 	}
 }
 

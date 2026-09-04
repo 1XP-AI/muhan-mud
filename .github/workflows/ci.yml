@@ -34,6 +34,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client libpq-dev
 
+      - name: Run P1F Linux runtime idle and native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src p1f-runtime-idle-test CC=gcc
+          make -C src p1f-runtime-native-test CC=gcc PG_CONFIG=pg_config
+
       - name: Compile isolated libpq receipt adapter
         shell: bash
         run: |

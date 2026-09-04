@@ -29,6 +29,18 @@ typedef struct character_save_journal_v2_runtime_native {
     character_player_snapshot_v1_handoff snapshot_handoff;
     int snapshot_handoff_enabled;
     int shadow_active;
+    /* The MUD host owns these injected seams and invokes the bounded drain
+     * only from its serialized idle-turn boundary. */
+    long (*snapshot_idle_clock)(void *opaque);
+    void *snapshot_idle_clock_opaque;
+    void (*snapshot_idle_diagnostic)(void *opaque, const char *message);
+    void *snapshot_idle_diagnostic_opaque;
+    long snapshot_idle_next_at;
+    long snapshot_idle_last_clock_at;
+    long snapshot_idle_last_failure_log_at;
+    int snapshot_idle_clock_seen;
+    int snapshot_idle_cadence_exhausted;
+    int snapshot_idle_failure_logged;
 #endif
 } character_save_journal_v2_runtime_native;
 
@@ -44,6 +56,18 @@ void character_save_journal_v2_runtime_native_init(
 character_save_journal_v2_process_owner_snapshot_tick_result
 character_save_journal_v2_runtime_native_snapshot_tick(
     character_save_journal_v2_runtime_native *native, unsigned int limit);
+
+/* The caller supplies clock/log seams so cadence and diagnostics remain
+ * deterministic in tests.  A configured idle tick consumes one token at most
+ * once per second, never participates in a synchronous save, and treats
+ * OFF/BUSY/NOT_READY as silent no-ops. */
+void character_save_journal_v2_runtime_native_snapshot_idle_configure(
+    character_save_journal_v2_runtime_native *native,
+    long (*clock)(void *opaque), void *clock_opaque,
+    void (*diagnostic)(void *opaque, const char *message),
+    void *diagnostic_opaque);
+void character_save_journal_v2_runtime_native_snapshot_idle_tick(
+    character_save_journal_v2_runtime_native *native);
 #endif
 
 #endif

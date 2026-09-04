@@ -10,6 +10,7 @@
 
 #include "mstruct.h"
 #include "mextern.h"
+#include <time.h>
 #ifdef USE_M3_RUNTIME
 #include "character_save_journal_v2_runtime.h"
 #include "character_save_journal_v2_runtime_native.h"
@@ -22,12 +23,33 @@ static character_save_journal_v2_runtime m3_runtime;
 static character_save_journal_v2_runtime_native m3_native;
 static int m3_runtime_atexit_registered;
 
+extern void m3_runtime_install_idle_hook(void (*hook)(void));
+extern void m3_runtime_remove_idle_hook(void);
+extern void install_graceful_shutdown_handler(void);
+
+static long m3_runtime_idle_clock(void *opaque)
+{
+	(void)opaque;
+	return time(0);
+}
+
+static void m3_runtime_idle_diagnostic(void *opaque, const char *message)
+{
+	(void)opaque;
+	log_f("%s\n",message);
+}
+
+static void m3_runtime_snapshot_idle_hook(void)
+{
+	character_save_journal_v2_runtime_native_snapshot_idle_tick(&m3_native);
+}
+
 static void m3_runtime_shutdown_at_exit(void)
 {
+	m3_runtime_remove_idle_hook();
 	character_save_journal_v2_runtime_shutdown(&m3_runtime);
 }
 #endif
-#include <time.h>
 #include <stdlib.h>
 #define SCHEDPORT  4000
 
@@ -83,7 +105,12 @@ char	*argv[];
 #ifdef USE_M3_RUNTIME
 	/* The optional runtime completes shadow bootstrap/recovery/PlayerStore
 	 * installation before socket setup.  Absent/off remains zero-I/O. */
+	/* Arm this before any M3 startup or atexit work: an early SIGTERM is a
+	 * graceful-lifecycle request, never default process termination. */
+	install_graceful_shutdown_handler();
 	character_save_journal_v2_runtime_native_init(&m3_native);
+	character_save_journal_v2_runtime_native_snapshot_idle_configure(&m3_native,
+		m3_runtime_idle_clock,0,m3_runtime_idle_diagnostic,0);
 	character_save_journal_v2_runtime_init(&m3_runtime,&m3_native.dependencies);
 	if(!m3_runtime_atexit_registered) {
 		if(atexit(m3_runtime_shutdown_at_exit)!=0) {
@@ -135,6 +162,11 @@ char	*argv[];
 	}
 
 	init_update_game(time(0));
+#ifdef USE_M3_RUNTIME
+	/* This is the sole live handoff consumer boundary: after all output,
+	 * commands, and world updates, before the next socket poll. */
+	m3_runtime_install_idle_hook(m3_runtime_snapshot_idle_hook);
+#endif
 	sock_loop();
 }
 

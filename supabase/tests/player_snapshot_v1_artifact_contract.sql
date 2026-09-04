@@ -129,6 +129,11 @@ returns bytea language sql immutable as $$
     substring($1 from 17 for 3) || decode('0000004f', 'hex')
       || substring($1 from 24 for 79) || substring($1 from 104))
 $$;
+create or replace function pg_temp.pva_field_8_not_player(p_wire bytea)
+returns bytea language sql immutable as $$
+  select pg_temp.cdto_reseal($1,
+    set_byte(substring($1 from 17 for octet_length($1) - 48), 357, 1))
+$$;
 create or replace function pg_temp.pva_inventory_bad_shots(p_wire bytea)
 returns bytea language sql immutable as $$
   select pg_temp.cdto_reseal($1,
@@ -178,6 +183,10 @@ select pg_temp.assert_true(
 select pg_temp.assert_true(
   not private.player_snapshot_v1_payload_valid(pg_temp.pva_field_1_wrong_length(:pva_payload)),
   'a digest-valid kind-7 envelope with an altered fixed field length is rejected'
+);
+select pg_temp.assert_true(
+  not private.player_snapshot_v1_payload_valid(pg_temp.pva_field_8_not_player(:pva_payload)),
+  'a resealed C fixture with outer field 8 scalar other than PLAYER is rejected'
 );
 select pg_temp.assert_true(
   private.player_snapshot_v1_payload_valid(:pva_payload),

@@ -8,12 +8,15 @@
 
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
 #include <stdlib.h>
+#include <limits.h>
 
 #define RUNTIME_NATIVE_SERIALIZER_BUFFER_CAPACITY (8UL * 1024UL * 1024UL)
 #define RUNTIME_NATIVE_SERIALIZER_MAX_DEPTH 64UL
 #define RUNTIME_NATIVE_SERIALIZER_MAX_OBJECTS 8192UL
 #define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV "MUD_M3_PLAYER_SNAPSHOT_V1"
 #define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE "handoff"
+#define RUNTIME_NATIVE_SNAPSHOT_IDLE_CADENCE_SECONDS 1L
+#define RUNTIME_NATIVE_SNAPSHOT_IDLE_FAILURE_LOG_SECONDS 60L
 
 /* The process-wide PlayerStore can have only one native shadow owner.  Keep
  * the lifecycle sentinel outside caller storage so first-time init may still
@@ -121,21 +124,15 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
            sizeof(native->world_id),world_id)||
        !runtime_native_bounded_text(conninfo,
            CHARACTER_SAVE_JOURNAL_V2_RUNTIME_CONNINFO_MAX+1UL)) {
-        runtime_native_wipe(native->muhan_home,sizeof(native->muhan_home));
-        runtime_native_wipe(native->world_id,sizeof(native->world_id));
-        runtime_native_active_owner=0;
-        return -1;
+        goto failed;
     }
     native->serializer_buffer=(char *)malloc(RUNTIME_NATIVE_SERIALIZER_BUFFER_CAPACITY);
-    if(!native->serializer_buffer) {
-        runtime_native_active_owner=0;
-        return -1;
-    }
+    if(!native->serializer_buffer) goto failed;
     native->serializer_buffer_capacity=RUNTIME_NATIVE_SERIALIZER_BUFFER_CAPACITY;
     character_save_journal_v2_rpc_transport_native_init(&native->transport_native);
     connection=PQconnectdb(conninfo);
     if(character_save_journal_v2_rpc_transport_native_start(&native->transport_native,
-        connection)!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK) return -1;
+        connection)!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK) goto failed;
     character_save_journal_v2_deadline_native_init(&native->deadline_native,120);
     memset(&configuration,0,sizeof(configuration));
     configuration.root=native->muhan_home;
@@ -161,9 +158,13 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     }
     character_save_journal_v2_process_owner_init(&native->process_owner,&configuration);
     if(character_save_journal_v2_process_owner_start(&native->process_owner)!=
-       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) return -1;
+       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) goto failed;
     native->shadow_active=1;
     return 0;
+
+failed:
+    runtime_native_shadow_shutdown(native);
+    return -1;
 }
 
 static const character_save_journal_v2_runtime_shadow_operations
@@ -179,6 +180,87 @@ character_save_journal_v2_runtime_native_snapshot_tick(
         return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
     return character_save_journal_v2_process_owner_snapshot_tick(
         &native->process_owner,limit);
+}
+
+void character_save_journal_v2_runtime_native_snapshot_idle_configure(
+    character_save_journal_v2_runtime_native *native,
+    long (*clock)(void *opaque), void *clock_opaque,
+    void (*diagnostic)(void *opaque, const char *message),
+    void *diagnostic_opaque)
+{
+    if(!native) return;
+    native->snapshot_idle_clock=clock;
+    native->snapshot_idle_clock_opaque=clock_opaque;
+    native->snapshot_idle_diagnostic=diagnostic;
+    native->snapshot_idle_diagnostic_opaque=diagnostic_opaque;
+    native->snapshot_idle_next_at=0;
+    native->snapshot_idle_last_clock_at=0;
+    native->snapshot_idle_last_failure_log_at=0;
+    native->snapshot_idle_clock_seen=0;
+    native->snapshot_idle_cadence_exhausted=0;
+    native->snapshot_idle_failure_logged=0;
+}
+
+/* The host still supplies wall time, so an invalid read is ignored and a
+ * backward step starts a fresh cadence epoch.  Saturation deliberately
+ * stops at LONG_MAX rather than wrapping the next one-second deadline. */
+static int runtime_native_snapshot_idle_due(
+    character_save_journal_v2_runtime_native *native, long now)
+{
+    if(now<0) return 0;
+    if(native->snapshot_idle_clock_seen &&
+       now<native->snapshot_idle_last_clock_at) {
+        native->snapshot_idle_failure_logged=0;
+        native->snapshot_idle_cadence_exhausted=0;
+    } else if(native->snapshot_idle_cadence_exhausted) {
+        native->snapshot_idle_last_clock_at=now;
+        native->snapshot_idle_clock_seen=1;
+        return 0;
+    } else if(native->snapshot_idle_clock_seen &&
+       now<native->snapshot_idle_next_at) {
+        native->snapshot_idle_last_clock_at=now;
+        return 0;
+    }
+    native->snapshot_idle_last_clock_at=now;
+    native->snapshot_idle_clock_seen=1;
+    if(now==LONG_MAX) {
+        native->snapshot_idle_next_at=LONG_MAX;
+        native->snapshot_idle_cadence_exhausted=1;
+    } else
+        native->snapshot_idle_next_at=now+
+            RUNTIME_NATIVE_SNAPSHOT_IDLE_CADENCE_SECONDS;
+    return 1;
+}
+
+static int runtime_native_snapshot_idle_failure_log_due(
+    character_save_journal_v2_runtime_native *native, long now)
+{
+    if(!native->snapshot_idle_failure_logged) return 1;
+    if(now<native->snapshot_idle_last_failure_log_at) return 1;
+    return now-native->snapshot_idle_last_failure_log_at>=
+        RUNTIME_NATIVE_SNAPSHOT_IDLE_FAILURE_LOG_SECONDS;
+}
+
+void character_save_journal_v2_runtime_native_snapshot_idle_tick(
+    character_save_journal_v2_runtime_native *native)
+{
+    character_save_journal_v2_process_owner_snapshot_tick_result result;
+    long now;
+
+    if(!native||!native->snapshot_handoff_enabled||!native->shadow_active||
+       !native->snapshot_idle_clock) return;
+    now=native->snapshot_idle_clock(native->snapshot_idle_clock_opaque);
+    if(!runtime_native_snapshot_idle_due(native,now)) return;
+    result=character_save_journal_v2_runtime_native_snapshot_tick(native,1);
+    if(result!=CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED)
+        return;
+    if(runtime_native_snapshot_idle_failure_log_due(native,now)) {
+        if(native->snapshot_idle_diagnostic) native->snapshot_idle_diagnostic(
+            native->snapshot_idle_diagnostic_opaque,
+            "M3 PlayerSnapshotV1 handoff tick failed; will retry");
+        native->snapshot_idle_last_failure_log_at=now;
+        native->snapshot_idle_failure_logged=1;
+    }
 }
 #endif
 
