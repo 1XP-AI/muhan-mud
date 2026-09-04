@@ -62,6 +62,7 @@ if [[ -z "$harness" ]]; then
     "$repo_root/src/character_save_journal_v2_process_owner.c" \
     "$repo_root/src/character_save_journal_v2_live_ops.c" \
     "$repo_root/src/character_save_journal_v2_player_store.c" \
+    "$repo_root/src/character_save_journal_v2_bootstrap.c" \
     "$repo_root/src/character_save_journal_v2_rpc_transport.c" \
     "$repo_root/src/character_save_journal_v2_rpc_transport_native.c" \
     "$repo_root/src/character_save_journal_v2_protocol.c" \
