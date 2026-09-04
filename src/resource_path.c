@@ -5,6 +5,7 @@
 #include <errno.h>
 
 #define RP_MAX_LINE 8192
+#define RP_RESOLVE_CANONICAL_MISSING -2
 
 typedef struct rp_alias {
     char *legacy_hex;
@@ -237,6 +238,59 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
     rp_get_runtime_root(root, sizeof(root));
     root_len = (unsigned long)strlen(root);
 
+    if(rp_starts_with(legacy_path, MUDHOME "/"))
+        rel = legacy_path + strlen(MUDHOME) + 1;
+    else if(root_len > 0 && rp_starts_with(legacy_path, root) && legacy_path[root_len] == '/')
+        rel = legacy_path + root_len + 1;
+    else if(legacy_path[0] != '/')
+        rel = legacy_path;
+
+    /*
+     * Renamed aliases must precede the raw legacy tree. On a case-insensitive
+     * filesystem a request for a legacy case-collision path can otherwise
+     * open a different raw file before the canonical suffix is considered.
+     * Identity aliases retain the existing raw-first behavior for mutable
+     * runtime paths.
+     */
+    if(rel && rel[0]) {
+#ifdef USE_RUST_RESOLVER
+        if(!g_rust_manifest_loaded) {
+            char manifest_path[1024];
+            snprintf(manifest_path, sizeof(manifest_path), "%s/resources_manifest/path-alias.v1.tsv", root);
+            g_rust_manifest_loaded = (mr_manifest_load(manifest_path) == 0) ? 1 : -1;
+        }
+
+        if(g_rust_manifest_loaded == 1) {
+            if(mr_resolve_legacy_path(rel, candidate, sizeof(candidate)) == 0) {
+                if(strcmp(candidate, rel) != 0) {
+                    if(candidate[0] == '/') {
+                        if(resolve_runtime_path(candidate, out, out_sz) < 0)
+                            return -1;
+                    } else {
+                        char rust_joined[2048];
+                        snprintf(rust_joined, sizeof(rust_joined), "%s/resources_utf8/%s", root, candidate);
+                        snprintf(out, out_sz, "%s", rust_joined);
+                    }
+                    if(rp_path_exists(out))
+                        return 0;
+                    return RP_RESOLVE_CANONICAL_MISSING;
+                }
+            }
+        }
+#endif
+
+        rp_bytes_to_hex((const unsigned char *)rel, hexbuf, sizeof(hexbuf));
+        alias = rp_find_alias(hexbuf);
+        if(alias && alias[0] && strcmp(alias, rel) != 0) {
+            snprintf(candidate, sizeof(candidate), "%s/resources_utf8/%s", root, alias);
+            if(rp_path_exists(candidate)) {
+                snprintf(out, out_sz, "%s", candidate);
+                return 0;
+            }
+            return RP_RESOLVE_CANONICAL_MISSING;
+        }
+    }
+
     /*
      * An explicit MUHAN_HOME is an isolation boundary. Prefer it even when a
      * host-level /home/muhan happens to exist, otherwise tests and side-by-side
@@ -261,28 +315,6 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
         return 0;
     }
 
-#ifdef USE_RUST_RESOLVER
-    if(!g_rust_manifest_loaded) {
-        char manifest_path[1024];
-        snprintf(manifest_path, sizeof(manifest_path), "%s/resources_manifest/path-alias.v1.tsv", root);
-        g_rust_manifest_loaded = (mr_manifest_load(manifest_path) == 0) ? 1 : -1;
-    }
-
-    if(g_rust_manifest_loaded == 1) {
-        if(mr_resolve_legacy_path(legacy_path, candidate, sizeof(candidate)) == 0) {
-            if(candidate[0] == '/') {
-                if(resolve_runtime_path(candidate, out, out_sz) < 0)
-                    return -1;
-            } else {
-                char rust_joined[2048];
-                snprintf(rust_joined, sizeof(rust_joined), "%s/resources_utf8/%s", root, candidate);
-                snprintf(out, out_sz, "%s", rust_joined);
-            }
-            return rp_path_exists(out) ? 0 : -1;
-        }
-    }
-#endif
-
     if(rp_is_mudhome_path(legacy_path) && strcmp(root, MUDHOME) != 0) {
         snprintf(adjusted, sizeof(adjusted), "%s%s", root, legacy_path + strlen(MUDHOME));
         if(rp_path_exists(adjusted)) {
@@ -291,18 +323,8 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
         }
     }
 
-    if(rp_starts_with(legacy_path, MUDHOME "/"))
-        rel = legacy_path + strlen(MUDHOME) + 1;
-    else if(root_len > 0 && rp_starts_with(legacy_path, root) && legacy_path[root_len] == '/')
-        rel = legacy_path + root_len + 1;
-    else if(legacy_path[0] != '/')
-        rel = legacy_path;
-
     if(rel && rel[0]) {
-        rp_bytes_to_hex((const unsigned char *)rel, hexbuf, sizeof(hexbuf));
-        alias = rp_find_alias(hexbuf);
-
-        if(alias && alias[0]) {
+        if(alias && alias[0] && strcmp(alias, rel) != 0) {
             snprintf(candidate, sizeof(candidate), "%s/resources_utf8/%s", root, alias);
             if(rp_path_exists(candidate)) {
                 snprintf(out, out_sz, "%s", candidate);
@@ -329,10 +351,16 @@ int resolve_legacy_path(const char *legacy_path, char *out, unsigned long out_sz
 FILE *rp_fopen(const char *path, const char *mode)
 {
     char resolved[2048];
+    int resolve_result;
 
     if(rp_is_read_mode(mode)) {
-        if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
+        resolve_result = resolve_legacy_path(path, resolved, sizeof(resolved));
+        if(resolve_result == 0)
             return fopen(resolved, mode);
+        if(resolve_result == RP_RESOLVE_CANONICAL_MISSING) {
+            errno = ENOENT;
+            return 0;
+        }
     } else {
         if(resolve_runtime_path(path, resolved, sizeof(resolved)) == 0)
             return fopen(resolved, mode);
@@ -348,13 +376,18 @@ FILE *rp_fopen(const char *path, const char *mode)
 int rp_open(const char *path, int flags, int mode)
 {
     char resolved[2048];
-    int read_only;
+    int read_only, resolve_result;
 
     read_only = ((flags & O_ACCMODE) == O_RDONLY) && !(flags & O_CREAT);
 
     if(read_only) {
-        if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
+        resolve_result = resolve_legacy_path(path, resolved, sizeof(resolved));
+        if(resolve_result == 0)
             return open(resolved, flags, mode);
+        if(resolve_result == RP_RESOLVE_CANONICAL_MISSING) {
+            errno = ENOENT;
+            return(-1);
+        }
     } else {
         if(resolve_runtime_path(path, resolved, sizeof(resolved)) == 0)
             return open(resolved, flags, mode);
@@ -370,9 +403,15 @@ int rp_open(const char *path, int flags, int mode)
 int rp_stat(const char *path, struct stat *st)
 {
     char resolved[2048];
+    int resolve_result;
 
-    if(resolve_legacy_path(path, resolved, sizeof(resolved)) == 0)
+    resolve_result = resolve_legacy_path(path, resolved, sizeof(resolved));
+    if(resolve_result == 0)
         return stat(resolved, st);
+    if(resolve_result == RP_RESOLVE_CANONICAL_MISSING) {
+        errno = ENOENT;
+        return(-1);
+    }
 
     if(!runtime_path_allows_legacy_fallback(path)) {
         errno = ENOENT;

@@ -90,6 +90,7 @@ clean:
 
 unit-test:
 	mkdir -p /tmp/muhan-unit
+	python3 ../tests/unit/resource_tree_manifest_test.py
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_test.c player_store.c -o /tmp/muhan-unit/player_store_test
 	/tmp/muhan-unit/player_store_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_file_test.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/player_store_file_test
