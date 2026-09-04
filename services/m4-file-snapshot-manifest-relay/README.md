@@ -50,8 +50,16 @@ M4_PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_DATABASE_URL="$MUD_REPLAY_READER_DATAB
   pnpm --filter @muhan/m4-file-snapshot-manifest-relay replay-differential -- --once
 ```
 
-The supplied connection must not use `mud_writer_login`. The command performs
-only one parameterized `SELECT` per valid journal record and emits stable JSON
-with fixed metadata evidence only: it never emits payloads, game state, paths,
-parse errors, or credentials. Every result other than `MATCH` (including an
-invalid journal entry or database read error) exits nonzero.
+The supplied connection must not use `mud_writer_login`. Entries are processed
+in bytewise lexical filename order, with a hard limit of 256 JSON journal
+entries per invocation; a set above that bound is reported as `INCONSISTENT`
+without reading an entry or querying the database. The stable top-level
+`classification` is `EXACT`, `MISSING`, or `INCONSISTENT`; detailed record
+reasons remain metadata-only evidence, and the CLI exits zero only for
+`EXACT`.
+
+The command performs only one parameterized `SELECT` per valid journal record
+and emits fixed metadata evidence only: it never emits payloads, game state,
+paths, parse errors, or credentials. It performs no database mutation, repair,
+authority change, or authority cutover; its output is observational evidence
+only.

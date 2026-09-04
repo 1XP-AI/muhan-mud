@@ -7,9 +7,15 @@ const HASH_RE = /^[0-9a-f]{64}$/
 const JOURNAL_FIELDS = ['characterId', 'commandId', 'format', 'receiptRequestSha256', 'sourcePostSha256', 'verification', 'version']
 const VERIFICATION_FIELDS = ['algorithm', 'canonicalDigest', 'canonicalOctets', 'format', 'inputDigest', 'inventoryNodeCount', 'version']
 
+/** Maximum immutable journal entries examined by one explicit reconciliation invocation. */
+export const PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES = 256
+
 export type PlayerSnapshotV1ReplayDifferentialClassification =
   | 'MATCH' | 'MISSING_DB_ARTIFACT' | 'IDENTITY_MISMATCH' | 'DIGEST_MISMATCH' | 'OCTETS_MISMATCH'
-  | 'JOURNAL_INVALID' | 'DB_READ_ERROR' | 'UNEXPECTED_DUPLICATE'
+  | 'JOURNAL_INVALID' | 'DB_READ_ERROR' | 'UNEXPECTED_DUPLICATE' | 'JOURNAL_BOUND_EXCEEDED'
+
+/** Stable caller-facing interpretation of the detailed metadata evidence. */
+export type PlayerSnapshotV1ReplayDifferentialPrimaryClassification = 'EXACT' | 'MISSING' | 'INCONSISTENT'
 
 /** Metadata copied from the immutable artifact relation; it deliberately excludes payload bytes. */
 export interface PlayerSnapshotV1ReplayArtifactEvidence {
@@ -25,6 +31,17 @@ export interface PlayerSnapshotV1ReplayArtifactEvidence {
 /** A read boundary separate from relay stores: implementations may issue SELECT statements only. */
 export interface PlayerSnapshotV1ReplayArtifactDifferentialReader {
   findByCommandId(commandId: string): Promise<readonly PlayerSnapshotV1ReplayArtifactEvidence[]>
+}
+
+/** Read-only journal access boundary, injectable for deterministic reconciliation checks. */
+export interface PlayerSnapshotV1ReplayDifferentialJournalFileReader {
+  readDirectory(directory: string): Promise<readonly Buffer[]>
+  readEntry(path: string): Promise<string>
+}
+
+const defaultJournalFileReader: PlayerSnapshotV1ReplayDifferentialJournalFileReader = {
+  readDirectory: async (directory) => readdir(directory, { encoding: 'buffer' }),
+  readEntry: async (path) => readFile(path, 'utf8'),
 }
 
 export interface PlayerSnapshotV1ReplayDifferentialJournalEvidence {
@@ -51,6 +68,7 @@ export interface PlayerSnapshotV1ReplayDifferentialRecord {
 export interface PlayerSnapshotV1ReplayDifferentialResult {
   format: 'player-snapshot-v1-replay-differential'
   version: '1'
+  classification: PlayerSnapshotV1ReplayDifferentialPrimaryClassification
   records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]
 }
 
@@ -101,6 +119,16 @@ function configuredAbsoluteDirectory(directory: string): string | undefined {
   return directory.length > 0 && !directory.includes('\0') && isAbsolute(directory) ? directory : undefined
 }
 
+function primaryClassification(records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]): PlayerSnapshotV1ReplayDifferentialPrimaryClassification {
+  if (records.some((record) => record.classification !== 'MATCH' && record.classification !== 'MISSING_DB_ARTIFACT')) return 'INCONSISTENT'
+  if (records.some((record) => record.classification === 'MISSING_DB_ARTIFACT')) return 'MISSING'
+  return 'EXACT'
+}
+
+function resultFor(records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]): PlayerSnapshotV1ReplayDifferentialResult {
+  return { format: 'player-snapshot-v1-replay-differential', version: '1', classification: primaryClassification(records), records }
+}
+
 /**
  * Reads immutable journal JSON entries in bytewise lexical filename order. The
  * returned result contains only fixed metadata and never file paths, payloads, or parse errors.
@@ -108,21 +136,28 @@ function configuredAbsoluteDirectory(directory: string): string | undefined {
 export async function comparePlayerSnapshotV1ReplayShadowJournal(
   directory: string,
   reader: PlayerSnapshotV1ReplayArtifactDifferentialReader,
+  journalFiles: PlayerSnapshotV1ReplayDifferentialJournalFileReader = defaultJournalFileReader,
 ): Promise<PlayerSnapshotV1ReplayDifferentialResult> {
   const configured = configuredAbsoluteDirectory(directory)
   if (!configured) throw new Error('invalid replay differential configuration')
   let names: Buffer[]
   try {
-    names = (await readdir(configured, { encoding: 'buffer' }))
+    names = (await journalFiles.readDirectory(configured))
       .filter((name) => name.subarray(-5).equals(Buffer.from('.json')))
       .sort(Buffer.compare)
   } catch {
-    return { format: 'player-snapshot-v1-replay-differential', version: '1', records: [{ index: 0, classification: 'JOURNAL_INVALID' }] }
+    return resultFor([{ index: 0, classification: 'JOURNAL_INVALID' }])
+  }
+  if (names.length > PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES) {
+    return resultFor([{
+      index: PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES,
+      classification: 'JOURNAL_BOUND_EXCEEDED',
+    }])
   }
   const records: PlayerSnapshotV1ReplayDifferentialRecord[] = []
   for (const [index, name] of names.entries()) {
     let parsed: unknown
-    try { parsed = JSON.parse((await readFile(join(configured, name.toString('utf8')), 'utf8'))) }
+    try { parsed = JSON.parse(await journalFiles.readEntry(join(configured, name.toString('utf8')))) }
     catch { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
     if (!isJournalEntry(parsed)) { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
     const evidence = journalEvidence(parsed)
@@ -133,9 +168,9 @@ export async function comparePlayerSnapshotV1ReplayShadowJournal(
       else records.push({ index, classification: classify(parsed, artifacts[0]!), evidence: { journal: evidence, artifact: artifacts[0]! } })
     } catch { records.push({ index, classification: 'DB_READ_ERROR', evidence: { journal: evidence } }) }
   }
-  return { format: 'player-snapshot-v1-replay-differential', version: '1', records }
+  return resultFor(records)
 }
 
 export function replayDifferentialHasNonMatch(result: PlayerSnapshotV1ReplayDifferentialResult): boolean {
-  return result.records.some((record) => record.classification !== 'MATCH')
+  return result.classification !== 'EXACT'
 }

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import {
+  PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES,
   comparePlayerSnapshotV1ReplayShadowJournal,
   type PlayerSnapshotV1ReplayArtifactDifferentialReader,
   type PlayerSnapshotV1ReplayArtifactEvidence,
+  type PlayerSnapshotV1ReplayDifferentialJournalFileReader,
 } from '../src/player-snapshot-v1-replay-differential.js'
 import { main as differentialMain } from '../src/player-snapshot-v1-replay-differential-cli.js'
 import { PostgresPlayerSnapshotV1ArtifactDifferentialReader, assertReplayDifferentialDatabaseUrl, type PgClient, type PgPool } from '../src/store.js'
@@ -54,7 +56,7 @@ test('differential reader processes journal JSON in lexical order with stable me
   await withJournal({ 'z.json': journal(), 'a.json': '{bad json' }, async (path) => {
     const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, reader([artifact()]))
     assert.deepEqual(result, {
-      format: 'player-snapshot-v1-replay-differential', version: '1',
+      format: 'player-snapshot-v1-replay-differential', version: '1', classification: 'INCONSISTENT',
       records: [
         { index: 0, classification: 'JOURNAL_INVALID' },
         {
@@ -71,6 +73,125 @@ test('differential reader processes journal JSON in lexical order with stable me
     })
     assert.equal(JSON.stringify(result).includes('bad json'), false)
   })
+})
+
+test('differential default filesystem reader returns EXACT for one valid journal entry without mutation', async () => {
+  await withJournal({ 'entry.json': journal() }, async (path) => {
+    const entryPath = join(path, 'entry.json')
+    const before = await readFile(entryPath, 'utf8')
+    const namesBefore = await readdir(path, { encoding: 'buffer' })
+    let metadataReads = 0
+
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, {
+      findByCommandId: async (id) => {
+        metadataReads++
+        assert.equal(id, commandId)
+        return [artifact()]
+      },
+    })
+
+    assert.equal(result.classification, 'EXACT')
+    assert.equal(result.records[0]?.classification, 'MATCH')
+    assert.equal(metadataReads, 1)
+    assert.equal(await readFile(entryPath, 'utf8'), before)
+    assert.deepEqual(await readdir(path, { encoding: 'buffer' }), namesBefore)
+  })
+})
+
+test('differential processes journal entries in deterministic lexical order', async () => {
+  const commandIds = [
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333',
+  ]
+  const observed: string[] = []
+  await withJournal({
+    'z.json': journal({ commandId: commandIds[2] }),
+    'a.json': journal({ commandId: commandIds[0] }),
+    'm.json': journal({ commandId: commandIds[1] }),
+  }, async (path) => {
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, {
+      findByCommandId: async (id) => {
+        observed.push(id)
+        return [artifact({ commandId: id })]
+      },
+    })
+    assert.deepEqual(observed, commandIds)
+    assert.deepEqual(result.records.map((record) => record.index), [0, 1, 2])
+    assert.equal(result.classification, 'EXACT')
+  })
+})
+
+test('differential accepts and deterministically processes exactly 256 valid journal entries', async () => {
+  const commandIds = Array.from({ length: PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES }, (_, index) =>
+    `11111111-1111-4111-8111-${index.toString(16).padStart(12, '0')}`,
+  )
+  const filenames = commandIds.map((_, index) => `${String(index).padStart(3, '0')}.json`)
+  const observed: string[] = []
+  let contentReads = 0
+  let databaseReads = 0
+  await withJournal({}, async (path) => {
+    const entries = new Map(filenames.map((name, index) => [join(path, name), journal({ commandId: commandIds[index]! })]))
+    const journalFiles: PlayerSnapshotV1ReplayDifferentialJournalFileReader = {
+      readDirectory: async () => filenames.map((name) => Buffer.from(name)).reverse(),
+      readEntry: async (entryPath) => {
+        contentReads++
+        const entry = entries.get(entryPath)
+        assert.notEqual(entry, undefined)
+        return entry
+      },
+    }
+    const countingReader: PlayerSnapshotV1ReplayArtifactDifferentialReader = {
+      findByCommandId: async (id) => {
+        databaseReads++
+        observed.push(id)
+        return [artifact({ commandId: id })]
+      },
+    }
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, countingReader, journalFiles)
+    assert.equal(result.classification, 'EXACT')
+    assert.deepEqual(result.records.map((record) => record.index), Array.from({ length: commandIds.length }, (_, index) => index))
+    assert.deepEqual(observed, commandIds)
+    assert.equal(contentReads, PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES)
+    assert.equal(databaseReads, PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES)
+  })
+})
+
+test('differential rejects 257 journal entries before content or database reads', async () => {
+  const names = Array.from(
+    { length: PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES + 1 },
+    (_, index) => Buffer.from(`${String(index).padStart(3, '0')}.json`),
+  )
+  let contentReads = 0
+  let databaseCalls = 0
+  const journalFiles: PlayerSnapshotV1ReplayDifferentialJournalFileReader = {
+    readDirectory: async () => names,
+    readEntry: async () => { contentReads++; return journal() },
+  }
+  await withJournal({}, async (path) => {
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, {
+      findByCommandId: async () => { databaseCalls++; return [artifact()] },
+    }, journalFiles)
+    assert.equal(result.classification, 'INCONSISTENT')
+    assert.deepEqual(result.records, [{ index: PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES, classification: 'JOURNAL_BOUND_EXCEEDED' }])
+    assert.equal(contentReads, 0)
+    assert.equal(databaseCalls, 0)
+  })
+})
+
+test('differential maps detailed evidence to EXACT, MISSING, and INCONSISTENT primary classifications', async () => {
+  const cases: Array<[string, PlayerSnapshotV1ReplayArtifactDifferentialReader, 'EXACT' | 'MISSING' | 'INCONSISTENT']> = [
+    ['exact', reader([artifact()]), 'EXACT'],
+    ['missing', reader([]), 'MISSING'],
+    ['mismatch', reader([artifact({ snapshotSha256: 'd'.repeat(64) })]), 'INCONSISTENT'],
+    ['read failure', reader(new Error('safe failure')), 'INCONSISTENT'],
+  ]
+  for (const [, artifactReader, classification] of cases) {
+    await withJournal({ 'entry.json': journal() }, async (path) => {
+      const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, artifactReader)
+      assert.equal(result.classification, classification)
+    })
+  }
 })
 
 test('differential classifies missing, identity, digest, octets, duplicates, and database read failures', async () => {
@@ -121,7 +242,7 @@ test('unreadable or missing configured journal directory is a stable journal-inv
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('dedicated --once CLI requires separate opt-in settings, emits one stable JSON result, and returns nonzero on non-match', async () => {
+test('dedicated --once CLI requires separate opt-in settings, emits one stable JSON result, and exits zero only for EXACT', async () => {
   await withJournal({ 'entry.json': journal() }, async (path) => {
     const output: string[] = []
     let closed = false
@@ -136,9 +257,17 @@ test('dedicated --once CLI requires separate opt-in settings, emits one stable J
     }
     assert.equal(await differentialMain(env, ['--once'], dependencies), 1)
     assert.equal(output.length, 1)
+    assert.equal(JSON.parse(output[0]!).classification, 'MISSING')
     assert.equal(JSON.parse(output[0]!).records[0].classification, 'MISSING_DB_ARTIFACT')
     assert.equal(closed, true)
     await assert.rejects(() => differentialMain({ ...env, DATABASE_URL: env.M4_PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_DATABASE_URL }, ['--once'], dependencies))
+
+    const exactOutput: string[] = []
+    assert.equal(await differentialMain(env, ['--once'], {
+      createReader: () => ({ findByCommandId: async () => [artifact()] }),
+      writeStdout: (value: string) => { exactOutput.push(value) },
+    }), 0)
+    assert.equal(JSON.parse(exactOutput[0]!).classification, 'EXACT')
   })
 })
 

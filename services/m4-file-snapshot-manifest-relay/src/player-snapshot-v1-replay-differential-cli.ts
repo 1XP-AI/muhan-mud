@@ -1,7 +1,6 @@
 import { isAbsolute } from 'node:path'
 import {
   comparePlayerSnapshotV1ReplayShadowJournal,
-  replayDifferentialHasNonMatch,
   type PlayerSnapshotV1ReplayArtifactDifferentialReader,
   type PlayerSnapshotV1ReplayDifferentialResult,
 } from './player-snapshot-v1-replay-differential.js'
@@ -44,7 +43,7 @@ export async function main(
     result = await comparePlayerSnapshotV1ReplayShadowJournal(journalDirectory, reader)
   } finally { await reader.close?.() }
   dependencies.writeStdout(`${JSON.stringify(result)}\n`)
-  return replayDifferentialHasNonMatch(result) ? 1 : 0
+  return result.classification === 'EXACT' ? 0 : 1
 }
 
 if (import.meta.url === new URL(process.argv[1]!, 'file:').href) {
