@@ -479,8 +479,9 @@ fixture_hex_value(int value)
     return -1;
 }
 
-static void
-assert_fixture_hex_stream(FILE *fixture, const uint8_t *wire, size_t wire_length)
+static int
+fixture_hex_stream_matches(FILE *fixture, const uint8_t *wire,
+    size_t wire_length)
 {
     size_t index;
     int high;
@@ -490,13 +491,21 @@ assert_fixture_hex_stream(FILE *fixture, const uint8_t *wire, size_t wire_length
     for (index = 0U; index < wire_length; ++index) {
         high = fixture_hex_value(fgetc(fixture));
         low = fixture_hex_value(fgetc(fixture));
-        assert(high >= 0 && low >= 0);
-        assert(wire[index] == (uint8_t)((high << 4) | low));
+        if (high < 0 || low < 0) return 0;
+        if (wire[index] != (uint8_t)((high << 4) | low)) return 0;
     }
     trailing = fgetc(fixture);
-    if (trailing == '\r') assert(fgetc(fixture) == '\n');
-    else assert(trailing == '\n' || trailing == EOF);
-    assert(fgetc(fixture) == EOF);
+    if (trailing == EOF) return ferror(fixture) == 0;
+    if (trailing == '\n') return fgetc(fixture) == EOF && ferror(fixture) == 0;
+    if (trailing != '\r') return 0;
+    return fgetc(fixture) == '\n' && fgetc(fixture) == EOF
+        && ferror(fixture) == 0;
+}
+
+static void
+assert_fixture_hex_stream(FILE *fixture, const uint8_t *wire, size_t wire_length)
+{
+    assert(fixture_hex_stream_matches(fixture, wire, wire_length));
 }
 
 static void
@@ -510,18 +519,47 @@ assert_canonical_fixture(const char *path, const uint8_t *wire, size_t wire_leng
     assert(fclose(fixture) == 0);
 }
 
-static void
-test_fixture_reader_accepts_crlf(void)
+static int
+fixture_hex_stream_matches_text(const char *text, size_t text_length,
+    const uint8_t *wire, size_t wire_length)
 {
-    const uint8_t wire[] = { 0U };
     FILE *fixture;
+    int matches;
 
+    /* tmpfile() opens a binary update stream, avoiding line-ending conversion. */
     fixture = tmpfile();
     assert(fixture != NULL);
-    assert(fwrite("00\r\n", 1U, 4U, fixture) == 4U);
+    assert(fwrite(text, 1U, text_length, fixture) == text_length);
     assert(fseek(fixture, 0L, SEEK_SET) == 0);
-    assert_fixture_hex_stream(fixture, wire, sizeof(wire));
+    matches = fixture_hex_stream_matches(fixture, wire, wire_length);
     assert(fclose(fixture) == 0);
+    return matches;
+}
+
+static void
+test_fixture_reader_trailer_contract(void)
+{
+    const uint8_t wire[] = { 0U };
+    struct fixture_hex_trailer_case {
+        const char *text;
+        size_t text_length;
+        int expected;
+    } cases[] = {
+        { "00", sizeof("00") - 1U, 1 },
+        { "00\n", sizeof("00\n") - 1U, 1 },
+        { "00\r\n", sizeof("00\r\n") - 1U, 1 },
+        { "00\r", sizeof("00\r") - 1U, 0 },
+        { "00\rx", sizeof("00\rx") - 1U, 0 },
+        { "00\nx", sizeof("00\nx") - 1U, 0 },
+        { "00x", sizeof("00x") - 1U, 0 }
+    };
+    size_t index;
+
+    for (index = 0U; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        assert(fixture_hex_stream_matches_text(cases[index].text,
+            cases[index].text_length, wire, sizeof(wire)) ==
+            cases[index].expected);
+    }
 }
 
 /* This literal fixture was emitted by player_snapshot_v1_encode_loaded() for
@@ -688,7 +726,7 @@ main(void)
     test_valid_envelope_schema_rejections();
     test_root_boundaries();
     test_child_list_boundaries();
-    test_fixture_reader_accepts_crlf();
+    test_fixture_reader_trailer_contract();
     test_canonical_fixture_exact_reread();
     test_canonical_inventory_fixture_exact_reread();
     test_canonical_tree_inventory_fixture_exact_reread();
