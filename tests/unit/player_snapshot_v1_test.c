@@ -468,6 +468,51 @@ fixture_hex_value(int value)
     return -1;
 }
 
+static void
+assert_fixture_hex_stream(FILE *fixture, const uint8_t *wire, size_t wire_length)
+{
+    size_t index;
+    int high;
+    int low;
+    int trailing;
+
+    for (index = 0U; index < wire_length; ++index) {
+        high = fixture_hex_value(fgetc(fixture));
+        low = fixture_hex_value(fgetc(fixture));
+        assert(high >= 0 && low >= 0);
+        assert(wire[index] == (uint8_t)((high << 4) | low));
+    }
+    trailing = fgetc(fixture);
+    if (trailing == '\r') assert(fgetc(fixture) == '\n');
+    else assert(trailing == '\n' || trailing == EOF);
+    assert(fgetc(fixture) == EOF);
+}
+
+static void
+assert_canonical_fixture(const char *path, const uint8_t *wire, size_t wire_length)
+{
+    FILE *fixture;
+
+    fixture = fopen(path, "rb");
+    assert(fixture != NULL);
+    assert_fixture_hex_stream(fixture, wire, wire_length);
+    assert(fclose(fixture) == 0);
+}
+
+static void
+test_fixture_reader_accepts_crlf(void)
+{
+    const uint8_t wire[] = { 0U };
+    FILE *fixture;
+
+    fixture = tmpfile();
+    assert(fixture != NULL);
+    assert(fwrite("00\r\n", 1U, 4U, fixture) == 4U);
+    assert(fseek(fixture, 0L, SEEK_SET) == 0);
+    assert_fixture_hex_stream(fixture, wire, sizeof(wire));
+    assert(fclose(fixture) == 0);
+}
+
 /* This literal fixture was emitted by player_snapshot_v1_encode_loaded() for
  * a zeroed PLAYER named Pvahero.  It is also the PG contract fixture, so this
  * check prevents the database test from silently drifting away from C bytes. */
@@ -480,11 +525,6 @@ test_canonical_fixture_exact_reread(void)
     uint8_t *reread;
     size_t wire_length;
     size_t reread_length;
-    size_t index;
-    int high;
-    int low;
-    int trailing;
-    FILE *fixture;
 
     memset(&source, 0, sizeof(source));
     source.type = PLAYER;
@@ -494,17 +534,8 @@ test_canonical_fixture_exact_reread(void)
     wire_length = 0U;
     assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
         CDTO_V1_OK);
-    fixture = fopen("../tests/fixtures/player_snapshot_v1_canonical.hex", "r");
-    assert(fixture != NULL);
-    for (index = 0U; index < wire_length; ++index) {
-        high = fixture_hex_value(fgetc(fixture));
-        low = fixture_hex_value(fgetc(fixture));
-        assert(high >= 0 && low >= 0);
-        assert(wire[index] == (uint8_t)((high << 4) | low));
-    }
-    trailing = fgetc(fixture);
-    assert(trailing == '\n' || trailing == EOF);
-    assert(fclose(fixture) == 0);
+    assert_canonical_fixture("../tests/fixtures/player_snapshot_v1_canonical.hex",
+        wire, wire_length);
 
     clone = NULL;
     assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
@@ -531,11 +562,6 @@ test_canonical_inventory_fixture_exact_reread(void)
     uint8_t *reread;
     size_t wire_length;
     size_t reread_length;
-    size_t index;
-    int high;
-    int low;
-    int trailing;
-    FILE *fixture;
 
     memset(&source, 0, sizeof(source));
     memset(&item, 0, sizeof(item));
@@ -550,17 +576,8 @@ test_canonical_inventory_fixture_exact_reread(void)
     wire_length = 0U;
     assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
         CDTO_V1_OK);
-    fixture = fopen("../tests/fixtures/player_snapshot_v1_one_inventory_item.hex", "r");
-    assert(fixture != NULL);
-    for (index = 0U; index < wire_length; ++index) {
-        high = fixture_hex_value(fgetc(fixture));
-        low = fixture_hex_value(fgetc(fixture));
-        assert(high >= 0 && low >= 0);
-        assert(wire[index] == (uint8_t)((high << 4) | low));
-    }
-    trailing = fgetc(fixture);
-    assert(trailing == '\n' || trailing == EOF);
-    assert(fclose(fixture) == 0);
+    assert_canonical_fixture("../tests/fixtures/player_snapshot_v1_one_inventory_item.hex",
+        wire, wire_length);
 
     clone = NULL;
     assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
@@ -590,11 +607,6 @@ test_canonical_tree_inventory_fixture_exact_reread(void)
     uint8_t *reread;
     size_t wire_length;
     size_t reread_length;
-    size_t index;
-    int high;
-    int low;
-    int trailing;
-    FILE *fixture;
 
     memset(&source, 0, sizeof(source));
     memset(&root_a, 0, sizeof(root_a));
@@ -634,17 +646,8 @@ test_canonical_tree_inventory_fixture_exact_reread(void)
     wire_length = 0U;
     assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
         CDTO_V1_OK);
-    fixture = fopen("../tests/fixtures/player_snapshot_v1_tree_inventory.hex", "r");
-    assert(fixture != NULL);
-    for (index = 0U; index < wire_length; ++index) {
-        high = fixture_hex_value(fgetc(fixture));
-        low = fixture_hex_value(fgetc(fixture));
-        assert(high >= 0 && low >= 0);
-        assert(wire[index] == (uint8_t)((high << 4) | low));
-    }
-    trailing = fgetc(fixture);
-    assert(trailing == '\n' || trailing == EOF);
-    assert(fclose(fixture) == 0);
+    assert_canonical_fixture("../tests/fixtures/player_snapshot_v1_tree_inventory.hex",
+        wire, wire_length);
 
     clone = NULL;
     assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
@@ -673,6 +676,7 @@ main(void)
     test_valid_envelope_schema_rejections();
     test_root_boundaries();
     test_child_list_boundaries();
+    test_fixture_reader_accepts_crlf();
     test_canonical_fixture_exact_reread();
     test_canonical_inventory_fixture_exact_reread();
     test_canonical_tree_inventory_fixture_exact_reread();
