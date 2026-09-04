@@ -3,6 +3,7 @@
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
 - 포팅 기능 기준 커밋: `dfcaacec541015dc1c0a42d4ec87e2da1e400394`
+- 최신 검증 커밋: `d9415508566a188c15829ed20aa7bdad03c82d65`
 
 ## 먼저 알아야 할 상태
 
@@ -166,13 +167,10 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 ## 남은 선행 작업
 
-1. 이 handoff와 함께 push되는 Linux GCC fixture 경고 수정이 GitHub CI 전체 matrix에서
-   GREEN인지 확인한다. 이것은 test fixture의 bounded pathname 증명만 바꾸며 게임 동작이나
-   영속 포맷을 바꾸지 않는다.
-2. helper transport/process supervision은 별도 설계와 RED 테스트로 시작한다. wake frame은
+1. helper transport/process supervision은 별도 설계와 RED 테스트로 시작한다. wake frame은
    identity, path, credential, payload, acknowledgement 또는 authority 신호로 확장하지
    않는다.
-3. M3 shadow opt-in을 검토하려면 feature-OFF testnet 배포, PVC/restart/rollback, PG17
+2. M3 shadow opt-in을 검토하려면 feature-OFF testnet 배포, PVC/restart/rollback, PG17
    reconciliation과 실제 browser/xterm smoke를 별도 증거로 축적한다. DB authority 전환은
    그보다 뒤의 명시적 gate다.
 
@@ -300,8 +298,26 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - `PlayerSnapshotV1` full DB contract의 독립 Terra 검토는 P0/P1 구현 누락 없음으로
   판정했다. 선택적 P2 negative fixture 증강은 다음 별도 slice다.
 - 이 handoff와 함께 들어가는 bounded bootstrap fixture 수정은 GitHub Ubuntu GCC의
-  `-Werror=format-truncation` 경고를 해소하기 위한 것이다. 정확한 Linux matrix GREEN은
-  push 뒤 CI 결과로만 확정한다.
+  `-Werror=format-truncation` 경고를 해소하기 위한 것이다.
+
+### 2026-09-05 CI 전체 복구 `67b6bc6`, `72e4099`, `06d10f0`, `d941550`
+
+- `67b6bc6`은 Linux GCC bootstrap fixture의 bounded pathname 경고만 고쳤다.
+- `72e4099`은 M3 RPC expiry fixture가 `expires_at > issued_at` 계약을 항상 만족하도록
+  두 timestamp를 한 statement에서 재기준화했다.
+- `06d10f0`은 successor writer epoch 2에 맞춰 M3 receipt exact-retry golden digest 두 개만
+  동기화했다.
+- `d941550`은 `player_store`가 쓰는
+  `character_save_journal_v2_bootstrap_absent_head` 구현을 PG17 process-owner와
+  runtime-shadow E2E harness의 명시 링크 목록에 각각 추가했다. 제품 runtime, SQL migration,
+  DB authority, chart와 UI는 바꾸지 않았다.
+- 로컬에서는 두 harness의 shell syntax/diff check 및 `player_store`·`bootstrap` 정적 compile와
+  bootstrap unit test가 통과했다. PostgreSQL 17 실통합은 GitHub Actions에서 확인했다.
+- private GitHub Actions: <https://github.com/1XP-Inc/muhan-mud/actions/runs/33915490900>
+  (`Supabase ownership contract`, Ubuntu ARM, Ubuntu, Windows, macOS 모두 GREEN). 이 run에는
+  M3 RPC receipt/login/startup, PlayerSnapshot/relay, process-owner+runtime-shadow, named-volume
+  restart와 importer integration이 포함된다.
+- 사용자 소유 `src/frp.new`는 이번 네 개 커밋 어디에도 포함되지 않았다.
 
 ## Kubernetes 현황
 
@@ -322,15 +338,12 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 
 ## 다음 완료 순서
 
-1. `HANDOFF.md`와 Linux GCC bootstrap fixture 수정만 stage하여 `private`에 push하고,
-   GitHub CI 전체 matrix를 GREEN으로 확인한다. 사용자 소유 `src/frp.new`는 절대 포함하지
-   않는다.
-2. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
+1. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
    smoke로 검증한다. game account와 Auth account의 분리는 유지한다.
-3. 다음 M3 slice는 helper transport/process supervision 또는 shadow reconciliation 중
+2. 다음 M3 slice는 helper transport/process supervision 또는 shadow reconciliation 중
    하나만 선택해 RED→GREEN으로 시작한다. wake protocol 자체에는 runtime transport를
    덧붙이지 않는다.
-4. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
+3. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
    모두 쌓인 뒤에만 별도 승인으로 M3 opt-in을 검토한다. DB authority 전환은 그 이후다.
 
 ## 먼저 읽을 문서
