@@ -6,6 +6,8 @@ use muhan_core_dto::{
     encode, Error, Field, Kind, Record, MAX_ENVELOPE_SIZE, OBJECT_GRAPH_V1_MAX_DEPTH,
     OBJECT_GRAPH_V1_MAX_NODES, OBJECT_GRAPH_V1_NODE_LENGTH,
 };
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 
 fn fixture_hex(source: &str) -> Vec<u8> {
     let text = source.trim();
@@ -37,6 +39,32 @@ fn fixtures() -> [(Vec<u8>, usize); 3] {
             5,
         ),
     ]
+}
+
+fn digest_hex(digest: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(digest.len() * 2);
+    for &byte in digest {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn run_replay_runner(wire: &[u8]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_player_snapshot_v1_replay_verify"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("replay verifier runner launches");
+    child
+        .stdin
+        .take()
+        .expect("runner stdin is piped")
+        .write_all(wire)
+        .expect("runner accepts fixture input");
+    child.wait_with_output().expect("runner exits")
 }
 
 fn player_snapshot_fields(inventory: Vec<u8>) -> Vec<Field> {
@@ -142,6 +170,60 @@ fn verification_is_deterministic_for_the_same_input() {
         verify_player_snapshot_replay_v1(&wire).expect("first verification"),
         verify_player_snapshot_replay_v1(&wire).expect("second verification")
     );
+}
+
+#[test]
+fn replay_runner_is_version_pinned_deterministic_and_metadata_only() {
+    let (wire, expected_nodes) = &fixtures()[1];
+    let library_report = verify_player_snapshot_replay_v1(wire).expect("fixture verifies");
+    let expected = format!(
+        "format=player-snapshot-v1-replay-verification\nversion=1\nalgorithm=sha-256\ninput_digest={}\ncanonical_digest={}\ncanonical_octets={}\ninventory_node_count={}\n",
+        digest_hex(&library_report.input_digest),
+        digest_hex(&library_report.canonical_digest),
+        library_report.canonical_octets,
+        expected_nodes,
+    );
+
+    let first = run_replay_runner(wire);
+    let second = run_replay_runner(wire);
+    assert!(first.status.success(), "runner accepts canonical fixture");
+    assert!(second.status.success(), "runner accepts canonical fixture");
+    assert_eq!(first.stdout, expected.as_bytes());
+    assert_eq!(second.stdout, first.stdout, "repeated input is byte-stable");
+    assert!(first.stderr.is_empty(), "successful run has no diagnostics");
+}
+
+#[test]
+fn replay_runner_rejects_mutated_input_with_a_single_generic_diagnostic() {
+    let (mut wire, _) = fixtures()[1].clone();
+    let last = wire.len() - 1;
+    wire[last] ^= 1;
+
+    let output = run_replay_runner(&wire);
+    assert!(!output.status.success(), "mutated input is rejected");
+    assert!(output.stdout.is_empty(), "rejections have no report");
+    let diagnostic = String::from_utf8(output.stderr).expect("runner diagnostic is text");
+    assert_eq!(
+        diagnostic.lines().collect::<Vec<_>>(),
+        ["rejected: invalid player snapshot CDTO"],
+        "rejection is a single generic diagnostic"
+    );
+    assert!(diagnostic.ends_with('\n'), "diagnostic is line-terminated");
+}
+
+#[test]
+fn replay_runner_rejects_one_byte_malformed_cdto_without_parser_details() {
+    let output = run_replay_runner(&[0xa5]);
+
+    assert!(!output.status.success(), "malformed CDTO is rejected");
+    assert!(output.stdout.is_empty(), "rejections have no report");
+    assert_eq!(
+        output.stderr, b"rejected: invalid player snapshot CDTO\n",
+        "rejection text is stable and does not expose parser details"
+    );
+    let diagnostic = String::from_utf8(output.stderr).expect("runner diagnostic is text");
+    assert!(!diagnostic.contains("Truncated"));
+    assert!(!diagnostic.contains("a5"));
 }
 
 #[test]

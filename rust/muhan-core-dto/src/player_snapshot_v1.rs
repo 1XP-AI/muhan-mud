@@ -8,6 +8,8 @@ use super::{
 
 pub const MAX_LIST_ITEMS: usize = 4096;
 
+/// Pinned text report format for replay verification.
+pub const REPLAY_VERIFICATION_V1_FORMAT: &str = "player-snapshot-v1-replay-verification";
 /// Pinned digest algorithm for the replay verification report.
 pub const REPLAY_VERIFICATION_V1_ALGORITHM: &str = "sha-256";
 /// Pinned report schema version for replay verification.
@@ -25,6 +27,32 @@ pub struct ReplayVerificationV1 {
     pub canonical_digest: [u8; super::DIGEST_LENGTH],
     pub canonical_octets: usize,
     pub inventory_node_count: usize,
+}
+
+/// Renders a replay verification result as a stable, metadata-only text report.
+///
+/// The order and final newline are part of the version-pinned format. Snapshot
+/// source values are deliberately never included.
+pub fn format_replay_verification_v1_report(report: &ReplayVerificationV1) -> String {
+    fn hex(digest: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut output = String::with_capacity(digest.len() * 2);
+        for &byte in digest {
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        output
+    }
+
+    format!(
+        "format={REPLAY_VERIFICATION_V1_FORMAT}\nversion={}\nalgorithm={}\ninput_digest={}\ncanonical_digest={}\ncanonical_octets={}\ninventory_node_count={}\n",
+        report.version,
+        report.algorithm,
+        hex(&report.input_digest),
+        hex(&report.canonical_digest),
+        report.canonical_octets,
+        report.inventory_node_count,
+    )
 }
 
 fn player_fixed_string_is_canonical(value: &[u8]) -> bool {
