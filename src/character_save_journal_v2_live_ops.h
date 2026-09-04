@@ -34,6 +34,15 @@ character_save_journal_v2_live_ops_writer_epoch_renew(
     void *opaque, const character_save_journal_v2_writer_tuple *held,
     const char *lease_expires_at);
 
+/* Sends the fixed M7a absent-head seed RPC for one already-bound,
+ * uninitialized route.  It has no local file, stage, journal, or publish
+ * effect and maps no transport outcome into success. */
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_live_ops_seed_absent_head(
+    character_save_journal_v2_live_ops *ops,
+    const character_save_journal_v2_writer_tuple *held,
+    const character_save_journal_v2_bound_route_v3 *route);
+
 /* Implements character_save_journal_v2_route_lookup_v3.  It accepts canonical
  * bytes, materializes a bounded NUL-terminated RPC key, and makes one lookup. */
 character_save_journal_v2_route_lookup_result

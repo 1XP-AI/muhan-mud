@@ -77,6 +77,26 @@ static int live_ops_name_key(const unsigned char *bytes, size_t length,
     return 1;
 }
 
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_live_ops_seed_absent_head(
+    character_save_journal_v2_live_ops *ops,
+    const character_save_journal_v2_writer_tuple *held,
+    const character_save_journal_v2_bound_route_v3 *route)
+{
+    char key[CHARACTER_SAVE_JOURNAL_V2_ROUTE_NAME_MAX+1];
+
+    if(!live_ops_ready(ops) || !held || !route || !held->writer_epoch ||
+       held->writer_epoch>(uint64_t)LLONG_MAX ||
+       route->head_state!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED ||
+       route->head_revision || strcmp(held->world_id,route->world_id) ||
+       !live_ops_name_key(route->legacy_name,route->legacy_name_length,key))
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID;
+    return character_save_journal_v2_rpc_transport_seed_absent_head(
+        ops->transport,held->world_id,key,route->character_id,
+        held->writer_instance_id,(unsigned long long)held->writer_epoch,
+        route->storage_format);
+}
+
 static int live_ops_lifecycle(const char *text,
     character_save_journal_v2_route_lifecycle *out)
 {

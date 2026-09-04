@@ -93,6 +93,14 @@ character_save_journal_v2_rpc_transport_outcome
 character_save_journal_v2_rpc_transport_lookup_route_v3(
     character_save_journal_v2_rpc_transport *transport, const char *world_id,
     const char *legacy_name_key, character_save_journal_v2_rpc_route_v3 *route);
+/* Seeds only the revision-zero absent baseline after the caller has proved
+ * the canonical legacy file absent beneath a held trusted root. */
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_rpc_transport_seed_absent_head(
+    character_save_journal_v2_rpc_transport *transport, const char *world_id,
+    const char *legacy_name_key, const char *character_id,
+    const char *writer_instance_id, unsigned long long writer_epoch,
+    unsigned int storage_format);
 character_save_journal_v2_rpc_transport_outcome
 character_save_journal_v2_rpc_transport_acquire(
     character_save_journal_v2_rpc_transport *transport, const char *world_id,

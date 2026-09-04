@@ -31,7 +31,8 @@ static void *fake_exec(void *connection, const char *sql, int count,
     fake->calls++;
     fake->kind=strstr(sql,"m3_assert_writer_session") ? 1 :
         (strstr(sql,"route_v3") ? 2 : (strstr(sql,"acquire_game") ? 3 :
-        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"record_legacy") ? 5 : 0))));
+        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"record_legacy") ? 5 :
+        (strstr(sql,"seed_game_character_absent_head") ? 6 : 0)))));
     if(fake->kind==2 && values && values[1]) {
         strncpy(fake->name,values[1],sizeof(fake->name)-1);
         fake->name[sizeof(fake->name)-1]=0;
@@ -50,7 +51,7 @@ static int fake_rows(void *result)
 static int fake_columns(void *result)
 {
     live_fake *fake=(live_fake *)result;
-    return fake->kind==1 || fake->kind==5 ? 1 :
+    return fake->kind==1 || fake->kind==5 || fake->kind==6 ? 1 :
         (fake->kind==2 ? 10 : 2);
 }
 static const char *fake_value(void *result, int row, int column)
@@ -226,5 +227,36 @@ static int test_receipt_mapping(void)
     return bad;
 }
 
+static int test_absent_head_seed_mapping(void)
+{
+    character_save_journal_v2_rpc_transport transport;
+    character_save_journal_v2_live_ops ops;
+    character_save_journal_v2_writer_tuple held;
+    character_save_journal_v2_bound_route_v3 route;
+    live_fake fake;
+    int calls, bad=0;
+
+    ready(&transport,&fake);
+    character_save_journal_v2_live_ops_init(&ops,&transport,0);
+    tuple(&held); held.writer_epoch=7;
+    memset(&route,0,sizeof(route));
+    strcpy(route.world_id,"m3-world");
+    strcpy(route.character_id,"92000000-0000-0000-0000-000000000001");
+    memcpy(route.legacy_name,"M3hero",6); route.legacy_name_length=6;
+    strcpy(route.legacy_shard,"11"); route.storage_format=1;
+    route.lifecycle=CHARACTER_SAVE_JOURNAL_V2_ROUTE_ACTIVE;
+    route.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED;
+    bad|=expect(character_save_journal_v2_live_ops_seed_absent_head(&ops,&held,
+        &route)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK&&fake.kind==6,
+        "seed maps an exact uninitialized route to transport success");
+    calls=fake.calls;
+    route.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    bad|=expect(character_save_journal_v2_live_ops_seed_absent_head(&ops,&held,
+        &route)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID&&fake.calls==calls,
+        "seed rejects a non-uninitialized route before transport I/O");
+    character_save_journal_v2_rpc_transport_close(&transport);
+    return bad;
+}
+
 int main(void)
-{ return test_acquire_and_renew()|test_route_bytes_and_output_contract()|test_receipt_mapping(); }
+{ return test_acquire_and_renew()|test_route_bytes_and_output_contract()|test_receipt_mapping()|test_absent_head_seed_mapping(); }

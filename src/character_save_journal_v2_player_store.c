@@ -51,6 +51,16 @@ static void player_store_finish(character_save_journal_v2_player_store *store)
     store->state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
 }
 
+static int player_store_default_absent_bootstrap(void *opaque,
+    const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_live_ops *live_ops,
+    const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length)
+{
+    (void)opaque;
+    return character_save_journal_v2_bootstrap_absent_head(writer,live_ops,
+        canonical_legacy_name,canonical_legacy_name_length);
+}
+
 static int player_store_serialize_bounded(
     character_save_journal_v2_player_store *store)
 {
@@ -117,7 +127,21 @@ void character_save_journal_v2_player_store_init(
     store->command_uuid_opaque=command_uuid_opaque;
     store->file_load=file_load;
     store->file_load_opaque=file_load_opaque;
+    store->absent_bootstrap=player_store_default_absent_bootstrap;
     store->state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
+}
+
+int character_save_journal_v2_player_store_set_absent_bootstrap(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_absent_bootstrap bootstrap,
+    void *bootstrap_opaque)
+{
+    if(!store || !bootstrap ||
+       store->state!=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE)
+        return -1;
+    store->absent_bootstrap=bootstrap;
+    store->absent_bootstrap_opaque=bootstrap_opaque;
+    return 0;
 }
 
 int character_save_journal_v2_player_store_set_stage_observer(
@@ -183,6 +207,14 @@ int character_save_journal_v2_player_store_save(
           CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX)) goto failed;
     if(character_save_journal_v2_live_ops_writer_epoch_renew(store->live_ops,
        &tuple,deadline)!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK) goto failed;
+    /* This is deliberately after exact writer renewal and before UUID,
+     * serializer, PREPARED, stage, publish, or receipt work.  The default
+     * callback reads the initial bound route, proves canonical live absence
+     * from a held-root descriptor only for uninitialized heads, seeds once,
+     * then exact-rebinds absent/revision-zero identity. */
+    if(!store->absent_bootstrap || store->absent_bootstrap(
+       store->absent_bootstrap_opaque,store->held_writer,store->live_ops,
+       (const unsigned char *)name,(size_t)name_length)) goto failed;
     memset(command_uuid,0,sizeof(command_uuid));
     if(store->command_uuid(store->command_uuid_opaque,command_uuid)||
        !player_store_uuid_valid(command_uuid)) goto failed;

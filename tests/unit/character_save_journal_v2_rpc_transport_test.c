@@ -7,6 +7,7 @@
 typedef struct fake {
     int ok, transaction, execs, clears, closes, status, kind, rows;
     int clear_order, close_order, sequence, assert_null;
+    int seed_fixed, seed_calls;
     const char *sqlstate, *legacy_shard, *route_world, *route_name;
     const char *route_storage, *route_lifecycle, *epoch_value;
     const char *v3_head_state, *v3_head_sha256, *v3_head_revision;
@@ -21,12 +22,22 @@ static void *f_exec(void *connection, const char *sql, int count,
                     const int *lengths, const int *formats, int result_format)
 {
     fake *f=(fake *)connection;
-    (void)count; (void)types; (void)values; (void)lengths; (void)formats;
+    (void)types; (void)lengths; (void)formats;
     (void)result_format;
     f->execs++;
     f->kind=strstr(sql,"m3_assert_writer_session") ? 1 :
         (strstr(sql,"route_v3") ? 7 : (strstr(sql,"resolve_game") ? 2 : (strstr(sql,"acquire_game") ? 3 :
-        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"seal_game") ? 5 : 6)))));
+        (strstr(sql,"renew_game") ? 4 : (strstr(sql,"seal_game") ? 5 :
+        (strstr(sql,"seed_game_character_absent_head") ? 8 : 6))))));
+    if(f->kind==8) {
+        f->seed_calls++;
+        f->seed_fixed=count==6 &&
+            !strcmp(sql,"select private.seed_game_character_absent_head($1::text,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::smallint)") &&
+            values && !strcmp(values[0],"m3-world") && !strcmp(values[1],"M3hero") &&
+            !strcmp(values[2],"92000000-0000-0000-0000-000000000001") &&
+            !strcmp(values[3],"94000000-0000-0000-0000-000000000001") &&
+            !strcmp(values[4],"1") && !strcmp(values[5],"1");
+    }
     if(f->kind==1&&f->assert_null) return 0;
     return f;
 }
@@ -144,7 +155,7 @@ static int test_transaction_and_error_order(void)
 
 static int test_total_mapping_and_outputs(void)
 {
-    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_rpc_route_v3 route_v3; character_save_journal_v2_receipt r; unsigned long long epoch=77; char expires[64]="stale"; unsigned char nul_name[]={'M','3',0,'x'}; int bad=0;
+    fake f; character_save_journal_v2_rpc_transport t; character_save_journal_v2_rpc_route route; character_save_journal_v2_rpc_route_v3 route_v3; character_save_journal_v2_receipt r; unsigned long long epoch=77; char expires[64]="stale"; unsigned char nul_name[]={'M','3',0,'x'}; int bad=0,before;
     ready(&f); init_ready(&t,&f); f.status=2; f.sqlstate="22001";
     memset(&route,0x5a,sizeof(route));
     bad|=expect(character_save_journal_v2_rpc_transport_lookup_route(&t,"m3-world","M3hero",&route)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID,"class 22 maps invalid");
@@ -195,6 +206,11 @@ static int test_total_mapping_and_outputs(void)
     bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"m3-world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED&&route_v3.world_id[0]==0,"v3 uninitialized head requires revision zero");
     f.v3_head_state=0; f.v3_head_revision=0; memset(&route_v3,0x5a,sizeof(route_v3));
     bad|=expect(character_save_journal_v2_rpc_transport_lookup_route_v3(&t,"Bad_world","M3hero",&route_v3)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID&&route_v3.world_id[0]==0,"v3 output is cleared before invalid input");
+    before=f.execs;
+    bad|=expect(character_save_journal_v2_rpc_transport_seed_absent_head(&t,
+        "m3-world","M3hero","bad","94000000-0000-0000-0000-000000000001",1,1)==
+        CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID&&f.execs==before,
+        "seed rejects malformed exact tuple before RPC");
     return bad;
 }
 
@@ -210,6 +226,11 @@ static int test_all_success_and_receipt_validation(void)
     bad|=expect(character_save_journal_v2_rpc_transport_acquire(&t,"m3-world","94000000-0000-0000-0000-000000000001","2026-09-02T00:00:00Z",&epoch,expires)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK&&epoch==1,"acquire success");
     bad|=expect(character_save_journal_v2_rpc_transport_renew(&t,"m3-world","94000000-0000-0000-0000-000000000001",epoch,"2026-09-02T00:00:00Z",expires)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"renew success");
     bad|=expect(character_save_journal_v2_rpc_transport_seal(&t,"m3-world","94000000-0000-0000-0000-000000000001",epoch)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"seal success");
+    bad|=expect(character_save_journal_v2_rpc_transport_seed_absent_head(&t,
+        "m3-world","M3hero","92000000-0000-0000-0000-000000000001",
+        "94000000-0000-0000-0000-000000000001",epoch,1)==
+        CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK&&f.seed_calls==1&&f.seed_fixed,
+        "seed uses only the fixed parameterized M7a RPC");
     receipt(&r);
     bad|=expect(character_save_journal_v2_rpc_transport_receipt(&t,&r)==CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK,"receipt absent accepts null expected hash");
     r.expected_state="existing";

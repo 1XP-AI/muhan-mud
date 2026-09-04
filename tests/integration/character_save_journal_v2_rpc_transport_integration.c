@@ -11,6 +11,7 @@ static const char world[] = "m3-rpc-contract";
 static const char bad_cast_world[] = "m3-rpc-bad-cast";
 static const char character[] = "92000000-0000-0000-0000-000000000001";
 static const char writer[] = "94000000-0000-0000-0000-000000000001";
+static const char successor[] = "94000000-0000-0000-0000-000000000002";
 static const char command[] = "93000000-0000-0000-0000-000000000001";
 static const char command_second[] = "93000000-0000-0000-0000-000000000002";
 static const char request[] =
@@ -141,6 +142,25 @@ static int terminate_backend(PGconn *super, int pid)
         return fail("terminate backend SQL overflow");
     return tuples_bool(super, sql,
         "disposable super connection did not terminate writer backend");
+}
+
+static int expire_sealed_predecessor(const char *conninfo)
+{
+    PGconn *connection = connect_database(conninfo, "disposable super");
+    PGresult *result;
+    int answer;
+
+    if (!connection)
+        return 0;
+    result = command_exec(connection,
+        "update private.game_character_writer_epochs set expires_at="
+        "clock_timestamp()-interval '1 second' where world_id='m3-rpc-contract'",
+        "expire sealed predecessor");
+    answer = result != 0;
+    if (result)
+        PQclear(result);
+    PQfinish(connection);
+    return answer;
 }
 
 static int begin_before_start_rejected(const char *conninfo)
@@ -319,10 +339,10 @@ int main(void)
     if (character_save_journal_v2_rpc_transport_lookup_route_v3(
             &native.transport, world, "M3hero", &route_v3) ||
         strcmp(route_v3.character_id, character) || route_v3.storage_format != 1 ||
-        strcmp(route_v3.head_state, "absent") || route_v3.head_sha256[0] ||
+        strcmp(route_v3.head_state, "uninitialized") || route_v3.head_sha256[0] ||
         route_v3.head_revision != 0) {
         character_save_journal_v2_rpc_transport_close(&native.transport);
-        return fail("initial v3 writer route head lookup failed");
+        return fail("initial v3 writer route did not remain uninitialized");
     }
     if (character_save_journal_v2_rpc_transport_acquire(&native.transport,
             world, writer, until, &epoch, renewed) || epoch != 1) {
@@ -334,13 +354,42 @@ int main(void)
         character_save_journal_v2_rpc_transport_close(&native.transport);
         return fail("writer epoch renew failed");
     }
+    if (character_save_journal_v2_rpc_transport_seed_absent_head(
+            &native.transport, world, "M3hero", character, writer, epoch, 1) ||
+        character_save_journal_v2_rpc_transport_seed_absent_head(
+            &native.transport, world, "M3hero", character, writer, epoch, 1)) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("absent-head seed or exact retry failed");
+    }
+    if (character_save_journal_v2_rpc_transport_lookup_route_v3(
+            &native.transport, world, "M3hero", &route_v3) ||
+        strcmp(route_v3.head_state, "absent") || route_v3.head_sha256[0] ||
+        route_v3.head_revision != 0) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("seed did not rebind to absent revision zero");
+    }
+    if (character_save_journal_v2_rpc_transport_seal(&native.transport,
+            world, writer, epoch) || !expire_sealed_predecessor(super_conninfo) ||
+        !expiry(until) || character_save_journal_v2_rpc_transport_acquire(
+            &native.transport, world, successor, until, &epoch, renewed) || epoch != 2) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("sealed predecessor did not admit exact successor epoch");
+    }
+    if (character_save_journal_v2_rpc_transport_seed_absent_head(
+            &native.transport, world, "M3hero", character, writer, 1, 1) !=
+        CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_REJECTED ||
+        character_save_journal_v2_rpc_transport_seed_absent_head(
+            &native.transport, world, "M3hero", character, successor, epoch, 1)) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("stale predecessor or exact successor seed contract failed");
+    }
     memset(&receipt, 0, sizeof(receipt));
     receipt.world_id = world;
     receipt.legacy_name_key = (const unsigned char *)"M3hero";
     receipt.legacy_name_key_length = 6;
     receipt.character_id = character;
     receipt.command_id = command;
-    receipt.writer_instance_id = writer;
+    receipt.writer_instance_id = successor;
     receipt.request_sha256 = request;
     receipt.writer_epoch = epoch;
     receipt.writer_revision = 1;
@@ -379,9 +428,15 @@ int main(void)
         return fail("second save did not become v3 revision two");
     }
     if (character_save_journal_v2_rpc_transport_seal(&native.transport,
-            world, writer, epoch)) {
+            world, successor, epoch)) {
         character_save_journal_v2_rpc_transport_close(&native.transport);
         return fail("writer epoch seal failed");
+    }
+    if (character_save_journal_v2_rpc_transport_seed_absent_head(
+            &native.transport, world, "M3hero", character, successor, epoch, 1) !=
+        CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_REJECTED) {
+        character_save_journal_v2_rpc_transport_close(&native.transport);
+        return fail("sealed writer seed was not permanently rejected");
     }
     character_save_journal_v2_rpc_transport_close(&native.transport);
     return 0;

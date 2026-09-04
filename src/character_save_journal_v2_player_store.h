@@ -7,6 +7,7 @@
  * must keep them alive for every dispatched save.
  */
 #include "character_save_journal_v2_live_ops.h"
+#include "character_save_journal_v2_bootstrap.h"
 #include "character_save_journal_v2_protocol.h"
 #include "character_save_journal_v2_uuid.h"
 #include "player_record_serializer.h"
@@ -27,6 +28,14 @@ typedef int (*character_save_journal_v2_player_store_command_uuid)(
 typedef int (*character_save_journal_v2_player_store_file_load)(
     void *opaque, char *name, struct creature **player);
 
+/* Optional test seam for the mandatory pre-serialization first-head gate.
+ * A zero result authorizes the unchanged save_held_v3 path; every nonzero
+ * result is a local I/O failure with no serializer/stage/journal action. */
+typedef int (*character_save_journal_v2_player_store_absent_bootstrap)(
+    void *opaque, const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_live_ops *live_ops,
+    const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length);
+
 typedef enum character_save_journal_v2_player_store_state {
     CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE = 0,
     CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING = 1
@@ -44,6 +53,8 @@ typedef struct character_save_journal_v2_player_store {
     void *command_uuid_opaque;
     character_save_journal_v2_player_store_file_load file_load;
     void *file_load_opaque;
+    character_save_journal_v2_player_store_absent_bootstrap absent_bootstrap;
+    void *absent_bootstrap_opaque;
     character_save_journal_v2_prepared_stage_observer stage_observer;
     void *stage_observer_opaque;
 
@@ -81,6 +92,14 @@ int character_save_journal_v2_player_store_set_stage_observer(
     character_save_journal_v2_player_store *store,
     character_save_journal_v2_prepared_stage_observer observer,
     void *observer_opaque);
+
+/* Replace the default held-root/seed/rebind gate only while idle.  This is
+ * for deterministic tests and platform ports; normal initialization installs
+ * character_save_journal_v2_bootstrap_absent_head. */
+int character_save_journal_v2_player_store_set_absent_bootstrap(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_absent_bootstrap bootstrap,
+    void *bootstrap_opaque);
 
 /* Produces an opaque PlayerStore dispatch value.  No heap allocation, global
  * registration, connection ownership, or libpq dependency is involved. */

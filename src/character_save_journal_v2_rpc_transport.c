@@ -540,6 +540,46 @@ character_save_journal_v2_rpc_transport_lookup_route_v3(
     return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
 }
 
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_rpc_transport_seed_absent_head(
+    character_save_journal_v2_rpc_transport *t, const char *world,
+    const char *name, const char *character, const char *writer,
+    unsigned long long epoch, unsigned int storage_format)
+{
+    static const char sql[] =
+        "select private.seed_game_character_absent_head($1::text,$2::text,"
+        "$3::uuid,$4::uuid,$5::bigint,$6::smallint)";
+    char epoch_text[32];
+    char format_text[8];
+    const char *values[6];
+    void *r;
+    character_save_journal_v2_rpc_transport_outcome answer;
+
+    if (!rpc_world(world) || !rpc_name_text(name) || !rpc_uuid(character) ||
+        !rpc_uuid(writer) || !epoch ||
+        epoch > (unsigned long long)LLONG_MAX || !storage_format ||
+        storage_format > (unsigned int)SHRT_MAX)
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID;
+    snprintf(epoch_text, sizeof(epoch_text), "%llu", epoch);
+    snprintf(format_text, sizeof(format_text), "%u", storage_format);
+    values[0] = world;
+    values[1] = name;
+    values[2] = character;
+    values[3] = writer;
+    values[4] = epoch_text;
+    values[5] = format_text;
+    answer = rpc_execute(t, sql, 6, rpc_types, values, &r);
+    if (answer != CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK)
+        return answer;
+    if (!rpc_tuples(t, r, 1, 1) ||
+        t->operations->result_value_length(r, 0, 0) != 0) {
+        t->operations->result_clear(r);
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_DEFERRED;
+    }
+    t->operations->result_clear(r);
+    return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
+}
+
 static character_save_journal_v2_rpc_transport_outcome rpc_epoch_call(
     character_save_journal_v2_rpc_transport *t, const char *sql, int count,
     const char *const *values, unsigned long long *epoch, char expires[64])
