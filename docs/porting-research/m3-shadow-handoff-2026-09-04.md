@@ -10,7 +10,7 @@
 ## 현재 기준점
 
 - 브랜치: `codex/mud-identity-foundation`
-- 기준 커밋: `1d80e72` (`private` 원격 저장소에 푸시됨)
+- 기준 커밋: `8fffce1` (`private` 원격 저장소에 푸시됨)
 - `PlayerSnapshotV1`은 40개 필드의 pointer-free CDTO와 bounded inventory
   graph를 사용한다.
 - PostgreSQL 17 계약은 canonical payload, receipt tuple, immutable replay,
@@ -35,29 +35,45 @@
 - `make -C src player-snapshot-v1-test`
 - `make -C src player-snapshot-v1-sanitizer-test`
 - `make -C src character-save-journal-v2-runtime-static-test`
+- `make -C src character-player-snapshot-v1-capture-native-test`
+- `make -C src character-player-snapshot-v1-handoff-test`
+- `make -C src character-player-snapshot-v1-handoff-sanitizer-test`
+- `bash -n supabase/tests/m3_runtime_shadow_pg17_integration.sh`
 - `PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 supabase/tests/player_snapshot_v1_artifact_pg17_integration.sh`
 
 위 PostgreSQL 17 계약은 migration 140에서 RED, 150 적용 후 GREEN을
-확인한다. native runtime 실행 테스트는 Linux/libpq 대상이며, macOS에서는
-의도적으로 skip된다. CI의 Linux native test는 `PROBE_ONLY` 없이 운영
-source를 test seam으로 포함하여 opt-in 및 ABI mismatch 경로를 실행한다.
+확인한다. 새 runtime-shadow handoff E2E는 Linux/libpq/Docker 대상이라
+macOS에서는 의도적으로 실행하지 않으며, private branch CI가 full GREEN
+환경이다. CI의 Linux native test는 `PROBE_ONLY` 없이 운영 source를 test
+seam으로 포함하여 opt-in 및 ABI mismatch 경로를 실행한다.
+
+## 완료한 단일-save 통합 증거
+
+`8fffce1`은 Linux 전용 disposable PostgreSQL 17 runtime-shadow harness에
+다음 흐름을 추가했다.
+
+1. 기본 OFF `fault`/`recover` run은 PlayerSnapshotV1 outbox/handoff
+   directory를 만들지 않는다.
+2. `MUD_M3_PLAYER_SNAPSHOT_V1=handoff` opt-in run은 production
+   `save_ply`를 한 번 호출하고, real `files1.c` player decoder를 사용해
+   bounded native tick 한 번으로 immutable artifact 한 건을 기록한다.
+3. harness는 filename만 보지 않고 production artifact-load와
+   PlayerSnapshotV1 clone decode로 command, character, request hash,
+   source hash, writer tuple, snapshot bytes를 PREPARED evidence와 대조한다.
+4. 두 번째 tick은 artifact를 추가로 만들지 않으며, legacy player bytes와
+   PostgreSQL receipt/head revision은 저장 결과 그대로 남는다.
+
+레거시 파일과 M3 receipt가 계속 권위이고 artifact는 local immutable
+evidence다. 이 slice는 artifact upload, DB readback, bank, reconnect,
+ownership/lifecycle 전환을 하지 않는다.
 
 ## 다음 수직 단계
 
-실제 레거시 save call-site 하나를 명시적으로 선택해, 단일
-character/save에 한해 다음을 feature-off 기본값으로 연결한다.
-
-1. 기존 legacy save가 PREPARED와 receipt를 완성한다.
-2. 성공/실패 결과와 gameplay authority는 그대로 legacy 경로가 결정한다.
-3. native shadow owner의 bounded idle drain이 동일 source/receipt tuple로
-   immutable PlayerSnapshotV1 artifact를 기록한다.
-4. DB readback, bank, reconnect, ownership/lifecycle 전환은 하지 않는다.
-
-필요한 테스트는 성공, DB offline deferred retry, exact replay, receipt 또는
-epoch mismatch, source mutation, crash/restart cleanup, 그리고 legacy
-file/player bytes가 변하지 않았음을 포함해야 한다. rollback은 opt-in과
-idle invocation을 끄는 것뿐이며, 기존 legacy 저장 경로와 이미 기록된
-불변 증거는 삭제하지 않는다.
+Linux CI에서 위 disposable PostgreSQL 17 harness의 full GREEN을 확인한 뒤,
+별도 M4 relay 경계에서 이 immutable artifact를 PostgreSQL validator로
+전달하는 단일-record 계약을 추가한다. relay는 snapshot을 gameplay read
+source로 승격하지 않으며, upload 실패는 artifact를 남긴 채 재시도 가능한
+diagnostic 상태로 끝나야 한다.
 
 ## 작업 원칙
 
