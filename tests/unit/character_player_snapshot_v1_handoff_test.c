@@ -12,6 +12,7 @@
 #include "character_save_journal_v2.h"
 #include "character_save_journal_v2_ack.h"
 #include "character_save_journal_v2_publish.h"
+#include "character_snapshot_shadow_outbox.h"
 #include "player_snapshot_v1.h"
 
 #include <dirent.h>
@@ -28,12 +29,13 @@
 static const char WORLD[]="m3-handoff";
 static const char INSTANCE[]="11111111-1111-4111-8111-111111111111";
 static const char CHARACTER[]="90000000-0000-4000-8000-000000000006";
+static const char CHARACTER_B[]="90000000-0000-4000-8000-000000000007";
 static const char COMMAND[]="10000000-0000-4000-8000-000000000001";
 static const char COMMAND_B[]="20000000-0000-4000-8000-000000000002";
 static const unsigned char RAW[]="legacy-player-stage";
 static const unsigned char RAW_B[]="legacy-player-stage-successor";
 
-typedef struct decode_fixture { int calls,releases,block; } decode_fixture;
+typedef struct decode_fixture { int calls,releases,block,name_b; } decode_fixture;
 
 static int expect(value,message)
 int value; const char *message;
@@ -68,7 +70,7 @@ const char *root;
 {
     static const char instance[]="version=2\nkind=writer-instance\nwriter_instance_id=11111111-1111-4111-8111-111111111111\n";
     static const char epoch[]="version=2\nkind=writer-epoch\nworld_id=m3-handoff\nwriter_instance_id=11111111-1111-4111-8111-111111111111\nwriter_epoch=7\n";
-    return make_dir(root,"player")||make_dir(root,"player/66")||
+    return make_dir(root,"player")||make_dir(root,"player/66")||make_dir(root,"player/b2")||
         make_dir(root,"character-save-stage")||make_dir(root,"character-save-journal")||
         leaf(root,"character-save-journal/writer-instance.v2",instance,sizeof(instance)-1)||
         leaf(root,"character-save-journal/writer-epoch.v2",epoch,sizeof(epoch)-1)?-1:0;
@@ -105,6 +107,22 @@ const char *root;
 { return prepare_command(root,COMMAND,RAW,sizeof(RAW)-1,
     CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT,0,0,1); }
 
+static int prepare_command_other(root,command,bytes,length,revision)
+const char *root,*command;const void *bytes;size_t length;uint64_t revision;
+{
+    character_save_journal_v2_wire wire;
+    memset(&wire,0,sizeof(wire));
+    wire.state=CHARACTER_SAVE_JOURNAL_V2_PREPARED;
+    strcpy(wire.writer_instance_id,INSTANCE);strcpy(wire.character_id,CHARACTER_B);
+    strcpy(wire.world_id,WORLD);strcpy(wire.legacy_name_key_hex,"4d3362657461");
+    strcpy(wire.legacy_shard,"b2");strcpy(wire.command_uuid,command);
+    wire.writer_epoch=7;wire.writer_revision=revision;
+    wire.expected_state=CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT;wire.storage_format=1;
+    if(hash_bytes(root,bytes,length,wire.post_sha256)||
+       character_save_journal_v2_request_sha256(&wire,wire.request_sha256))return-1;
+    return character_save_journal_v2_prepare(root,&wire,bytes,length);
+}
+
 static int decode(opaque,fd,output)
 void *opaque; int fd; creature **output;
 {
@@ -115,7 +133,8 @@ void *opaque; int fd; creature **output;
     if(fixture->block) pause();
     player=(creature *)calloc(1,sizeof(*player));
     if(!player)return-1;
-    player->type=PLAYER;player->fd=-1;strcpy(player->name,"M3alpha");
+    player->type=PLAYER;player->fd=-1;strcpy(player->name,
+        fixture->name_b?"M3beta":"M3alpha");
     memset(player->password,0x5a,sizeof(player->password));*output=player;
     return 0;
 }
@@ -139,6 +158,62 @@ const char *root,*command;
 static int artifact_exists(root)
 const char *root;
 { return artifact_exists_command(root,COMMAND); }
+
+static int manifest_exists_command(root,command)
+const char *root,*command;
+{
+    char relative[128];int count=snprintf(relative,sizeof(relative),"%s/%s.manifest",
+        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY,command);
+    return count>0&&(size_t)count<sizeof(relative)&&exists(root,relative);
+}
+
+static int snapshot_path(root,relative,output)
+const char *root,*relative;struct stat *output;
+{ char path[PATH_MAX];return path_join(path,sizeof(path),root,relative)||lstat(path,output)?-1:0; }
+
+static int same_path(root,relative,before)
+const char *root,*relative;const struct stat *before;
+{
+    struct stat after;
+    return before&&snapshot_path(root,relative,&after)==0&&
+        before->st_dev==after.st_dev&&before->st_ino==after.st_ino&&
+        before->st_mode==after.st_mode&&before->st_nlink==after.st_nlink&&
+        before->st_size==after.st_size;
+}
+
+static int write_conflicting_manifest(root,command)
+const char *root,*command;
+{
+    char directory[PATH_MAX];int fd,result;
+    uint8_t *snapshot=0;size_t length=0;
+    character_player_snapshot_v1_artifact_metadata key,artifact;
+    character_snapshot_shadow_outbox_manifest manifest;
+    if(path_join(directory,sizeof(directory),root,
+       CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY))return-1;
+    fd=open(directory,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0)return-1;
+    memset(&key,0,sizeof(key));memset(&artifact,0,sizeof(artifact));
+    memset(&manifest,0,sizeof(manifest));strcpy(key.command_id,command);
+    result=character_player_snapshot_v1_artifact_load(fd,&key,&artifact,
+        &snapshot,&length);
+    character_player_snapshot_v1_artifact_free(snapshot);
+    if(result!=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK) { close(fd);return-1; }
+    strcpy(manifest.world_id,artifact.world_id);
+    strcpy(manifest.character_id,artifact.character_id);
+    strcpy(manifest.command_id,artifact.command_id);
+    strcpy(manifest.canonical_name_hex,artifact.canonical_name_hex);
+    strcpy(manifest.request_sha256,artifact.request_sha256);
+    strcpy(manifest.post_sha256,artifact.source_post_sha256);
+    strcpy(manifest.writer_instance_id,artifact.writer_instance_id);
+    strcpy(manifest.snapshot_format,CHARACTER_SNAPSHOT_SHADOW_OUTBOX_FORMAT);
+    manifest.writer_epoch=artifact.writer_epoch;
+    manifest.writer_revision=artifact.writer_revision+1U;
+    manifest.storage_format=artifact.storage_format;
+    manifest.snapshot_octets=artifact.source_octets;
+    result=character_snapshot_shadow_outbox_write(fd,&manifest);
+    if(close(fd))return-1;
+    return result==CHARACTER_SNAPSHOT_SHADOW_OUTBOX_OK?0:-1;
+}
 
 static int handoff_exists(root,command,suffix)
 const char *root,*command,*suffix;
@@ -320,6 +395,36 @@ static int test_stopped_consumer_does_not_gate_publish_or_ack(void)
         fprintf(stderr,"handoff drain trace: result=%d capture=%d report=%d calls=%d consumed=%llu\n",
             observed,capture.report.last_result,handoff.report.last_result,decoder.calls,
             (unsigned long long)handoff.report.consumed);
+    if(teardown(root,&writer))failed++;
+    return failed;
+}
+
+/* RED: the ordinary handoff consumer predates receipt pairing.  It must
+ * capture and clean its durable reservation without waiting for an ACK marker
+ * or creating a relay manifest. */
+static int test_default_consumer_captures_and_cleans_up_without_ack(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_player_snapshot_v1_capture capture;
+    character_player_snapshot_v1_handoff handoff;
+    decode_fixture decoder;
+    int failed=0;
+
+    if(setup(root,&writer,&capture,&handoff,&decoder,"default-cleanup"))return 1;
+    failed+=expect(!handoff.receipt_pair&&
+        character_player_snapshot_v1_handoff_observe(&handoff,&writer,
+        COMMAND)==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&
+        character_save_journal_v2_publish_recover(&writer,COMMAND)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&
+        character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==1&&
+        decoder.releases==1&&artifact_exists_command(root,COMMAND)&&
+        !manifest_exists_command(root,COMMAND)&&
+        !handoff_exists(root,COMMAND,".handoff")&&
+        !handoff_exists(root,COMMAND,".source")&&
+        !exists(root,"character-save-journal/10000000-0000-4000-8000-000000000001.acked"),
+        "the default consumer must preserve capture-to-cleanup without ACK or relay pairing");
     if(teardown(root,&writer))failed++;
     return failed;
 }
@@ -1009,6 +1114,137 @@ static int test_untrusted_source_and_temp_pair_skips_to_later_valid_snapshot(voi
     return failed;
 }
 
+/* RED: an already durable artifact used to be consumed before its matching
+ * DB_ACKED marker could publish its same-directory relay manifest.  A pending
+ * A must remain retryable while an ACKED B advances in the same bounded scan;
+ * after A becomes ACKED the exact artifact is paired without re-decoding. */
+static int test_ack_verified_receipt_pair_retries_without_head_of_line_blocking(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_player_snapshot_v1_capture capture;
+    character_player_snapshot_v1_handoff handoff;
+    decode_fixture decoder;
+    character_save_journal_v2_receipt_result receipt_result;
+    int receipt_calls=0,failed=0;
+
+    if(setup(root,&writer,&capture,&handoff,&decoder,"ack-pair"))return 1;
+    character_player_snapshot_v1_handoff_enable_receipt_pair(&handoff,
+        character_player_snapshot_v1_receipt_pair_commit);
+    failed+=expect(character_player_snapshot_v1_handoff_observe(&handoff,&writer,
+        COMMAND)==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&
+        character_save_journal_v2_publish_recover(&writer,COMMAND)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&
+        character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==1&&
+        artifact_exists_command(root,COMMAND)&&!manifest_exists_command(root,COMMAND)&&
+        handoff_exists(root,COMMAND,".handoff")&&handoff_exists(root,COMMAND,".source"),
+        "an artifact without DB_ACKED must retain its token and source without a manifest");
+    { int prepared_b=prepare_command_other(root,COMMAND_B,RAW_B,sizeof(RAW_B)-1,2);
+    int observed_b=character_player_snapshot_v1_handoff_observe(&handoff,&writer,COMMAND_B);
+    int published_b=character_save_journal_v2_publish_recover(&writer,COMMAND_B);
+    int acked_b=character_save_journal_v2_ack(&writer,COMMAND_B,receipt,&receipt_calls);
+    decoder.name_b=1;
+    int drained_b=character_player_snapshot_v1_handoff_drain(&handoff,&writer,1);
+    failed+=expect(prepared_b==0&&observed_b==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&
+        published_b==CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&
+        acked_b==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&drained_b==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==2&&
+        handoff_exists(root,COMMAND,".handoff")&&handoff_exists(root,COMMAND,".source")&&
+        !manifest_exists_command(root,COMMAND)&&artifact_exists_command(root,COMMAND_B)&&
+        manifest_exists_command(root,COMMAND_B)&&!handoff_exists(root,COMMAND_B,".handoff")&&
+        !handoff_exists(root,COMMAND_B,".source"),
+        "a pending A must not spend B's bounded drain slot once B is ACKED"); }
+    receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    character_save_journal_v2_ack_faults_for_test(0,0,0,1,0,0,0);
+    { int acked_a=character_save_journal_v2_ack(&writer,COMMAND,receipt,
+        &receipt_result);int drained_a=character_player_snapshot_v1_handoff_drain(
+        &handoff,&writer,1);
+    failed+=expect(acked_a==CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE&&
+        drained_a==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==2&&
+        !manifest_exists_command(root,COMMAND)&&handoff_exists(root,COMMAND,".handoff")&&
+        handoff_exists(root,COMMAND,".source"),
+        "local-incomplete ACK evidence must remain pending without cleanup"); }
+    failed+=expect(character_save_journal_v2_ack(&writer,COMMAND,receipt,
+        &receipt_result)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED,
+        "exact DB retry must complete A's local ACK marker");
+    character_snapshot_shadow_outbox_test_fail_next(
+        CHARACTER_SNAPSHOT_SHADOW_OUTBOX_TEST_FAULT_DIR_FSYNC);
+    failed+=expect(character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR&&decoder.calls==2&&
+        artifact_exists_command(root,COMMAND)&&manifest_exists_command(root,COMMAND)&&
+        handoff_exists(root,COMMAND,".handoff")&&handoff_exists(root,COMMAND,".source"),
+        "pair fsync failure must retain artifact, manifest, token, and source for retry");
+    failed+=expect(character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==2&&
+        artifact_exists_command(root,COMMAND)&&manifest_exists_command(root,COMMAND)&&
+        !handoff_exists(root,COMMAND,".handoff")&&!handoff_exists(root,COMMAND,".source"),
+        "ACKED A must pair its exact artifact and clean up without another decode");
+    if(teardown(root,&writer))failed++;
+    return failed;
+}
+
+static int test_ack_pair_conflict_and_corruption_preserve_immutable_evidence(void)
+{
+    char root[PATH_MAX],relative[128],artifact_relative[128];
+    struct stat artifact_before,manifest_before;
+    character_save_journal_v2_writer_context writer;
+    character_player_snapshot_v1_capture capture;
+    character_player_snapshot_v1_handoff handoff;
+    decode_fixture decoder;
+    int receipt_calls=0,failed=0;
+
+    if(setup(root,&writer,&capture,&handoff,&decoder,"ack-pair-conflict"))return 1;
+    character_player_snapshot_v1_handoff_enable_receipt_pair(&handoff,
+        character_player_snapshot_v1_receipt_pair_commit);
+    failed+=expect(character_player_snapshot_v1_handoff_observe(&handoff,&writer,
+        COMMAND)==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&
+        character_save_journal_v2_publish_recover(&writer,COMMAND)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&
+        character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==1&&
+        write_conflicting_manifest(root,COMMAND)==0&&
+        character_save_journal_v2_ack(&writer,COMMAND,receipt,&receipt_calls)==
+        CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&
+        snprintf(relative,sizeof(relative),"%s/%s.player-snapshot-v1",
+        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY,COMMAND)>0&&
+        snapshot_path(root,relative,&artifact_before)==0&&
+        snprintf(artifact_relative,sizeof(artifact_relative),"%s",relative)>0&&
+        snprintf(relative,sizeof(relative),"%s/%s.manifest",
+        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY,COMMAND)>0&&
+        snapshot_path(root,relative,&manifest_before)==0&&
+        character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT&&decoder.calls==1&&
+        same_path(root,artifact_relative,&artifact_before)&&
+        same_path(root,relative,&manifest_before)&&artifact_exists_command(root,COMMAND)&&
+        handoff_exists(root,COMMAND,".handoff")&&handoff_exists(root,COMMAND,".source"),
+        "conflicting receipt-pair evidence must freeze without cleanup or replacement");
+    if(teardown(root,&writer))return failed+1;
+
+    if(setup(root,&writer,&capture,&handoff,&decoder,"ack-pair-corrupt"))return failed+1;
+    character_player_snapshot_v1_handoff_enable_receipt_pair(&handoff,
+        character_player_snapshot_v1_receipt_pair_commit);
+    failed+=expect(character_player_snapshot_v1_handoff_observe(&handoff,&writer,
+        COMMAND)==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&
+        character_save_journal_v2_publish_recover(&writer,COMMAND)==
+        CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK&&
+        character_player_snapshot_v1_handoff_drain(&handoff,&writer,1)==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK&&decoder.calls==1&&
+        leaf(root,"character-player-snapshot-v1-outbox/10000000-0000-4000-8000-000000000001.manifest",
+        "corrupt\n",8)==0&&character_save_journal_v2_ack(&writer,COMMAND,
+        receipt,&receipt_calls)==CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED&&
+        snapshot_path(root,"character-player-snapshot-v1-outbox/10000000-0000-4000-8000-000000000001.manifest",
+        &manifest_before)==0&&character_player_snapshot_v1_handoff_drain(&handoff,
+        &writer,1)==CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT&&decoder.calls==1&&
+        same_path(root,"character-player-snapshot-v1-outbox/10000000-0000-4000-8000-000000000001.manifest",
+        &manifest_before)&&artifact_exists_command(root,COMMAND)&&handoff_exists(root,
+        COMMAND,".handoff")&&handoff_exists(root,COMMAND,".source"),
+        "corrupt receipt-pair evidence must remain immutable and unconsumed");
+    if(teardown(root,&writer))failed++;
+    return failed;
+}
+
 int main(void)
 {
     character_save_journal_v2_set_trusted_uid_for_test(getuid());
@@ -1016,6 +1252,7 @@ int main(void)
     character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());
     character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());
     return test_stopped_consumer_does_not_gate_publish_or_ack()|
+        test_default_consumer_captures_and_cleans_up_without_ack()|
         test_crash_cutpoints_retry_without_wrong_duplicate()|
         test_same_character_successors_keep_distinct_immutable_sources()|
         test_final_token_fsync_exact_retry_repairs_parent_durability()|
@@ -1029,5 +1266,7 @@ int main(void)
         test_safe_poison_skips_to_later_valid_snapshot_without_duplicate()|
         test_external_hardlinked_source_skips_to_later_valid_snapshot()|
         test_external_hardlinked_source_temp_skips_to_later_valid_snapshot()|
-        test_untrusted_source_and_temp_pair_skips_to_later_valid_snapshot();
+        test_untrusted_source_and_temp_pair_skips_to_later_valid_snapshot()|
+        test_ack_verified_receipt_pair_retries_without_head_of_line_blocking()|
+        test_ack_pair_conflict_and_corruption_preserve_immutable_evidence();
 }

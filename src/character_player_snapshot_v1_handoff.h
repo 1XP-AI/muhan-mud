@@ -10,6 +10,7 @@
  * and legacy file remain the sole save authority throughout.
  */
 #include "character_player_snapshot_v1_capture.h"
+#include "character_player_snapshot_v1_receipt_pair.h"
 
 #include <stdint.h>
 
@@ -50,16 +51,32 @@ typedef struct character_player_snapshot_v1_handoff_report {
     char last_command_id[37];
 } character_player_snapshot_v1_handoff_report;
 
+/* Receipt pairing is a separately linked relay capability.  Ordinary
+ * handoff users neither select nor retain it. */
+typedef character_player_snapshot_v1_receipt_pair_result
+    (*character_player_snapshot_v1_handoff_receipt_pair)(
+    const character_save_journal_v2_writer_context *writer,
+    int artifact_directory_fd,
+    const character_player_snapshot_v1_artifact_metadata *artifact_key);
+
 typedef struct character_player_snapshot_v1_handoff {
     /* The caller owns the capture object and schedules drain independently
      * from the M3 protocol/recovery PREPARED observer. */
     character_player_snapshot_v1_capture *capture;
+    character_player_snapshot_v1_handoff_receipt_pair receipt_pair;
     character_player_snapshot_v1_handoff_report report;
 } character_player_snapshot_v1_handoff;
 
 void character_player_snapshot_v1_handoff_init(
     character_player_snapshot_v1_handoff *handoff,
     character_player_snapshot_v1_capture *capture);
+
+/* Enables the optional DB_ACKED-to-manifest relay only for this handoff.
+ * Passing a null capability leaves the default capture-to-cleanup consumer
+ * unchanged. */
+void character_player_snapshot_v1_handoff_enable_receipt_pair(
+    character_player_snapshot_v1_handoff *handoff,
+    character_player_snapshot_v1_handoff_receipt_pair receipt_pair);
 
 /* Matches character_save_journal_v2_prepared_stage_observer.  A nonzero
  * result is diagnostic only: callers must not let a full or unavailable

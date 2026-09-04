@@ -1,6 +1,7 @@
 #include "character_save_journal_v2_runtime_native.h"
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
 #include "player_snapshot_v1.h"
+#include "character_player_snapshot_v1_receipt_pair.h"
 #include "character_save_journal_v2_uuid_native.h"
 #endif
 
@@ -157,6 +158,9 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
         character_player_snapshot_v1_capture_native_init(&native->snapshot_capture);
         character_player_snapshot_v1_handoff_init(&native->snapshot_handoff,
             &native->snapshot_capture);
+        character_player_snapshot_v1_handoff_enable_receipt_pair(
+            &native->snapshot_handoff,
+            character_player_snapshot_v1_receipt_pair_commit);
         configuration.snapshot_handoff=&native->snapshot_handoff;
         native->snapshot_handoff_enabled=1;
     }

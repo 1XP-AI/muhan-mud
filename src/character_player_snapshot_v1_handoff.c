@@ -53,6 +53,7 @@
 #define CPSH_SOURCE_OK 0
 #define CPSH_SOURCE_ABSENT 1
 #define CPSH_SOURCE_PARTIAL_TEMP 2
+#define CPSH_RECEIPT_PAIR_ARTIFACT_ABSENT 8
 
 typedef struct cpsh_record {
     char command_uuid[37];
@@ -655,6 +656,43 @@ int root;const char *name;uid_t uid;
     return child;
 }
 
+static int cpsh_receipt_pair_existing(root,uid,writer,record,receipt_pair)
+int root;uid_t uid;const character_save_journal_v2_writer_context *writer;
+const cpsh_record *record;
+character_player_snapshot_v1_handoff_receipt_pair receipt_pair;
+{
+    character_player_snapshot_v1_artifact_metadata key,artifact;
+    uint8_t *snapshot=0;
+    size_t snapshot_length=0;
+    int directory=-1,artifact_result,result;
+    if(root<0||!writer||!receipt_pair||!cpsh_record_valid(record))
+        return CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_INVALID;
+    directory=cpsh_open_child(root,CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY,uid);
+    if(directory<0)
+        return errno==ENOENT ? CPSH_RECEIPT_PAIR_ARTIFACT_ABSENT :
+            CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_IO_ERROR;
+    memset(&key,0,sizeof(key));memset(&artifact,0,sizeof(artifact));
+    memcpy(key.command_id,record->command_uuid,sizeof(key.command_id));
+    artifact_result=character_player_snapshot_v1_artifact_load(directory,&key,
+        &artifact,&snapshot,&snapshot_length);
+    character_player_snapshot_v1_artifact_free(snapshot);
+    if(artifact_result==CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_NOT_FOUND)
+        result=CPSH_RECEIPT_PAIR_ARTIFACT_ABSENT;
+    else if(artifact_result==CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK)
+        result=receipt_pair(writer,directory,&artifact);
+    else if(artifact_result==CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_CORRUPT||
+       artifact_result==CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_INVALID||
+       artifact_result==CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_CONFLICT)
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_FROZEN;
+    else result=CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_IO_ERROR;
+    if(cpsh_close(directory)&&
+       (result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK||
+        result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_EXACT_RETRY))
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_IO_ERROR;
+    memset(&key,0,sizeof(key));memset(&artifact,0,sizeof(artifact));
+    return result;
+}
+
 static int cpsh_stage_file_safe(fd,directory,before)
 int fd;const struct stat *directory;struct stat *before;
 {
@@ -1013,6 +1051,13 @@ character_player_snapshot_v1_capture *capture;
     handoff->report.last_capture_result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID;
 }
 
+void character_player_snapshot_v1_handoff_enable_receipt_pair(handoff,receipt_pair)
+character_player_snapshot_v1_handoff *handoff;
+character_player_snapshot_v1_handoff_receipt_pair receipt_pair;
+{
+    if(handoff) handoff->receipt_pair=receipt_pair;
+}
+
 int character_player_snapshot_v1_handoff_observe(opaque,writer,command_uuid)
 void *opaque;const character_save_journal_v2_writer_context *writer;
 const char *command_uuid;
@@ -1254,6 +1299,20 @@ int queue;const cpsh_record *record;const character_save_journal_v2_wire *wire;
     return removed<0 ? -1:0;
 }
 
+static int cpsh_finish_captured(queue,record,wire)
+int queue;const cpsh_record *record;const character_save_journal_v2_wire *wire;
+{
+    char name[CPSH_NAME_MAX],temp[CPSH_NAME_MAX],source[CPSH_NAME_MAX];
+    char source_temp[CPSH_NAME_MAX],consumed[CPSH_NAME_MAX];
+    char consumed_temp[CPSH_NAME_MAX];
+    if(!record||!wire||cpsh_names(record,name,temp,source,source_temp,consumed)||
+       cpsh_consumed_temp_name(record,consumed_temp)||
+       cpsh_publish_consumed_record(queue,record,consumed,consumed_temp)||
+       cpsh_fault(CPSH_FAULT_UNLINK)||
+       cpsh_finish_consumed(queue,record,wire->post_sha256))return -1;
+    return 0;
+}
+
 int character_player_snapshot_v1_handoff_drain(handoff,writer,limit)
 character_player_snapshot_v1_handoff *handoff;
 const character_save_journal_v2_writer_context *writer;
@@ -1269,7 +1328,7 @@ unsigned int limit;
     struct stat directory,source_status;
     uid_t uid=0;
     int root=-1,queue=-1,source=-1,read_result,consumed_result,
-        capture_result,source_result,stage_result,cleanup_result,poison_result,result=
+        capture_result,source_result,stage_result,cleanup_result,poison_result,pair_result,result=
         CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_INVALID;
     unsigned int count,index,done=0;
     if(!handoff||!handoff->capture||!writer||!limit||
@@ -1367,6 +1426,38 @@ unsigned int limit;
             }
             result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT;break;
         }
+        if(handoff->receipt_pair) {
+        pair_result=cpsh_receipt_pair_existing(root,uid,writer,&record,
+            handoff->receipt_pair);
+        if(pair_result!=CPSH_RECEIPT_PAIR_ARTIFACT_ABSENT) {
+            if(pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_NOT_ACKED||
+               pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_LOCAL_INCOMPLETE)
+                continue;
+            if(pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK||
+               pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_EXACT_RETRY) {
+                if(cpsh_finish_captured(queue,&record,&wire)) {
+                    cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR,
+                        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK,record.command_uuid);
+                    result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;
+                    continue;
+                }
+                cpsh_increment(&handoff->report.consumed);done++;
+                cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK,
+                    CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK,record.command_uuid);
+                continue;
+            }
+            if(pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_FROZEN) {
+                cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT,
+                    CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK,record.command_uuid);
+                result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT;
+            } else {
+                cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR,
+                    CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK,record.command_uuid);
+                result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;
+            }
+            continue;
+        }
+        }
         source_result=cpsh_source_valid(queue,source_name,source_temp,
            wire.post_sha256);
         if(source_result==CPSH_SOURCE_PARTIAL_TEMP) {
@@ -1445,16 +1536,35 @@ unsigned int limit;
                 capture_result,record.command_uuid);
             result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CAPTURE;break;
         }
-        if(cpsh_publish_consumed_record(queue,&record,consumed,consumed_temp)) {
-            cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR,
+        if(!handoff->receipt_pair) {
+            if(cpsh_finish_captured(queue,&record,&wire)) {
+                cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR,
+                    capture_result,record.command_uuid);
+                result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;continue;
+            }
+            cpsh_increment(&handoff->report.consumed);done++;
+            cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK,
                 capture_result,record.command_uuid);
-            result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;break;
+            continue;
         }
-        if(cpsh_fault(CPSH_FAULT_UNLINK)||
-           cpsh_finish_consumed(queue,&record,wire.post_sha256)) {
+        pair_result=cpsh_receipt_pair_existing(root,uid,writer,&record,
+            handoff->receipt_pair);
+        if(pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_NOT_ACKED||
+           pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_LOCAL_INCOMPLETE)
+            continue;
+        if(pair_result!=CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_OK&&
+           pair_result!=CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_EXACT_RETRY) {
+            result=pair_result==CHARACTER_PLAYER_SNAPSHOT_V1_RECEIPT_PAIR_FROZEN ?
+                CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_CORRUPT :
+                CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;
+            cpsh_last(handoff,(character_player_snapshot_v1_handoff_result)result,
+                capture_result,record.command_uuid);
+            continue;
+        }
+        if(cpsh_finish_captured(queue,&record,&wire)) {
             cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR,
                 capture_result,record.command_uuid);
-            result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;break;
+            result=CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_IO_ERROR;continue;
         }
         cpsh_increment(&handoff->report.consumed);done++;
         cpsh_last(handoff,CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK,

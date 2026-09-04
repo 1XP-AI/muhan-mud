@@ -1,5 +1,6 @@
-/* Test-only receipt-pair boundary.  It is deliberately absent from the live
- * object graph: legacy publication stays authoritative and nonblocking. */
+/* Optional M3 receipt-pair boundary.  It is deliberately absent from the
+ * default live object graph: legacy publication stays authoritative and
+ * nonblocking unless the M3 runtime explicitly opts in. */
 #include "character_player_snapshot_v1_receipt_pair.h"
 
 #include "character_save_journal_v2_ack.h"

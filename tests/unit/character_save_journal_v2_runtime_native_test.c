@@ -40,6 +40,7 @@ void test_free(void *memory);
 #define character_save_journal_v2_deadline_native_callback test_deadline_native_callback
 #define character_player_snapshot_v1_capture_native_init test_snapshot_capture_native_init
 #define character_player_snapshot_v1_handoff_init test_snapshot_handoff_init
+#define character_player_snapshot_v1_handoff_enable_receipt_pair test_snapshot_handoff_enable_receipt_pair
 #define player_snapshot_v1_native_abi_supported test_snapshot_native_abi_supported
 
 #include "character_save_journal_v2_runtime_native.c"
@@ -68,6 +69,7 @@ void test_free(void *memory);
 #undef character_save_journal_v2_deadline_native_callback
 #undef character_player_snapshot_v1_capture_native_init
 #undef character_player_snapshot_v1_handoff_init
+#undef character_player_snapshot_v1_handoff_enable_receipt_pair
 #undef player_snapshot_v1_native_abi_supported
 #undef malloc
 #undef free
@@ -92,6 +94,7 @@ static int transport_close_calls;
 static int default_load_calls;
 static int snapshot_capture_native_init_calls;
 static int snapshot_handoff_init_calls;
+static int snapshot_handoff_enable_receipt_pair_calls;
 static int snapshot_native_abi_supported;
 static int snapshot_native_abi_calls;
 static size_t snapshot_native_abi_char_bits;
@@ -287,6 +290,15 @@ void test_snapshot_handoff_init(character_player_snapshot_v1_handoff *handoff,
     handoff->capture=capture;
 }
 
+void test_snapshot_handoff_enable_receipt_pair(
+    character_player_snapshot_v1_handoff *handoff,
+    character_player_snapshot_v1_handoff_receipt_pair pair)
+{
+    snapshot_handoff_enable_receipt_pair_calls++;
+    (void)handoff;
+    (void)pair;
+}
+
 int test_snapshot_native_abi_supported(size_t char_bits, size_t short_bits,
     size_t long_bits, int long_covers_i64, int player_wire_value)
 {
@@ -370,6 +382,7 @@ static void reset_fakes(void)
     default_load_calls=0;
     snapshot_capture_native_init_calls=0;
     snapshot_handoff_init_calls=0;
+    snapshot_handoff_enable_receipt_pair_calls=0;
     snapshot_native_abi_supported=1;
     snapshot_native_abi_calls=0;
     snapshot_native_abi_char_bits=0U;
@@ -412,7 +425,7 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
         process_owner_start_calls==1,"shadow start must construct one owner");
     failed|=expect(!native.process_owner.configuration.snapshot_handoff&&
         !native.snapshot_handoff_enabled&&!snapshot_capture_native_init_calls&&
-        !snapshot_handoff_init_calls,
+        !snapshot_handoff_init_calls&&!snapshot_handoff_enable_receipt_pair_calls,
         "snapshot handoff must stay OFF unless the native opt-in token is set");
     failed|=expect(character_save_journal_v2_runtime_native_snapshot_tick(&native,1)==
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF&&
@@ -467,6 +480,7 @@ static int test_native_snapshot_handoff_opt_in_has_only_explicit_tick(void)
     failed|=expect(native.snapshot_handoff_enabled&&
         native.process_owner.configuration.snapshot_handoff==&native.snapshot_handoff&&
         snapshot_capture_native_init_calls==1&&snapshot_handoff_init_calls==1&&
+        snapshot_handoff_enable_receipt_pair_calls==1&&
         snapshot_native_abi_calls==1&&snapshot_native_abi_char_bits==CHAR_BIT&&
         snapshot_native_abi_short_bits==16U&&snapshot_native_abi_long_bits==64U&&
         snapshot_native_abi_long_covers_i64&&
