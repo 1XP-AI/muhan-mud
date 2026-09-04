@@ -397,6 +397,31 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - 이 변경은 offline reconciliation read boundary만 다룬다. M3 runtime, MUD save,
   DB state/schema, Auth, deployment, testnet 데이터는 바꾸지 않았다.
 
+### Feature-OFF legacy authority contract `ea542e4`
+
+- `MUD_M3_MODE`가 absent 또는 `off`일 때 failing shadow starter는 시작되지 않으며, 실제
+  legacy `FileStore`의 atomic save 뒤 `load_ply`가 같은 legacy bytes를 다시 읽는 계약을
+  추가했다. save 성공은 receipt·DB·shadow 결과에 의존하지 않는다.
+- normal/ASan·UBSan target, 전체 C `unit-test`, 독립 Luna review 및 private GitHub Actions
+  <https://github.com/1XP-Inc/muhan-mud/actions/runs/33928831076>가 GREEN이다. test fixture는
+  실행 후 player bytes와 temporary root를 정리한다.
+- production save wiring, M3 enablement, Supabase schema/RPC, game data, deployment와
+  testnet 상태에는 변화가 없다.
+
+### Opt-in web onboarding smoke harness `2c734b2`
+
+- default로는 browser/network를 만들지 않고 두 Playwright case를 skip한다. 단위 guard는
+  literal enable flag, HTTPS target, 별도 durable-data/uniqueness attestation, 서로 다른
+  pre-created fixture accounts/names, non-placeholder inputs를 요구한다.
+- 명시 opt-in 후의 provision은 기존 C/Gateway wizard의 name → gender → class → stats →
+  weapon → alignment → race → game-password 순서를 완료하고, C `SAVED`, Gateway finalize,
+  C `COMMIT` 뒤 active roster와 normal game admission까지 확인한다. claim도 named legacy
+  fixture에서 같은 roster/admission을 확인한다.
+- web 26 tests, typecheck, default Playwright skip, 독립 Terra/Luna review 및 위 private CI가
+  GREEN이다. 이 하네스는 signup/fixture 생성/전역 uniqueness query를 자동화하지 않는다.
+  실제 실행은 사용자에게서 받은 별도 승인과 pre-created disposable fixtures가 있어야 하며,
+  영속 Auth/onboarding/character/session data를 만든다.
+
 ## Kubernetes 현황
 
 - context: `testnet-1xp`
@@ -417,15 +442,18 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 ## 다음 완료 순서
 
 1. M3는 OFF인 채로 testnet의 xterm 신규 가입과 기존 캐릭터 claim/link를 실제 browser
-   smoke로 검증한다. 먼저 default-skipped harness와 guard test를 완성하고, 그 뒤에만
-   명시 승인된 disposable web users·provision name·imported unclaimed character fixture로
+   smoke로 검증한다. harness/guard/CI는 준비됐고, 이제 명시 승인된 disposable web users,
+   provision name, imported unclaimed character fixture 및 전역 uniqueness 확인이 있어야
    실행한다. game account와 Auth account의 분리는 유지한다.
-2. 다음 M3 slice는 실제 Linux helper transport/process supervision의 endpoint, helper
+2. shadow reconciliation의 다음 slice는 raw-U8 PlayerSnapshotV1 level의 canonical
+   C↔Rust proof를 먼저 고정한 뒤, legacy file authority를 유지하는 additive immutable
+   Postgres projection을 receipt-bound artifact RPC·replay differential에 TDD로 추가한다.
+   level은 gameplay range가 아니라 serialized raw value로 다룬다.
+3. 실제 Linux helper transport/process supervision은 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
-   Linux fake-ops/FD hygiene RED gate를 추가하거나, shadow reconciliation 중 하나만
-   선택해 RED→GREEN으로 시작한다. wake protocol 자체에는 identity/path/credential/payload/
-   ack/authority field를 덧붙이지 않는다.
-3. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
+   Linux fake-ops/FD hygiene RED gate를 추가한 뒤 별도 slice로 시작한다. wake protocol
+   자체에는 identity/path/credential/payload/ack/authority field를 덧붙이지 않는다.
+4. feature-OFF 배포, PVC/restart, rollback, PG17 reconciliation과 충분한 shadow evidence가
    모두 쌓인 뒤에만 별도 승인으로 M3 opt-in을 검토한다. DB authority 전환은 그 이후다.
 
 ## 먼저 읽을 문서
@@ -436,6 +464,7 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - `docs/porting-research/persistence-supabase.md`
 - `docs/porting-research/rust-differential.md`
 - `docs/web-mud/game-identity-refactor.md`
+- `docs/web-mud/live-onboarding-smoke.md`
 - `docs/web-mud/trusted-admission.md`
 
 `execution-plan.md`의 날짜가 있는 snapshot은 당시의 역사적 근거다. 현재 상태는 이
