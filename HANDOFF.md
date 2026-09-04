@@ -2,24 +2,26 @@
 
 - 최종 갱신: 2026-09-04 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 현재 코드 기준 커밋: `9f7bf247700759c64e6362dc9054dcca41806690`
+- 현재 코드 기준 커밋: `d2910bd3055db480acde60f1fa42664ded5b27be`
 - M4 WIP 기준 커밋: `68100aa685ed3ee2626aadcc6f788c9f0a860e0e`
 
 ## 먼저 알아야 할 상태
 
 이 브랜치는 레거시 C MUD의 파일 영속 상태를 Supabase/PostgreSQL로 단계적으로
 이전하고, Rust가 검증 가능한 canonical CDTO 경계만 사용하도록 포팅하는 작업이다.
-M1부터 M3 기반과 `PlayerSnapshotV1` C/Rust 경계는 private CI를 통과했다. 현재 M4
+M1부터 M3 기반과 `PlayerSnapshotV1` C/Rust 경계는 private CI를 통과했다. M4
 코드는 다른 에이전트가 이어서 수정할 수 있도록 WIP 기준점으로 커밋되어 있다.
 
 macOS의 case-insensitive filesystem에서 일반 clone을 막던
 `objmon/Celduin_sign`/`objmon/celduin_sign` 충돌은 `9f7bf24`에서 해결됐다.
 새 clone은 충돌 경고 없이 clean checkout되고, 서로 다른 두 역사적 blob도 보존된다.
 
-**현재 M4 코드는 배포 가능한 완료본이 아니다.** 단위·sanitizer·PostgreSQL 17
-계약 테스트는 통과하지만, 독립 리뷰에서 P1 두 건과 P2 한 건이 확인됐다. 아래
-회귀 테스트와 수정이 끝나기 전에는 live runtime에 연결하거나 testnet에 배포하지
-말아야 한다.
+**현재 M4 코드는 배포 가능한 완료본이 아니다.** `372b5e8`과 `d2910bd`에서
+non-blocking PlayerSnapshot durable handoff, Linux PG17 링크 경계, relay의
+non-Linux fail-closed 경계를 해결했고 private CI도 통과했다. 하지만 durable
+consumer를 실제 게임 유휴 루프에서 호출하는 TDD 작업과 PostgreSQL의 full
+PlayerSnapshot validation이 아직 남아 있으므로 live runtime 연결이나 testnet 배포를
+승인하지 않는다.
 
 이 작업은 보안 침해나 사이버 시큐리티 작업이 아니다. MUD의 계정, 캐릭터 저장,
 DB 이관, 웹 xterm 연결을 안전하게 리팩터링하는 일반 소프트웨어 개발 작업이다.
@@ -141,7 +143,7 @@ immutable artifact table, receipt anchor, record/reconciliation RPC와 role 경�
 strict 13-line manifest를 lexical order로 읽고 direct PostgreSQL RPC를 호출하는 one-shot
 Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수정하지 않는다.
 
-## 반드시 먼저 해결할 리뷰 항목
+## 남은 선행 작업
 
 ### P1: PostgreSQL이 임의 kind-7 CDTO를 영구 저장할 수 있다
 
@@ -158,40 +160,48 @@ row가 먼저 삽입되면 같은 character/command의 올바른 payload가 conf
    topology를 더 좁게 강제한다.
 3. 실제 C fixture를 record한 뒤 C와 Rust가 exact-byte로 다시 읽는 integration을 만든다.
 
-### P1: best-effort observer가 legacy publish를 동기적으로 막는다
+### P1: durable handoff consumer의 실제 유휴 lifecycle 연결
 
-observer는 PREPARED 뒤 publish 전에 동기 호출된다. 현재 capture는 stage 전체
-hash/decode/encode와 artifact file/directory `fsync`까지 수행한다. 느린 디스크나 decoder가
-legacy publish와 ACK를 무기한 지연시킬 수 있다.
-
-필수 TDD 순서:
-
-1. capture worker가 느리거나 멈춰도 publish가 bounded time에 진행되는 RED를 만든다.
-2. publish path는 상수 시간의 durable handoff만 수행하게 한다.
-3. 별도 worker가 immutable handoff를 소비해 hash/decode/encode/fsync를 수행한다.
-4. crash cutpoint마다 handoff 유실, 중복 artifact, publish 지연이 없음을 검증한다.
-
-### P2: relay의 macOS fallback에 root TOCTOU가 있다
-
-Linux는 `/proc/self/fd/<root-fd>/<leaf>`를 사용하지만 macOS fallback은 root pathname을
-다시 조합한다. identity 검사 뒤 root가 교체되면 다른 디렉터리의 leaf를 읽을 수 있다.
+`MUD_M3_PLAYER_SNAPSHOT_V1=handoff`는 default OFF인 명시적 opt-in이다. enabled일 때
+startup recovery와 live save는 immutable private handoff를 남기지만,
+`character_save_journal_v2_runtime_native_snapshot_tick()`을 실제 게임 프로세스가 아직
+호출하지 않으므로 artifact consumer는 자동으로 drain되지 않는다. legacy save/publish/ACK
+authority와 결과는 바꾸지 않지만, 이 상태를 실사용 기능으로 선언하거나 배포하면 안 된다.
 
 필수 TDD 순서:
 
-1. root rename/replacement race 테스트를 추가한다.
-2. native `openat` helper를 쓰거나 Linux-only runtime을 선언하고 non-Linux를
-   fail-closed한다.
-3. file/root descriptor close 오류를 숨기지 않는다.
-4. JS `number` stat 대신 bigint identity를 검토한다.
+1. `USE_M3_RUNTIME` guarded main-to-`sock_loop()` idle hook을 만들고, 한 게임 turn의
+   `output_buf`·command 처리·`update_game` 뒤에만 호출한다.
+2. 1초마다 최대 1 token만 소비하고 OFF/BUSY/NOT_READY는 no-op, handoff 오류는
+   rate-limited diagnostic으로 처리한다.
+3. default OFF, synchronous save/publish/ACK/startup/shutdown 경로에서 tick이 호출되지
+   않는 테스트와 idle ordering·busy suppression·retry 테스트를 먼저 만든다.
+4. SIGKILL은 final drain 대상이 아니라 existing durable recovery boundary로 유지한다.
+
+### 해결된 scoped 항목 (다시 열지 말 것)
+
+- **P1b–P1e durable handoff:** legacy stage의 hard-link 대신 command별 private source
+  copy를 만들고, hash-verified rename-only promotion을 사용한다. consumer-visible source는
+  항상 `nlink==1`이며 source/source.tmp 2-link 또는 불명 leaf는 evidence를 보존한 poison
+  경로로 처리한다. `MAX_PENDING=128` identity(최대 8 GiB payload ceiling)에는 poison도
+  포함되고, unsafe A가 `limit=1`에서 뒤의 valid B를 막지 않는다.
+- **publish independence:** stage가 publish 뒤 사라진 partial source는 game save가 아니라
+  shadow snapshot만 명시적으로 drop한다. publish/ACK는 capture consumer를 기다리지 않는다.
+- **P2 relay:** `de80115`에서 Linux descriptor-rooted scan을 사용하고 non-Linux는
+  fail-closed로 바꿨다. root pathname fallback을 다시 추가하지 않는다.
+- **Linux CI graph:** `d2910bd`에서 PG17 process-owner/runtime-shadow harness에만 required
+  handoff/capture closure와 fail-closed fixture decoder를 더했다. default legacy Makefile
+  graph에는 handoff/libpq가 추가되지 않았다.
 
 ## 병렬 위임 권장안
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** non-blocking durable capture handoff와 crash matrix.
+1. **Terra/고난도:** `sock_loop()` idle pump의 TDD 구현, opt-in/idle/Busy/shutdown lifecycle
+   경계와 deterministic cadence 검증.
 2. **Terra/고난도:** PostgreSQL full PlayerSnapshot validation과 C/Rust/PG fixture 연동.
-3. **Luna/중간 난도:** manifest relay Linux descriptor 경계, close error, bigint stat,
-   race tests와 CI wiring.
+3. **Luna/중간 난도:** Linux PG17 harness와 idle-pump diff의 독립 리뷰, default-off 및
+   legacy link graph 회귀 검사.
 
 각 에이전트는 자기 묶음만 수정하고, 커밋하지 않은 다른 에이전트 파일을 정리하거나
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
@@ -245,15 +255,36 @@ PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 \
 - disposable PostgreSQL 17 migration replay: pass.
 - staged diff credential scan: 0 findings.
 - `files1.c` native capture build는 레거시 non-prototype warning 67개를 출력하지만 pass.
-- 위 GREEN은 리뷰 P1/P2 경로를 아직 포함하지 않으므로 배포 승인 증거가 아니다.
+- 위 GREEN은 당시 WIP 기준 증거다. durable handoff/relay 수정의 최신 CI 증거는 아래 별도 항목을 따른다.
+
+### Durable handoff P1e 및 Linux CI 복구 `372b5e8`, `d2910bd`
+
+2026-09-04 KST에 다음 검증이 통과했다.
+
+```sh
+make -C src \
+  character-player-snapshot-v1-handoff-static-test \
+  character-player-snapshot-v1-handoff-test \
+  character-player-snapshot-v1-handoff-sanitizer-test \
+  character-player-snapshot-v1-capture-native-test \
+  character-save-journal-v2-process-owner-test CC=cc
+make -C src unit-test CC=cc
+bash -n supabase/tests/m3_process_owner_pg17_integration.sh \
+  supabase/tests/m3_runtime_shadow_pg17_integration.sh
+```
+
+- focused handoff/capture/process-owner tests, ASan/UBSan, 전체 C unit: pass.
+- 독립 Luna review: source rename/poison 경계와 Linux PG17 closure에 P0/P1/P2 없음.
+- private GitHub Actions: <https://github.com/1XP-Inc/muhan-mud/actions/runs/33849595161>
+  (`Supabase ownership contract`, Ubuntu ARM, Ubuntu, Windows, macOS 모두 GREEN).
+- Linux PG17 E2E는 process-owner/runtime-shadow, full M3 runtime link, artifact contract,
+  named-volume restart까지 통과했다. macOS의 native lifecycle target은 Linux-only이므로
+  local에서 skip되는 것이 정상이다.
 
 아직 필요한 검증:
 
-- P1/P2 회귀 테스트와 수정
-- 새 target과 migration의 `.github/workflows/ci.yml` 연결
-- 전체 C unit/sanitizer matrix
-- 전체 workspace test/typecheck/build
-- fresh private GitHub Actions
+- idle pump P1의 RED/GREEN과 full Linux CI
+- PostgreSQL full PlayerSnapshot schema validation P1
 - live runtime opt-in, PVC, rollback 및 browser smoke
 
 ## Kubernetes 현황
@@ -267,22 +298,22 @@ PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 \
 - running app digest:
   `sha256:117baa939a909f5005a872a355f9e714a5c6cde692af16dff0652f97c7218c70`
 - chart repo: sibling checkout `../tesnet-1xp.nosync/muhan-mud/charts`
-- live image에는 `68100aa`의 M4 WIP가 포함되지 않았다.
+- live image에는 `d2910bd` durable handoff/CI 복구나 `68100aa`의 M4 WIP가 포함되지 않았다.
 - 현재 웹 로그인은 가능하지만 연결된 캐릭터가 없으면 게임 진입이 막힌다. 신규 가입과
   기존 캐릭터 claim/link 흐름은 아직 사용자에게 열지 않았다.
 
 ## 다음 완료 순서
 
-1. 위 세 리뷰 항목을 RED 테스트부터 해결한다.
-2. runtime feature flag를 exact `MUD_PLAYER_SNAPSHOT_V1_CAPTURE=on`으로 연결한다.
-   absent/OFF는 DB·file I/O 없이 기존 startup을 유지하고 invalid 값은 fail-closed한다.
-3. CI에 C, relay, PG17 계약을 연결한다.
-4. targeted/full unit, sanitizer, PG17, workspace test/typecheck/build를 실행한다.
-5. `src/frp.new`를 제외한 의도된 파일만 stage한다. `git add -A`를 쓰지 않는다.
-6. `private`에만 push하고 CI 완료까지 확인한다.
-7. CI GREEN 뒤 testnet chart를 별도 커밋한다. feature OFF 배포와 rollback/smoke를 먼저
-   확인한 뒤 shadow 기능만 opt-in한다.
-8. reconciliation 증거가 안정된 뒤에만 xterm 신규 가입과 기존 계정 claim/link를 연다.
+1. P1 idle pump를 RED 테스트부터 구현한다. runtime flag는 exact
+   `MUD_M3_PLAYER_SNAPSHOT_V1=handoff`만 허용하며 absent/OFF는 기존 startup을 유지한다.
+2. PostgreSQL full PlayerSnapshot schema validation을 C/Rust fixture와 동등하게 만든다.
+3. targeted/full unit, sanitizer, PG17, workspace test/typecheck/build와 fresh private CI를
+   다시 실행한다.
+4. `src/frp.new`를 제외한 의도된 파일만 stage한다. `git add -A`를 쓰지 않는다.
+5. `private`에만 push하고 CI 완료까지 확인한다.
+6. CI GREEN 뒤에만 testnet chart를 별도 커밋한다. feature OFF 배포와 rollback/smoke를
+   먼저 확인한 뒤 shadow 기능만 opt-in한다.
+7. reconciliation 증거가 안정된 뒤에만 xterm 신규 가입과 기존 계정 claim/link를 연다.
 
 ## 먼저 읽을 문서
 
