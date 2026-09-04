@@ -369,6 +369,20 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
   승인과 Linux restart/reconciliation 증명 없이는 연결하지 않는다. testnet의 `m3.mode=off`와
   legacy file authority는 그대로다.
 
+### M3 wake supervisor owner-token refinement `349aaf9`
+
+- owner는 raw descriptor가 아닌 **양수의 opaque token**으로 명시했다. `claim_owner`의 0 또는
+  음수 결과는 unavailable로 정규화되어 send/release 없이 deterministic backoff로 전환한다.
+  따라서 미래 Linux adapter가 descriptor 0을 포함한 실제 resource를 token 뒤에 안전하게
+  보관할 수 있고, supervisor 자체는 OS handle을 해석하지 않는다.
+- pure fake-ops TDD는 negative/zero/missing claim, exact retry deadline과 overflow saturation,
+  missing send/release callback, non-positive/missing reap, idle shutdown을 추가로 고정했다.
+  re-init semantics와 real FD ownership은 의도적으로 아직 정의하지 않았다.
+- RED→GREEN, focused C/ASan·UBSan, default-link static audit, C↔Rust wake differential 및
+  private GitHub Actions <https://github.com/1XP-Inc/muhan-mud/actions/runs/33926283456>의
+  모든 job이 GREEN이다. default object graph, runtime wiring, MUD save path, DB/Auth,
+  deployment와 testnet 상태에는 변화가 없다.
+
 ## Kubernetes 현황
 
 - context: `testnet-1xp`
