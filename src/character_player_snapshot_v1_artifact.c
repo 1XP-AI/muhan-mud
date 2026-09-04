@@ -274,7 +274,9 @@ uint64_t *output;
     if(!length || length>19U || value[0]=='0') return -1;
     parsed=0;
     for(index=0;index<length;++index) { if(value[index]<'0'||value[index]>'9'||parsed>((uint64_t)INT64_MAX-(uint64_t)(value[index]-'0'))/10U) return -1; parsed=parsed*10U+(uint64_t)(value[index]-'0'); }
-    if(!parsed) return -1; *output=parsed; return 0;
+    if(!parsed) return -1;
+    *output=parsed;
+    return 0;
 }
 static int cpsa_text(destination, capacity, value, length)
 char *destination; unsigned long capacity; const char *value; unsigned long length;
@@ -463,7 +465,9 @@ size_t *snapshot_length;
 {
     int root,result,close_result;
     char name[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_FILENAME_SIZE];
-    if(metadata) memset(metadata,0,sizeof(*metadata)); if(snapshot) *snapshot=0; if(snapshot_length) *snapshot_length=0U;
+    if(metadata) memset(metadata,0,sizeof(*metadata));
+    if(snapshot) *snapshot=0;
+    if(snapshot_length) *snapshot_length=0U;
     if(!key || !metadata || !snapshot || !snapshot_length || character_player_snapshot_v1_artifact_filename(key,name,sizeof(name))) return CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_INVALID;
     root=cpsa_root_duplicate(directory_fd); if(root<0) return CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_IO_ERROR;
     result=cpsa_read_existing(root,name,metadata,snapshot,snapshot_length); close_result=cpsa_close(root,1);
