@@ -814,6 +814,7 @@ pub enum Error {
     InvalidUtf8 { field_id: u16 },
     InvalidBoolean { field_id: u16 },
     LengthOverflow,
+    NonCanonicalEncoding,
 }
 
 impl fmt::Display for Error {
@@ -833,6 +834,7 @@ impl fmt::Display for Error {
             Self::InvalidUtf8 { .. } => "invalid UTF-8 text field",
             Self::InvalidBoolean { .. } => "invalid boolean field",
             Self::LengthOverflow => "length overflow",
+            Self::NonCanonicalEncoding => "non-canonical encoding",
         };
         formatter.write_str(label)
     }

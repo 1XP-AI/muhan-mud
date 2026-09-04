@@ -8,6 +8,25 @@ use super::{
 
 pub const MAX_LIST_ITEMS: usize = 4096;
 
+/// Pinned digest algorithm for the replay verification report.
+pub const REPLAY_VERIFICATION_V1_ALGORITHM: &str = "sha-256";
+/// Pinned report schema version for replay verification.
+pub const REPLAY_VERIFICATION_V1_VERSION: u16 = 1;
+
+/// Metadata-only result of validating one canonical player snapshot envelope.
+///
+/// This report intentionally contains no snapshot source data. Its digests are
+/// over the complete input and canonical envelope, respectively.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayVerificationV1 {
+    pub algorithm: &'static str,
+    pub version: u16,
+    pub input_digest: [u8; super::DIGEST_LENGTH],
+    pub canonical_digest: [u8; super::DIGEST_LENGTH],
+    pub canonical_octets: usize,
+    pub inventory_node_count: usize,
+}
+
 fn player_fixed_string_is_canonical(value: &[u8]) -> bool {
     value.contains(&0) && fixed_string_is_canonical(value)
 }
@@ -277,4 +296,44 @@ pub fn decode_player_snapshot_v1(w: &[u8]) -> Result<PlayerSnapshotV1, Error> {
         return Err(Error::InvalidFieldLength { field_id: 0 });
     }
     Ok(v)
+}
+
+fn reject_noncanonical_encoding(canonical: &[u8], wire: &[u8]) -> Result<(), Error> {
+    if canonical != wire {
+        return Err(Error::NonCanonicalEncoding);
+    }
+    Ok(())
+}
+
+/// Verifies a replay snapshot by decoding and reproducing its canonical wire form.
+///
+/// Any decoder, digest, or bound failure is returned unchanged. A byte sequence
+/// that decodes but does not re-encode identically is rejected as non-canonical.
+pub fn verify_player_snapshot_replay_v1(wire: &[u8]) -> Result<ReplayVerificationV1, Error> {
+    let input_digest = super::sha256(wire);
+    let snapshot = decode_player_snapshot_v1(wire)?;
+    let canonical = encode_player_snapshot_v1(&snapshot)?;
+    reject_noncanonical_encoding(&canonical, wire)?;
+
+    Ok(ReplayVerificationV1 {
+        algorithm: REPLAY_VERIFICATION_V1_ALGORITHM,
+        version: REPLAY_VERIFICATION_V1_VERSION,
+        input_digest,
+        canonical_digest: super::sha256(&canonical),
+        canonical_octets: canonical.len(),
+        inventory_node_count: snapshot.inventory.nodes.len(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noncanonical_encoding_defense_is_fail_closed() {
+        assert_eq!(
+            reject_noncanonical_encoding(&[1, 2], &[1, 3]),
+            Err(Error::NonCanonicalEncoding)
+        );
+    }
 }
