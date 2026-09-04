@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
-import { chmod, link, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, link, mkdtemp, open as openFile, rename, rm, writeFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { parsePlayerSnapshotV1Artifact } from '../src/player-snapshot-v1-artifact.js'
+import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { parseManifest } from '../src/manifest.js'
 import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../src/relay.js'
-import { PostgresManifestStore, assertDatabaseUrl, type ManifestStore, type PgClient, type PgPool } from '../src/store.js'
+import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
+import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
 const second = '22222222-2222-4222-8222-222222222222'
@@ -13,6 +17,68 @@ const second = '22222222-2222-4222-8222-222222222222'
 function body(commandId: string, revision = '1'): Uint8Array {
   const value = `version=1\nworld_id=muhan-01\ncharacter_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\ncommand_id=${commandId}\ncanonical_name_hex=4d3341\nrequest_sha256=${'a'.repeat(64)}\npost_sha256=${'b'.repeat(64)}\nwriter_instance_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\nsnapshot_format=legacy-file-manifest-v1\nwriter_epoch=7\nwriter_revision=${revision}\nstorage_format=1\nsnapshot_octets=128\n`
   return Buffer.from(value)
+}
+
+function u16(value: number): Buffer {
+  const bytes = Buffer.alloc(2)
+  bytes.writeUInt16BE(value)
+  return bytes
+}
+
+function u32(value: number): Buffer {
+  const bytes = Buffer.alloc(4)
+  bytes.writeUInt32BE(value)
+  return bytes
+}
+
+/** A test-created canonical PlayerSnapshotV1 CDTO payload with an empty object graph. */
+function playerSnapshotV1(): Uint8Array {
+  const types = [9, 9, 9, 9, 9, 9, 1, 5, 5, 5, 5, 6, 5, 5, 5, 5, 5, 6, 6, 6, 6, 5, 5, 8, 8, 6, 6, 6, 6, 9, 9, 9, 9, 9, 5, 9, 6, 9, 9]
+  const lengths = [80, 80, 80, 20, 20, 20, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 8, 8, 2, 2, 2, 2, 40, 32, 16, 8, 16, 1, 20, 2, 100, 810]
+  const graphBody = Buffer.concat([u16(1), Buffer.from([3]), u32(4), u32(0)])
+  const graph = Buffer.concat([
+    Buffer.from('MUHCDTO\0', 'ascii'), Buffer.from([0, 1, 0, 6]), u32(graphBody.length), graphBody,
+    createHash('sha256').update(graphBody).digest(),
+  ])
+  const fields = lengths.map((length, index) => Buffer.concat([
+    u16(index + 1), Buffer.from([types[index]!]), u32(length), Buffer.alloc(length),
+  ]))
+  fields.push(Buffer.concat([u16(40), Buffer.from([9]), u32(graph.length), graph]))
+  const payload = Buffer.concat(fields)
+  return Buffer.concat([
+    Buffer.from('MUHCDTO\0', 'ascii'), Buffer.from([0, 1, 0, 7]), u32(payload.length), payload,
+    createHash('sha256').update(payload).digest(),
+  ])
+}
+
+/** Test-created native artifact: canonical 15-line header, blank line, CDTO. */
+function playerSnapshotV1Artifact(payload = playerSnapshotV1(), overrides: Partial<Record<string, string>> = {}): Uint8Array {
+  const values = {
+    world_id: 'muhan-01',
+    character_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    command_id: first,
+    canonical_name_hex: '4d3341',
+    request_sha256: 'a'.repeat(64),
+    source_post_sha256: 'b'.repeat(64),
+    writer_instance_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    writer_epoch: '7',
+    writer_revision: '1',
+    storage_format: '1',
+    snapshot_format: 'player-snapshot-v1',
+    source_octets: '128',
+    snapshot_sha256: createHash('sha256').update(payload).digest('hex'),
+    snapshot_octets: String(payload.length),
+    ...overrides,
+  }
+  return Buffer.concat([Buffer.from([
+    'version=1', `world_id=${values.world_id}`, `character_id=${values.character_id}`,
+    `command_id=${values.command_id}`, `canonical_name_hex=${values.canonical_name_hex}`,
+    `request_sha256=${values.request_sha256}`, `source_post_sha256=${values.source_post_sha256}`,
+    `writer_instance_id=${values.writer_instance_id}`, `writer_epoch=${values.writer_epoch}`,
+    `writer_revision=${values.writer_revision}`, `storage_format=${values.storage_format}`,
+    `snapshot_format=${values.snapshot_format}`, `source_octets=${values.source_octets}`,
+    `snapshot_sha256=${values.snapshot_sha256}`, `snapshot_octets=${values.snapshot_octets}`, '', '',
+  ].join('\n'), 'ascii'), Buffer.from(payload)])
 }
 
 test('parses the exact thirteen-line canonical encoding', () => {
@@ -119,4 +185,139 @@ test('postgres adapter uses SET ROLE then one parameterized M4 function call', a
   assert.deepEqual(queries[1]?.values, [manifest.characterId, manifest.commandId, manifest.requestSha256, manifest.snapshotFormat, manifest.postSha256, manifest.snapshotOctets])
   assert.throws(() => assertDatabaseUrl('https://example.test/rest'))
   assert.throws(() => assertDatabaseUrl('postgresql://service_role@localhost/postgres'))
+})
+
+test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy manifest parser', async () => {
+  const manifest = body(first)
+  const payload = playerSnapshotV1()
+  const artifact = playerSnapshotV1Artifact(payload)
+  const originalArtifact = Buffer.from(artifact)
+  const originalManifest = Buffer.from(manifest)
+  const calls: string[] = []
+  const rows = new Map<string, ReturnType<typeof parsePlayerSnapshotV1Artifact>>()
+  const legacyEvidence = { receipt: Buffer.from(manifest), head: Buffer.from('absent'), bytes: Buffer.from('legacy-player-bytes') }
+  const originalLegacyEvidence = { receipt: Buffer.from(legacyEvidence.receipt), head: Buffer.from(legacyEvidence.head), bytes: Buffer.from(legacyEvidence.bytes) }
+  const fs: PlayerSnapshotV1ArtifactFilesystem = { scan: async () => [
+    { name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest },
+    { name: `${second}.player-snapshot-v1`, bytes: Buffer.from('malformed'), receiptManifestBytes: body(second) },
+  ] }
+  const store: PlayerSnapshotV1ArtifactStore = { recordPlayerSnapshotV1Artifact: async (value) => {
+    calls.push(value.commandId)
+    assert.equal(value.snapshotFormat, 'player-snapshot-v1')
+    assert.equal(value.snapshotOctets, payload.length)
+    assert.deepEqual(value.payload, payload)
+    const existing = rows.get(value.commandId)
+    if (!existing) { rows.set(value.commandId, value); return 'RECORDED' }
+    assert.deepEqual(existing, value)
+    return 'EXACT_RETRY'
+  } }
+  assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
+    visited: 2, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+  })
+  assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
+    visited: 2, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+  })
+  assert.deepEqual(calls, [first, first])
+  assert.equal(rows.size, 1)
+  assert.deepEqual([...rows.values()].map(() => 'EXACT'), ['EXACT'])
+  assert.deepEqual(artifact, originalArtifact)
+  assert.deepEqual(manifest, originalManifest)
+  assert.deepEqual(legacyEvidence, originalLegacyEvidence)
+  assert.throws(() => parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, Buffer.from('bad'), parseManifest(manifest)))
+})
+
+test('PlayerSnapshotV1 artifact requires the exact native header and receipt agreement', () => {
+  const receipt = parseManifest(body(first))
+  const payload = playerSnapshotV1()
+  const artifact = playerSnapshotV1Artifact(payload)
+  const parsed = parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, artifact, receipt)
+  assert.deepEqual(parsed.payload, payload)
+  assert.equal(parsed.snapshotSha256, createHash('sha256').update(payload).digest('hex'))
+  assert.throws(() => parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, payload, receipt))
+  assert.throws(() => parsePlayerSnapshotV1Artifact(
+    `${first}.player-snapshot-v1`, playerSnapshotV1Artifact(payload, { writer_revision: '2' }), receipt,
+  ))
+  assert.throws(() => parsePlayerSnapshotV1Artifact(
+    `${first}.player-snapshot-v1`, playerSnapshotV1Artifact(payload, { source_post_sha256: 'c'.repeat(64) }), receipt,
+  ))
+  assert.throws(() => parsePlayerSnapshotV1Artifact(
+    `${first}.player-snapshot-v1`, Buffer.from(artifact.toString('ascii').replace('writer_epoch=7', 'writer_epoch=07'), 'ascii'), receipt,
+  ))
+  assert.throws(() => parsePlayerSnapshotV1Artifact(
+    `${first}.player-snapshot-v1`, playerSnapshotV1Artifact(payload, { snapshot_sha256: 'd'.repeat(64) }), receipt,
+  ))
+})
+
+test('artifact filesystem pairs one immutable PlayerSnapshotV1 file with its canonical receipt', { skip: process.platform !== 'linux' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-'))
+  const manifest = Buffer.from(body(first))
+  const artifact = Buffer.from(playerSnapshotV1Artifact())
+  try {
+    await chmod(root, 0o700)
+    await writeFile(join(root, `${first}.manifest`), manifest, { mode: 0o600 })
+    await writeFile(join(root, `${first}.player-snapshot-v1`), artifact, { mode: 0o600 })
+    const files = await new NodePlayerSnapshotV1ArtifactFilesystem().scan(root)
+    assert.deepEqual(files, [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }])
+    assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.manifest`))), manifest)
+    assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.player-snapshot-v1`))), artifact)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('artifact filesystem rejects immutable evidence metadata changed while immutable evidence is read', { skip: process.platform !== 'linux', concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-metadata-race-'))
+  const manifest = Buffer.from(body(first))
+  const artifact = Buffer.from(playerSnapshotV1Artifact())
+  const manifestPath = join(root, `${first}.manifest`)
+  const probe = await openFile(manifestPath, 'w+')
+  const handlePrototype = Object.getPrototypeOf(probe) as {
+    stat: (...args: unknown[]) => Promise<{ mode: bigint }>
+  }
+  const originalStat = handlePrototype.stat
+  const statCalls = new WeakMap<object, number>()
+  try {
+    await chmod(root, 0o700)
+    await probe.close()
+    await writeFile(manifestPath, manifest, { mode: 0o600 })
+    await chmod(manifestPath, 0o600)
+    await writeFile(join(root, `${first}.player-snapshot-v1`), artifact, { mode: 0o600 })
+    handlePrototype.stat = async function (this: object, ...args: unknown[]) {
+      const stat = await originalStat.apply(this, args)
+      const calls = (statCalls.get(this) ?? 0) + 1
+      statCalls.set(this, calls)
+      // Simulate an otherwise-safe mode-bit change after the read. Keeping the
+      // device/inode/timestamps fixed isolates the evidence-metadata invariant.
+      return calls === 2 ? { ...stat, mode: stat.mode | 0o4000n } : stat
+    }
+    const files = await new NodePlayerSnapshotV1ArtifactFilesystem().scan(root)
+    assert.deepEqual(files, [{ name: `${first}.player-snapshot-v1`, error: 'invalid' }])
+  } finally {
+    handlePrototype.stat = originalStat
+    await probe.close().catch(() => undefined)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('PlayerSnapshotV1 postgres adapter parameterizes the immutable artifact recorder', async () => {
+  const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+  const client: PgClient = {
+    query: async <Row>(sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values })
+      return { rows: sql.startsWith('select outcome') ? [{ outcome: 'EXACT_RETRY' } as Row] : [] }
+    },
+    release: () => undefined,
+  }
+  const pool: PgPool = { connect: async () => client, end: async () => undefined }
+  const parsed = parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, playerSnapshotV1Artifact(), parseManifest(body(first)))
+  const store = new PostgresPlayerSnapshotV1ArtifactStore('postgresql://mud_writer_login@localhost/postgres', pool)
+  assert.equal(await store.recordPlayerSnapshotV1Artifact(parsed), 'EXACT_RETRY')
+  assert.deepEqual(queries.map((query) => query.sql), [
+    'set role mud_writer',
+    'select outcome from private.record_player_snapshot_v1_artifact_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::text, $7::text, $8::bigint, $9::bytea)',
+  ])
+  assert.deepEqual(queries[1]?.values, [
+    parsed.characterId, parsed.commandId, parsed.receiptRequestSha256, parsed.sourcePostSha256,
+    parsed.sourceOctets, parsed.snapshotFormat, parsed.snapshotSha256, parsed.snapshotOctets, parsed.payload,
+  ])
 })

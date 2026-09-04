@@ -44,7 +44,11 @@ interface BigIntStat {
 }
 
 function identity(stat: BigIntStat): string {
-  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+  // Preserve both the content-bearing identity fields and every metadata
+  // invariant enforced by assertFile. ctime alone is not a substitute: the
+  // post-read check must explicitly fail if a platform reports changed mode,
+  // owner, or link count without a distinguishable timestamp change.
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}:${stat.uid}:${stat.nlink}`
 }
 
 function descriptorPath(fd: number): string {
@@ -60,18 +64,18 @@ function assertDirectory(stat: BigIntStat): void {
   if (stat.isSymbolicLink() || !stat.isDirectory() || (stat.mode & 0o777n) !== 0o700n || (uid !== undefined && stat.uid !== BigInt(uid))) throw new UnsafeOutboxError()
 }
 
-function assertFile(stat: BigIntStat, uid: bigint): void {
+function assertFile(stat: BigIntStat, uid: bigint, maximumBytes: number): void {
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1n || stat.uid !== uid
-    || (stat.mode & 0o777n) !== 0o600n || stat.size < 0n || stat.size >= BigInt(MAX_MANIFEST_BYTES)) throw new UnsafeOutboxError()
+    || (stat.mode & 0o777n) !== 0o600n || stat.size < 0n || stat.size >= BigInt(maximumBytes)) throw new UnsafeOutboxError()
 }
 
-async function readStableFile(path: string, owner: bigint): Promise<Uint8Array> {
+async function readStableFile(path: string, owner: bigint, maximumBytes: number): Promise<Uint8Array> {
   const before = await lstat(path, { bigint: true })
-  assertFile(before, owner)
+  assertFile(before, owner, maximumBytes)
   const file = await open(path, noFollowFileFlags())
   try {
     const opened = await file.stat({ bigint: true })
-    assertFile(opened, owner)
+    assertFile(opened, owner, maximumBytes)
     if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
     const bytes = Buffer.allocUnsafe(Number(opened.size))
     let offset = 0
@@ -93,36 +97,47 @@ export class NodeManifestFilesystem implements ManifestFilesystem {
   constructor(private readonly platform: NodeJS.Platform = process.platform) {}
 
   async scan(path: string): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
-    // Node has no portable openat(2) binding. Rejoining a verified root pathname
-    // on macOS leaves a root rename/replacement TOCTOU, so non-Linux is denied.
-    if (process.platform !== 'linux' || this.platform !== 'linux') throw new UnsafeOutboxError()
-    if (!isAbsolute(path) || path.includes('\0')) throw new UnsafeOutboxError()
-    const rootPath = resolve(path)
-    const before = await lstat(rootPath, { bigint: true })
-    assertDirectory(before)
-    const root = await open(rootPath, noFollowDirectoryFlags())
-    try {
-      const opened = await root.stat({ bigint: true })
-      assertDirectory(opened)
-      if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
-      const entries = await readdir(descriptorPath(root.fd), { encoding: 'buffer' })
-      const candidates = entries.filter((name) => isManifestFilename(name)).sort(Buffer.compare)
-      if (candidates.length > MAX_OUTBOX_ENTRIES) throw new UnsafeOutboxError()
-      const uid = opened.uid
-      const result: Array<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }> = []
-      for (const rawName of candidates) {
-        const name = Buffer.from(rawName).toString('utf8')
-        if (!Buffer.from(name, 'utf8').equals(Buffer.from(rawName)) || name.includes('/') || name.includes('\\')) {
-          result.push({ name: '<invalid>', error: 'invalid' }); continue
-        }
-        try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid) }) }
-        catch (error) {
-          result.push({ name, error: error instanceof UnsafeOutboxError ? 'invalid' : 'io' })
-        }
-      }
-      return result
-    } finally { await root.close() }
+    return scanImmutableOutboxFiles(path, isManifestFilename, MAX_MANIFEST_BYTES, this.platform)
   }
+}
+
+/** Shared no-follow scanner for immutable evidence files; parsers remain format-specific. */
+export async function scanImmutableOutboxFiles(
+  path: string,
+  isCandidateFilename: (name: Uint8Array) => boolean,
+  maximumBytes: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new UnsafeOutboxError()
+  // Node has no portable openat(2) binding. Rejoining a verified root pathname
+  // on macOS leaves a root rename/replacement TOCTOU, so non-Linux is denied.
+  if (process.platform !== 'linux' || platform !== 'linux') throw new UnsafeOutboxError()
+  if (!isAbsolute(path) || path.includes('\0')) throw new UnsafeOutboxError()
+  const rootPath = resolve(path)
+  const before = await lstat(rootPath, { bigint: true })
+  assertDirectory(before)
+  const root = await open(rootPath, noFollowDirectoryFlags())
+  try {
+    const opened = await root.stat({ bigint: true })
+    assertDirectory(opened)
+    if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
+    const entries = await readdir(descriptorPath(root.fd), { encoding: 'buffer' })
+    const candidates = entries.filter((name) => isCandidateFilename(name)).sort(Buffer.compare)
+    if (candidates.length > MAX_OUTBOX_ENTRIES) throw new UnsafeOutboxError()
+    const uid = opened.uid
+    const result: Array<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }> = []
+    for (const rawName of candidates) {
+      const name = Buffer.from(rawName).toString('utf8')
+      if (!Buffer.from(name, 'utf8').equals(Buffer.from(rawName)) || name.includes('/') || name.includes('\\')) {
+        result.push({ name: '<invalid>', error: 'invalid' }); continue
+      }
+      try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid, maximumBytes) }) }
+      catch (error) {
+        result.push({ name, error: error instanceof UnsafeOutboxError ? 'invalid' : 'io' })
+      }
+    }
+    return result
+  } finally { await root.close() }
 }
 
 /** Deliver every valid immutable outbox evidence file once, in deterministic filename order. */

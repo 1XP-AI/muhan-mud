@@ -88,15 +88,18 @@ select private.record_legacy_published_receipt(
 -- independently reread it byte-for-byte; this harness passes it as SQL.
 \if :{?pva_payload}
 \else
-  \quit
+  \echo pva_payload is required
+  do $$ begin raise exception 'pva_payload is required' using errcode = '22023'; end $$;
 \endif
 \if :{?pva_inventory_payload}
 \else
-  \quit
+  \echo pva_inventory_payload is required
+  do $$ begin raise exception 'pva_inventory_payload is required' using errcode = '22023'; end $$;
 \endif
 \if :{?pva_tree_inventory_payload}
 \else
-  \quit
+  \echo pva_tree_inventory_payload is required
+  do $$ begin raise exception 'pva_tree_inventory_payload is required' using errcode = '22023'; end $$;
 \endif
 
 \set pva_empty_payload 'decode(''4d55484344544f000001000700000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'', ''hex'')'
@@ -225,6 +228,12 @@ select pg_temp.expect_state('P0001', format(
 set local session authorization mud_writer_login;
 set local role mud_writer;
 select pg_temp.assert_true(private.m3_assert_writer_session(), 'writer identity is the actual login plus SET ROLE');
+select pg_temp.assert_true(
+  (select outcome = 'RECORDED' from private.record_m4_file_snapshot_manifest_for_receipt(
+    'a9500000-0000-0000-0000-000000000001'::uuid, 'c9500000-0000-0000-0000-000000000001'::uuid,
+    :'pva_first_request_sha256', 'legacy-file-manifest-v1', repeat('a', 64), 9)),
+  'the acknowledged receipt manifest records its source octets'
+);
 
 select pg_temp.expect_state('22023', format(
   'select * from private.record_player_snapshot_v1_artifact_for_receipt(%L::uuid,%L::uuid,%L,%L,9,%L,%L,48,%s)',
@@ -249,6 +258,23 @@ select pg_temp.expect_state('22023', format(
 select pg_temp.expect_state('22023', format(
   'select * from private.record_player_snapshot_v1_artifact_for_receipt(%L::uuid,%L::uuid,%L,%L,9,%L,%L,48,decode(''00'',''hex''))',
   'a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', :'pva_first_request_sha256', repeat('a', 64), 'player-snapshot-v1', :'pva_snapshot_sha256'));
+
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_artifact_for_receipt(%L::uuid,%L::uuid,%L,%L,10,%L,%L,%s,%s)',
+  'a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001',
+  :'pva_first_request_sha256', repeat('a', 64), 'player-snapshot-v1', :'pva_snapshot_sha256', :'pva_snapshot_octets', :'pva_payload'));
+reset role;
+reset session authorization;
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.game_character_player_snapshot_v1_artifacts
+     where character_id = 'a9500000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9500000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a source octets mismatch creates no artifact'
+);
+set local session authorization mud_writer_login;
+set local role mud_writer;
 
 select pg_temp.expect_state('P0001', format(
   'select * from private.record_player_snapshot_v1_artifact_for_receipt(%L::uuid,%L::uuid,%L,%L,9,%L,%L,%s,%s)',
@@ -298,6 +324,14 @@ select pg_temp.assert_true(
   (select array_agg(artifact_state order by writer_revision)
      from private.list_player_snapshot_v1_artifact_reconciliation('pva-contract', 10)) = array['EXACT']::text[],
   'reconciliation reports EXACT'
+);
+set local session_replication_role = replica;
+update private.game_character_player_snapshot_v1_artifacts set source_octets = 10;
+set local session_replication_role = origin;
+select pg_temp.assert_true(
+  (select array_agg(artifact_state order by writer_revision)
+     from private.list_player_snapshot_v1_artifact_reconciliation('pva-contract', 10)) = array['INCONSISTENT']::text[],
+  'reconciliation reports a stored source octets mismatch as INCONSISTENT'
 );
 select pg_temp.expect_state('22023', $$
   select * from private.list_player_snapshot_v1_artifact_reconciliation(null, 1)

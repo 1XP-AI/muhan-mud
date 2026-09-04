@@ -63,8 +63,32 @@ if run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inve
 fi
 echo "RED PostgreSQL 17: PlayerSnapshotV1 artifact RPCs are absent through migration 140"
 run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
+if run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inventory_fixture_sql" \
+  --set="pva_tree_inventory_payload=$tree_fixture_sql" \
+  --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql >/dev/null 2>&1; then
+  echo "RED unexpectedly accepted mismatched PlayerSnapshotV1 source octets through migration 150" >&2; exit 1
+fi
+echo "RED PostgreSQL 17: PlayerSnapshotV1 source octets are not receipt-bound through migration 150"
+run_super --file=/workspace/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
+for missing_payload_variable in pva_payload pva_inventory_payload pva_tree_inventory_payload; do
+  case "$missing_payload_variable" in
+    pva_payload)
+      contract_payload_args=(--set="pva_inventory_payload=$inventory_fixture_sql" --set="pva_tree_inventory_payload=$tree_fixture_sql")
+      ;;
+    pva_inventory_payload)
+      contract_payload_args=(--set="pva_payload=$fixture_sql" --set="pva_tree_inventory_payload=$tree_fixture_sql")
+      ;;
+    pva_tree_inventory_payload)
+      contract_payload_args=(--set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inventory_fixture_sql")
+      ;;
+  esac
+  if run_super "${contract_payload_args[@]}" --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql >/dev/null 2>&1; then
+    echo "RED unexpectedly accepted missing $missing_payload_variable through migration 160" >&2; exit 1
+  fi
+done
+echo "RED PostgreSQL 17: PlayerSnapshotV1 artifact contract rejects each missing payload variable"
 run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inventory_fixture_sql" \
   --set="pva_tree_inventory_payload=$tree_fixture_sql" \
   --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql
-run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
-echo "GREEN PostgreSQL 17: PlayerSnapshotV1 artifact contract and idempotent replay passed"
+run_super --file=/workspace/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
+echo "GREEN PostgreSQL 17: PlayerSnapshotV1 artifact receipt-octets contract and idempotent replay passed"

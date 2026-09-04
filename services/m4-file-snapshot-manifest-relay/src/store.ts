@@ -1,10 +1,16 @@
 import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
+import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 
 export type StoreOutcome = 'RECORDED' | 'EXACT_RETRY'
 
 export interface ManifestStore {
   recordManifest(manifest: Manifest): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
+export interface PlayerSnapshotV1ArtifactStore {
+  recordPlayerSnapshotV1Artifact(artifact: PlayerSnapshotV1Artifact): Promise<StoreOutcome>
   close?(): Promise<void>
 }
 
@@ -59,6 +65,33 @@ export class PostgresManifestStore implements ManifestStore {
     } finally {
       client.release()
     }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+/** Direct PostgreSQL adapter for immutable PlayerSnapshotV1 evidence only. */
+export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1ArtifactStore {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async recordPlayerSnapshotV1Artifact(artifact: PlayerSnapshotV1Artifact): Promise<StoreOutcome> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_player_snapshot_v1_artifact_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::text, $7::text, $8::bigint, $9::bytea)',
+        [artifact.characterId, artifact.commandId, artifact.receiptRequestSha256, artifact.sourcePostSha256,
+          artifact.sourceOctets, artifact.snapshotFormat, artifact.snapshotSha256, artifact.snapshotOctets, artifact.payload],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
   }
 
   async close(): Promise<void> { await this.pool.end() }
