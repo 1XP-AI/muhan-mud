@@ -5,12 +5,25 @@ import {
   type PlayerSnapshotV1ReplayVerification,
   type PlayerSnapshotV1ReplayVerifierOptions,
 } from './player-snapshot-v1-replay-verifier.js'
+import {
+  NodePlayerSnapshotV1ReplayShadowJournal,
+  type PlayerSnapshotV1ReplayJournalEntry,
+  type PlayerSnapshotV1ReplayShadowJournal,
+} from './player-snapshot-v1-replay-shadow-journal.js'
 
 export type PlayerSnapshotV1ReplayObservation = 'observed' | 'disabled'
 
+/** Identifiers are copied from already parsed artifact and receipt metadata. */
+export interface PlayerSnapshotV1ReplayObservationContext {
+  commandId: string
+  characterId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+}
+
 /** The relay deliberately consumes only this binary observation outcome. */
 export interface PlayerSnapshotV1ReplayObserver {
-  observe(payload: Uint8Array): Promise<PlayerSnapshotV1ReplayObservation>
+  observe(payload: Uint8Array, context: PlayerSnapshotV1ReplayObservationContext): Promise<PlayerSnapshotV1ReplayObservation>
 }
 
 export type PlayerSnapshotV1ReplayVerifier = (
@@ -19,8 +32,23 @@ export type PlayerSnapshotV1ReplayVerifier = (
 ) => Promise<PlayerSnapshotV1ReplayVerification>
 
 function configuredRunnerPath(env: NodeJS.ProcessEnv): string | undefined {
-  const path = env.M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH
+  return configuredAbsolutePath(env.M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH)
+}
+
+function configuredJournalPath(env: NodeJS.ProcessEnv): string | undefined {
+  return configuredAbsolutePath(env.M4_PLAYER_SNAPSHOT_V1_REPLAY_JOURNAL_PATH)
+}
+
+function configuredAbsolutePath(path: string | undefined): string | undefined {
   return path && !path.includes('\0') && isAbsolute(path) ? path : undefined
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const HASH_RE = /^[0-9a-f]{64}$/
+
+function isJournalContext(value: PlayerSnapshotV1ReplayObservationContext): boolean {
+  return UUID_RE.test(value.commandId) && UUID_RE.test(value.characterId)
+    && HASH_RE.test(value.receiptRequestSha256) && HASH_RE.test(value.sourcePostSha256)
 }
 
 /**
@@ -45,21 +73,54 @@ function isVerifiedReplayResult(value: unknown, payload: Uint8Array): value is P
     && result.inventoryNodeCount >= 0
 }
 
+function projectedVerification(result: PlayerSnapshotV1ReplayVerification): PlayerSnapshotV1ReplayJournalEntry['verification'] {
+  return {
+    format: result.format,
+    version: result.version,
+    algorithm: result.algorithm,
+    inputDigest: result.inputDigest,
+    canonicalDigest: result.canonicalDigest,
+    canonicalOctets: result.canonicalOctets,
+    inventoryNodeCount: result.inventoryNodeCount,
+  }
+}
+
+function isEnabledJournal(journal: PlayerSnapshotV1ReplayShadowJournal | undefined): journal is PlayerSnapshotV1ReplayShadowJournal {
+  return journal !== undefined && (!(journal instanceof NodePlayerSnapshotV1ReplayShadowJournal) || journal.isEnabled)
+}
+
 /**
  * A best-effort, metadata-only replay check. Any unavailable runner or invalid
  * report is explicitly disabled so it cannot alter the established relay flow.
  */
 export class PlayerSnapshotV1ReplayObserver implements PlayerSnapshotV1ReplayObserver {
-  constructor(
-    private readonly runnerPath: string | undefined,
-    private readonly verifier: PlayerSnapshotV1ReplayVerifier = verifyPlayerSnapshotV1Replay,
-  ) {}
+  private readonly runnerPath: string | undefined
+  private readonly verifier: PlayerSnapshotV1ReplayVerifier
+  private readonly journal: PlayerSnapshotV1ReplayShadowJournal | undefined
 
-  async observe(payload: Uint8Array): Promise<PlayerSnapshotV1ReplayObservation> {
-    if (!this.runnerPath) return 'disabled'
+  constructor(
+    runnerPath: string | undefined,
+    verifier: PlayerSnapshotV1ReplayVerifier = verifyPlayerSnapshotV1Replay,
+    journal: PlayerSnapshotV1ReplayShadowJournal | undefined = undefined,
+  ) {
+    this.runnerPath = configuredAbsolutePath(runnerPath)
+    this.verifier = verifier
+    this.journal = journal
+  }
+
+  async observe(payload: Uint8Array, context: PlayerSnapshotV1ReplayObservationContext): Promise<PlayerSnapshotV1ReplayObservation> {
+    if (!this.runnerPath || !isEnabledJournal(this.journal) || !isJournalContext(context)) return 'disabled'
     try {
       const result: unknown = await this.verifier(payload, { runnerPath: this.runnerPath })
-      return isVerifiedReplayResult(result, payload) ? 'observed' : 'disabled'
+      if (!isVerifiedReplayResult(result, payload)) return 'disabled'
+      const entry: PlayerSnapshotV1ReplayJournalEntry = {
+        format: 'player-snapshot-v1-replay-shadow-journal', version: '1',
+        commandId: context.commandId, characterId: context.characterId,
+        receiptRequestSha256: context.receiptRequestSha256, sourcePostSha256: context.sourcePostSha256,
+        verification: projectedVerification(result),
+      }
+      await this.journal.append(entry)
+      return 'observed'
     } catch {
       return 'disabled'
     }
@@ -71,5 +132,9 @@ export function playerSnapshotV1ReplayObserverFromEnvironment(
   env: NodeJS.ProcessEnv,
   verifier: PlayerSnapshotV1ReplayVerifier = verifyPlayerSnapshotV1Replay,
 ): PlayerSnapshotV1ReplayObserver {
-  return new PlayerSnapshotV1ReplayObserver(configuredRunnerPath(env), verifier)
+  const journalPath = configuredJournalPath(env)
+  return new PlayerSnapshotV1ReplayObserver(
+    configuredRunnerPath(env), verifier,
+    journalPath ? new NodePlayerSnapshotV1ReplayShadowJournal(journalPath) : undefined,
+  )
 }

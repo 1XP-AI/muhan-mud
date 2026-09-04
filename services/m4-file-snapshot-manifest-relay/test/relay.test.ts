@@ -9,7 +9,8 @@ import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesy
 import { parseManifest } from '../src/manifest.js'
 import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../src/relay.js'
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
-import type { PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
+import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
+import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
 import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
@@ -232,8 +233,9 @@ test('replay observation is payload-only and never changes PlayerSnapshotV1 reco
   const payload = playerSnapshotV1()
   const artifact = playerSnapshotV1Artifact(payload)
   const observed: Uint8Array[] = []
+  const contexts: unknown[] = []
   const observer: PlayerSnapshotV1ReplayObserver = {
-    observe: async (value) => { observed.push(Buffer.from(value)); throw new Error('untrusted runner failure') },
+    observe: async (value, context) => { observed.push(Buffer.from(value)); contexts.push(context); throw new Error('untrusted runner failure') },
   }
   let records = 0
   const store: PlayerSnapshotV1ArtifactStore = {
@@ -249,6 +251,60 @@ test('replay observation is payload-only and never changes PlayerSnapshotV1 reco
   })
   assert.equal(records, 1)
   assert.deepEqual(observed, [payload])
+  assert.deepEqual(contexts, [{
+    commandId: first, characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64),
+  }])
+})
+
+test('every replay journal filesystem failure exposes its temporary and publish state while PlayerSnapshotV1 recording remains intact', async () => {
+  const manifest = body(first)
+  const payload = playerSnapshotV1()
+  const artifact = playerSnapshotV1Artifact(payload)
+  const digest = createHash('sha256').update(payload).digest('hex')
+  for (const failedStep of ['open', 'write', 'sync', 'close', 'link', 'unlink'] as const) {
+    const temporaryPaths: string[] = []
+    let published = false
+    const journal = new NodePlayerSnapshotV1ReplayShadowJournal('/explicit/journal', {
+      open: async () => {
+        if (failedStep === 'open') throw new Error('open failed')
+        return {
+          writeFile: async () => { if (failedStep === 'write') throw new Error('write failed') },
+          sync: async () => { if (failedStep === 'sync') throw new Error('sync failed') },
+          close: async () => { if (failedStep === 'close') throw new Error('close failed') },
+        }
+      },
+      link: async () => {
+        if (failedStep === 'link') throw new Error('link failed')
+        published = true
+      },
+      unlink: async (path) => {
+        temporaryPaths.push(path)
+        if (failedStep === 'unlink') throw new Error('unlink failed')
+      },
+    })
+    const observer = new PlayerSnapshotV1ReplayObserver(
+      '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify',
+      async () => ({
+        format: 'player-snapshot-v1-replay-verification', version: '1', algorithm: 'sha-256',
+        inputDigest: digest, canonicalDigest: digest, canonicalOctets: payload.length, inventoryNodeCount: 0,
+      }),
+      journal,
+    )
+    let recorded = 0
+    const result = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', {
+      recordPlayerSnapshotV1Artifact: async () => { recorded++; return 'RECORDED' },
+    }, {
+      scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }],
+    }, observer)
+    assert.equal(recorded, 1)
+    assert.equal(temporaryPaths.length, 1)
+    assert.equal(published, failedStep === 'unlink')
+    assert.deepEqual(result, {
+      visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+      replayObserved: 0, replayDisabled: 1,
+    })
+  }
 })
 
 test('a successful replay observation preserves recorder input and established relay aggregates', async () => {

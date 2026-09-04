@@ -97,7 +97,12 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     catch { result.invalid++; continue }
     result.valid++
     try {
-      if (await replayObserver.observe(artifact.payload) === 'observed') result.replayObserved++
+      if (await replayObserver.observe(artifact.payload, {
+        commandId: artifact.commandId,
+        characterId: artifact.characterId,
+        receiptRequestSha256: artifact.receiptRequestSha256,
+        sourcePostSha256: artifact.sourcePostSha256,
+      }) === 'observed') result.replayObserved++
       else result.replayDisabled++
     } catch { result.replayDisabled++ }
     try {
