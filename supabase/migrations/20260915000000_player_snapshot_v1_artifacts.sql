@@ -2,9 +2,168 @@
 -- This is additive storage evidence only.  It never becomes gameplay or
 -- legacy-file authority and it exposes no browser/service-role path.
 
--- The validator is deliberately structural: it checks the CDTO envelope
--- prefix, player kind, declared payload length, exact total length, and the
--- payload digest.  Game-specific field decoding remains outside PostgreSQL.
+-- These helpers mirror the native PlayerSnapshotV1 decoder's byte boundary.
+-- Snapshot evidence is immutable, so accepting an envelope that native C
+-- cannot load would permanently block the correct retry for that command.
+create or replace function private.player_snapshot_v1_fixed_string_valid(p_value bytea)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = pg_catalog
+as $$
+declare
+  v_index integer;
+  v_length integer;
+  v_seen_nul boolean := false;
+begin
+  v_length := octet_length(p_value);
+  if v_length = 0 then return false; end if;
+  for v_index in 0..v_length - 1 loop
+    if get_byte(p_value, v_index) = 0 then
+      v_seen_nul := true;
+    elsif v_seen_nul then
+      return false;
+    end if;
+  end loop;
+  return v_seen_nul;
+end;
+$$;
+
+create or replace function private.player_snapshot_v1_u16(p_value bytea, p_offset integer)
+returns bigint
+language plpgsql
+immutable
+strict
+set search_path = pg_catalog
+as $$
+begin
+  if p_offset < 0 or p_offset + 2 > octet_length(p_value) then return null; end if;
+  return get_byte(p_value, p_offset)::bigint * 256 + get_byte(p_value, p_offset + 1);
+end;
+$$;
+
+create or replace function private.player_snapshot_v1_u32(p_value bytea, p_offset integer)
+returns bigint
+language plpgsql
+immutable
+strict
+set search_path = pg_catalog
+as $$
+begin
+  if p_offset < 0 or p_offset + 4 > octet_length(p_value) then return null; end if;
+  return get_byte(p_value, p_offset)::bigint * 16777216
+       + get_byte(p_value, p_offset + 1)::bigint * 65536
+       + get_byte(p_value, p_offset + 2)::bigint * 256
+       + get_byte(p_value, p_offset + 3);
+end;
+$$;
+
+create or replace function private.player_snapshot_v1_object_graph_valid(p_graph bytea)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = pg_catalog, public, private
+as $$
+declare
+  v_total integer;
+  v_body_length bigint;
+  v_count bigint;
+  v_cursor integer;
+  v_value_start integer;
+  v_index integer;
+  v_node_index bigint;
+  v_parent bigint;
+  v_sibling bigint;
+  v_expected integer;
+  v_position integer;
+  v_root_count integer := 0;
+  v_ancestor_count integer := 0;
+  v_depth integer;
+  v_number bigint;
+  v_children integer[];
+  v_depths integer[];
+  v_ancestors integer[] := ARRAY[]::integer[];
+begin
+  v_total := octet_length(p_graph);
+  if v_total < 48 or v_total > 4194352 then return false; end if;
+  if substring(p_graph from 1 for 8) <> decode('4d55484344544f00', 'hex') then return false; end if;
+  if get_byte(p_graph, 8) <> 0 or get_byte(p_graph, 9) <> 1 then return false; end if;
+  if get_byte(p_graph, 10) <> 0 or get_byte(p_graph, 11) <> 6 then return false; end if;
+  v_body_length := private.player_snapshot_v1_u32(p_graph, 12);
+  if v_body_length is null or v_body_length > 4194304
+     or v_body_length + 48 <> v_total then return false; end if;
+  if public.digest(substring(p_graph from 17 for v_body_length::integer), 'sha256')
+     <> substring(p_graph from (v_total - 31)::integer for 32) then return false; end if;
+
+  -- ObjectGraphV1 is a count field followed by exactly one fixed 349-byte
+  -- node field per preorder index.  The exact size check also rejects a
+  -- hidden trailing field before any tree allocation-like work is done.
+  if v_body_length < 11
+     or private.player_snapshot_v1_u16(p_graph, 16) <> 1
+     or get_byte(p_graph, 18) <> 3
+     or private.player_snapshot_v1_u32(p_graph, 19) <> 4 then return false; end if;
+  v_count := private.player_snapshot_v1_u32(p_graph, 23);
+  if v_count is null or v_count > 8192
+     or v_body_length <> 11 + v_count * 356 then return false; end if;
+  if v_count = 0 then return true; end if;
+
+  v_children := array_fill(0, ARRAY[v_count::integer]);
+  v_depths := array_fill(0, ARRAY[v_count::integer]);
+  v_cursor := 27;
+  for v_index in 0..v_count::integer - 1 loop
+    if private.player_snapshot_v1_u16(p_graph, v_cursor) <> v_index + 2
+       or get_byte(p_graph, v_cursor + 2) <> 9
+       or private.player_snapshot_v1_u32(p_graph, v_cursor + 3) <> 349 then return false; end if;
+    v_value_start := v_cursor + 7;
+    v_node_index := private.player_snapshot_v1_u32(p_graph, v_value_start);
+    v_parent := private.player_snapshot_v1_u32(p_graph, v_value_start + 4);
+    v_sibling := private.player_snapshot_v1_u32(p_graph, v_value_start + 8);
+    if v_node_index <> v_index then return false; end if;
+    if not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 13 for 80))
+       or not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 93 for 80))
+       or not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 173 for 20))
+       or not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 193 for 20))
+       or not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 213 for 20))
+       or not private.player_snapshot_v1_fixed_string_valid(substring(p_graph from v_value_start + 233 for 80)) then return false; end if;
+    v_number := private.player_snapshot_v1_u16(p_graph, v_value_start + 324);
+    if v_number >= 32768 then v_number := v_number - 65536; end if;
+    v_expected := v_number::integer;
+    v_number := private.player_snapshot_v1_u16(p_graph, v_value_start + 326);
+    if v_number >= 32768 then v_number := v_number - 65536; end if;
+    if v_number > v_expected then return false; end if;
+
+    if v_parent = 4294967295 then
+      v_expected := v_root_count;
+      if v_expected >= 4096 then return false; end if;
+      v_root_count := v_root_count + 1;
+      v_depth := 1;
+      v_ancestor_count := 0;
+    else
+      if v_parent >= v_index then return false; end if;
+      v_position := 0;
+      for v_position in 1..v_ancestor_count loop
+        if v_ancestors[v_position] = v_parent then exit; end if;
+      end loop;
+      if v_ancestor_count = 0 or v_position > v_ancestor_count
+         or v_ancestors[v_position] <> v_parent then return false; end if;
+      v_ancestor_count := v_position;
+      v_expected := v_children[v_parent::integer + 1];
+      if v_expected >= 4096 then return false; end if;
+      v_children[v_parent::integer + 1] := v_expected + 1;
+      v_depth := v_depths[v_parent::integer + 1] + 1;
+    end if;
+    if v_sibling <> v_expected or v_depth > 64 then return false; end if;
+    v_depths[v_index + 1] := v_depth;
+    v_ancestor_count := v_ancestor_count + 1;
+    v_ancestors[v_ancestor_count] := v_index;
+    v_cursor := v_cursor + 356;
+  end loop;
+  return true;
+end;
+$$;
+
 create or replace function private.player_snapshot_v1_payload_valid(p_payload bytea)
 returns boolean
 language plpgsql
@@ -14,6 +173,23 @@ as $$
 declare
   v_payload_length bigint;
   v_total bigint;
+  v_cursor integer := 0;
+  v_value_start integer;
+  v_field_id bigint;
+  v_field_type integer;
+  v_field_length bigint;
+  v_index integer;
+  v_hpmax integer;
+  v_mpmax integer;
+  v_number bigint;
+  v_expected_types integer[] := ARRAY[
+    9,9,9,9,9,9,1,5,5,5,5,6,5,5,5,5,5,6,6,6,
+    6,5,5,8,8,6,6,6,6,9,9,9,9,9,5,9,6,9,9,9
+  ];
+  v_expected_lengths integer[] := ARRAY[
+    80,80,80,20,20,20,1,1,1,1,1,2,1,1,1,1,1,2,2,2,
+    2,1,1,8,8,2,2,2,2,40,32,16,8,16,1,20,2,100,810,-1
+  ];
 begin
   if p_payload is null then return false; end if;
   v_total := octet_length(p_payload);
@@ -29,7 +205,49 @@ begin
   if v_payload_length > 4194304 or v_payload_length + 48 <> v_total then return false; end if;
   if public.digest(substring(p_payload from 17 for v_payload_length::integer), 'sha256')
      <> substring(p_payload from (v_total - 31)::integer for 32) then return false; end if;
-  return true;
+
+  for v_index in 1..40 loop
+    if v_payload_length - v_cursor < 7 then return false; end if;
+    v_field_id := private.player_snapshot_v1_u16(p_payload, 16 + v_cursor);
+    v_field_type := get_byte(p_payload, 18 + v_cursor);
+    v_field_length := private.player_snapshot_v1_u32(p_payload, 19 + v_cursor);
+    if v_field_id <> v_index or v_field_type <> v_expected_types[v_index]
+       or v_field_length is null
+       or v_field_length > v_payload_length - v_cursor - 7 then return false; end if;
+    if v_index = 40 then
+      if v_field_length = 0 then return false; end if;
+    elsif v_field_length <> v_expected_lengths[v_index] then
+      return false;
+    end if;
+    v_value_start := 16 + v_cursor + 7;
+    if v_index <= 6 and not private.player_snapshot_v1_fixed_string_valid(
+         substring(p_payload from v_value_start + 1 for v_field_length::integer)) then
+      return false;
+    elsif v_index = 8 and get_byte(p_payload, v_value_start) <> 0 then
+      return false;
+    elsif v_index = 18 then
+      v_number := private.player_snapshot_v1_u16(p_payload, v_value_start);
+      if v_number >= 32768 then v_number := v_number - 65536; end if;
+      v_hpmax := v_number::integer;
+    elsif v_index = 19 then
+      v_number := private.player_snapshot_v1_u16(p_payload, v_value_start);
+      if v_number >= 32768 then v_number := v_number - 65536; end if;
+      if v_number > v_hpmax then return false; end if;
+    elsif v_index = 20 then
+      v_number := private.player_snapshot_v1_u16(p_payload, v_value_start);
+      if v_number >= 32768 then v_number := v_number - 65536; end if;
+      v_mpmax := v_number::integer;
+    elsif v_index = 21 then
+      v_number := private.player_snapshot_v1_u16(p_payload, v_value_start);
+      if v_number >= 32768 then v_number := v_number - 65536; end if;
+      if v_number > v_mpmax then return false; end if;
+    elsif v_index = 40 and not private.player_snapshot_v1_object_graph_valid(
+         substring(p_payload from v_value_start + 1 for v_field_length::integer)) then
+      return false;
+    end if;
+    v_cursor := v_cursor + 7 + v_field_length::integer;
+  end loop;
+  return v_cursor = v_payload_length;
 end;
 $$;
 
@@ -268,6 +486,14 @@ $$;
 
 grant usage on schema private to mud_writer;
 revoke all on table private.game_character_player_snapshot_v1_artifacts
+  from public, anon, authenticated, service_role, mud_writer, mud_writer_login;
+revoke all on function private.player_snapshot_v1_fixed_string_valid(bytea)
+  from public, anon, authenticated, service_role, mud_writer, mud_writer_login;
+revoke all on function private.player_snapshot_v1_u16(bytea,integer)
+  from public, anon, authenticated, service_role, mud_writer, mud_writer_login;
+revoke all on function private.player_snapshot_v1_u32(bytea,integer)
+  from public, anon, authenticated, service_role, mud_writer, mud_writer_login;
+revoke all on function private.player_snapshot_v1_object_graph_valid(bytea)
   from public, anon, authenticated, service_role, mud_writer, mud_writer_login;
 revoke all on function private.player_snapshot_v1_payload_valid(bytea)
   from public, anon, authenticated, service_role, mud_writer, mud_writer_login;

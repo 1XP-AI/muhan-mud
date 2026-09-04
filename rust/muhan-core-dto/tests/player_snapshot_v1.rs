@@ -76,6 +76,76 @@ fn fixture() -> PlayerSnapshotV1 {
     }
 }
 
+fn canonical_c_fixture() -> Vec<u8> {
+    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_canonical.hex"))
+}
+
+fn canonical_c_inventory_fixture() -> Vec<u8> {
+    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_one_inventory_item.hex"))
+}
+
+fn canonical_c_tree_inventory_fixture() -> Vec<u8> {
+    fixture_hex(include_str!("../../../tests/fixtures/player_snapshot_v1_tree_inventory.hex"))
+}
+
+fn fixture_hex(source: &str) -> Vec<u8> {
+    let text = source.trim();
+    assert_eq!(text.len() % 2, 0, "fixture has whole hex octets");
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("fixture hex"))
+        .collect()
+}
+
+#[test]
+fn canonical_c_fixture_rereads_to_identical_rust_cdto_bytes() {
+    let wire = canonical_c_fixture();
+    let decoded = decode_player_snapshot_v1(&wire).expect("C fixture decodes in Rust");
+    assert_eq!(&decoded.name[..8], b"Pvahero\0");
+    assert_eq!(decoded.type_code, 0);
+    assert!(decoded.inventory.nodes.is_empty());
+    assert_eq!(
+        encode_player_snapshot_v1(&decoded).expect("C fixture reencodes in Rust"),
+        wire,
+        "Rust must preserve every canonical byte emitted by C"
+    );
+}
+
+#[test]
+fn canonical_c_inventory_fixture_rereads_to_identical_rust_cdto_bytes() {
+    let wire = canonical_c_inventory_fixture();
+    let decoded = decode_player_snapshot_v1(&wire).expect("C inventory fixture decodes in Rust");
+    assert_eq!(decoded.inventory.nodes.len(), 1);
+    assert_eq!(decoded.inventory.nodes[0].parent_index, None);
+    assert_eq!(
+        encode_player_snapshot_v1(&decoded).expect("C inventory fixture reencodes in Rust"),
+        wire,
+        "Rust must preserve C's canonical inventory graph bytes"
+    );
+}
+
+#[test]
+fn canonical_c_tree_inventory_fixture_rereads_to_identical_rust_cdto_bytes() {
+    let wire = canonical_c_tree_inventory_fixture();
+    let decoded = decode_player_snapshot_v1(&wire).expect("C tree fixture decodes in Rust");
+    let topology: Vec<(Option<u32>, u32)> = decoded
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| (node.parent_index, node.child_index))
+        .collect();
+    assert_eq!(
+        topology,
+        vec![(None, 0), (Some(0), 0), (Some(1), 0), (Some(0), 1), (None, 1)],
+        "C preorder parent/sibling topology survives Rust decoding"
+    );
+    assert_eq!(
+        encode_player_snapshot_v1(&decoded).expect("C tree fixture reencodes in Rust"),
+        wire,
+        "Rust must preserve C's canonical tree graph bytes"
+    );
+}
+
 #[test]
 fn snapshot_round_trip_preserves_all_safe_fields_and_allows_daily_overmax() {
     let input = fixture();

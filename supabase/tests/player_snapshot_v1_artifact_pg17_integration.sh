@@ -9,6 +9,24 @@ command -v docker >/dev/null || { echo "player snapshot v1 artifact integration 
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="player-snapshot-v1-${RANDOM}-${RANDOM}"
+fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex"
+fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
+[[ "$fixture_hex" =~ ^[0-9a-f]+$ && "${#fixture_hex}" -eq 3556 ]] || {
+  echo "PlayerSnapshotV1 C fixture is not canonical lowercase hex" >&2; exit 2;
+}
+inventory_fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_one_inventory_item.hex"
+inventory_fixture_hex="$(tr -d '\r\n' < "$inventory_fixture_path")"
+[[ "$inventory_fixture_hex" =~ ^[0-9a-f]+$ && "${#inventory_fixture_hex}" -eq 4268 ]] || {
+  echo "PlayerSnapshotV1 C inventory fixture is not canonical lowercase hex" >&2; exit 2;
+}
+tree_fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_tree_inventory.hex"
+tree_fixture_hex="$(tr -d '\r\n' < "$tree_fixture_path")"
+[[ "$tree_fixture_hex" =~ ^[0-9a-f]+$ && "${#tree_fixture_hex}" -eq 7116 ]] || {
+  echo "PlayerSnapshotV1 C tree fixture is not canonical lowercase hex" >&2; exit 2;
+}
+fixture_sql="decode('$fixture_hex', 'hex')"
+inventory_fixture_sql="decode('$inventory_fixture_hex', 'hex')"
+tree_fixture_sql="decode('$tree_fixture_hex', 'hex')"
 cleanup() { docker rm --force "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 docker run --detach --rm --name "$container" \
@@ -38,11 +56,15 @@ for migration in \
   20260914000000_m4_file_snapshot_manifest.sql; do
   run_super --file="/workspace/supabase/migrations/$migration"
 done
-if run_super --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql >/dev/null 2>&1; then
+if run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inventory_fixture_sql" \
+  --set="pva_tree_inventory_payload=$tree_fixture_sql" \
+  --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql >/dev/null 2>&1; then
   echo "RED unexpectedly passed through migration 140" >&2; exit 1
 fi
 echo "RED PostgreSQL 17: PlayerSnapshotV1 artifact RPCs are absent through migration 140"
 run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
-run_super --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql
+run_super --set="pva_payload=$fixture_sql" --set="pva_inventory_payload=$inventory_fixture_sql" \
+  --set="pva_tree_inventory_payload=$tree_fixture_sql" \
+  --file=/workspace/supabase/tests/player_snapshot_v1_artifact_contract.sql
 run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
 echo "GREEN PostgreSQL 17: PlayerSnapshotV1 artifact contract and idempotent replay passed"

@@ -137,6 +137,14 @@ jobs:
           make -C src character-snapshot-shadow-outbox-pg17-integration \
             M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE=1
 
+      - name: Run PlayerSnapshotV1 PostgreSQL 17 artifact contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/player_snapshot_v1_artifact_pg17_integration.sh
+
       - name: Run isolated M3 owner and runtime-shadow PostgreSQL 17 E2E gates
         if: runner.os == 'Linux'
         shell: bash

@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -459,6 +460,210 @@ test_child_list_boundaries(void)
     free(children);
 }
 
+static int
+fixture_hex_value(int value)
+{
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    return -1;
+}
+
+/* This literal fixture was emitted by player_snapshot_v1_encode_loaded() for
+ * a zeroed PLAYER named Pvahero.  It is also the PG contract fixture, so this
+ * check prevents the database test from silently drifting away from C bytes. */
+static void
+test_canonical_fixture_exact_reread(void)
+{
+    creature source;
+    creature *clone;
+    uint8_t *wire;
+    uint8_t *reread;
+    size_t wire_length;
+    size_t reread_length;
+    size_t index;
+    int high;
+    int low;
+    int trailing;
+    FILE *fixture;
+
+    memset(&source, 0, sizeof(source));
+    source.type = PLAYER;
+    source.fd = -1;
+    set_string(source.name, sizeof(source.name), "Pvahero");
+    wire = NULL;
+    wire_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
+        CDTO_V1_OK);
+    fixture = fopen("../tests/fixtures/player_snapshot_v1_canonical.hex", "r");
+    assert(fixture != NULL);
+    for (index = 0U; index < wire_length; ++index) {
+        high = fixture_hex_value(fgetc(fixture));
+        low = fixture_hex_value(fgetc(fixture));
+        assert(high >= 0 && low >= 0);
+        assert(wire[index] == (uint8_t)((high << 4) | low));
+    }
+    trailing = fgetc(fixture);
+    assert(trailing == '\n' || trailing == EOF);
+    assert(fclose(fixture) == 0);
+
+    clone = NULL;
+    assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
+        CDTO_V1_OK);
+    reread = NULL;
+    reread_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(clone, &reread, &reread_length) ==
+        CDTO_V1_OK);
+    assert(reread_length == wire_length);
+    assert(memcmp(reread, wire, wire_length) == 0);
+    cdto_v1_free_wire(reread);
+    player_snapshot_v1_free_clone(clone);
+    cdto_v1_free_wire(wire);
+}
+
+static void
+test_canonical_inventory_fixture_exact_reread(void)
+{
+    creature source;
+    creature *clone;
+    object item;
+    otag tag;
+    uint8_t *wire;
+    uint8_t *reread;
+    size_t wire_length;
+    size_t reread_length;
+    size_t index;
+    int high;
+    int low;
+    int trailing;
+    FILE *fixture;
+
+    memset(&source, 0, sizeof(source));
+    memset(&item, 0, sizeof(item));
+    memset(&tag, 0, sizeof(tag));
+    source.type = PLAYER;
+    source.fd = -1;
+    set_string(source.name, sizeof(source.name), "Pvahero");
+    item.parent_crt = &source;
+    tag.obj = &item;
+    source.first_obj = &tag;
+    wire = NULL;
+    wire_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
+        CDTO_V1_OK);
+    fixture = fopen("../tests/fixtures/player_snapshot_v1_one_inventory_item.hex", "r");
+    assert(fixture != NULL);
+    for (index = 0U; index < wire_length; ++index) {
+        high = fixture_hex_value(fgetc(fixture));
+        low = fixture_hex_value(fgetc(fixture));
+        assert(high >= 0 && low >= 0);
+        assert(wire[index] == (uint8_t)((high << 4) | low));
+    }
+    trailing = fgetc(fixture);
+    assert(trailing == '\n' || trailing == EOF);
+    assert(fclose(fixture) == 0);
+
+    clone = NULL;
+    assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
+        CDTO_V1_OK);
+    assert(clone->first_obj != NULL && clone->first_obj->obj != NULL);
+    reread = NULL;
+    reread_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(clone, &reread, &reread_length) ==
+        CDTO_V1_OK);
+    assert(reread_length == wire_length);
+    assert(memcmp(reread, wire, wire_length) == 0);
+    cdto_v1_free_wire(reread);
+    player_snapshot_v1_free_clone(clone);
+    cdto_v1_free_wire(wire);
+}
+
+/* Preorder: root-a, child-a-1, grandchild-a-1, child-a-2, root-b.  This
+ * covers root siblings, child siblings, and a grandchild parent path. */
+static void
+test_canonical_tree_inventory_fixture_exact_reread(void)
+{
+    creature source;
+    creature *clone;
+    object root_a, root_b, child_a1, child_a2, grandchild;
+    otag root_a_tag, root_b_tag, child_a1_tag, child_a2_tag, grandchild_tag;
+    uint8_t *wire;
+    uint8_t *reread;
+    size_t wire_length;
+    size_t reread_length;
+    size_t index;
+    int high;
+    int low;
+    int trailing;
+    FILE *fixture;
+
+    memset(&source, 0, sizeof(source));
+    memset(&root_a, 0, sizeof(root_a));
+    memset(&root_b, 0, sizeof(root_b));
+    memset(&child_a1, 0, sizeof(child_a1));
+    memset(&child_a2, 0, sizeof(child_a2));
+    memset(&grandchild, 0, sizeof(grandchild));
+    memset(&root_a_tag, 0, sizeof(root_a_tag));
+    memset(&root_b_tag, 0, sizeof(root_b_tag));
+    memset(&child_a1_tag, 0, sizeof(child_a1_tag));
+    memset(&child_a2_tag, 0, sizeof(child_a2_tag));
+    memset(&grandchild_tag, 0, sizeof(grandchild_tag));
+    source.type = PLAYER;
+    source.fd = -1;
+    set_string(source.name, sizeof(source.name), "Pvahero");
+    root_a.parent_crt = &source;
+    root_b.parent_crt = &source;
+    child_a1.parent_obj = &root_a;
+    child_a2.parent_obj = &root_a;
+    grandchild.parent_obj = &child_a1;
+    set_string(root_a.name, sizeof(root_a.name), "root-a");
+    set_string(root_b.name, sizeof(root_b.name), "root-b");
+    set_string(child_a1.name, sizeof(child_a1.name), "child-a-1");
+    set_string(child_a2.name, sizeof(child_a2.name), "child-a-2");
+    set_string(grandchild.name, sizeof(grandchild.name), "grandchild-a-1");
+    root_a_tag.obj = &root_a;
+    root_b_tag.obj = &root_b;
+    root_a_tag.next_tag = &root_b_tag;
+    child_a1_tag.obj = &child_a1;
+    child_a2_tag.obj = &child_a2;
+    child_a1_tag.next_tag = &child_a2_tag;
+    grandchild_tag.obj = &grandchild;
+    root_a.first_obj = &child_a1_tag;
+    child_a1.first_obj = &grandchild_tag;
+    source.first_obj = &root_a_tag;
+    wire = NULL;
+    wire_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
+        CDTO_V1_OK);
+    fixture = fopen("../tests/fixtures/player_snapshot_v1_tree_inventory.hex", "r");
+    assert(fixture != NULL);
+    for (index = 0U; index < wire_length; ++index) {
+        high = fixture_hex_value(fgetc(fixture));
+        low = fixture_hex_value(fgetc(fixture));
+        assert(high >= 0 && low >= 0);
+        assert(wire[index] == (uint8_t)((high << 4) | low));
+    }
+    trailing = fgetc(fixture);
+    assert(trailing == '\n' || trailing == EOF);
+    assert(fclose(fixture) == 0);
+
+    clone = NULL;
+    assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
+        CDTO_V1_OK);
+    assert(clone->first_obj != NULL && clone->first_obj->next_tag != NULL
+        && clone->first_obj->obj->first_obj != NULL
+        && clone->first_obj->obj->first_obj->next_tag != NULL
+        && clone->first_obj->obj->first_obj->obj->first_obj != NULL);
+    reread = NULL;
+    reread_length = 0U;
+    assert(player_snapshot_v1_encode_loaded(clone, &reread, &reread_length) ==
+        CDTO_V1_OK);
+    assert(reread_length == wire_length);
+    assert(memcmp(reread, wire, wire_length) == 0);
+    cdto_v1_free_wire(reread);
+    player_snapshot_v1_free_clone(clone);
+    cdto_v1_free_wire(wire);
+}
+
 int
 main(void)
 {
@@ -468,5 +673,8 @@ main(void)
     test_valid_envelope_schema_rejections();
     test_root_boundaries();
     test_child_list_boundaries();
+    test_canonical_fixture_exact_reread();
+    test_canonical_inventory_fixture_exact_reread();
+    test_canonical_tree_inventory_fixture_exact_reread();
     return 0;
 }
