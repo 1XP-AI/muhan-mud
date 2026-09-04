@@ -2,16 +2,16 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `dfcaacec541015dc1c0a42d4ec87e2da1e400394`
-- 최신 검증 커밋: `d9415508566a188c15829ed20aa7bdad03c82d65`
+- 포팅 기능 기준 커밋: `2fb20c6a2d44a33986f57a620578db6d514dcaae`
+- 최신 검증 커밋: `a861f4cb8aec393a68e8a906d2a52d7b46b1f72b`
 
 ## 먼저 알아야 할 상태
 
 이 브랜치는 레거시 C MUD의 파일 영속 상태를 Supabase/PostgreSQL로 단계적으로
 이전하고, Rust가 검증 가능한 canonical CDTO 경계만 사용하도록 포팅하는 작업이다.
 현재 branch에는 M3 observer/durable handoff, `PlayerSnapshotV1`의 C/Rust/PG17
-검증 경계, M4 manifest relay, 그리고 C↔Rust helper wake 프로토콜의 첫 계약이
-들어 있다.
+검증 경계와 DB_ACKED receipt-pair outbox, M4 manifest relay, 그리고 C↔Rust helper
+wake 프로토콜의 첫 계약이 들어 있다.
 
 macOS의 case-insensitive filesystem에서 일반 clone을 막던
 `objmon/Celduin_sign`/`objmon/celduin_sign` 충돌은 `9f7bf24`에서 해결됐다.
@@ -156,6 +156,13 @@ Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수�
 최대 한 token이고 OFF/BUSY/NOT_READY는 no-op이며 실패 진단은 rate-limited다. 일반 종료는
 idempotent teardown을 거치고 SIGKILL은 기존 durable recovery 경계로 남는다. 기본 build와
 기본 환경은 runtime symbol을 link하거나 I/O를 하지 않는다.
+
+동일한 exact opt-in 안에서만 durable local `DB_ACKED` marker가 검증된 artifact에
+대해 `$command.manifest` receipt evidence를 추가한다. generic handoff는 callback이
+없으면 기존 capture→cleanup 흐름을 그대로 유지한다. manifest의 `snapshot_octets`는
+serialized `PlayerSnapshotV1` bytes가 아니라 relay가 재확인할 legacy source bytes
+(`artifact.source_octets`)이며, 이 consumer는 DB 권위나 legacy save 결과를 바꾸지
+않는다.
 
 ### 6. M3 helper wake protocol v1
 
@@ -318,6 +325,30 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
   M3 RPC receipt/login/startup, PlayerSnapshot/relay, process-owner+runtime-shadow, named-volume
   restart와 importer integration이 포함된다.
 - 사용자 소유 `src/frp.new`는 이번 네 개 커밋 어디에도 포함되지 않았다.
+
+### PlayerSnapshotV1 receipt-pair opt-in `2fb20c6`–`a861f4c`
+
+- `2fb20c6`은 M3 native runtime의 exact `handoff` opt-in에서만 receipt-pair callback을
+  연결했다. generic handoff와 default object graph는 callback, libpq, outbox dependency를
+  추가하지 않는다.
+- `b40bccc`은 Linux native runtime test harness가 실제 callback ABI를 링크·호출하도록
+  고정했고, `36fa7bf`은 PostgreSQL runtime-shadow harness의 명시 링크 closure에
+  receipt-pair/outbox 구현 두 개만 추가했다.
+- `a861f4c`은 runtime-shadow PG17 E2E가 one `*.player-snapshot-v1` artifact와 같은
+  command의 one `*.manifest`를 정확히 검증하게 했다. prepared receipt identity,
+  artifact decode/source bytes, manifest의 `source_octets`, file owner/mode/nlink, 불필요한
+  regular evidence 부재와 두 번째 idle tick의 inode/content/authority 불변성을 모두
+  확인한다.
+- 로컬에서는 forced Linux-branch syntax check, handoff/receipt-pair/outbox ASan·UBSan,
+  focused handoff tests, 전체 C unit, runtime static/idle-hook static, shell syntax가
+  통과했다. macOS에는 Linux libpq/PG17 runtime 환경이 없으므로 실제 disposable E2E는
+  GitHub Actions를 authority로 삼는다.
+- private GitHub Actions: <https://github.com/1XP-Inc/muhan-mud/actions/runs/33923184270>
+  (`Supabase ownership contract`, Ubuntu ARM, Ubuntu, Windows, macOS 모두 GREEN). 이 run의
+  runtime-shadow E2E는 paired evidence, named-volume restart와 importer integration까지
+  통과했다.
+- 이 slice는 testnet 배포를 변경하지 않았다. `m3.mode=off`와 legacy file authority는
+  그대로다.
 
 ## Kubernetes 현황
 
