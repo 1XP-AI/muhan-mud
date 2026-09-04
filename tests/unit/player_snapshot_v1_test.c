@@ -124,6 +124,17 @@ test_round_trip(void)
 }
 
 static void
+test_native_abi_capability(void)
+{
+    assert(player_snapshot_v1_native_abi_supported(8U, 16U, 64U, 1, 0));
+    assert(!player_snapshot_v1_native_abi_supported(7U, 16U, 64U, 1, 0));
+    assert(!player_snapshot_v1_native_abi_supported(8U, 32U, 64U, 1, 0));
+    assert(!player_snapshot_v1_native_abi_supported(8U, 16U, 32U, 1, 0));
+    assert(!player_snapshot_v1_native_abi_supported(8U, 16U, 64U, 0, 0));
+    assert(!player_snapshot_v1_native_abi_supported(8U, 16U, 64U, 1, 1));
+}
+
+static void
 test_rejections(void)
 {
     creature source;
@@ -670,6 +681,7 @@ test_canonical_tree_inventory_fixture_exact_reread(void)
 int
 main(void)
 {
+    test_native_abi_capability();
     test_round_trip();
     test_rejections();
     test_inventory_and_faults();

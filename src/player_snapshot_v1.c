@@ -14,6 +14,14 @@ typedef char ps_assert_player_list_limit[
     (PLAYER_SNAPSHOT_V1_MAX_LIST_ITEMS ==
      OBJECT_GRAPH_V1_PLAYER_MAX_LIST_ITEMS) ? 1 : -1];
 
+int
+player_snapshot_v1_native_abi_supported(size_t char_bits, size_t short_bits,
+    size_t long_bits, int long_covers_i64, int player_wire_value)
+{
+    return char_bits == 8U && short_bits == 16U && long_bits == 64U &&
+        long_covers_i64 && player_wire_value == 0;
+}
+
 #define PS_FIELDS PLAYER_SNAPSHOT_V1_FIELD_COUNT
 #define PS_LIST_LIMIT PLAYER_SNAPSHOT_V1_MAX_LIST_ITEMS
 

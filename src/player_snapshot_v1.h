@@ -10,6 +10,12 @@
 #define PLAYER_SNAPSHOT_V1_FIELD_COUNT 40U
 #define PLAYER_SNAPSHOT_V1_MAX_LIST_ITEMS 4096U
 
+/* Returns nonzero only for the native ABI accepted by the durable handoff
+ * contract.  The codec itself remains independently portable. */
+int player_snapshot_v1_native_abi_supported(size_t char_bits,
+    size_t short_bits, size_t long_bits, int long_covers_i64,
+    int player_wire_value);
+
 /* Encodes the pointer-free persisted projection of a normalized player-file
  * load.  Passwords, descriptors, ready slots, and runtime links never enter
  * the wire.  The caller owns a successful wire via cdto_v1_free_wire(). */

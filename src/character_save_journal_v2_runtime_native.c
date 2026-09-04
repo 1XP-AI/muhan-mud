@@ -1,5 +1,6 @@
 #include "character_save_journal_v2_runtime_native.h"
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
+#include "player_snapshot_v1.h"
 #include "character_save_journal_v2_uuid_native.h"
 #endif
 
@@ -57,7 +58,10 @@ static int runtime_native_snapshot_handoff_enabled(void)
 {
     const char *value=getenv(RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV);
 
-    return value && !strcmp(value,RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE);
+    return value && !strcmp(value,RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE) &&
+        player_snapshot_v1_native_abi_supported(CHAR_BIT,
+            sizeof(short)*CHAR_BIT,sizeof(long)*CHAR_BIT,
+            LONG_MIN<=INT64_MIN&&LONG_MAX>=INT64_MAX,PLAYER);
 }
 
 static int runtime_native_command_uuid(void *opaque,
