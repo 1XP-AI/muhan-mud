@@ -283,10 +283,12 @@ size_t *payload_length;
         if (i && fields[i].id < fields[i - 1].id) return CDTO_V1_OUT_OF_ORDER_FIELD;
         status = cdto_validate_type(&fields[i]);
         if (status != CDTO_V1_OK) return status;
-        if ((size_t)fields[i].length > (size_t)-1 - CDTO_V1_FIELD_HEADER_LENGTH ||
-            total > (size_t)-1 - CDTO_V1_FIELD_HEADER_LENGTH - (size_t)fields[i].length)
+        if (total > (size_t)-1 - CDTO_V1_FIELD_HEADER_LENGTH)
             return CDTO_V1_LENGTH_OVERFLOW;
-        total += CDTO_V1_FIELD_HEADER_LENGTH + (size_t)fields[i].length;
+        total += CDTO_V1_FIELD_HEADER_LENGTH;
+        if (total > (size_t)-1 - (size_t)fields[i].length)
+            return CDTO_V1_LENGTH_OVERFLOW;
+        total += (size_t)fields[i].length;
     }
     *payload_length = total;
     return CDTO_V1_OK;
