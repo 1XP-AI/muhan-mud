@@ -19,11 +19,13 @@
 #include "character_save_journal_v2_runtime_native.h"
 #include "character_save_journal_v2_writer.h"
 #include "character_player_snapshot_v1_artifact.h"
+#include "character_snapshot_shadow_outbox.h"
 #include "player_record_serializer.h"
 #include "player_snapshot_v1.h"
 #include "player_store.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -101,30 +103,15 @@ static int journal_markers(const char *root, const char *marker)
     return count;
 }
 
-static int artifact_files(const char *root)
+static int artifact_directory_missing(const char *root)
 {
     char path[1024];
-    DIR *directory;
-    struct dirent *entry;
     struct stat status;
-    int count=0;
 
     if(!root||snprintf(path,sizeof(path),"%s/%s",root,
        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)>=(int)sizeof(path))
-        return -1;
-    directory=opendir(path);
-    if(!directory) return -1;
-    while((entry=readdir(directory))!=0) {
-        if(!strcmp(entry->d_name,".")||!strcmp(entry->d_name,".."))continue;
-        if(fstatat(dirfd(directory),entry->d_name,&status,AT_SYMLINK_NOFOLLOW)||
-           !S_ISREG(status.st_mode)) {
-            closedir(directory);
-            return -1;
-        }
-        count++;
-    }
-    if(closedir(directory)) return -1;
-    return count;
+        return 0;
+    return lstat(path,&status)<0&&errno==ENOENT;
 }
 
 static int regular_0600(const char *path)
@@ -160,20 +147,113 @@ static int live_matches_serializer(const char *root, const creature *player)
         !memcmp(actual,expected,expected_length);
 }
 
-static int snapshot_artifact_matches(const char *root,
+typedef struct snapshot_evidence_stats {
+    struct stat artifact;
+    struct stat manifest;
+} snapshot_evidence_stats;
+
+static int snapshot_evidence_unchanged(const snapshot_evidence_stats *before,
+    const snapshot_evidence_stats *after)
+{
+    return before&&after&&before->artifact.st_dev==after->artifact.st_dev&&
+        before->artifact.st_ino==after->artifact.st_ino&&
+        before->artifact.st_mode==after->artifact.st_mode&&
+        before->artifact.st_uid==after->artifact.st_uid&&
+        before->artifact.st_nlink==after->artifact.st_nlink&&
+        before->artifact.st_size==after->artifact.st_size&&
+        before->artifact.st_mtime==after->artifact.st_mtime&&
+        before->manifest.st_dev==after->manifest.st_dev&&
+        before->manifest.st_ino==after->manifest.st_ino&&
+        before->manifest.st_mode==after->manifest.st_mode&&
+        before->manifest.st_uid==after->manifest.st_uid&&
+        before->manifest.st_nlink==after->manifest.st_nlink&&
+        before->manifest.st_size==after->manifest.st_size&&
+        before->manifest.st_mtime==after->manifest.st_mtime;
+}
+
+static int snapshot_evidence_shape(int directory,
+    const char *artifact_name, const char *manifest_name,
+    snapshot_evidence_stats *stats)
+{
+    DIR *entries;
+    struct dirent *entry;
+    struct stat status;
+    int close_result,duplicate,artifacts=0,manifests=0,unexpected_regular=0,
+        result=0;
+
+    if(directory<0||!artifact_name||!manifest_name||!stats) return 0;
+    memset(stats,0,sizeof(*stats));
+    duplicate=fcntl(directory,F_DUPFD_CLOEXEC,3);
+    if(duplicate<0||lseek(duplicate,0,SEEK_SET)<0) {
+        if(duplicate>=0) close(duplicate);
+        return 0;
+    }
+    entries=fdopendir(duplicate);
+    if(!entries) {
+        close(duplicate);
+        return 0;
+    }
+    while((entry=readdir(entries))!=0) {
+        if(!strcmp(entry->d_name,".")||!strcmp(entry->d_name,"..")) continue;
+        if(fstatat(directory,entry->d_name,&status,AT_SYMLINK_NOFOLLOW)||
+           !S_ISREG(status.st_mode)||(status.st_mode&0777)!=0600||
+           status.st_nlink!=1||status.st_uid!=geteuid()) goto done;
+        if(!strcmp(entry->d_name,artifact_name)) {
+            artifacts++;
+            stats->artifact=status;
+        } else if(!strcmp(entry->d_name,manifest_name)) {
+            manifests++;
+            stats->manifest=status;
+        } else unexpected_regular++;
+    }
+    close_result=closedir(entries);
+    entries=0;
+    if(!close_result)
+        result=artifacts==1&&manifests==1&&!unexpected_regular;
+done:
+    if(entries) closedir(entries);
+    return result;
+}
+
+static int protocol_authority_unchanged(
+    const character_save_journal_v2_process_owner *owner,
+    const character_save_journal_v2_writer_tuple *before,
+    const character_save_journal_v2_protocol_report *report)
+{
+    character_save_journal_v2_writer_tuple after;
+    const character_save_journal_v2_protocol_report *current;
+
+    if(!owner||!before||!report||character_save_journal_v2_writer_validate_held(
+       &owner->held_writer,&after)!=CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return 0;
+    current=&owner->player_store.last_report;
+    return !strcmp(before->world_id,after.world_id)&&
+        !strcmp(before->writer_instance_id,after.writer_instance_id)&&
+        before->writer_epoch==after.writer_epoch&&
+        current->reached==report->reached&&
+        current->publish_result==report->publish_result&&
+        current->ack_result==report->ack_result&&
+        current->recovery_result==report->recovery_result&&
+        current->snapshot_attempted==report->snapshot_attempted&&
+        current->snapshot_result==report->snapshot_result;
+}
+
+static int snapshot_evidence_matches(const char *root,
     const character_save_journal_v2_runtime_native *native,
-    const creature *player)
+    const creature *player, snapshot_evidence_stats *stats)
 {
     character_save_journal_v2_wire prepared;
     character_player_snapshot_v1_artifact_metadata key,metadata;
+    character_snapshot_shadow_outbox_manifest manifest,existing;
     creature *decoded=0;
     uint8_t *snapshot=0;
     size_t snapshot_length=0;
     struct stat live_status;
-    char artifact_path[1024],live[1024];
+    char artifact_path[1024],artifact_name[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_FILENAME_SIZE];
+    char manifest_name[46],live[1024];
     int artifact_directory=-1,result=0;
 
-    if(!root||!native||!player||!native->snapshot_handoff.report.last_command_id[0]||
+    if(!root||!native||!player||!stats||!native->snapshot_handoff.report.last_command_id[0]||
        character_save_journal_v2_read_prepared(root,
        native->snapshot_handoff.report.last_command_id,&prepared)||
        strcmp(prepared.command_uuid,native->snapshot_handoff.report.last_command_id)||
@@ -203,6 +283,26 @@ static int snapshot_artifact_matches(const char *root,
        metadata.source_octets!=(uint64_t)live_status.st_size||
        metadata.storage_format!=(int16_t)prepared.storage_format||
        metadata.snapshot_octets!=(uint64_t)snapshot_length) goto done;
+    if(character_player_snapshot_v1_artifact_filename(&metadata,artifact_name,
+       sizeof(artifact_name))||snprintf(manifest_name,sizeof(manifest_name),
+       "%s.manifest",prepared.command_uuid)!=(int)sizeof(manifest_name)-1) goto done;
+    memset(&manifest,0,sizeof(manifest));
+    strcpy(manifest.world_id,prepared.world_id);
+    strcpy(manifest.character_id,prepared.character_id);
+    strcpy(manifest.command_id,prepared.command_uuid);
+    strcpy(manifest.canonical_name_hex,prepared.legacy_name_key_hex);
+    strcpy(manifest.request_sha256,prepared.request_sha256);
+    strcpy(manifest.post_sha256,prepared.post_sha256);
+    strcpy(manifest.writer_instance_id,prepared.writer_instance_id);
+    strcpy(manifest.snapshot_format,CHARACTER_SNAPSHOT_SHADOW_OUTBOX_FORMAT);
+    manifest.writer_epoch=prepared.writer_epoch;
+    manifest.writer_revision=prepared.writer_revision;
+    manifest.storage_format=(int16_t)prepared.storage_format;
+    manifest.snapshot_octets=metadata.source_octets;
+    memset(&existing,0,sizeof(existing));
+    if(!snapshot_evidence_shape(artifact_directory,artifact_name,manifest_name,stats)||
+       character_snapshot_shadow_outbox_retry(artifact_directory,&manifest,
+       &existing)!=CHARACTER_SNAPSHOT_SHADOW_OUTBOX_EXACT_RETRY) goto done;
     result=1;
 done:
     if(decoded) player_snapshot_v1_free_clone(decoded);
@@ -304,13 +404,15 @@ static int handoff_save_and_tick(const char *root,
     character_save_journal_v2_runtime_native *native)
 {
     creature player;
-    int first_count,second_count=-2;
-    int initial_count,save_result,tick_result,artifact_loaded,save_live_matches;
+    snapshot_evidence_stats evidence_before,evidence_after;
+    character_save_journal_v2_writer_tuple authority_before;
+    character_save_journal_v2_protocol_report report_before;
+    int initial_missing,save_result,tick_result,evidence_loaded,save_live_matches;
 
-    initial_count=artifact_files(root);
-    if(!native->snapshot_handoff_enabled||initial_count!=-1) {
-        fprintf(stderr,"m3 handoff phase=startup enabled=%d artifact_count=%d\n",
-            native->snapshot_handoff_enabled,initial_count);
+    initial_missing=artifact_directory_missing(root);
+    if(!native->snapshot_handoff_enabled||!initial_missing) {
+        fprintf(stderr,"m3 handoff phase=startup enabled=%d artifact_directory_missing=%d\n",
+            native->snapshot_handoff_enabled,initial_missing);
         return -1;
     }
     init_player(&player);
@@ -370,25 +472,37 @@ static int handoff_save_and_tick(const char *root,
             native->snapshot_capture.report.failed);
         return -1;
     }
-    first_count=artifact_files(root);
-    artifact_loaded=snapshot_artifact_matches(root,native,&player);
-    if(first_count!=1||!artifact_loaded||!live_matches_serializer(root,&player)) {
-        fprintf(stderr,"m3 handoff phase=artifact count=%d load=%d\n",
-            first_count,artifact_loaded);
+    if(character_save_journal_v2_writer_validate_held(
+       &native->process_owner.held_writer,&authority_before)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) return -1;
+    report_before=native->process_owner.player_store.last_report;
+    evidence_loaded=snapshot_evidence_matches(root,native,&player,&evidence_before);
+    if(!evidence_loaded||!protocol_authority_unchanged(&native->process_owner,
+       &authority_before,&report_before)||!live_matches_serializer(root,&player)) {
+        fprintf(stderr,"m3 handoff phase=evidence load=%d authority=%d\n",
+            evidence_loaded,protocol_authority_unchanged(&native->process_owner,
+            &authority_before,&report_before));
         return -1;
     }
     if(character_save_journal_v2_runtime_native_snapshot_tick(native,1)!=
          CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK||
-       artifact_files(root)!=(second_count=first_count)||
        native->snapshot_handoff.report.consumed!=1||
        native->snapshot_capture.report.attempted!=1||
        native->snapshot_capture.report.recorded!=1||
+       !snapshot_evidence_matches(root,native,&player,&evidence_after)||
+       !snapshot_evidence_unchanged(&evidence_before,&evidence_after)||
+       !protocol_authority_unchanged(&native->process_owner,&authority_before,
+       &report_before)||
        !live_matches_serializer(root,&player)) {
-        fprintf(stderr,"m3 handoff phase=repeat-tick enqueued=%" PRIu64 " consumed=%" PRIu64 " capture_attempted=%" PRIu64 " capture_recorded=%" PRIu64 " artifact_count=%d\n",
+        fprintf(stderr,"m3 handoff phase=repeat-tick enqueued=%" PRIu64 " consumed=%" PRIu64 " capture_attempted=%" PRIu64 " capture_recorded=%" PRIu64 " evidence=%d preserved=%d authority=%d\n",
             native->snapshot_handoff.report.enqueued,
             native->snapshot_handoff.report.consumed,
             native->snapshot_capture.report.attempted,
-            native->snapshot_capture.report.recorded,second_count);
+            native->snapshot_capture.report.recorded,
+            snapshot_evidence_matches(root,native,&player,&evidence_after),
+            snapshot_evidence_unchanged(&evidence_before,&evidence_after),
+            protocol_authority_unchanged(&native->process_owner,
+            &authority_before,&report_before));
         return -1;
     }
     (void)runtime;
@@ -422,8 +536,8 @@ int main(int argc, char **argv)
     init_player(&player);
     if(!strcmp(mode,"handoff")) {
         if(handoff_save_and_tick(root,&runtime,&native)||stop_safely(&runtime,&native))
-            return fail("real native decoder handoff did not create one immutable snapshot");
-        puts("m3 runtime shadow PG17 native PlayerSnapshotV1 handoff: ok");
+            return fail("real native decoder handoff did not create immutable paired evidence");
+        puts("m3 runtime shadow PG17 native PlayerSnapshotV1 paired evidence: ok");
         return 0;
     }
     if(!strcmp(mode, "fault")) {
