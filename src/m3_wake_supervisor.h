@@ -23,14 +23,19 @@ typedef enum m3_wake_supervisor_reap_result {
     M3_WAKE_SUPERVISOR_REAPED = 2
 } m3_wake_supervisor_reap_result;
 
-/* Every effect is supplied by the embedding caller. */
+/* Positive opaque owner token supplied by the embedding; never a descriptor. */
+typedef long m3_wake_supervisor_owner;
+
+/* Every effect is supplied by the embedding caller.  claim_owner returns a
+ * positive token or a non-positive unavailable result. */
 typedef struct m3_wake_supervisor_operations {
-    long (*claim_owner)(void *opaque);
-    long (*send_frame)(void *opaque, long owner, const unsigned char *frame,
+    m3_wake_supervisor_owner (*claim_owner)(void *opaque);
+    long (*send_frame)(void *opaque, m3_wake_supervisor_owner owner,
+        const unsigned char *frame,
         size_t frame_length);
     int (*last_error)(void *opaque);
-    int (*reap_owner)(void *opaque, long owner);
-    void (*release_owner)(void *opaque, long owner);
+    int (*reap_owner)(void *opaque, m3_wake_supervisor_owner owner);
+    void (*release_owner)(void *opaque, m3_wake_supervisor_owner owner);
 } m3_wake_supervisor_operations;
 
 typedef struct m3_wake_supervisor {
@@ -38,7 +43,7 @@ typedef struct m3_wake_supervisor {
     void *opaque;
     unsigned long retry_at;
     unsigned long backoff;
-    long owner;
+    m3_wake_supervisor_owner owner;
     m3_wake_supervisor_mode mode;
 } m3_wake_supervisor;
 

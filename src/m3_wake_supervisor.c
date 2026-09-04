@@ -16,10 +16,10 @@ static void m3_wake_supervisor_schedule_retry(m3_wake_supervisor *supervisor,
 static void m3_wake_supervisor_release_and_retry(
     m3_wake_supervisor *supervisor, unsigned long now)
 {
-    long owner;
+    m3_wake_supervisor_owner owner;
 
     owner = supervisor->owner;
-    if(owner && supervisor->operations &&
+    if(owner > 0 && supervisor->operations &&
        supervisor->operations->release_owner)
         supervisor->operations->release_owner(supervisor->opaque, owner);
     supervisor->owner = 0;
@@ -48,7 +48,7 @@ m3_wake_supervisor_wake_result m3_wake_supervisor_wake(
 
     if(!supervisor || supervisor->mode != M3_WAKE_SUPERVISOR_ON)
         return M3_WAKE_SUPERVISOR_WAKE_OFF;
-    if(!supervisor->owner) {
+    if(supervisor->owner <= 0) {
         if(now < supervisor->retry_at)
             return M3_WAKE_SUPERVISOR_WAKE_BACKING_OFF;
         if(!supervisor->operations || !supervisor->operations->claim_owner) {
@@ -56,7 +56,8 @@ m3_wake_supervisor_wake_result m3_wake_supervisor_wake(
             return M3_WAKE_SUPERVISOR_WAKE_DROPPED;
         }
         supervisor->owner = supervisor->operations->claim_owner(supervisor->opaque);
-        if(!supervisor->owner) {
+        if(supervisor->owner <= 0) {
+            supervisor->owner = 0;
             m3_wake_supervisor_schedule_retry(supervisor, now);
             return M3_WAKE_SUPERVISOR_WAKE_DROPPED;
         }
@@ -86,7 +87,7 @@ m3_wake_supervisor_reap_result m3_wake_supervisor_reap(
 
     if(!supervisor || supervisor->mode != M3_WAKE_SUPERVISOR_ON)
         return M3_WAKE_SUPERVISOR_REAP_OFF;
-    if(!supervisor->owner || !supervisor->operations ||
+    if(supervisor->owner <= 0 || !supervisor->operations ||
        !supervisor->operations->reap_owner)
         return M3_WAKE_SUPERVISOR_REAP_NONE;
     reaped = supervisor->operations->reap_owner(supervisor->opaque,
@@ -99,7 +100,7 @@ m3_wake_supervisor_reap_result m3_wake_supervisor_reap(
 void m3_wake_supervisor_shutdown(m3_wake_supervisor *supervisor)
 {
     if(!supervisor || supervisor->mode == M3_WAKE_SUPERVISOR_OFF) return;
-    if(supervisor->owner && supervisor->operations &&
+    if(supervisor->owner > 0 && supervisor->operations &&
        supervisor->operations->release_owner)
         supervisor->operations->release_owner(supervisor->opaque,
             supervisor->owner);
@@ -110,7 +111,7 @@ void m3_wake_supervisor_shutdown(m3_wake_supervisor *supervisor)
 
 int m3_wake_supervisor_has_owner(const m3_wake_supervisor *supervisor)
 {
-    return supervisor && supervisor->owner != 0;
+    return supervisor && supervisor->owner > 0;
 }
 
 unsigned long m3_wake_supervisor_retry_at(const m3_wake_supervisor *supervisor)

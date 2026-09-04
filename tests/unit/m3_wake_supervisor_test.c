@@ -8,6 +8,7 @@
 #include "m3_wake_supervisor.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -80,13 +81,36 @@ static const m3_wake_supervisor_operations fake_operations_without_error = {
     fake_claim, fake_send, 0, fake_reap, fake_release
 };
 
-static void fixture_init(fixture *test, m3_wake_supervisor *supervisor,
-    m3_wake_supervisor_mode mode)
+static const m3_wake_supervisor_operations fake_operations_without_claim = {
+    0, fake_send, fake_last_error, fake_reap, fake_release
+};
+
+static const m3_wake_supervisor_operations fake_operations_without_send = {
+    fake_claim, 0, fake_last_error, fake_reap, fake_release
+};
+
+static const m3_wake_supervisor_operations fake_operations_without_reap = {
+    fake_claim, fake_send, fake_last_error, 0, fake_release
+};
+
+static const m3_wake_supervisor_operations fake_operations_without_release = {
+    fake_claim, fake_send, fake_last_error, fake_reap, 0
+};
+
+static void fixture_init_with_operations(fixture *test,
+    m3_wake_supervisor *supervisor, m3_wake_supervisor_mode mode,
+    const m3_wake_supervisor_operations *operations, unsigned long backoff)
 {
     memset(test, 0, sizeof(*test));
     test->next_owner = 7;
     test->send_result = M3_WAKE_V1_FRAME_LENGTH;
-    m3_wake_supervisor_init(supervisor, mode, &fake_operations, test, 5);
+    m3_wake_supervisor_init(supervisor, mode, operations, test, backoff);
+}
+
+static void fixture_init(fixture *test, m3_wake_supervisor *supervisor,
+    m3_wake_supervisor_mode mode)
+{
+    fixture_init_with_operations(test, supervisor, mode, &fake_operations, 5);
 }
 
 static int test_off_never_claims_or_sends(void)
@@ -121,6 +145,127 @@ static int test_wake_uses_exact_canonical_packet(void)
     failed |= expect(test.frame_length == sizeof(canonical) &&
         memcmp(test.frame, canonical, sizeof(canonical)) == 0,
         "wake packet is exactly m3_wake_v1 canonical bytes");
+    return failed;
+}
+
+static int test_negative_claim_is_unavailable(void)
+{
+    fixture test;
+    m3_wake_supervisor supervisor;
+    int failed = 0;
+
+    fixture_init(&test, &supervisor, M3_WAKE_SUPERVISOR_ON);
+    test.next_owner = -7;
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 40) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED,
+        "negative claim is unavailable");
+    failed |= expect(test.claim_calls == 1 && test.send_calls == 0 &&
+        test.release_calls == 0 && !m3_wake_supervisor_has_owner(&supervisor) &&
+        m3_wake_supervisor_retry_at(&supervisor) == 45,
+        "negative claim sends and releases nothing, then backs off exactly");
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 44) ==
+        M3_WAKE_SUPERVISOR_WAKE_BACKING_OFF && test.claim_calls == 1,
+        "negative claim backoff is deterministic");
+    return failed;
+}
+
+static int test_zero_or_missing_claim_backs_off(void)
+{
+    fixture test;
+    m3_wake_supervisor supervisor;
+    int failed = 0;
+
+    fixture_init(&test, &supervisor, M3_WAKE_SUPERVISOR_ON);
+    test.next_owner = 0;
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 100) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED && test.claim_calls == 1 &&
+        test.send_calls == 0 && test.release_calls == 0 &&
+        m3_wake_supervisor_retry_at(&supervisor) == 105,
+        "zero claim is unavailable with an exact retry deadline");
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 104) ==
+        M3_WAKE_SUPERVISOR_WAKE_BACKING_OFF && test.claim_calls == 1,
+        "zero claim honors the exact retry deadline");
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 105) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED && test.claim_calls == 2 &&
+        m3_wake_supervisor_retry_at(&supervisor) == 110,
+        "zero claim can retry at the exact deadline");
+    m3_wake_supervisor_shutdown(&supervisor);
+    failed |= expect(test.release_calls == 0,
+        "idle shutdown after an unavailable claim releases nothing");
+
+    fixture_init_with_operations(&test, &supervisor, M3_WAKE_SUPERVISOR_ON,
+        &fake_operations_without_claim, 10);
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, ULONG_MAX - 4) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED && test.claim_calls == 0 &&
+        test.send_calls == 0 && test.release_calls == 0 &&
+        m3_wake_supervisor_retry_at(&supervisor) == ULONG_MAX,
+        "missing claim callback saturates the retry deadline");
+    return failed;
+}
+
+static int test_missing_send_or_release_callback_drops_owner(void)
+{
+    fixture test;
+    m3_wake_supervisor supervisor;
+    int failed = 0;
+
+    fixture_init_with_operations(&test, &supervisor, M3_WAKE_SUPERVISOR_ON,
+        &fake_operations_without_send, 5);
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 10) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED && test.claim_calls == 1 &&
+        test.send_calls == 0 && test.release_calls == 1 &&
+        !m3_wake_supervisor_has_owner(&supervisor) &&
+        m3_wake_supervisor_retry_at(&supervisor) == 15,
+        "missing send callback releases a claimed token and backs off");
+    m3_wake_supervisor_shutdown(&supervisor);
+    failed |= expect(test.release_calls == 1,
+        "idle shutdown after missing send does not release twice");
+
+    fixture_init_with_operations(&test, &supervisor, M3_WAKE_SUPERVISOR_ON,
+        &fake_operations_without_release, 5);
+    test.send_result = 0;
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 20) ==
+        M3_WAKE_SUPERVISOR_WAKE_DROPPED && test.send_calls == 1 &&
+        test.release_calls == 0 && !m3_wake_supervisor_has_owner(&supervisor) &&
+        m3_wake_supervisor_retry_at(&supervisor) == 25,
+        "absent release callback still drops the token and backs off");
+    m3_wake_supervisor_shutdown(&supervisor);
+    failed |= expect(m3_wake_supervisor_wake(&supervisor, 21) ==
+        M3_WAKE_SUPERVISOR_WAKE_OFF && test.release_calls == 0,
+        "shutdown remains terminal without a release callback");
+    return failed;
+}
+
+static int test_reap_nonpositive_or_missing_callback_keeps_owner(void)
+{
+    fixture test;
+    m3_wake_supervisor supervisor;
+    int failed = 0;
+
+    fixture_init(&test, &supervisor, M3_WAKE_SUPERVISOR_ON);
+    (void)m3_wake_supervisor_wake(&supervisor, 10);
+    test.reap_result = 0;
+    failed |= expect(m3_wake_supervisor_reap(&supervisor, 11) ==
+        M3_WAKE_SUPERVISOR_REAP_NONE && test.reap_calls == 1 &&
+        test.release_calls == 0 && m3_wake_supervisor_has_owner(&supervisor),
+        "zero reap result keeps the token");
+    test.reap_result = -1;
+    failed |= expect(m3_wake_supervisor_reap(&supervisor, 12) ==
+        M3_WAKE_SUPERVISOR_REAP_NONE && test.reap_calls == 2 &&
+        test.release_calls == 0 && m3_wake_supervisor_has_owner(&supervisor),
+        "negative reap result keeps the token");
+    m3_wake_supervisor_shutdown(&supervisor);
+
+    fixture_init_with_operations(&test, &supervisor, M3_WAKE_SUPERVISOR_ON,
+        &fake_operations_without_reap, 5);
+    (void)m3_wake_supervisor_wake(&supervisor, 20);
+    failed |= expect(m3_wake_supervisor_reap(&supervisor, 21) ==
+        M3_WAKE_SUPERVISOR_REAP_NONE && test.reap_calls == 0 &&
+        test.release_calls == 0 && m3_wake_supervisor_has_owner(&supervisor),
+        "missing reap callback keeps the token");
+    m3_wake_supervisor_shutdown(&supervisor);
+    failed |= expect(test.release_calls == 1,
+        "shutdown releases a token that could not be reaped");
     return failed;
 }
 
@@ -169,9 +314,8 @@ static int test_unrecoverable_send_loss_releases_and_backs_off(void)
     failed |= expect(test.release_calls == 1,
         "short-write release is not repeated during shutdown");
 
-    fixture_init(&test, &supervisor, M3_WAKE_SUPERVISOR_ON);
-    m3_wake_supervisor_init(&supervisor, M3_WAKE_SUPERVISOR_ON,
-        &fake_operations_without_error, &test, 5);
+    fixture_init_with_operations(&test, &supervisor, M3_WAKE_SUPERVISOR_ON,
+        &fake_operations_without_error, 5);
     test.send_result = -1;
     failed |= expect(m3_wake_supervisor_wake(&supervisor, 20) ==
         M3_WAKE_SUPERVISOR_WAKE_DROPPED,
@@ -257,6 +401,10 @@ int main(void)
     int failed = 0;
     failed |= test_off_never_claims_or_sends();
     failed |= test_wake_uses_exact_canonical_packet();
+    failed |= test_negative_claim_is_unavailable();
+    failed |= test_zero_or_missing_claim_backs_off();
+    failed |= test_missing_send_or_release_callback_drops_owner();
+    failed |= test_reap_nonpositive_or_missing_callback_keeps_owner();
     failed |= test_transient_loss_is_deliberately_dropped();
     failed |= test_unrecoverable_send_loss_releases_and_backs_off();
     failed |= test_one_owner_reap_and_backoff();
