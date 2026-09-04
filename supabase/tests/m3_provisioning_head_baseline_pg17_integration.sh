@@ -80,6 +80,15 @@ echo "RED PostgreSQL 17: provisioning completion does not seed an M3 baseline th
 run_super --file=/workspace/supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
 run_super --file=/workspace/supabase/tests/m3_provisioning_head_baseline_contract.sql
 
+if run_super --file=/workspace/supabase/tests/m3_absent_head_seed_contract.sql >/dev/null 2>&1; then
+  echo "m3 absent-head seed RED unexpectedly passed through migration 130" >&2
+  exit 1
+fi
+echo "RED PostgreSQL 17: file-authoritative absent-head seed RPC is absent through migration 130"
+
+run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
+run_super --file=/workspace/supabase/tests/m3_absent_head_seed_contract.sql
+
 # Seed pre-130 finalized rows after the first application.  The second
 # application must backfill only the missing head and preserve the advanced
 # one byte-for-byte.
@@ -102,4 +111,4 @@ run_super --command="select private.acquire_game_world_writer_epoch('$world','$w
   exit 1
 }
 
-echo "GREEN PostgreSQL 17: finalize/reconcile baseline, conflict atomicity, replay, v3 revision 0, and receipt revision 1 passed"
+echo "GREEN PostgreSQL 17: provisioning baseline plus file-authoritative absent-head seed, replay, and receipt revision 1 passed"

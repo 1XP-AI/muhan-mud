@@ -121,11 +121,13 @@ jobs:
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260912000000_m3_live_save_route.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
           M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1 \
           M3_RPC_TRANSPORT_DATABASE_URL=postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:5432/postgres \
             make -C src character-save-journal-v2-rpc-transport-integration CC=gcc PG_CONFIG=pg_config
 
-      - name: Run M3 v3 route and provisioning baseline PostgreSQL 17 contracts
+      - name: Run M3 v3 route, provisioning baseline, and absent-head seed PostgreSQL 17 contracts
         if: runner.os == 'Linux'
         shell: bash
         env:
