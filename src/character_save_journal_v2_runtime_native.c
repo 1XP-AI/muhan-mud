@@ -12,6 +12,8 @@
 #define RUNTIME_NATIVE_SERIALIZER_BUFFER_CAPACITY (8UL * 1024UL * 1024UL)
 #define RUNTIME_NATIVE_SERIALIZER_MAX_DEPTH 64UL
 #define RUNTIME_NATIVE_SERIALIZER_MAX_OBJECTS 8192UL
+#define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV "MUD_M3_PLAYER_SNAPSHOT_V1"
+#define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE "handoff"
 
 /* The process-wide PlayerStore can have only one native shadow owner.  Keep
  * the lifecycle sentinel outside caller storage so first-time init may still
@@ -48,6 +50,13 @@ static int runtime_native_bounded_text(const char *source,
     return source&&source[0]&&memchr(source,0,(size_t)capacity)!=0;
 }
 
+static int runtime_native_snapshot_handoff_enabled(void)
+{
+    const char *value=getenv(RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV);
+
+    return value && !strcmp(value,RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE);
+}
+
 static int runtime_native_command_uuid(void *opaque,
     char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH+1])
 {
@@ -81,6 +90,9 @@ static void runtime_native_shadow_shutdown(void *opaque)
         native->serializer_buffer=0;
     }
     native->serializer_buffer_capacity=0;
+    runtime_native_wipe(&native->snapshot_handoff,sizeof(native->snapshot_handoff));
+    runtime_native_wipe(&native->snapshot_capture,sizeof(native->snapshot_capture));
+    native->snapshot_handoff_enabled=0;
     runtime_native_wipe(native->muhan_home,sizeof(native->muhan_home));
     runtime_native_wipe(native->world_id,sizeof(native->world_id));
     native->shadow_active=0;
@@ -139,6 +151,14 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     configuration.candidate_uuid_opaque=0;
     configuration.file_load=runtime_native_file_load;
     configuration.file_load_opaque=0;
+    native->snapshot_handoff_enabled=0;
+    if(runtime_native_snapshot_handoff_enabled()) {
+        character_player_snapshot_v1_capture_native_init(&native->snapshot_capture);
+        character_player_snapshot_v1_handoff_init(&native->snapshot_handoff,
+            &native->snapshot_capture);
+        configuration.snapshot_handoff=&native->snapshot_handoff;
+        native->snapshot_handoff_enabled=1;
+    }
     character_save_journal_v2_process_owner_init(&native->process_owner,&configuration);
     if(character_save_journal_v2_process_owner_start(&native->process_owner)!=
        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) return -1;
@@ -150,6 +170,16 @@ static const character_save_journal_v2_runtime_shadow_operations
 runtime_native_shadow_operations={
     runtime_native_shadow_start,runtime_native_shadow_shutdown
 };
+
+character_save_journal_v2_process_owner_snapshot_tick_result
+character_save_journal_v2_runtime_native_snapshot_tick(
+    character_save_journal_v2_runtime_native *native, unsigned int limit)
+{
+    if(!native || !native->shadow_active || !native->snapshot_handoff_enabled)
+        return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
+    return character_save_journal_v2_process_owner_snapshot_tick(
+        &native->process_owner,limit);
+}
 #endif
 
 static void *runtime_native_connect(void *opaque, const char *conninfo)

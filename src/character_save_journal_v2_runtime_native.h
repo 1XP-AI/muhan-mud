@@ -7,6 +7,7 @@
 #include "character_save_journal_v2_deadline_native.h"
 #include "character_save_journal_v2_process_owner.h"
 #include "character_save_journal_v2_rpc_transport_native.h"
+#include "character_player_snapshot_v1_capture_native.h"
 #endif
 
 /* This is the only M3 runtime unit that includes or calls libpq.  The live
@@ -23,6 +24,10 @@ typedef struct character_save_journal_v2_runtime_native {
     char world_id[CHARACTER_SAVE_JOURNAL_V2_RUNTIME_WORLD_ID_MAX+1];
     char *serializer_buffer;
     unsigned long serializer_buffer_capacity;
+    /* Native owner storage for the optional durable snapshot observer. */
+    character_player_snapshot_v1_capture snapshot_capture;
+    character_player_snapshot_v1_handoff snapshot_handoff;
+    int snapshot_handoff_enabled;
     int shadow_active;
 #endif
 } character_save_journal_v2_runtime_native;
@@ -32,5 +37,13 @@ typedef struct character_save_journal_v2_runtime_native {
  * the active owner is a non-destructive no-op. */
 void character_save_journal_v2_runtime_native_init(
     character_save_journal_v2_runtime_native *native);
+
+#if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
+/* Explicit host lifecycle boundary for the opt-in handoff consumer.  Native
+ * startup, recovery, and PlayerStore save intentionally never call this. */
+character_save_journal_v2_process_owner_snapshot_tick_result
+character_save_journal_v2_runtime_native_snapshot_tick(
+    character_save_journal_v2_runtime_native *native, unsigned int limit);
+#endif
 
 #endif

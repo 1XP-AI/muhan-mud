@@ -20,6 +20,7 @@ typedef struct fixture {
     int close_fail, finish_calls, deadline_calls, uuid_calls, live_init_calls;
     int bootstrap_calls, recovery_calls, store_init_calls, build_calls, set_calls;
     int observer_set_calls, reset_calls, close_calls, global_store_installed;
+    int handoff_drain_calls, handoff_drain_result;
     int bound_previous_store, binding_current;
     char trace[32];
     unsigned int trace_length;
@@ -30,6 +31,10 @@ typedef struct fixture {
     void *recovery_observer_opaque;
     character_save_journal_v2_prepared_stage_observer store_observer;
     void *store_observer_opaque;
+    character_player_snapshot_v1_handoff handoff;
+    character_player_snapshot_v1_handoff *handoff_drain_handoff;
+    character_save_journal_v2_writer_context *handoff_drain_writer;
+    unsigned int handoff_drain_limit;
     character_save_journal_v2_writer_context writer;
 } fixture;
 
@@ -322,6 +327,28 @@ static int fake_stage_observer(void *opaque,
     return -73;
 }
 
+int character_player_snapshot_v1_handoff_observe(void *opaque,
+    const character_save_journal_v2_writer_context *writer,
+    const char *command_uuid)
+{
+    (void)opaque;
+    (void)writer;
+    (void)command_uuid;
+    return 0;
+}
+
+int character_player_snapshot_v1_handoff_drain(
+    character_player_snapshot_v1_handoff *handoff,
+    const character_save_journal_v2_writer_context *writer,
+    unsigned int limit)
+{
+    current->handoff_drain_calls++;
+    current->handoff_drain_handoff=handoff;
+    current->handoff_drain_writer=(character_save_journal_v2_writer_context *)writer;
+    current->handoff_drain_limit=limit;
+    return current->handoff_drain_result;
+}
+
 static int no_later_calls(const fixture *test)
 {
     return !test->live_init_calls && !test->bootstrap_calls &&
@@ -524,6 +551,52 @@ static int test_stage_observer_reaches_recovery_and_player_store(void)
         test.store_observer == fake_stage_observer &&
         test.store_observer_opaque == &test,
         "one optional stage observer must cover restart recovery and live saves");
+    failed += expect(character_save_journal_v2_process_owner_snapshot_tick(
+        &test.owner,1)==CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF&&
+        !test.handoff_drain_calls,
+        "legacy generic observer composition must leave the durable consumer OFF");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+    return failed;
+}
+
+static int test_handoff_replaces_generic_observer_and_ticks_only_explicitly(void)
+{
+    fixture test;
+    unsigned int trace_length;
+    int failed=0;
+
+    setup(&test);
+    test.configuration.stage_observer=fake_stage_observer;
+    test.configuration.stage_observer_opaque=&test;
+    test.configuration.snapshot_handoff=&test.handoff;
+    character_save_journal_v2_process_owner_init(&test.owner,
+        &test.configuration);
+    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK&&
+        test.recovery_observer==character_player_snapshot_v1_handoff_observe&&
+        test.recovery_observer_opaque==&test.handoff&&
+        test.store_observer==character_player_snapshot_v1_handoff_observe&&
+        test.store_observer_opaque==&test.handoff&&
+        !test.handoff_drain_calls,
+        "durable handoff must replace generic observer for recovery and live saves without draining during startup");
+    trace_length=test.trace_length;
+    failed+=expect(character_save_journal_v2_process_owner_snapshot_tick(
+        &test.owner,0)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_INVALID_ARGUMENT&&
+        !test.handoff_drain_calls&&test.trace_length==trace_length,
+        "an invalid explicit tick must not reach the consumer or save lifecycle");
+    test.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING;
+    failed+=expect(character_save_journal_v2_process_owner_snapshot_tick(
+        &test.owner,3)==CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_BUSY&&
+        !test.handoff_drain_calls&&test.trace_length==trace_length,
+        "a save in progress must keep the consumer outside the synchronous route");
+    test.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
+    failed+=expect(character_save_journal_v2_process_owner_snapshot_tick(
+        &test.owner,3)==CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK&&
+        test.handoff_drain_calls==1&&test.handoff_drain_handoff==&test.handoff&&
+        test.handoff_drain_writer==&test.owner.held_writer&&
+        test.handoff_drain_limit==3&&test.trace_length==trace_length,
+        "only an idle explicit tick may invoke the bounded consumer without save or ACK work");
     (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
     return failed;
 }
@@ -536,5 +609,6 @@ int main(void)
         test_close_failure_and_restart() |
         test_prior_store_restore_and_external_takeover() |
         test_reentrant_startup_shutdown_is_deferred() |
-        test_stage_observer_reaches_recovery_and_player_store();
+        test_stage_observer_reaches_recovery_and_player_store() |
+        test_handoff_replaces_generic_observer_and_ticks_only_explicitly();
 }

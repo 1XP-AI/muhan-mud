@@ -46,6 +46,19 @@ static int process_owner_valid(const character_save_journal_v2_process_owner *ow
         configuration->file_load;
 }
 
+static character_save_journal_v2_prepared_stage_observer
+process_owner_stage_observer(
+    const character_save_journal_v2_process_owner *owner,
+    void **observer_opaque)
+{
+    if(owner->configuration.snapshot_handoff) {
+        *observer_opaque=owner->configuration.snapshot_handoff;
+        return character_player_snapshot_v1_handoff_observe;
+    }
+    *observer_opaque=owner->configuration.stage_observer_opaque;
+    return owner->configuration.stage_observer;
+}
+
 static void process_owner_clear_held(character_save_journal_v2_process_owner *owner)
 {
     memset(&owner->held_writer, 0, sizeof(owner->held_writer));
@@ -107,6 +120,9 @@ void character_save_journal_v2_process_owner_init(
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_INVALID_ARGUMENT;
     owner->shutdown_result = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK;
     owner->recovery_result = CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INVALID_ARGUMENT;
+    owner->snapshot_tick_result =
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
+    owner->snapshot_handoff_result = CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_INVALID;
 }
 
 character_save_journal_v2_process_owner_startup_result
@@ -117,6 +133,8 @@ character_save_journal_v2_process_owner_start(
     char deadline[CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX + 1];
     char candidate[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
     player_store_ops store_ops;
+    character_save_journal_v2_prepared_stage_observer stage_observer;
+    void *stage_observer_opaque;
     int callback_result;
 
     if(!owner) return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_INVALID_ARGUMENT;
@@ -149,6 +167,10 @@ character_save_journal_v2_process_owner_start(
         sizeof(owner->player_store_binding));
     memset(&owner->recovery_report, 0, sizeof(owner->recovery_report));
     owner->recovery_result = CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INVALID_ARGUMENT;
+    owner->snapshot_tick_result = owner->configuration.snapshot_handoff ?
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_NOT_READY :
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
+    owner->snapshot_handoff_result = CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_INVALID;
     memset(deadline, 0, sizeof(deadline));
     callback_result = configuration->acquire_deadline(
         configuration->acquire_deadline_opaque, deadline);
@@ -182,11 +204,12 @@ character_save_journal_v2_process_owner_start(
         return process_owner_stop_start(owner,
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_BOOTSTRAP, 0);
     }
+    stage_observer = process_owner_stage_observer(owner,
+        &stage_observer_opaque);
     owner->recovery_result = character_save_journal_v2_recovery_run_with_stage_observer(
         &owner->held_writer,
-        character_save_journal_v2_live_ops_receipt_callback,
-        &owner->live_ops, configuration->stage_observer,
-        configuration->stage_observer_opaque, &owner->recovery_report);
+        character_save_journal_v2_live_ops_receipt_callback, &owner->live_ops,
+        stage_observer, stage_observer_opaque, &owner->recovery_report);
     if(owner->shutdown_requested) return process_owner_cancel_start(owner);
     if(owner->recovery_result != CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK) {
         return process_owner_stop_start(owner,
@@ -200,8 +223,7 @@ character_save_journal_v2_process_owner_start(
         configuration->candidate_uuid, configuration->candidate_uuid_opaque,
         configuration->file_load, configuration->file_load_opaque);
     if(character_save_journal_v2_player_store_set_stage_observer(
-       &owner->player_store, configuration->stage_observer,
-       configuration->stage_observer_opaque))
+       &owner->player_store, stage_observer, stage_observer_opaque))
         return process_owner_stop_start(owner,
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_PLAYER_STORE, 1);
     if(owner->shutdown_requested) return process_owner_cancel_start(owner);
@@ -248,4 +270,46 @@ character_save_journal_v2_process_owner_shutdown(
     owner->operation_active = 0;
     owner->shutdown_requested = 0;
     return owner->shutdown_result;
+}
+
+character_save_journal_v2_process_owner_snapshot_tick_result
+character_save_journal_v2_process_owner_snapshot_tick(
+    character_save_journal_v2_process_owner *owner, unsigned int limit)
+{
+    if(!owner)
+        return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_INVALID_ARGUMENT;
+    if(!limit) {
+        owner->snapshot_tick_result =
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_INVALID_ARGUMENT;
+        return owner->snapshot_tick_result;
+    }
+    if(!owner->configuration.snapshot_handoff) {
+        owner->snapshot_tick_result =
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
+        return owner->snapshot_tick_result;
+    }
+    if(owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY ||
+       !owner->writer_held) {
+        owner->snapshot_tick_result =
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_NOT_READY;
+        return owner->snapshot_tick_result;
+    }
+    if(owner->operation_active || owner->player_store.state !=
+       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE) {
+        owner->snapshot_tick_result =
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_BUSY;
+        return owner->snapshot_tick_result;
+    }
+    /* The host is responsible for choosing this single-owner idle boundary;
+     * this guard also prevents recursive tick calls from entering the same
+     * consumer.  No publish/ACK or PlayerStore dispatch is made here. */
+    owner->operation_active = 1;
+    owner->snapshot_handoff_result = character_player_snapshot_v1_handoff_drain(
+        owner->configuration.snapshot_handoff, &owner->held_writer, limit);
+    owner->operation_active = 0;
+    owner->snapshot_tick_result = owner->snapshot_handoff_result ==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK ?
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK :
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED;
+    return owner->snapshot_tick_result;
 }

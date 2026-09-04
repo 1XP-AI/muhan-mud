@@ -220,9 +220,47 @@ static int test_source_and_decode_rejections(void)
     return failed;
 }
 
+/* The handoff consumer receives an already-open private source.  It must
+ * still enforce one-link ownership itself, because a caller can race an
+ * external hardlink in after queue validation. */
+static int test_hardlinked_private_consume_source_is_rejected(void)
+{
+    char root[PATH_MAX],source[PATH_MAX],alias[PATH_MAX],artifact[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_player_snapshot_v1_capture capture;
+    character_save_journal_v2_wire wire;
+    decode_fixture decoder;
+    struct stat source_status,alias_status;
+    int fd=-1,failed=0,result;
+
+    if(setup(root,"hardlink-private-consume",&writer,&capture,&decoder))return 1;
+    if(path_join(source,sizeof(source),root,"private-source")||
+       path_join(alias,sizeof(alias),root,"private-source-alias")||
+       leaf(root,"private-source",RAW,sizeof(RAW)-1)||link(source,alias)||
+       character_save_journal_v2_read_prepared(root,COMMAND,&wire))
+        return teardown(root,&writer)?2:1;
+    fd=open(source,O_RDONLY|O_NOFOLLOW);
+    result=fd<0 ? CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID :
+        character_player_snapshot_v1_capture_consume(&capture,&writer,COMMAND,
+        wire.request_sha256,wire.writer_instance_id,wire.writer_epoch,fd);
+    if(fd>=0&&close(fd))failed++;
+    failed+=expect(result==CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_SOURCE&&
+        decoder.calls==0&&decoder.releases==0&&
+        path_join(artifact,sizeof(artifact),root,
+        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)==0&&access(artifact,F_OK)!=0&&
+        lstat(source,&source_status)==0&&lstat(alias,&alias_status)==0&&
+        source_status.st_dev==alias_status.st_dev&&source_status.st_ino==alias_status.st_ino&&
+        source_status.st_nlink==2,
+        "capture consume must reject an externally hardlinked private source without touching either name");
+    memset(&wire,0,sizeof(wire));
+    if(teardown(root,&writer))failed++;
+    return failed;
+}
+
 int main(void)
 {
     character_save_journal_v2_set_trusted_uid_for_test(getuid());
     character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());
-    return test_capture_and_exact_retry()|test_source_and_decode_rejections();
+    return test_capture_and_exact_retry()|test_source_and_decode_rejections()|
+        test_hardlinked_private_consume_source_is_rejected();
 }

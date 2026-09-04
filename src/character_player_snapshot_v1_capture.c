@@ -78,6 +78,30 @@ struct stat *status;
         (uint64_t)status->st_size<=CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES;
 }
 
+/* A retained source is a private handoff copy.  Queue-local promotion repairs
+ * its brief two-name interval before capture; this consumer accepts only the
+ * resulting one-link final and never a link to the legacy save-stage file. */
+static int capture_source_safe(fd,uid,status)
+int fd;
+uid_t uid;
+struct stat *status;
+{
+    return status&&fd>=0&&!fstat(fd,status)&&S_ISREG(status->st_mode)&&
+        status->st_uid==uid&&(status->st_mode&07777)==0600&&
+        status->st_nlink==1&&status->st_size>0&&
+        (uint64_t)status->st_size<=CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES;
+}
+
+static int capture_hash_source(fd,digest)
+int fd;
+char digest[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN+1];
+{
+    struct stat status;
+    if(fd<0||fstat(fd,&status))return -1;
+    if(status.st_nlink==1)return character_save_journal_v2_hash_fd(fd,digest);
+    return -1;
+}
+
 static int capture_same_stage(left,right)
 const struct stat *left,*right;
 {
@@ -360,5 +384,123 @@ done:
     memset(&metadata,0,sizeof(metadata));
     memset(digest,0,sizeof(digest));
     memset(stage_leaf,0,sizeof(stage_leaf));
+    return result;
+}
+
+int character_player_snapshot_v1_capture_consume(opaque,writer,command_uuid,
+    request_sha256,writer_instance_id,writer_epoch,source_fd)
+void *opaque;
+const character_save_journal_v2_writer_context *writer;
+const char *command_uuid;
+const char *request_sha256;
+const char *writer_instance_id;
+uint64_t writer_epoch;
+int source_fd;
+{
+    character_player_snapshot_v1_capture *capture=
+        (character_player_snapshot_v1_capture *)opaque;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_wire wire;
+    character_player_snapshot_v1_artifact_metadata metadata;
+    creature *player=0;
+    uint8_t *snapshot=0;
+    size_t snapshot_length=0;
+    struct stat source_before,source_after;
+    uid_t trusted_uid=0;
+    char digest[CHARACTER_SAVE_JOURNAL_V2_HASH_HEX_LEN+1];
+    int root=-1,artifact_directory=-1,artifact_result=
+        CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_NOT_FOUND;
+    character_player_snapshot_v1_capture_result result=
+        CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID;
+
+    if(!capture)return CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID;
+    capture_increment(&capture->report.attempted);
+    capture->report.last_result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID;
+    capture->report.last_artifact_result=
+        CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_NOT_FOUND;
+    capture->report.last_source_post_sha256[0]=0;
+    if(!capture->decode||!capture->release||!writer||!command_uuid||
+       !request_sha256||!writer_instance_id||!writer_epoch||source_fd<0)goto done;
+    memset(&tuple,0,sizeof(tuple));
+    if(character_save_journal_v2_writer_validate_held(writer,&tuple)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK||
+       character_save_journal_v2_writer_dup_held_root_fd(writer,&root)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK||
+       !capture_directory_safe(root,&trusted_uid)) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_CONTEXT;
+        goto done;
+    }
+    memset(&wire,0,sizeof(wire));
+    if(character_save_journal_v2_read_prepared_at(root,command_uuid,&wire)||
+       strcmp(wire.command_uuid,command_uuid)||
+       strcmp(wire.request_sha256,request_sha256)||
+       strcmp(wire.writer_instance_id,writer_instance_id)||
+       wire.writer_epoch!=writer_epoch) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_PREPARED;
+        goto done;
+    }
+    capture_text_copy(capture->report.last_source_post_sha256,
+        sizeof(capture->report.last_source_post_sha256),wire.post_sha256);
+    if(!capture_source_safe(source_fd,trusted_uid,&source_before)||
+       capture_hash_source(source_fd,digest)||strcmp(digest,wire.post_sha256)||
+       lseek(source_fd,0,SEEK_SET)<0) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_SOURCE;
+        goto done;
+    }
+    if(capture->decode(capture->decode_opaque,source_fd,&player)||!player||
+       player->type!=PLAYER||
+       !capture_player_name_matches(player,wire.legacy_name_key_hex)) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DECODE;
+        goto done;
+    }
+    if(player_snapshot_v1_encode_loaded(player,&snapshot,&snapshot_length)!=
+       CDTO_V1_OK||!snapshot||!snapshot_length) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_ENCODE;
+        goto done;
+    }
+    if(capture_hash_source(source_fd,digest)||strcmp(digest,wire.post_sha256)||
+       !capture_source_safe(source_fd,trusted_uid,&source_after)||
+       !capture_same_stage(&source_before,&source_after)) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_SOURCE;
+        goto done;
+    }
+    artifact_directory=capture_open_artifact_directory(root,trusted_uid);
+    if(artifact_directory<0) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_IO_ERROR;goto done;
+    }
+    memset(&metadata,0,sizeof(metadata));
+    if(capture_text_copy(metadata.world_id,sizeof(metadata.world_id),wire.world_id)||
+       capture_text_copy(metadata.character_id,sizeof(metadata.character_id),wire.character_id)||
+       capture_text_copy(metadata.command_id,sizeof(metadata.command_id),wire.command_uuid)||
+       capture_text_copy(metadata.canonical_name_hex,sizeof(metadata.canonical_name_hex),wire.legacy_name_key_hex)||
+       capture_text_copy(metadata.request_sha256,sizeof(metadata.request_sha256),wire.request_sha256)||
+       capture_text_copy(metadata.source_post_sha256,sizeof(metadata.source_post_sha256),wire.post_sha256)||
+       capture_text_copy(metadata.writer_instance_id,sizeof(metadata.writer_instance_id),wire.writer_instance_id)||
+       capture_text_copy(metadata.snapshot_format,sizeof(metadata.snapshot_format),CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_FORMAT)) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_INVALID;goto done;
+    }
+    metadata.writer_epoch=wire.writer_epoch;
+    metadata.writer_revision=wire.writer_revision;
+    metadata.source_octets=(uint64_t)source_before.st_size;
+    metadata.storage_format=(int16_t)wire.storage_format;
+    artifact_result=character_player_snapshot_v1_artifact_store(
+        artifact_directory,&metadata,snapshot,snapshot_length);
+    if(artifact_result!=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK&&
+       artifact_result!=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_EXACT_RETRY) {
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_ARTIFACT;goto done;
+    }
+    result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK;
+done:
+    if(snapshot)cdto_v1_free_wire(snapshot);
+    if(player)capture->release(capture->release_opaque,player);
+    if(artifact_directory>=0&&capture_close(artifact_directory)&&
+       result==CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK)
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_IO_ERROR;
+    if(root>=0&&capture_close(root)&&result==CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_OK)
+        result=CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_IO_ERROR;
+    capture_set_last(capture,result,artifact_result,
+        wire.post_sha256[0]?wire.post_sha256:0);
+    memset(&tuple,0,sizeof(tuple));memset(&wire,0,sizeof(wire));
+    memset(&metadata,0,sizeof(metadata));memset(digest,0,sizeof(digest));
     return result;
 }

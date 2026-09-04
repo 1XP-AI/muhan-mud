@@ -24,11 +24,14 @@
 #define character_save_journal_v2_process_owner_init test_process_owner_init
 #define character_save_journal_v2_process_owner_start test_process_owner_start
 #define character_save_journal_v2_process_owner_shutdown test_process_owner_shutdown
+#define character_save_journal_v2_process_owner_snapshot_tick test_process_owner_snapshot_tick
 #define character_save_journal_v2_rpc_transport_native_init test_rpc_transport_native_init
 #define character_save_journal_v2_rpc_transport_native_start test_rpc_transport_native_start
 #define character_save_journal_v2_rpc_transport_close test_rpc_transport_close
 #define character_save_journal_v2_deadline_native_init test_deadline_native_init
 #define character_save_journal_v2_deadline_native_callback test_deadline_native_callback
+#define character_player_snapshot_v1_capture_native_init test_snapshot_capture_native_init
+#define character_player_snapshot_v1_handoff_init test_snapshot_handoff_init
 
 #include "character_save_journal_v2_runtime_native.c"
 
@@ -48,11 +51,14 @@
 #undef character_save_journal_v2_process_owner_init
 #undef character_save_journal_v2_process_owner_start
 #undef character_save_journal_v2_process_owner_shutdown
+#undef character_save_journal_v2_process_owner_snapshot_tick
 #undef character_save_journal_v2_rpc_transport_native_init
 #undef character_save_journal_v2_rpc_transport_native_start
 #undef character_save_journal_v2_rpc_transport_close
 #undef character_save_journal_v2_deadline_native_init
 #undef character_save_journal_v2_deadline_native_callback
+#undef character_player_snapshot_v1_capture_native_init
+#undef character_player_snapshot_v1_handoff_init
 
 #include <stdio.h>
 
@@ -65,8 +71,14 @@ static int connect_calls;
 static int process_owner_init_calls;
 static int process_owner_start_calls;
 static int process_owner_shutdown_calls;
+static int process_owner_snapshot_tick_calls;
 static int transport_close_calls;
 static int default_load_calls;
+static int snapshot_capture_native_init_calls;
+static int snapshot_handoff_init_calls;
+static character_player_snapshot_v1_capture *snapshot_handoff_capture;
+static character_save_journal_v2_process_owner *snapshot_tick_owner;
+static unsigned int snapshot_tick_limit;
 static char supplied_conninfo[64];
 
 static int expect(int condition, const char *message)
@@ -201,6 +213,32 @@ test_process_owner_shutdown(character_save_journal_v2_process_owner *owner)
     return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK;
 }
 
+character_save_journal_v2_process_owner_snapshot_tick_result
+test_process_owner_snapshot_tick(character_save_journal_v2_process_owner *owner,
+    unsigned int limit)
+{
+    process_owner_snapshot_tick_calls++;
+    snapshot_tick_owner=owner;
+    snapshot_tick_limit=limit;
+    return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK;
+}
+
+void test_snapshot_capture_native_init(
+    character_player_snapshot_v1_capture *capture)
+{
+    snapshot_capture_native_init_calls++;
+    memset(capture,0,sizeof(*capture));
+}
+
+void test_snapshot_handoff_init(character_player_snapshot_v1_handoff *handoff,
+    character_player_snapshot_v1_capture *capture)
+{
+    snapshot_handoff_init_calls++;
+    snapshot_handoff_capture=capture;
+    memset(handoff,0,sizeof(*handoff));
+    handoff->capture=capture;
+}
+
 void test_rpc_transport_native_init(
     character_save_journal_v2_rpc_transport_native *native)
 {
@@ -249,9 +287,16 @@ static void reset_fakes(void)
     process_owner_init_calls=0;
     process_owner_start_calls=0;
     process_owner_shutdown_calls=0;
+    process_owner_snapshot_tick_calls=0;
     transport_close_calls=0;
     default_load_calls=0;
+    snapshot_capture_native_init_calls=0;
+    snapshot_handoff_init_calls=0;
+    snapshot_handoff_capture=0;
+    snapshot_tick_owner=0;
+    snapshot_tick_limit=0;
     memset(supplied_conninfo,0,sizeof(supplied_conninfo));
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
 }
 
 static int test_native_owns_root_and_world_for_process_lifetime(void)
@@ -272,6 +317,14 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
         "valid shadow start must succeed");
     failed|=expect(connect_calls==1&&process_owner_init_calls==1&&
         process_owner_start_calls==1,"shadow start must construct one owner");
+    failed|=expect(!native.process_owner.configuration.snapshot_handoff&&
+        !native.snapshot_handoff_enabled&&!snapshot_capture_native_init_calls&&
+        !snapshot_handoff_init_calls,
+        "snapshot handoff must stay OFF unless the native opt-in token is set");
+    failed|=expect(character_save_journal_v2_runtime_native_snapshot_tick(&native,1)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF&&
+        !process_owner_snapshot_tick_calls,
+        "OFF native composition must not create a consumer scheduling path");
     failed|=expect(!strcmp(supplied_conninfo,"dbname=muhan"),
         "conninfo must be used only to establish the connection");
     failed|=expect(native.process_owner.configuration.root==native.muhan_home&&
@@ -302,6 +355,41 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
     failed|=expect(bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
         bytes_are_zero(native.world_id,sizeof(native.world_id)),
         "shutdown must clear native-owned routing strings");
+    return failed;
+}
+
+static int test_native_snapshot_handoff_opt_in_has_only_explicit_tick(void)
+{
+    character_save_journal_v2_runtime_native native;
+    int failed=0;
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must enable the explicit native snapshot opt-in");
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,"/tmp/muhan-runtime-owned",
+        "world-a","dbname=muhan")==0,
+        "opted-in native shadow start must succeed");
+    failed|=expect(native.snapshot_handoff_enabled&&
+        native.process_owner.configuration.snapshot_handoff==&native.snapshot_handoff&&
+        snapshot_capture_native_init_calls==1&&snapshot_handoff_init_calls==1&&
+        snapshot_handoff_capture==&native.snapshot_capture&&
+        native.snapshot_handoff.capture==&native.snapshot_capture&&
+        !process_owner_snapshot_tick_calls,
+        "native owner must own the handoff observer but never drain it during startup");
+    failed|=expect(character_save_journal_v2_runtime_native_snapshot_tick(&native,7)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK&&
+        process_owner_snapshot_tick_calls==1&&snapshot_tick_owner==
+        &native.process_owner&&snapshot_tick_limit==7,
+        "only the host-called native tick may schedule the bounded consumer");
+    native.dependencies.shadow_operations->shutdown(
+        native.dependencies.shadow_opaque);
+    failed|=expect(!native.snapshot_handoff_enabled&&
+        bytes_are_zero(&native.snapshot_handoff,sizeof(native.snapshot_handoff))&&
+        bytes_are_zero(&native.snapshot_capture,sizeof(native.snapshot_capture)),
+        "shutdown must clear native-owned optional handoff state after owner shutdown");
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
     return failed;
 }
 
@@ -370,6 +458,7 @@ int main(void)
 {
     int failed=0;
     failed|=test_native_owns_root_and_world_for_process_lifetime();
+    failed|=test_native_snapshot_handoff_opt_in_has_only_explicit_tick();
     failed|=test_native_rejects_unbounded_borrowed_strings_before_connect();
     failed|=test_active_native_reinitialization_is_non_destructive();
     if(failed) return 1;

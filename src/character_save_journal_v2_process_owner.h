@@ -9,6 +9,7 @@
  */
 #include "character_save_journal_v2_player_store.h"
 #include "character_save_journal_v2_recovery.h"
+#include "character_player_snapshot_v1_handoff.h"
 
 typedef enum character_save_journal_v2_process_owner_state {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_NEW = 0,
@@ -35,6 +36,18 @@ typedef enum character_save_journal_v2_process_owner_shutdown_result {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED = 1
 } character_save_journal_v2_process_owner_shutdown_result;
 
+/* The handoff consumer is deliberately driven only by an owner caller at a
+ * known-safe lifecycle/tick boundary.  It is never dispatched from recovery,
+ * PlayerStore save, publish, or ACK. */
+typedef enum character_save_journal_v2_process_owner_snapshot_tick_result {
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK = 0,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF = 1,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_NOT_READY = 2,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_BUSY = 3,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_INVALID_ARGUMENT = 4,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED = 5
+} character_save_journal_v2_process_owner_snapshot_tick_result;
+
 typedef struct character_save_journal_v2_process_owner_configuration {
     const char *root;
     const char *world_id;
@@ -51,6 +64,10 @@ typedef struct character_save_journal_v2_process_owner_configuration {
     /* Optional shadow-only capture, shared by cold recovery and live saves. */
     character_save_journal_v2_prepared_stage_observer stage_observer;
     void *stage_observer_opaque;
+    /* Optional durable replacement for stage_observer.  When present it wins
+     * for both startup recovery and live saves, while the owner retains no
+     * ownership; callers must keep it alive through shutdown. */
+    character_player_snapshot_v1_handoff *snapshot_handoff;
 } character_save_journal_v2_process_owner_configuration;
 
 typedef struct character_save_journal_v2_process_owner {
@@ -65,6 +82,8 @@ typedef struct character_save_journal_v2_process_owner {
     character_save_journal_v2_process_owner_state state;
     character_save_journal_v2_process_owner_startup_result startup_result;
     character_save_journal_v2_process_owner_shutdown_result shutdown_result;
+    character_save_journal_v2_process_owner_snapshot_tick_result snapshot_tick_result;
+    int snapshot_handoff_result;
     int writer_held;
     int player_store_installed;
     int operation_active;
@@ -90,5 +109,12 @@ character_save_journal_v2_process_owner_start(
 character_save_journal_v2_process_owner_shutdown_result
 character_save_journal_v2_process_owner_shutdown(
     character_save_journal_v2_process_owner *owner);
+
+/* Processes a bounded number of durable snapshot tokens only when the owner
+ * is READY and its PlayerStore is idle.  Hosts choose when to call this;
+ * neither live saves nor startup recovery invoke it implicitly. */
+character_save_journal_v2_process_owner_snapshot_tick_result
+character_save_journal_v2_process_owner_snapshot_tick(
+    character_save_journal_v2_process_owner *owner, unsigned int limit);
 
 #endif

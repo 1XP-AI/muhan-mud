@@ -62,4 +62,17 @@ int character_player_snapshot_v1_capture_observe(
     const character_save_journal_v2_writer_context *writer,
     const char *command_uuid);
 
+/* Durable-handoff consumer boundary.  The caller supplies identity copied
+ * from a private handoff token plus its already-open immutable source link;
+ * this function rereads and matches PREPARED evidence, then captures that
+ * source.  It never selects a pathname from caller data or the live leaf. */
+int character_player_snapshot_v1_capture_consume(
+    void *opaque,
+    const character_save_journal_v2_writer_context *writer,
+    const char *command_uuid,
+    const char *request_sha256,
+    const char *writer_instance_id,
+    uint64_t writer_epoch,
+    int source_fd);
+
 #endif

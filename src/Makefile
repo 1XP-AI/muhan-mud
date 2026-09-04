@@ -66,7 +66,11 @@ M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_
 	character_save_journal_v2_recovery.o character_save_journal_v2_ack.o \
 	character_save_journal_v2_publish.o character_save_journal_v2_route.o \
 	character_save_journal_v2_writer.o character_save_journal_v2.o \
-	player_record_serializer.o
+	player_record_serializer.o character_player_snapshot_v1_handoff.o \
+	character_player_snapshot_v1_capture.o \
+	character_player_snapshot_v1_capture_native.o \
+	character_player_snapshot_v1_artifact.o player_snapshot_v1.o \
+	object_graph_v1.o cdto_v1.o
 
 ifeq ($(USE_M3_RUNTIME),1)
 ifneq ($(shell uname -s),Linux)
@@ -143,6 +147,7 @@ unit-test:
 	$(MAKE) character-player-snapshot-v1-artifact-test
 	$(MAKE) character-player-snapshot-v1-capture-test
 	$(MAKE) character-player-snapshot-v1-capture-native-test
+	$(MAKE) character-player-snapshot-v1-handoff-test
 
 character-snapshot-shadow-outbox-test:
 	mkdir -p /tmp/muhan-unit
@@ -155,8 +160,9 @@ character-snapshot-shadow-outbox-sanitizer-test:
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SNAPSHOT_SHADOW_OUTBOX_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_snapshot_shadow_outbox_test.c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_snapshot_shadow_outbox_sanitizer_test
 
-# This immutable capture boundary is deliberately test-only.  Do not add its
-# object to OBJECTS: the legacy live executable remains unaware of artifacts.
+# This immutable capture boundary never enters default OBJECTS: the legacy
+# executable remains unaware of artifacts.  The Linux M3 opt-in graph above
+# is the sole production composition that links it.
 character-player-snapshot-v1-artifact-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_artifact.c -o /tmp/muhan-unit/character_player_snapshot_v1_artifact_prod.o
@@ -191,6 +197,20 @@ character-player-snapshot-v1-capture-native-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -c files1.c -o /tmp/muhan-unit/character_player_snapshot_v1_capture_files1_sanitizer.o
 	$(CC) $(V2_TEST_CFLAGS) -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_player_snapshot_v1_capture_native_test.c character_player_snapshot_v1_capture_native.c character_player_snapshot_v1_capture.c character_player_snapshot_v1_artifact.c player_record_serializer.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c /tmp/muhan-unit/character_player_snapshot_v1_capture_files1_sanitizer.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/character_player_snapshot_v1_capture_native_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_player_snapshot_v1_capture_native_sanitizer_test
+
+character-player-snapshot-v1-handoff-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_handoff.c -o /tmp/muhan-unit/character_player_snapshot_v1_handoff_prod.o
+
+character-player-snapshot-v1-handoff-test: character-player-snapshot-v1-handoff-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_TESTING -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. ../tests/unit/character_player_snapshot_v1_handoff_test.c character_player_snapshot_v1_handoff.c character_player_snapshot_v1_capture.c character_player_snapshot_v1_artifact.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_player_snapshot_v1_handoff_test
+	/tmp/muhan-unit/character_player_snapshot_v1_handoff_test
+
+character-player-snapshot-v1-handoff-sanitizer-test: character-player-snapshot-v1-handoff-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_TESTING -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_player_snapshot_v1_handoff_test.c character_player_snapshot_v1_handoff.c character_player_snapshot_v1_capture.c character_player_snapshot_v1_artifact.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_player_snapshot_v1_handoff_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_player_snapshot_v1_handoff_sanitizer_test
 
 character-save-journal-v2-receipt-transport-static-test:
 	mkdir -p /tmp/muhan-unit
