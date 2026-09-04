@@ -59,6 +59,10 @@ name = "muhan-core-dto"
 version = "0.1.0"
 
 [[package]]
+name = "muhan-m3-wake-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "muhan-resource-ffi"
 version = "0.1.0"
 dependencies = [

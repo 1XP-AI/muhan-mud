@@ -144,6 +144,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) m3-runtime-idle-hook-static-test
+	$(MAKE) m3-wake-v1-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
 	$(MAKE) character-snapshot-shadow-outbox-test
@@ -435,6 +436,16 @@ m3-runtime-idle-hook-static-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(CFLAGS) -I. -c io.c -o /tmp/muhan-unit/io_default_p1f.o
 	python3 ../tests/unit/m3_runtime_idle_hook_static_test.py --main-source main.c --io-source io.c --native-source character_save_journal_v2_runtime_native.c --default-io-object /tmp/muhan-unit/io_default_p1f.o
+
+m3-wake-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/m3_wake_v1_test.c m3_wake_v1.c -o /tmp/muhan-unit/m3_wake_v1_test
+	/tmp/muhan-unit/m3_wake_v1_test
+
+m3-wake-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_wake_v1_test.c m3_wake_v1.c -o /tmp/muhan-unit/m3_wake_v1_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_wake_v1_sanitizer_test
 
 p1f-runtime-idle-test:
 	mkdir -p /tmp/muhan-unit

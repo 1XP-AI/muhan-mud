@@ -531,15 +531,17 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           pnpm test:browser
 
-      - name: Rust CDTO clone-only contract
+      - name: Rust CDTO and M3 wake protocol contracts
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
           cargo fmt --manifest-path rust/Cargo.toml --all --check
           cargo clippy --manifest-path rust/Cargo.toml -p muhan-core-dto --all-targets -- -D warnings
+          cargo clippy --manifest-path rust/Cargo.toml -p muhan-m3-wake-protocol --all-targets -- -D warnings
           ./scripts/run-cdto-differential.sh
-          cargo test --manifest-path rust/Cargo.toml --workspace
+          ./scripts/run-m3-wake-differential.sh
+          cargo test --manifest-path rust/Cargo.toml --workspace --exclude muhan-m3-wake-protocol
 
       - name: Trusted admission scenario
         if: matrix.runner == 'ubuntu-latest'
