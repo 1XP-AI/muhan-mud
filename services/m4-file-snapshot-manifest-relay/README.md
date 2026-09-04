@@ -9,6 +9,9 @@ The scanner requires a process-owned `0700` directory and process-owned,
 single-link regular `0600` files. Symlinks, FIFOs, hard links, races, malformed
 names, non-canonical manifests, and files at or above 2048 bytes are rejected.
 At most 256 candidate files are considered, in bytewise lexical filename order.
+The relay is Linux-only: on non-Linux platforms it fails closed because Node
+does not provide the descriptor-relative `openat` operation needed to prevent a
+root rename/replacement race.
 
 Run once with:
 

@@ -1,5 +1,5 @@
 import { lstat, open, readdir } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import {
   MAX_MANIFEST_BYTES, MAX_OUTBOX_ENTRIES, commandFromFilename, isManifestFilename,
   noFollowDirectoryFlags, noFollowFileFlags, parseManifest, type Manifest,
@@ -29,39 +29,51 @@ function summary(): RelaySummary {
   return { visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0 }
 }
 
-function identity(stat: { dev: number, ino: number, size: number, mtimeMs: number, ctimeMs: number }): string {
-  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+interface BigIntStat {
+  dev: bigint
+  ino: bigint
+  size: bigint
+  mtimeNs: bigint
+  ctimeNs: bigint
+  mode: bigint
+  uid: bigint
+  nlink: bigint
+  isDirectory(): boolean
+  isFile(): boolean
+  isSymbolicLink(): boolean
+}
+
+function identity(stat: BigIntStat): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
 }
 
 function descriptorPath(fd: number): string {
-  return process.platform === 'linux' ? `/proc/self/fd/${fd}` : `/dev/fd/${fd}`
-}
-
-function childPath(fd: number, root: string, name: string): string {
-  return process.platform === 'linux' ? `${descriptorPath(fd)}/${name}` : join(root, name)
+  return `/proc/self/fd/${fd}`
 }
 
 function currentUid(): number | undefined {
   return typeof process.getuid === 'function' ? process.getuid() : undefined
 }
 
-function assertDirectory(stat: { isDirectory(): boolean, isSymbolicLink(): boolean, mode: number, uid: number }): void {
-  if (stat.isSymbolicLink() || !stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (currentUid() !== undefined && stat.uid !== currentUid())) throw new UnsafeOutboxError()
+function assertDirectory(stat: BigIntStat): void {
+  const uid = currentUid()
+  if (stat.isSymbolicLink() || !stat.isDirectory() || (stat.mode & 0o777n) !== 0o700n || (uid !== undefined && stat.uid !== BigInt(uid))) throw new UnsafeOutboxError()
 }
 
-function assertFile(stat: { isFile(): boolean, isSymbolicLink(): boolean, mode: number, uid: number, nlink: number, size: number }, uid: number): void {
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o777) !== 0o600 || stat.size < 0 || stat.size >= MAX_MANIFEST_BYTES) throw new UnsafeOutboxError()
+function assertFile(stat: BigIntStat, uid: bigint): void {
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1n || stat.uid !== uid
+    || (stat.mode & 0o777n) !== 0o600n || stat.size < 0n || stat.size >= BigInt(MAX_MANIFEST_BYTES)) throw new UnsafeOutboxError()
 }
 
-async function readStableFile(path: string, uid: number): Promise<Uint8Array> {
-  const before = await lstat(path)
-  assertFile(before, uid)
+async function readStableFile(path: string, owner: bigint): Promise<Uint8Array> {
+  const before = await lstat(path, { bigint: true })
+  assertFile(before, owner)
   const file = await open(path, noFollowFileFlags())
   try {
-    const opened = await file.stat()
-    assertFile(opened, uid)
+    const opened = await file.stat({ bigint: true })
+    assertFile(opened, owner)
     if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
-    const bytes = Buffer.allocUnsafe(opened.size)
+    const bytes = Buffer.allocUnsafe(Number(opened.size))
     let offset = 0
     while (offset < bytes.length) {
       const read = await file.read(bytes, offset, bytes.length - offset, null)
@@ -70,30 +82,30 @@ async function readStableFile(path: string, uid: number): Promise<Uint8Array> {
     }
     const extra = Buffer.alloc(1)
     const readExtra = await file.read(extra, 0, 1, null)
-    const after = await file.stat()
+    const after = await file.stat({ bigint: true })
     if (readExtra.bytesRead !== 0 || identity(opened) !== identity(after)) throw new UnsafeOutboxError()
     return bytes
-  } finally { await file.close().catch(() => undefined) }
+  } finally { await file.close() }
 }
 
-/** Node filesystem implementation: descriptor-rooted on Linux and identity-checked elsewhere. */
+/** Node filesystem implementation: descriptor-rooted on Linux and fail-closed elsewhere. */
 export class NodeManifestFilesystem implements ManifestFilesystem {
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
+
   async scan(path: string): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
+    // Node has no portable openat(2) binding. Rejoining a verified root pathname
+    // on macOS leaves a root rename/replacement TOCTOU, so non-Linux is denied.
+    if (process.platform !== 'linux' || this.platform !== 'linux') throw new UnsafeOutboxError()
     if (!isAbsolute(path) || path.includes('\0')) throw new UnsafeOutboxError()
     const rootPath = resolve(path)
-    const before = await lstat(rootPath)
+    const before = await lstat(rootPath, { bigint: true })
     assertDirectory(before)
     const root = await open(rootPath, noFollowDirectoryFlags())
     try {
-      const opened = await root.stat()
+      const opened = await root.stat({ bigint: true })
       assertDirectory(opened)
       if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
-      // Linux can enumerate through the open descriptor. macOS's /dev/fd/N is
-      // not a directory path for all Node builds, so use the verified path and
-      // retain the identity check below on that platform.
-      const entries = await readdir(process.platform === 'linux' ? descriptorPath(root.fd) : rootPath, { encoding: 'buffer' })
-      const rootAfter = await lstat(rootPath)
-      if (process.platform !== 'linux' && identity(opened) !== identity(rootAfter)) throw new UnsafeOutboxError()
+      const entries = await readdir(descriptorPath(root.fd), { encoding: 'buffer' })
       const candidates = entries.filter((name) => isManifestFilename(name)).sort(Buffer.compare)
       if (candidates.length > MAX_OUTBOX_ENTRIES) throw new UnsafeOutboxError()
       const uid = opened.uid
@@ -103,13 +115,13 @@ export class NodeManifestFilesystem implements ManifestFilesystem {
         if (!Buffer.from(name, 'utf8').equals(Buffer.from(rawName)) || name.includes('/') || name.includes('\\')) {
           result.push({ name: '<invalid>', error: 'invalid' }); continue
         }
-        try { result.push({ name, bytes: await readStableFile(childPath(root.fd, rootPath, name), uid) }) }
+        try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid) }) }
         catch (error) {
           result.push({ name, error: error instanceof UnsafeOutboxError ? 'invalid' : 'io' })
         }
       }
       return result
-    } finally { await root.close().catch(() => undefined) }
+    } finally { await root.close() }
   }
 }
 

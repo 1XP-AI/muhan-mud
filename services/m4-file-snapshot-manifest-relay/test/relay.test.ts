@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, link, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, link, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -60,7 +60,7 @@ test('classifies SQLSTATE without retrying or leaking evidence', async () => {
   assert.equal(Object.keys(result).some((key) => /path|hash|name|payload/i.test(key)), false)
 })
 
-test('filesystem rejects unsafe links and preserves every evidence file', async () => {
+test('filesystem rejects unsafe links and preserves every evidence file', { skip: process.platform !== 'linux' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'm4-relay-'))
   const filename = `${first}.manifest`
   const original = Buffer.from(body(first))
@@ -78,6 +78,22 @@ test('filesystem rejects unsafe links and preserves every evidence file', async 
     assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, filename))), original)
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('macOS root rename/replacement race fails closed before reading replacement leaves', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'm4-relay-race-root-'))
+  const replacement = await mkdtemp(join(tmpdir(), 'm4-relay-race-replacement-'))
+  const displaced = `${root}.displaced`
+  try {
+    await writeFile(join(replacement, `${first}.manifest`), body(first), { mode: 0o600 })
+    await rename(root, displaced)
+    await rename(replacement, root)
+    await assert.rejects(() => new NodeManifestFilesystem('darwin').scan(root))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(displaced, { recursive: true, force: true })
+    await rm(replacement, { recursive: true, force: true })
   }
 })
 
