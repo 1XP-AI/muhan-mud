@@ -3,6 +3,7 @@ use muhan_core_dto::player_snapshot_v1::{
 };
 use muhan_core_dto::{
     decode, encode, DailyV1, Field, Kind, ObjectGraphNodeV1, ObjectGraphV1, ObjectV1, Record,
+    TYPE_U8,
 };
 
 fn fixture() -> PlayerSnapshotV1 {
@@ -167,6 +168,27 @@ fn snapshot_round_trip_preserves_all_safe_fields_and_allows_daily_overmax() {
 }
 
 #[test]
+fn snapshot_level_is_canonical_raw_u8_across_projection_bounds() {
+    for level in [0, 42, 255] {
+        let mut input = fixture();
+        input.level = level;
+        let wire = encode_player_snapshot_v1(&input).expect("level fixture encodes");
+        let envelope = decode(&wire).expect("level fixture has a CDTO envelope");
+        let field = &envelope.fields()[6];
+        assert_eq!((field.id(), field.type_tag()), (7, TYPE_U8));
+        assert_eq!(field.value(), &[level]);
+
+        let decoded = decode_player_snapshot_v1(&wire).expect("level fixture decodes");
+        assert_eq!(decoded.level, level);
+        assert_eq!(
+            encode_player_snapshot_v1(&decoded).expect("level fixture reencodes"),
+            wire,
+            "field 7 must remain byte-stable for raw U8 level {level}"
+        );
+    }
+}
+
+#[test]
 fn snapshot_rejects_hp_overmax_and_noncanonical_fixed_tail() {
     let mut input = fixture();
     input.hp_current = 101;
@@ -189,6 +211,24 @@ fn snapshot_rejects_non_player_type() {
     fields[7] = Field::i8(8, -1);
     let malformed = encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap();
     assert!(decode_player_snapshot_v1(&malformed).is_err());
+}
+
+#[test]
+fn snapshot_rejects_level_type_length_and_envelope_changes() {
+    let valid = decode(&encode_player_snapshot_v1(&fixture()).unwrap()).unwrap();
+
+    let mut fields = valid.fields().to_vec();
+    fields[6] = Field::i8(7, 42);
+    let wrong_type = encode(&Record::new(Kind::PlayerSnapshot, fields).unwrap()).unwrap();
+    assert!(decode_player_snapshot_v1(&wrong_type).is_err());
+
+    let mut fields = valid.fields().to_vec();
+    fields[6] = Field::raw(7, TYPE_U8, Vec::new());
+    assert!(Record::new(Kind::PlayerSnapshot, fields).is_err());
+
+    let wrong_envelope =
+        encode(&Record::new(Kind::Session, valid.fields().to_vec()).unwrap()).unwrap();
+    assert!(decode_player_snapshot_v1(&wrong_envelope).is_err());
 }
 
 #[test]

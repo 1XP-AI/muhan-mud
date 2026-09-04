@@ -10,7 +10,7 @@ use muhan_core_dto::player_snapshot_v1::{
 use muhan_core_dto::{
     decode, decode_creature_v1, decode_object_graph_v1, decode_object_v1, encode,
     encode_creature_v1, encode_object_graph_v1, encode_object_v1, CreatureV1, DailyV1, Error,
-    Field, Kind, ObjectGraphNodeV1, ObjectGraphV1, ObjectV1, Record, TYPE_BOOL,
+    Field, Kind, ObjectGraphNodeV1, ObjectGraphV1, ObjectV1, Record, TYPE_BOOL, TYPE_U8,
 };
 use std::env;
 use std::fs;
@@ -784,6 +784,18 @@ fn assert_player_roundtrip(
     snapshot: &PlayerSnapshotV1,
 ) {
     let rust_wire = encode_player_snapshot_v1(snapshot).expect("Rust player snapshot must encode");
+    let envelope = decode(&rust_wire).expect("Rust player snapshot has a CDTO envelope");
+    let level = &envelope.fields()[6];
+    assert_eq!(
+        (level.id(), level.type_tag()),
+        (7, TYPE_U8),
+        "field 7 must remain a raw U8 for {label}"
+    );
+    assert_eq!(
+        level.value(),
+        &[snapshot.level],
+        "field 7 must remain one octet for {label}"
+    );
     assert_eq!(
         encode_player_snapshot_v1(&decode_player_snapshot_v1(&rust_wire).unwrap()).unwrap(),
         rust_wire,
@@ -897,6 +909,17 @@ fn assert_player_snapshot_v1(oracle: &Path, artifact_dir: &Path, seed: u64) {
     );
 
     let mut generator_seed = seed ^ 0x5053_5631_0000_0001;
+    for level in [0, 42, 255] {
+        let mut snapshot = seeded_player_snapshot(&mut generator_seed, level as usize);
+        snapshot.level = level;
+        assert_player_roundtrip(
+            oracle,
+            artifact_dir,
+            &format!("player-snapshot-level-{level}"),
+            &snapshot,
+        );
+    }
+
     for case in 0..64 {
         let snapshot = seeded_player_snapshot(&mut generator_seed, case);
         assert_player_roundtrip(

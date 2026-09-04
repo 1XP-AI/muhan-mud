@@ -123,6 +123,52 @@ test_round_trip(void)
     cdto_v1_free_wire(wire);
 }
 
+/* Field 7 is a raw wire U8, not a gameplay-level policy.  Keep its complete
+ * byte range stable before a later projection consumes it. */
+static void
+test_level_raw_u8_canonicalization(void)
+{
+    const uint8_t levels[] = { 0U, 42U, 255U };
+    creature source;
+    creature *clone;
+    cdto_v1_decoded_record decoded;
+    uint8_t *wire;
+    uint8_t *reread;
+    size_t wire_length;
+    size_t reread_length;
+    size_t index;
+
+    for (index = 0U; index < sizeof(levels) / sizeof(levels[0]); ++index) {
+        fill_player(&source);
+        source.level = levels[index];
+        wire = NULL;
+        wire_length = 0U;
+        assert(player_snapshot_v1_encode_loaded(&source, &wire, &wire_length) ==
+            CDTO_V1_OK);
+        memset(&decoded, 0, sizeof(decoded));
+        assert(cdto_v1_decode(wire, wire_length, &decoded) == CDTO_V1_OK);
+        assert(decoded.fields[6].id == 7U);
+        assert(decoded.fields[6].type_tag == CDTO_V1_TYPE_U8);
+        assert(decoded.fields[6].length == 1U);
+        assert(decoded.fields[6].value[0] == levels[index]);
+        cdto_v1_free_decoded(&decoded);
+
+        clone = NULL;
+        assert(player_snapshot_v1_decode_clone(wire, wire_length, &clone) ==
+            CDTO_V1_OK);
+        assert(clone->level == levels[index]);
+        reread = NULL;
+        reread_length = 0U;
+        assert(player_snapshot_v1_encode_loaded(clone, &reread, &reread_length) ==
+            CDTO_V1_OK);
+        assert(reread_length == wire_length);
+        assert(memcmp(reread, wire, wire_length) == 0);
+        cdto_v1_free_wire(reread);
+        player_snapshot_v1_free_clone(clone);
+        cdto_v1_free_wire(wire);
+    }
+}
+
 static void
 test_native_abi_capability(void)
 {
@@ -284,6 +330,33 @@ test_valid_envelope_schema_rejections(void)
     record.kind = CDTO_V1_KIND_PLAYER_SNAPSHOT;
     record.fields = fields;
     record.field_count = 40U;
+    fields[6].type_tag = CDTO_V1_TYPE_I8;
+    changed = NULL;
+    changed_length = 0U;
+    clone = (creature *)1;
+    assert(cdto_v1_encode(&record, &changed, &changed_length) == 0);
+    assert(player_snapshot_v1_decode_clone(changed, changed_length, &clone) ==
+        CDTO_V1_INVALID_FIELD_LENGTH);
+    assert(clone == NULL);
+    cdto_v1_free_wire(changed);
+    fields[6].type_tag = CDTO_V1_TYPE_U8;
+    fields[6].length = 0U;
+    changed = NULL;
+    changed_length = 0U;
+    assert(cdto_v1_encode(&record, &changed, &changed_length) ==
+        CDTO_V1_INVALID_FIELD_LENGTH);
+    assert(changed == NULL);
+    fields[6].length = 1U;
+    record.kind = CDTO_V1_KIND_SESSION;
+    changed = NULL;
+    changed_length = 0U;
+    clone = (creature *)1;
+    assert(cdto_v1_encode(&record, &changed, &changed_length) == 0);
+    assert(player_snapshot_v1_decode_clone(changed, changed_length, &clone) ==
+        CDTO_V1_INVALID_FIELD_LENGTH);
+    assert(clone == NULL);
+    cdto_v1_free_wire(changed);
+    record.kind = CDTO_V1_KIND_PLAYER_SNAPSHOT;
     clone = (creature *)1;
     ((uint8_t *)fields[7].value)[0] = 1U;
     changed = NULL;
@@ -721,6 +794,7 @@ main(void)
 {
     test_native_abi_capability();
     test_round_trip();
+    test_level_raw_u8_canonicalization();
     test_rejections();
     test_inventory_and_faults();
     test_valid_envelope_schema_rejections();
