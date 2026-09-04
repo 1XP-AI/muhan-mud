@@ -77,6 +77,12 @@ if [[ -z "$harness" ]]; then
     "$repo_root/src/character_save_journal_v2_uuid.c" \
     "$repo_root/src/character_save_journal_v2_uuid_native.c" \
     "$repo_root/src/character_save_journal_v2.c" \
+    "$repo_root/src/character_player_snapshot_v1_handoff.c" \
+    "$repo_root/src/character_player_snapshot_v1_capture.c" \
+    "$repo_root/src/character_player_snapshot_v1_capture_native.c" \
+    "$repo_root/src/character_player_snapshot_v1_artifact.c" \
+    "$repo_root/src/player_snapshot_v1.c" \
+    "$repo_root/src/object_graph_v1.c" "$repo_root/src/cdto_v1.c" \
     "$repo_root/src/player_record_serializer.c" "$repo_root/src/player_store.c" \
     "$repo_root/src/utf8_text.c" -L"$(${PG_CONFIG:-pg_config} --libdir)" -lpq \
     -o "$harness"

@@ -55,6 +55,22 @@ int file_player_store_load(char *name, creature **player)
     return PLAYER_STORE_NOT_FOUND;
 }
 
+/* The handoff remains disabled in this runtime-shadow fixture, but the
+ * production runtime owns the native decoder callback at link time.  These
+ * isolated fallbacks make any unexpected decode fail safely without pulling
+ * the legacy loader's unrelated full link closure into this opt-in harness. */
+int read_crt_player(int descriptor, creature *player)
+{
+    (void)descriptor;
+    (void)player;
+    return -1;
+}
+
+void free_crt(creature *player)
+{
+    free(player);
+}
+
 static int fail(const char *message)
 {
     fprintf(stderr, "m3 runtime shadow PG17 integration: %s\n", message);

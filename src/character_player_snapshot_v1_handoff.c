@@ -621,7 +621,8 @@ int queue;unsigned int *count_out;
     DIR *directory;struct dirent *entry;int duplicate,close_result,seen;
     char commands[CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_MAX_PENDING][37],command[37];
     unsigned int count=0,index;
-    if(!count_out)return -1;*count_out=0;
+    if(!count_out)return -1;
+    *count_out=0;
     duplicate=fcntl(queue,F_DUPFD_CLOEXEC,3);
     if(duplicate<0)return -1;
     if(lseek(duplicate,0,SEEK_SET)<0) { cpsh_close(duplicate);return -1; }
@@ -1070,7 +1071,8 @@ unsigned int *count_out;
     unsigned char active_flags[CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_MAX_PENDING];
     unsigned char poison_flags[CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_MAX_PENDING];
     unsigned int count=0,identities=0,index;
-    if(!names||!count_out)return -1;*count_out=0;
+    if(!names||!count_out)return -1;
+    *count_out=0;
     duplicate=fcntl(queue,F_DUPFD_CLOEXEC,3);
     if(duplicate<0)return -1;
     if(lseek(duplicate,0,SEEK_SET)<0) { cpsh_close(duplicate);return -1; }
