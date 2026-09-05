@@ -1038,8 +1038,7 @@ unsigned char *str;
 		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
 		   !Ply[fd].ply ||
 		   onboarding_capture_activation_save_capability(fd, control.command_id,
-			   Ply[fd].ply->name) != 0 ||
-		   onboarding_send_active(fd, control.command_id) != 0) {
+			   Ply[fd].ply->name) != 0) {
 			onboarding_fail(fd);
 			return;
 		}
@@ -1048,6 +1047,10 @@ unsigned char *str;
 			onboarding_fail(fd);
 		return;
 #else
+		if(onboarding_send_active(fd, control.command_id) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
 		onboarding_finish_activation(fd);
 		disconnect(fd);
 		return;

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audit the narrow M3 onboarding gate without native resources."""
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[2]
 command = (root / "src" / "command1.c").read_text(encoding="utf-8")
@@ -10,6 +11,46 @@ gate = (root / "src" / "onboarding_activation_gate.c").read_text(encoding="utf-8
 def require(value: bool, message: str) -> None:
     if not value:
         raise SystemExit(message)
+
+def function_body(name: str) -> str:
+    start = command.index(name)
+    opening = command.index("{", start)
+    depth = 0
+    for position in range(opening, len(command)):
+        if command[position] == "{":
+            depth += 1
+        elif command[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return command[opening + 1:position]
+    raise SystemExit(f"unterminated function: {name}")
+
+def case_body(body: str, number: int) -> str:
+    match = re.search(rf"^\s*case {number}:", body, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"missing case {number}")
+    following = re.search(r"^\s*(?:case \d+|default):", body[match.end():],
+                          re.MULTILINE)
+    end = match.end() + following.start() if following else len(body)
+    return body[match.start():end]
+
+provision_activated = case_body(function_body("void onboarding_provision"), 5)
+claim_activated = case_body(function_body("void onboarding_claim"), 6)
+
+for label, activated in (("provision", provision_activated),
+                         ("claim", claim_activated)):
+    require("ONBOARDING_CONTROL_ACTIVATED" in activated,
+            f"{label} must validate its ACTIVATED case")
+    require(activated.count("onboarding_activation_gate_advance(fd, control.command_id)") == 1,
+            f"{label} must enter the gate exactly once")
+    gate_call = activated.index(
+        "onboarding_activation_gate_advance(fd, control.command_id)")
+    require("onboarding_send_active(fd," not in activated[:gate_call],
+            f"{label} must not emit ACTIVE before the runtime gate")
+    runtime_branch = activated[activated.index("#ifdef USE_M3_RUNTIME"):
+                               activated.index("#else")]
+    require("onboarding_send_active(fd," not in runtime_branch,
+            f"{label} runtime ACTIVATED case must leave ACTIVE to completion")
 
 require("onboarding_activation_gate_advance(fd, control.command_id)" in command,
         "both accepted ACTIVATED call sites must enter the gate")
