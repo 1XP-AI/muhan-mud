@@ -316,6 +316,21 @@ onboarding-snapshot-command-consumer-sanitizer-test:
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_snapshot_command_consumer_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c resource_path.c -o /tmp/muhan-unit/onboarding_snapshot_command_consumer_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_snapshot_command_consumer_sanitizer_test
 
+# Evidence harness for the next ownership slice.  It joins the local
+# descriptor-rooted reservation proof to the existing V4 candidate bridge in
+# a test binary only; no live owner currently owns such a descriptor.
+onboarding-activated-command-snapshot-harness-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activated_command_snapshot_harness_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c onboarding_activation_save_capability.c onboarding_activation_save_bridge.c resource_path.c -o /tmp/muhan-unit/onboarding_activated_command_snapshot_harness_test
+	/tmp/muhan-unit/onboarding_activated_command_snapshot_harness_test
+	python3 ../tests/unit/onboarding_snapshot_command_runtime_gap_test.py
+
+onboarding-activated-command-snapshot-harness-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activated_command_snapshot_harness_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c onboarding_activation_save_capability.c onboarding_activation_save_bridge.c resource_path.c -o /tmp/muhan-unit/onboarding_activated_command_snapshot_harness_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activated_command_snapshot_harness_sanitizer_test
+	python3 ../tests/unit/onboarding_snapshot_command_runtime_gap_test.py
+
 onboarding-admission-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_admission_test.c onboarding_admission.c onboarding_session.c onboarding_receipt.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/onboarding_admission_test
