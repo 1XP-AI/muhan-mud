@@ -244,16 +244,12 @@ async function completeOnboardingToActiveRoster(
   await emitOnboardingControl(page, { type: completion, characterId: character.id });
 
   await expect.poll(() => state.rosterRequests).toBeGreaterThan(requestsBeforeCompletion);
-  await expect(page.getByRole("heading", { name: "입장할 캐릭터를 고르세요" })).toBeVisible();
-  await expect(page.getByText(character.legacy_name, { exact: true })).toBeVisible();
 }
 
-async function enterActiveCharacterAndAssertGatewayAdmission(
+async function assertGatewayAdmissionAfterOnboarding(
   page: Page,
   character: MockRosterCharacter,
 ): Promise<void> {
-  await page.locator('input[name="mud-character"]').check();
-  await page.getByRole("button", { name: "게임 입장" }).click();
   await expect(page.locator(".selected-character-bar strong")).toHaveText(character.legacy_name);
   await expect(page.getByText("무한대전 세계와 연결됐습니다.")).toBeVisible();
 
@@ -315,7 +311,7 @@ for (const completedFlow of [
       completedFlow.completion,
       completedFlow.character,
     );
-    await enterActiveCharacterAndAssertGatewayAdmission(page, completedFlow.character);
+    await assertGatewayAdmissionAfterOnboarding(page, completedFlow.character);
   });
 }
 
