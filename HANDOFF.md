@@ -2,8 +2,8 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `2fb20c6a2d44a33986f57a620578db6d514dcaae`
-- 최신 검증 커밋: `a861f4cb8aec393a68e8a906d2a52d7b46b1f72b`
+- 포팅 기능 기준 커밋: `9710b85c38085fdb3cd152b58c125b7710d00824`
+- 최신 전체 CI 검증: [`9710b85`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33932493006)
 
 ## 먼저 알아야 할 상태
 
@@ -23,9 +23,6 @@ macOS의 case-insensitive filesystem에서 일반 clone을 막던
 전송·helper process·DB 작업·배포를 전혀 포함하지 않는 16-byte 무상태 신호 계약일
 뿐이다. 별도 TDD/PG17/운영 gate 없이 M3 runtime을 켜거나 game save를 DB 권위로
 바꾸지 않는다.
-
-이 작업은 보안 침해나 사이버 시큐리티 작업이 아니다. MUD의 계정, 캐릭터 저장,
-DB 이관, 웹 xterm 연결을 안전하게 리팩터링하는 일반 소프트웨어 개발 작업이다.
 
 ## 저장소와 원격
 
@@ -141,14 +138,37 @@ PostgreSQL에서 검사한다. `20260916000000`은 source octets를 acknowledged
 정확히 묶는다. PG17 계약은 migration 140의 RPC 부재를 RED로 확인한 뒤 150/160 적용과
 C/Rust exact-byte 재읽기를 GREEN으로 고정한다.
 
-### 4. M4 manifest relay
+### 4. PlayerSnapshotV1 raw-U8 level projection
+
+- `supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql`
+- `services/m4-file-snapshot-manifest-relay/src/store.ts`
+- `services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-artifact-relay.ts`
+
+`cb6ab08`에서 C와 Rust가 `PlayerSnapshotV1` field 7의 level을 gameplay range가 아닌
+raw U8로 취급하는 0/42/255 differential proof를 고정했다. `08e3a6a`과 `cf98e72`은
+receipt-bound artifact에서만 읽는 additive·immutable PostgreSQL projection과 PG17 role
+fixture를 추가했다.
+
+`9710b85`는 artifact relay에 선택적 projection store를 추가했다. artifact RPC가
+`RECORDED` 또는 `EXACT_RETRY`로 확인된 뒤에만 projection RPC를 호출하며, projection의
+invalid/conflict/retryable/unknown 결과나 예외는 artifact 결과, immutable evidence,
+legacy authority를 바꾸지 않고 다음 artifact 처리도 막지 않는다. production CLI의
+기본 호출에는 projection store를 주입하지 않으므로 이 커밋만으로 runtime 또는 배포에서
+projection이 켜지지 않는다.
+
+Linux disposable PostgreSQL 17 E2E는 raw level `42`, artifact와 projection의 exact retry,
+projection 행 불변성, 주입된 projection 실패의 격리, legacy/evidence 불변성을 모두
+확인한다. migration은 payload를 복제하지 않는 projection만 추가하며, journal v1에는
+level이 없으므로 이를 억지로 replay source로 사용하지 않는다.
+
+### 5. M4 manifest relay
 
 - `services/m4-file-snapshot-manifest-relay/`
 
 strict 13-line manifest를 lexical order로 읽고 direct PostgreSQL RPC를 호출하는 one-shot
 Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수정하지 않는다.
 
-### 5. Durable handoff consumer의 idle lifecycle
+### 6. Durable handoff consumer의 idle lifecycle
 
 `USE_M3_RUNTIME` build에서만 `main.c`가 optional native runtime을 시작한다. exact
 `MUD_M3_PLAYER_SNAPSHOT_V1=handoff` opt-in일 때 `io.c`의 serialized game loop가
@@ -164,7 +184,7 @@ serialized `PlayerSnapshotV1` bytes가 아니라 relay가 재확인할 legacy so
 (`artifact.source_octets`)이며, 이 consumer는 DB 권위나 legacy save 결과를 바꾸지
 않는다.
 
-### 6. M3 helper wake protocol v1
+### 7. M3 helper wake protocol v1
 
 `dfcaace`의 `m3_wake_v1.*`와 `rust/muhan-m3-wake-protocol/`은 identity나 durable-state
 참조가 전혀 없는 exact 16-byte wake frame을 C/Rust differential test로 고정한다. 이는
@@ -200,13 +220,14 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** 미래 helper transport/process supervision의 설계·RED 테스트만 맡긴다.
-   wake가 유실돼도 durable scan/recovery가 독립적으로 정확한지 증명하고, DB authority와
-   legacy save 결과는 바꾸지 않는다.
-2. **Terra/고난도:** M3 shadow opt-in 전의 PG17/PVC/restart/reconciliation E2E gate를
-   별도 worktree에서 보강한다. 활성화·배포는 이 작업의 권한이 아니다.
-3. **Luna/중간 난도:** Linux CI, C↔Rust differential, feature-OFF chart 값과 browser/xterm
-   smoke의 독립 재현을 맡긴다.
+1. **Terra/고난도:** raw-U8 level projection의 production activation 경계를 설계하고
+   RED 테스트부터 추가한다. 기본 no-projection, artifact 우선 확인, non-gating 오류 격리,
+   legacy authority를 반드시 유지하며 실제 활성화·배포는 이 작업의 권한이 아니다.
+2. **Terra/고난도:** closed replay journal v2 metadata-only level differential의 입력 계약을
+   설계·구현한다. journal v1의 level 부재를 우회하거나 payload를 다시 읽는 경로는 만들지
+   않는다.
+3. **Luna/중간 난도:** Linux CI와 C↔Rust differential, feature-OFF chart 값, browser/xterm
+   smoke guard의 독립 재현과 regression review를 맡긴다.
 
 각 에이전트는 자기 묶음만 수정하고, 커밋하지 않은 다른 에이전트 파일을 정리하거나
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
@@ -288,7 +309,7 @@ bash -n supabase/tests/m3_process_owner_pg17_integration.sh \
 
 ### 2026-09-05 현재 검증
 
-다음은 `dfcaace` 기준으로 로컬에서 다시 확인했다.
+다음은 현재 branch에서 로컬로 다시 확인했다.
 
 ```sh
 make -C src character-save-journal-v2-bootstrap-test CC=cc
@@ -301,7 +322,7 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 
 - focused bootstrap과 전체 C unit: pass.
 - C ASan/UBSan wake oracle, Rust unit, C↔Rust malformed corpus differential: pass.
-- relay: 49 pass, 3 expected skip; typecheck/build: pass.
+- relay: 53 pass, 3 expected skip; typecheck/build: pass.
 - `PlayerSnapshotV1` full DB contract의 독립 Terra 검토는 P0/P1 구현 누락 없음으로
   판정했다. 선택적 P2 negative fixture 증강은 다음 별도 slice다.
 - 이 handoff와 함께 들어가는 bounded bootstrap fixture 수정은 GitHub Ubuntu GCC의
@@ -349,6 +370,25 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
   통과했다.
 - 이 slice는 testnet 배포를 변경하지 않았다. `m3.mode=off`와 legacy file authority는
   그대로다.
+
+### PlayerSnapshotV1 raw-U8 level projection relay `cb6ab08`–`9710b85`
+
+- `cb6ab08`의 C/Rust differential은 field 7 level의 raw U8 값 0, 42, 255를 canonical
+  bytes로 round-trip한다. value를 gameplay range로 clamp하거나 reinterpret하지 않는다.
+- `20260919000000_player_snapshot_v1_level_projection.sql`은 verified artifact receipt를
+  source로 하는 payload-free immutable projection과 `mud_writer` RPC를 추가한다.
+  `08e3a6a`의 초기 schema offset 가정은 `cf98e72`에서 actual PG17 role fixture와 함께
+  바로잡았다.
+- `9710b85`의 optional relay store는 artifact `RECORDED`/`EXACT_RETRY` 뒤에만 exact five
+  parameter projection RPC를 호출한다. projection failure category는 별도 summary로
+  남고 artifact counter/evidence/legacy authority와 이후 파일 처리를 바꾸지 않는다.
+- 로컬에서 relay test 53 pass/3 expected skip, typecheck, build, E2E shell syntax가
+  통과했다. disposable PostgreSQL 17 전체 E2E는
+  [GitHub Actions run 33932493006](https://github.com/1XP-Inc/muhan-mud/actions/runs/33932493006)에서
+  raw level 42, exact retry, UPDATE 거부, failure isolation까지 통과했다. 동일 run의
+  Supabase ownership contract, Ubuntu ARM, Ubuntu, Windows, macOS도 모두 GREEN이다.
+- 이 slice는 production CLI 기본 경로, M3 runtime, C save path, DB authority, chart,
+  testnet 설정과 데이터를 바꾸지 않았다. `m3.mode=off`와 legacy file authority는 그대로다.
 
 ### M3 wake supervisor 계약 기반 `8e8d09e`
 
@@ -445,10 +485,11 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
    smoke로 검증한다. harness/guard/CI는 준비됐고, 이제 명시 승인된 disposable web users,
    provision name, imported unclaimed character fixture 및 전역 uniqueness 확인이 있어야
    실행한다. game account와 Auth account의 분리는 유지한다.
-2. shadow reconciliation의 다음 slice는 raw-U8 PlayerSnapshotV1 level의 canonical
-   C↔Rust proof를 먼저 고정한 뒤, legacy file authority를 유지하는 additive immutable
-   Postgres projection을 receipt-bound artifact RPC·replay differential에 TDD로 추가한다.
-   level은 gameplay range가 아니라 serialized raw value로 다룬다.
+2. raw-U8 PlayerSnapshotV1 level proof와 receipt-bound immutable projection gate는
+   완료됐다. 다음 slice는 별도 production activation configuration/operational gate와
+   closed journal v2 metadata-only level differential이다. 기본 no-projection, artifact
+   우선 확인, 오류 격리, legacy file authority를 유지하고 journal v1의 level 부재를
+   payload 재읽기나 순환 참조로 우회하지 않는다.
 3. 실제 Linux helper transport/process supervision은 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
    Linux fake-ops/FD hygiene RED gate를 추가한 뒤 별도 slice로 시작한다. wake protocol
