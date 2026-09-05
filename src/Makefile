@@ -165,6 +165,18 @@ bank-store-test:
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/bank_legacy_abi_test.c bank.c bank_store.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_legacy_abi_test
 	/tmp/muhan-unit/bank_legacy_abi_test
 
+# Read-only metadata seam; it stays outside default OBJECTS so login and save
+# behavior remain entirely legacy-owned until a separate composition opts in.
+legacy-identity-evidence-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DFILE_PLAYER_STORE_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/legacy_identity_evidence_test.c legacy_identity_evidence.c file_player_store.c player_path.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/legacy_identity_evidence_test
+	/tmp/muhan-unit/legacy_identity_evidence_test
+
+legacy-identity-evidence-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DFILE_PLAYER_STORE_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/legacy_identity_evidence_test.c legacy_identity_evidence.c file_player_store.c player_path.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/legacy_identity_evidence_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/legacy_identity_evidence_sanitizer_test
+
 m3-feature-off-legacy-authority-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/m3_feature_off_legacy_authority_test.c character_save_journal_v2_runtime.c player_store.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/m3_feature_off_legacy_authority_test

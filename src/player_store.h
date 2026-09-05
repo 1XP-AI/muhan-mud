@@ -46,5 +46,9 @@ int load_ply(char *name, struct creature **player);
 
 int file_player_store_save(char *name, struct creature *player);
 int file_player_store_load(char *name, struct creature **player);
+/* Metadata-only FileStore inspection.  It never exposes the descriptor or a
+ * decoded creature, and writes a digest only after the same opened file has
+ * passed the legacy decoder unchanged. */
+int file_player_store_inspect(char *name, char out_sha256[65]);
 
 #endif
