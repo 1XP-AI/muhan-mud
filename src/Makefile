@@ -927,6 +927,17 @@ files1-decoder-test:
 	$(CC) -fsanitize=address,undefined /tmp/muhan-unit/files1_decoder_files1.o /tmp/muhan-unit/files1_decoder_test.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/files1_decoder_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/files1_decoder_test
 
+# Test-only S1 seam: the oracle stays under tests/ and never joins OBJECTS or
+# M3_RUNTIME_OBJECTS, so legacy save/load authority remains unchanged.
+legacy-player-snapshot-v1-oracle-static-test:
+	@if printf '%s\n' '$(OBJECTS) $(M3_RUNTIME_OBJECTS)' | grep -q 'legacy_player_snapshot_v1_oracle'; then echo "test oracle leaked into production objects" >&2; exit 1; fi
+
+legacy-player-snapshot-v1-oracle-test: legacy-player-snapshot-v1-oracle-static-test
+	../scripts/run-legacy-player-snapshot-v1-differential.sh
+
+legacy-player-snapshot-v1-oracle-sanitizer-test: legacy-player-snapshot-v1-oracle-static-test
+	LEGACY_PLAYER_SNAPSHOT_V1_SANITIZE=1 DECODER_ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) ../scripts/run-legacy-player-snapshot-v1-differential.sh
+
 player-record-serializer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/player_record_serializer_test.c files1.c player_record_serializer.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/player_record_serializer_test
