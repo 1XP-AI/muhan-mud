@@ -299,6 +299,23 @@ static int run_case(int fail_publish, int fail_close)
             onboarding_activation_save_bridge_finish(&bridge, &report) ==
             ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED,
             "the production V4 implementation reports PREPARED and retains the bridge capability when its live publish route changes");
+        test.change_head_before_publish = 0;
+        memset(&report, 0, sizeof(report));
+        failed += expect(onboarding_activation_save_bridge_begin(&bridge, &capability,
+            command, actor, correlation, character,
+            ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, (const char *)name) ==
+            ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY,
+            "the retained V4 capability can begin the exact bridge again");
+        result = character_save_journal_v2_protocol_save_held_v4(&writer, &request,
+            &operations, &report);
+        failed += expect(result == CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_DEFERRED &&
+            report.reached == CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED &&
+            command_exists(root, "prepared") && command_exists(root, "published") &&
+            test.route_calls == 6 && test.serialize_calls == 2 &&
+            test.receipt_calls == 1 && capability.armed &&
+            onboarding_activation_save_bridge_finish(&bridge, &report) ==
+            ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !capability.armed,
+            "the exact retained V4 candidate retries its PREPARED journal, publishes once, and consumes only after publication");
     } else {
         failed += expect(result == CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_DEFERRED &&
             report.reached == CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED &&

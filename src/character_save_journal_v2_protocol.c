@@ -304,13 +304,44 @@ character_save_journal_v2_route_reply_v3 *reply;
     return result;
 }
 
-character_save_journal_v2_protocol_result
-character_save_journal_v2_protocol_save_held_v3(writer, request, operations,
-                                                 report_out)
+/* A retry must first prove that a durable PREPARED leaf is either absent or
+ * exactly the wire derived by this invocation.  Keeping this descriptor-local
+ * check here lets the V4 candidate path resume without exposing that authority
+ * to the generic V3 entry point. */
+static int protocol_prepared_state_at(root_fd, command_uuid)
+int root_fd;
+const char *command_uuid;
+{
+    char leaf[64];
+    struct stat status;
+    int journal_fd, count, result;
+
+    journal_fd = -1;
+    result = -1;
+    if(root_fd < 0 || !protocol_uuid(command_uuid)) return -1;
+    journal_fd = openat(root_fd, "character-save-journal",
+        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if(journal_fd < 0) goto done;
+    count = snprintf(leaf, sizeof(leaf), "%s.prepared", command_uuid);
+    if(count < 0 || (size_t)count >= sizeof(leaf)) goto done;
+    if(fstatat(journal_fd, leaf, &status, AT_SYMLINK_NOFOLLOW) == 0)
+        result = 1;
+    else if(errno == ENOENT)
+        result = 0;
+done:
+    if(journal_fd >= 0 && close(journal_fd)) result = -1;
+    memset(&status, 0, sizeof(status));
+    memset(leaf, 0, sizeof(leaf));
+    return result;
+}
+
+static character_save_journal_v2_protocol_result
+protocol_save_held_v3(writer, request, operations, report_out, retry_prepared)
 const character_save_journal_v2_writer_context *writer;
 const character_save_journal_v2_protocol_held_request_v3 *request;
 const character_save_journal_v2_protocol_operations_v3 *operations;
 character_save_journal_v2_protocol_report *report_out;
+int retry_prepared;
 {
     character_save_journal_v2_writer_tuple tuple;
     character_save_journal_v2_bound_route_v3 route;
@@ -321,7 +352,7 @@ character_save_journal_v2_protocol_report *report_out;
     character_save_journal_v2_publish_result published;
     character_save_journal_v2_ack_result acknowledged;
     character_save_journal_v2_protocol_result result;
-    int root_fd=-1;
+    int root_fd=-1, prepared_state;
     protocol_report_zero(report_out);
     if(!writer||!request||!operations||!report_out||
        !request->canonical_legacy_name||!request->canonical_legacy_name_length||
@@ -404,24 +435,33 @@ character_save_journal_v2_protocol_report *report_out;
      * valid PREPARED record already present for it; a new save must reject
      * before creating a stage whose newer route revision could contaminate
      * that recovery evidence. */
-    if(character_save_journal_v2_read_prepared_at(root_fd,
-       request->command_uuid,&reread)==0) {
+    prepared_state=protocol_prepared_state_at(root_fd,request->command_uuid);
+    if(prepared_state<0) {
         result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
         goto done;
     }
-    memset(&reread,0,sizeof(reread));
-    if(character_save_journal_v2_stage_at(root_fd,&wire,bytes,length)) {
+    if(prepared_state) {
+        if(!retry_prepared ||
+           character_save_journal_v2_read_prepared_at(root_fd,
+               request->command_uuid,&reread) ||
+           !protocol_wire_matches(&wire,&reread)) {
+            result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
+            goto done;
+        }
+    } else if(character_save_journal_v2_stage_at(root_fd,&wire,bytes,length)) {
         result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
         goto done;
+    } else {
+        report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_STAGED;
     }
-    report_out->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_STAGED;
     if(!protocol_writer_matches(writer,&tuple)||
        character_save_journal_v2_live_precondition_at(root_fd,&wire)||
        !protocol_writer_matches(writer,&tuple)||
-       character_save_journal_v2_commit_prepared_at(root_fd,&wire)||
-       character_save_journal_v2_read_prepared_at(root_fd,request->command_uuid,
-                                                   &reread)||
-       !protocol_wire_matches(&wire,&reread)) {
+       (!prepared_state &&
+        (character_save_journal_v2_commit_prepared_at(root_fd,&wire)||
+         character_save_journal_v2_read_prepared_at(root_fd,request->command_uuid,
+                                                     &reread)||
+         !protocol_wire_matches(&wire,&reread)))) {
         result=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PREPARE;
         goto done;
     }
@@ -461,6 +501,17 @@ done:
     memset(&wire,0,sizeof(wire));
     memset(&reread,0,sizeof(reread));
     return result;
+}
+
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v3(writer, request, operations,
+                                                 report_out)
+const character_save_journal_v2_writer_context *writer;
+const character_save_journal_v2_protocol_held_request_v3 *request;
+const character_save_journal_v2_protocol_operations_v3 *operations;
+character_save_journal_v2_protocol_report *report_out;
+{
+    return protocol_save_held_v3(writer,request,operations,report_out,0);
 }
 
 character_save_journal_v2_protocol_result
@@ -549,8 +600,8 @@ character_save_journal_v2_protocol_report *report_out;
     selected_operations.receipt_opaque = operations->receipt_opaque;
     selected_operations.observe_prepared_stage = operations->observe_prepared_stage;
     selected_operations.observe_prepared_stage_opaque = operations->observe_prepared_stage_opaque;
-    return character_save_journal_v2_protocol_save_held_v3(
-        writer, &selected_request, &selected_operations, report_out);
+    return protocol_save_held_v3(writer,&selected_request,&selected_operations,
+                                 report_out,candidate_result==1);
 }
 
 character_save_journal_v2_protocol_result
