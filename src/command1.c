@@ -384,11 +384,22 @@ void onboarding_activation_gate_idle_retry()
 #endif
 
 #ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
-int onboarding_activation_command_test_advance(fd, command_id)
+/* The dynamic harness supplies one Gateway record through the descriptor's
+ * real selected onboarding handler.  This exists only in test objects: it
+ * neither bypasses parser/state checks nor creates a production input path. */
+void onboarding_activation_command_test_deliver_activated(fd, command_id)
 int fd;
 const char *command_id;
 {
-	return onboarding_activation_lifecycle_advance(fd, command_id);
+	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	int written;
+
+	if(!onboarding_fd_active(fd) || !Ply[fd].io || !Ply[fd].io->fn ||
+	   !command_id) return;
+	written = snprintf(line, sizeof(line), "MUD1O ACTIVATED|%s", command_id);
+	if(written < 0 || (unsigned long)written >= sizeof(line)) return;
+	Ply[fd].io->fn(fd, Ply[fd].io->fnparam, (unsigned char *)line);
+	memset(line, 0, sizeof(line));
 }
 #ifdef USE_M3_RUNTIME
 void onboarding_activation_command_test_idle_retry()

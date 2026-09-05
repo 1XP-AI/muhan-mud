@@ -6,9 +6,10 @@
 #include "onboarding_activation_gate.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-extern int onboarding_activation_command_test_advance(int fd,
+extern void onboarding_activation_command_test_deliver_activated(int fd,
     const char *command_id);
 #ifdef USE_M3_RUNTIME
 extern void onboarding_activation_command_test_idle_retry(void);
@@ -30,6 +31,7 @@ typedef struct fixture {
     int activation_count;
     int disconnect_count;
     int save_count;
+    int binding_count;
 } fixture;
 
 static fixture *active_fixture;
@@ -44,31 +46,6 @@ static int expect(int ok, const char *message)
     fprintf(stderr, "onboarding_activation_command_lifecycle_test: %s\n",
         message);
     return 1;
-}
-
-int onboarding_format_c_control(out, out_size, control)
-char *out;
-unsigned long out_size;
-const onboarding_control *control;
-{
-    int written;
-    if(!out || !control || control->kind != ONBOARDING_CONTROL_ACTIVE) return -1;
-    written=snprintf(out, out_size, "MUD1O ACTIVE|%s\n", control->command_id);
-    return written < 0 || (unsigned long)written >= out_size ? -1:0;
-}
-
-int onboarding_state_apply_c_control(state, control)
-onboarding_state *state;
-const onboarding_control *control;
-{
-    return state && control && control->kind == ONBOARDING_CONTROL_ACTIVE ? 0:-1;
-}
-
-int onboarding_state_apply_gateway_control(state, control)
-onboarding_state *state;
-const onboarding_control *control;
-{
-    return state && control && control->kind == ONBOARDING_CONTROL_ACTIVE ? 0:-1;
 }
 
 int scwrite(fd, bytes, length)
@@ -109,6 +86,31 @@ unsigned long password_size;
 void *input;
 unsigned long input_size;
 { (void)password; (void)password_size; (void)input; (void)input_size; }
+
+int player_name_is_valid(name, min_codepoints, max_codepoints)
+const unsigned char *name;
+unsigned long min_codepoints;
+unsigned long max_codepoints;
+{
+    return name && !strcmp((const char *)name, "alpha") &&
+        min_codepoints == PLAYER_NAME_MIN_CODEPOINTS &&
+        max_codepoints == PLAYER_NAME_MAX_CODEPOINTS;
+}
+
+int onboarding_activation_binding_write(actor, correlation, character, mode,
+    command_id)
+const char *actor;
+const char *correlation;
+const char *character;
+onboarding_activation_binding_mode mode;
+const char *command_id;
+{
+    if(!active_fixture || !actor || !correlation || !character || !command_id ||
+       (mode != ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION &&
+        mode != ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM)) return -1;
+    active_fixture->binding_count++;
+    return 0;
+}
 
 #ifdef USE_M3_RUNTIME
 onboarding_activation_save_runtime_helper_result
@@ -155,10 +157,14 @@ static void setup(fixture *test, onboarding_activation_binding_mode mode)
         "33333333-3333-4333-8333-333333333333");
     test->ext.onboarding_mode=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ?
         ONBOARDING_ADMISSION_MODE_CLAIM:ONBOARDING_ADMISSION_MODE_PROVISION;
-    test->ext.onboarding_state=ONBOARDING_STATE_READY;
+    test->ext.onboarding_state=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ?
+        ONBOARDING_STATE_CLAIM_AWAIT_ACTIVATED:
+        ONBOARDING_STATE_PROVISION_AWAIT_ACTIVATED;
     test->ext.onboarding_world_staged=
         mode == ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION;
-    test->ext.onboarding_activation_save.armed=1;
+    test->io.fn=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ?
+        onboarding_claim:onboarding_provision;
+    test->io.fnparam=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ? 6:5;
     Ply[0].ply=&test->player;
     Ply[0].io=&test->io;
     Ply[0].extr=&test->ext;
@@ -177,6 +183,10 @@ static int completed(const fixture *test, onboarding_activation_binding_mode mod
          !test->activation_count && test->disconnect_count == 1);
 }
 
+static void deliver_activated(command_id)
+const char *command_id;
+{ onboarding_activation_command_test_deliver_activated(0, command_id); }
+
 #ifdef USE_M3_RUNTIME
 static int test_runtime_mode(onboarding_activation_binding_mode mode)
 {
@@ -184,13 +194,17 @@ static int test_runtime_mode(onboarding_activation_binding_mode mode)
     int failed=0;
     character_save_journal_v2_process_owner owner;
 
+    failed+=expect(setenv("MUD_M3_MODE", "shadow", 1) == 0 &&
+        setenv("MUD_M3_PLAYER_SNAPSHOT_V1", "handoff", 1) == 0,
+        "runtime activation fixture must enable its explicit feature flags");
     memset(&owner, 0, sizeof(owner));
     onboarding_activation_gate_bind_owner(&owner);
 
     setup(&test, mode);
     save_outcome=FAKE_SAVE_PUBLISHED;
-    failed+=expect(onboarding_activation_command_test_advance(0, expected_command) == 0 &&
-        test.save_count == 1 && completed(&test, mode),
+    deliver_activated(expected_command);
+    failed+=expect(test.save_count == 1 && test.binding_count == 1 &&
+        completed(&test, mode),
         "PUBLISHED must emit one ACTIVE and complete the command lifecycle");
     onboarding_activation_command_test_idle_retry();
     failed+=expect(test.active_count == 1 && test.save_count == 1,
@@ -198,8 +212,9 @@ static int test_runtime_mode(onboarding_activation_binding_mode mode)
 
     setup(&test, mode);
     save_outcome=FAKE_SAVE_PREPARED;
-    failed+=expect(onboarding_activation_command_test_advance(0, expected_command) == 1 &&
-        test.save_count == 1 && !test.active_count && test.ext.onboarding_activation_pending &&
+    deliver_activated(expected_command);
+    failed+=expect(test.save_count == 1 && test.binding_count == 1 &&
+        !test.active_count && test.ext.onboarding_activation_pending &&
         test.ext.onboarding_mode != 0,
         "PREPARED must suppress early ACTIVE and retain the command for idle");
     save_outcome=FAKE_SAVE_PUBLISHED;
@@ -212,27 +227,43 @@ static int test_runtime_mode(onboarding_activation_binding_mode mode)
 
     setup(&test, mode);
     save_outcome=FAKE_SAVE_PUBLISHED;
-    failed+=expect(onboarding_activation_command_test_advance(0,
-        "55555555-5555-4555-8555-555555555555") < 0 && !test.active_count &&
+    deliver_activated("55555555-5555-4555-8555-555555555555");
+    failed+=expect(!test.save_count && !test.active_count &&
         test.ext.onboarding_mode != 0 && !test.ext.onboarding_activation_pending,
         "a command mismatch must emit neither ACTIVE nor completion");
 
     setup(&test, mode);
     save_outcome=FAKE_SAVE_REJECTED;
-    failed+=expect(onboarding_activation_command_test_advance(0, expected_command) < 0 &&
+    deliver_activated(expected_command);
+    failed+=expect(
         test.save_count == 1 && !test.active_count && test.ext.onboarding_mode != 0 &&
         !test.ext.onboarding_activation_pending,
         "a gate error must emit neither ACTIVE nor completion");
     onboarding_activation_gate_unbind_owner(&owner);
     return failed;
 }
+
+static int test_runtime_feature_off(onboarding_activation_binding_mode mode)
+{
+    fixture test;
+
+    unsetenv("MUD_M3_MODE");
+    unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    setup(&test, mode);
+    save_outcome=FAKE_SAVE_REJECTED;
+    deliver_activated(expected_command);
+    return expect(!test.save_count && test.binding_count == 1 &&
+        completed(&test, mode),
+        "feature-off must retain the legacy completion path");
+}
 #else
 static int test_legacy_mode(onboarding_activation_binding_mode mode)
 {
     fixture test;
     setup(&test, mode);
-    return expect(onboarding_activation_command_test_advance(0, expected_command) == 0 &&
-        !test.save_count && completed(&test, mode),
+    deliver_activated(expected_command);
+    return expect(!test.save_count && test.binding_count == 1 &&
+        completed(&test, mode),
         "USE_M3_RUNTIME off must retain the legacy completion path");
 }
 #endif
@@ -243,6 +274,8 @@ int main(void)
 #ifdef USE_M3_RUNTIME
     failed+=test_runtime_mode(ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION);
     failed+=test_runtime_mode(ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM);
+    failed+=test_runtime_feature_off(ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION);
+    failed+=test_runtime_feature_off(ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM);
 #else
     failed+=test_legacy_mode(ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION);
     failed+=test_legacy_mode(ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM);

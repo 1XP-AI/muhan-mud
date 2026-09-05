@@ -55,6 +55,18 @@ require("onboarding_activation_gate_idle_retry();" in io,
 require("onboarding_activation_lifecycle_advance(fd," in command and
         "onboarding_activation_gate_idle_retry" in command,
         "the idle retry must use the same lifecycle boundary as commands")
+test_seam = function_body("void onboarding_activation_command_test_deliver_activated")
+require("Ply[fd].io->fn(fd, Ply[fd].io->fnparam" in test_seam and
+        "MUD1O ACTIVATED|%s" in test_seam,
+        "the test seam must dispatch a serialized ACTIVATED record")
+require("onboarding_activation_lifecycle_advance" not in test_seam and
+        "onboarding_provision(fd, 5" not in test_seam and
+        "onboarding_claim(fd, 6" not in test_seam,
+        "the test seam must not bypass the descriptor-selected command handler")
+require("#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING\n/* The dynamic harness" in command and
+        command.index("#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING\n/* The dynamic harness") <
+        command.index("void onboarding_activation_command_test_deliver_activated"),
+        "the command test seam must remain compiled out of production objects")
 require("onboarding_activation_pending) return 1;" in command,
         "retained activation must not accept socket input")
 require("ONBOARDING_ACTIVATION_GATE_RETAINED" in command and
