@@ -842,6 +842,9 @@ class OnboardingSession {
         // COMMIT control has been accepted by the C socket write path.
         await this.writeControl('MUD1O COMMIT\n')
         if (this.closed) return
+        const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: result.characterId, mode: this.mode! })
+        if (this.closed) return
+        if (activated.characterId !== result.characterId) throw new OnboardingProtocolError()
         // Provisioning owns only the one-shot C wizard transaction. The
         // refreshed browser roster must re-enter through /ws, where the
         // normal owner-active lease creates the normal MUD1 admission ticket.
@@ -894,6 +897,10 @@ class OnboardingSession {
         if (this.closed) return
         if (result.characterId !== challenge.characterId) throw new OnboardingProtocolError()
         await this.writeControl(`MUD1O CLAIMED|${result.characterId}\n`)
+        if (this.closed) return
+        const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: result.characterId, mode: this.mode! })
+        if (this.closed) return
+        if (activated.characterId !== result.characterId) throw new OnboardingProtocolError()
         // end() can synchronously emit C error/end. Mark the one-shot
         // onboarding connection terminal before invoking it so those events
         // cannot turn a completed claim into a failed session.

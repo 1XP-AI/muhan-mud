@@ -54,6 +54,10 @@ class RecordingOnboardingAuthorizer implements OnboardingAuthorizer, CharacterAu
     if (this.claimFailures > 0) { this.claimFailures -= 1; throw this.claimFailureError ?? new OnboardingAuthorizationError(true) }
     return { characterId: character }
   }
+  async activateHandoff(request: { characterId: string }): Promise<{ characterId: string }> {
+    this.calls.push('activate')
+    return { characterId: request.characterId }
+  }
   async challenge(request: ChallengeOnboardingRequest): Promise<{ characterId: string, legacyNameKey: string, fileSha256: string, allowExpiresAtMs: number }> {
     this.calls.push('challenge'); this.challenges.push(request)
     return { characterId: character, legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + 90_000 }
@@ -283,7 +287,7 @@ test('provision relays the original wizard before DB finalize and blocks only at
   await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve']))
   await eventually(() => assert.match(binaryText(messages), /성별\? /))
   ws.send(Buffer.from('m\n'))
-  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize']))
+  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate']))
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   assert.match(toMud[0]!.toString('ascii'), /^MUD1O\|P\|\d+\|000102030405060708090a0b0c0d0e0f\|123e4567-e89b-12d3-a456-426614174000\|123e4567-e89b-12d3-a456-426614174001\|[0-9a-f]{64}\n$/)
   assert.equal(toMud.filter((value) => value.toString('ascii').startsWith('MUD1O ')).length, 2)
@@ -345,6 +349,8 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
   t.after(async () => { await gateway.close(); await new Promise<void>((resolve) => mud.close(() => resolve())) })
   const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
   await once(ws, 'open')
+  // Arm this before completion can synchronously close the browser socket.
+  const uncertainProvisionClose = once(ws, 'close')
   const messages: Array<{ data: RawData, binary: boolean }> = []
   ws.on('message', (data, binary) => messages.push({ data, binary }))
   ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
@@ -353,13 +359,13 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
   await eventually(() => assert.match(binaryText(messages), /성별\? /))
   ws.send(Buffer.from('m\n'))
 
-  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile']))
+  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate']))
   const expectedFinalize: FinalizeOnboardingRequest = { actorUserId: actor, correlationId: correlation, characterId: character, fileSha256: 'c'.repeat(64), storageFormat: 'player-v1' }
   assert.deepEqual(authorizer.finalizations, [expectedFinalize])
   assert.deepEqual(authorizer.reconciliations, [expectedFinalize])
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
-  const [closeCode] = await once(ws, 'close') as [number]
+  const [closeCode] = await uncertainProvisionClose as [number]
   assert.equal(closeCode, 1000)
   await eventually(() => assert.equal(mudClosed, true))
   assert.equal(stage, 5)
@@ -425,7 +431,7 @@ test('provision completion silently drops game bytes coalesced with SAVED', asyn
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
   assert.equal(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(trailingGame)), false)
   assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
-  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize'])
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
 })
 
 test('provision completion drops a later C game event while SAVED finalization is pending', async (t) => {
@@ -547,6 +553,7 @@ test('provision completion closes onboarding and hands the owned active characte
 
   const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
   await once(ws, 'open')
+  const onboardingClosed = once(ws, 'close')
   const messages: Array<{ data: RawData, binary: boolean }> = []
   ws.on('message', (data, binary) => messages.push({ data, binary }))
   ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
@@ -557,17 +564,18 @@ test('provision completion closes onboarding and hands the owned active characte
   await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   mud.releaseCommit()
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
-  await once(ws, 'close')
+  await onboardingClosed
   assert.equal(authorizer.leaseBegins.length, 0, 'onboarding must not retain the gameplay lease')
 
   const regular = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
   await once(regular, 'open')
+  const regularClosed = once(regular, 'close')
   regular.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token-not-for-logs', characterId: character }))
   await eventually(() => assert.equal(authorizer.leaseBegins.length, 1))
   await eventually(() => assert.equal(tcpConnections, 2))
   assert.match(mud.writes.at(-1)!.toString('ascii'), /^MUD1\|/)
   regular.close()
-  await once(regular, 'close')
+  await regularClosed
   await eventually(() => assert.ok(authorizer.leaseReleases.includes(authorizer.leaseBegins[0]!.sessionId)))
 })
 
@@ -835,7 +843,7 @@ test('claim relays the legacy password prompt, calls only the name-bound claim R
   ws.send(Buffer.from('old-secret\n'))
   const [code] = await once(ws, 'close')
   assert.equal(code, 1000)
-  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'claim'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'claim', 'activate'])
   assert.deepEqual(authorizer.challenges.map(({ legacyNameKey, fileSha256 }) => ({ legacyNameKey, fileSha256 })), [{ legacyNameKey: 'Alice', fileSha256: 'b'.repeat(64) }])
   assert.deepEqual(authorizer.claimNames, ['Alice', 'Alice'])
   assert.deepEqual(authorizer.claimFingerprints, ['b'.repeat(64), 'b'.repeat(64)])
@@ -869,7 +877,7 @@ test('claim completion ignores synchronous C error and end events after CLAIMED'
 
   assert.equal(code, 1000)
   assert.equal(mud.destroyDuringEnd, 0, 'C close events after CLAIMED must not enter fail()')
-  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'activate'])
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
 })
 
@@ -889,6 +897,8 @@ test('claim completion drops later C game bytes while ownership finalization is 
 
   const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
   await once(ws, 'open')
+  // Activation can close immediately after the CLAIMED write callback.
+  const claimCompletionClose = once(ws, 'close')
   const messages: Array<{ data: RawData, binary: boolean }> = []
   ws.on('message', (data, binary) => messages.push({ data, binary }))
   ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
@@ -905,7 +915,7 @@ test('claim completion drops later C game bytes while ownership finalization is 
   assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
   authorizer.finishClaim()
   await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === `MUD1O CLAIMED|${character}\n`)))
-  const [closeCode] = await once(ws, 'close') as [number]
+  const [closeCode] = await claimCompletionClose as [number]
   assert.equal(closeCode, 1000)
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
 })

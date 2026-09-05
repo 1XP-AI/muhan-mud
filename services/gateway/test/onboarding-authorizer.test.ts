@@ -46,6 +46,39 @@ test('onboarding RPC aborts a hanging service-role request and normalizes the fa
   assert.equal(aborted, true)
 })
 
+test('handoff activation invokes only the exact service RPC and validates its active row', async () => {
+  const calls: Array<{ url: URL, init?: RequestInit }> = []
+  const client = new SupabaseOnboardingAuthorizer(config(), async (url, init) => {
+    calls.push({ url: new URL(url), init })
+    return Response.json([{
+      character_id: character,
+      actor_user_id: actor,
+      correlation_id: correlation,
+      lifecycle: 'active',
+      onboarding_status: 'finalized',
+    }])
+  })
+
+  await client.activateHandoff({ actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' })
+  assert.equal(calls[0]!.url.pathname, '/rpc/activate_game_character_onboarding_handoff')
+  assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), {
+    p_actor_user_id: actor,
+    p_correlation_id: correlation,
+    p_character_id: character,
+    p_mode: 'provision',
+  })
+
+  const unexpectedColumn = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{
+    character_id: character,
+    actor_user_id: actor,
+    correlation_id: correlation,
+    lifecycle: 'active',
+    onboarding_status: 'finalized',
+    mode: 'provision',
+  }]))
+  await assert.rejects(() => unexpectedColumn.activateHandoff({ actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' }), OnboardingAuthorizationError)
+})
+
 test('onboarding RPC rejects oversized, non-JSON, and unknown-column responses', async () => {
   const now = () => new Date('2026-09-01T23:50:00.000Z').getTime()
   const oversized = new SupabaseOnboardingAuthorizer(config(), async () => new Response(new Uint8Array(65_537), { headers: { 'content-type': 'application/json' } }), now)
@@ -56,8 +89,8 @@ test('onboarding RPC rejects oversized, non-JSON, and unknown-column responses',
   await assert.rejects(() => unknownColumn.begin(beginRequest()), OnboardingAuthorizationError)
 })
 
-test('onboarding client maps only player-v1 to storage format one and fails closed without PostgREST bodies', async () => {
-  const client = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{ character_id: character, actor_user_id: actor, lifecycle: 'active', status: 'finalized', saved_file_sha256: 'a'.repeat(64), storage_format: 2 }]))
+test('onboarding client maps only player-v1 to storage format one and requires a pending handoff result', async () => {
+  const client = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{ character_id: character, actor_user_id: actor, lifecycle: 'handoff_pending', status: 'finalized', saved_file_sha256: 'a'.repeat(64), storage_format: 2 }]))
   await assert.rejects(() => client.finalize({ actorUserId: actor, correlationId: correlation, characterId: character, fileSha256: 'a'.repeat(64), storageFormat: 'player-v1' }), OnboardingAuthorizationError)
   await assert.rejects(() => client.reserve({ actorUserId: actor, correlationId: correlation, worldId: 'muhan', legacyName: 'hero' }), OnboardingAuthorizationError)
 })
@@ -120,7 +153,7 @@ test('legacy claim binds the exact C-verified player fingerprint to the service 
     calls.push({ url: new URL(url), init })
     return Response.json([{
       character_id: character,
-      lifecycle: 'active',
+      lifecycle: 'handoff_pending',
       owner_user_id: actor,
       claimed_at: '2026-09-02T00:00:00.000Z',
       onboarding_status: 'finalized',
@@ -147,7 +180,7 @@ test('legacy claim binds the exact C-verified player fingerprint to the service 
 
   const mismatched = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{
     character_id: character,
-    lifecycle: 'active',
+    lifecycle: 'handoff_pending',
     owner_user_id: actor,
     claimed_at: '2026-09-02T00:00:00.000Z',
     onboarding_status: 'finalized',

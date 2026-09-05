@@ -18,6 +18,7 @@ export interface CancelUnreservedOnboardingRequest { actorUserId: string; correl
 export interface ReserveOnboardingRequest { actorUserId: string; correlationId: string; worldId: string; legacyName: string }
 export interface FinalizeOnboardingRequest { actorUserId: string; correlationId: string; characterId: string; fileSha256: string; storageFormat: string }
 export interface ClaimOnboardingRequest { actorUserId: string; correlationId: string; worldId: string; legacyNameKey: string; fileSha256: string }
+export interface ActivateOnboardingHandoffRequest { actorUserId: string; correlationId: string; characterId: string; mode: OnboardingMode }
 export interface ChallengeOnboardingRequest { actorUserId: string; correlationId: string; worldId: string; legacyNameKey: string; fileSha256: string }
 export interface ChallengeOnboardingResult { characterId: string; legacyNameKey: string; fileSha256: string; allowExpiresAtMs: number }
 export interface OnboardingAuthorizer {
@@ -28,6 +29,7 @@ export interface OnboardingAuthorizer {
   reconcile(request: FinalizeOnboardingRequest): Promise<{ characterId: string }>
   challenge(request: ChallengeOnboardingRequest): Promise<ChallengeOnboardingResult>
   claim(request: ClaimOnboardingRequest): Promise<{ characterId: string }>
+  activateHandoff(request: ActivateOnboardingHandoffRequest): Promise<{ characterId: string }>
 }
 
 function configured(config: GatewayConfig): { url: string; key: string } {
@@ -112,13 +114,24 @@ export class SupabaseOnboardingAuthorizer implements OnboardingAuthorizer {
   async claim(request: ClaimOnboardingRequest): Promise<{ characterId: string }> {
     if (!validBase(request.actorUserId, request.correlationId) || !SAFE_WORLD_RE.test(request.worldId) || !SAFE_NAME_RE.test(request.legacyNameKey) || !SHA256_RE.test(request.fileSha256)) throw new OnboardingAuthorizationError()
     const row = await this.rpc('claim_legacy_game_character_onboarding', { p_world_id: request.worldId, p_legacy_name_key: request.legacyNameKey, p_imported_file_sha256: request.fileSha256, p_actor_user_id: request.actorUserId, p_correlation_id: request.correlationId }, ['character_id', 'lifecycle', 'owner_user_id', 'claimed_at', 'onboarding_status', 'imported_file_sha256'])
-    if (!isStrictLowerUuid(row.character_id) || row.lifecycle !== 'active' || row.owner_user_id !== request.actorUserId || row.onboarding_status !== 'finalized' || row.imported_file_sha256 !== request.fileSha256 || typeof row.claimed_at !== 'string' || !Number.isFinite(Date.parse(row.claimed_at))) throw new OnboardingAuthorizationError()
+    if (!isStrictLowerUuid(row.character_id) || row.lifecycle !== 'handoff_pending' || row.owner_user_id !== request.actorUserId || row.onboarding_status !== 'finalized' || row.imported_file_sha256 !== request.fileSha256 || typeof row.claimed_at !== 'string' || !Number.isFinite(Date.parse(row.claimed_at))) throw new OnboardingAuthorizationError()
     return { characterId: row.character_id }
+  }
+  async activateHandoff(request: ActivateOnboardingHandoffRequest): Promise<{ characterId: string }> {
+    if (!validBase(request.actorUserId, request.correlationId) || !isStrictLowerUuid(request.characterId) || (request.mode !== 'provision' && request.mode !== 'claim')) throw new OnboardingAuthorizationError()
+    const row = await this.rpc('activate_game_character_onboarding_handoff', {
+      p_actor_user_id: request.actorUserId,
+      p_correlation_id: request.correlationId,
+      p_character_id: request.characterId,
+      p_mode: request.mode,
+    }, ['character_id', 'actor_user_id', 'correlation_id', 'lifecycle', 'onboarding_status'])
+    if (row.character_id !== request.characterId || row.actor_user_id !== request.actorUserId || row.correlation_id !== request.correlationId || row.lifecycle !== 'active' || row.onboarding_status !== 'finalized') throw new OnboardingAuthorizationError()
+    return { characterId: request.characterId }
   }
   private async complete(name: 'finalize_game_character_provisioning' | 'reconcile_game_character_provisioning', request: FinalizeOnboardingRequest): Promise<{ characterId: string }> {
     if (!validBase(request.actorUserId, request.correlationId) || !isStrictLowerUuid(request.characterId) || !SHA256_RE.test(request.fileSha256) || request.storageFormat !== 'player-v1') throw new OnboardingAuthorizationError()
     const row = await this.rpc(name, { p_actor_user_id: request.actorUserId, p_correlation_id: request.correlationId, p_saved_file_sha256: request.fileSha256, p_storage_format: 1 }, ['character_id', 'actor_user_id', 'lifecycle', 'status', 'saved_file_sha256', 'storage_format'])
-    if (row.character_id !== request.characterId || row.actor_user_id !== request.actorUserId || row.lifecycle !== 'active' || row.status !== 'finalized' || row.saved_file_sha256 !== request.fileSha256 || row.storage_format !== 1) throw new OnboardingAuthorizationError()
+    if (row.character_id !== request.characterId || row.actor_user_id !== request.actorUserId || row.lifecycle !== 'handoff_pending' || row.status !== 'finalized' || row.saved_file_sha256 !== request.fileSha256 || row.storage_format !== 1) throw new OnboardingAuthorizationError()
     return { characterId: request.characterId }
   }
   private async rpc(name: string, body: Record<string, unknown>, expectedKeys: readonly string[]): Promise<Record<string, unknown>> {
@@ -159,4 +172,5 @@ export class TestOnlyOnboardingAuthorizer implements OnboardingAuthorizer {
     return { characterId: '00000000-0000-4000-8000-000000000002', legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + CLAIM_ALLOW_TTL_MS }
   }
   async claim(_request: ClaimOnboardingRequest): Promise<{ characterId: string }> { return { characterId: '00000000-0000-4000-8000-000000000002' } }
+  async activateHandoff(request: ActivateOnboardingHandoffRequest): Promise<{ characterId: string }> { return { characterId: request.characterId } }
 }
