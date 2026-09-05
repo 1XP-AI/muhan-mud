@@ -5,17 +5,13 @@
 #include <string.h>
 
 #if defined(__GNUC__) || defined(__clang__)
-__attribute__((weak)) character_save_journal_v2_protocol_result
+extern character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save_held_v4(
-    writer, request, operations, report)
-const character_save_journal_v2_writer_context *writer;
-const character_save_journal_v2_protocol_held_request_v3 *request;
-const character_save_journal_v2_protocol_operations_v4 *operations;
-character_save_journal_v2_protocol_report *report;
-{
-    (void)writer; (void)request; (void)operations; (void)report;
-    return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
-}
+    const character_save_journal_v2_writer_context *writer,
+    const character_save_journal_v2_protocol_held_request_v3 *request,
+    const character_save_journal_v2_protocol_operations_v4 *operations,
+    character_save_journal_v2_protocol_report *report)
+    __attribute__((weak));
 #endif
 
 static unsigned long player_store_text_length(const char *text, unsigned long maximum)
@@ -92,9 +88,9 @@ static int player_store_serialize_bounded(
     return 0;
 }
 
-/* protocol_save_held_v3 receives only the already bounded caller buffer.  The
- * legacy record encoder has no route-dependent fields, so producing it before
- * protocol composition keeps the adapter's externally visible ordering exact. */
+/* v3 receives the already bounded caller buffer.  v4 leaves active_player
+ * live until its resolver and stage-route identity checks authorize this
+ * callback; that keeps rejected v4 candidates from touching caller bytes. */
 static int player_store_serialized(void *opaque,
     const character_save_journal_v2_writer_tuple *writer,
     const character_save_journal_v2_bound_route_v3 *route,
@@ -110,6 +106,10 @@ static int player_store_serialized(void *opaque,
     if(length_out) *length_out=0;
     if(!store||!bytes_out||!length_out||!store->buffer||
        store->buffer_length>store->buffer_capacity) return -1;
+    if(store->active_player) {
+        if(player_store_serialize_bounded(store)) return -1;
+        store->active_player=0;
+    }
     *bytes_out=(const unsigned char *)store->buffer;
     *length_out=(size_t)store->buffer_length;
     return 0;
@@ -249,9 +249,6 @@ int character_save_journal_v2_player_store_save(
            !player_store_uuid_valid(command_uuid)) goto failed;
         if(player_store_serialize_bounded(store)) goto failed;
         store->active_player=0;
-    } else {
-        if(player_store_serialize_bounded(store)) goto failed;
-        store->active_player=0;
     }
 
     memset(&request,0,sizeof(request));
@@ -282,6 +279,9 @@ int character_save_journal_v2_player_store_save(
         operations_v4.generate_uuid = (character_save_journal_v2_protocol_generate_uuid_v4)
             store->command_uuid;
         operations_v4.generate_uuid_opaque = store->command_uuid_opaque;
+#if defined(__GNUC__) || defined(__clang__)
+        if(!character_save_journal_v2_protocol_save_held_v4) goto failed;
+#endif
         result=character_save_journal_v2_protocol_save_held_v4(store->held_writer,
             &request,&operations_v4,&store->last_report);
     } else {
