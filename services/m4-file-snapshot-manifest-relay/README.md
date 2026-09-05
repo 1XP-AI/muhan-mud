@@ -63,3 +63,21 @@ and emits fixed metadata evidence only: it never emits payloads, game state,
 paths, parse errors, or credentials. It performs no database mutation, repair,
 authority change, or authority cutover; its output is observational evidence
 only.
+
+## V2 journal level shadow comparator
+
+This independent default-OFF command compares only closed V2 journal level
+metadata with the read-only level-projection relation. It does not use relay
+writer configuration or `DATABASE_URL`.
+
+```sh
+M4_PLAYER_SNAPSHOT_V2_JOURNAL_LEVEL_SHADOW_COMPARATOR_JOURNAL_PATH=/absolute/journal/path \
+M4_PLAYER_SNAPSHOT_V2_JOURNAL_LEVEL_SHADOW_COMPARATOR_DATABASE_URL="$MUD_REPLAY_READER_DATABASE_URL" \
+  pnpm --filter @muhan/m4-file-snapshot-manifest-relay v2-journal-level-shadow-comparator -- --once
+```
+
+The supplied URL must be the dedicated read-only replay-reader URL and must
+not equal `DATABASE_URL`. The command emits one metadata-only JSON line, closes
+its reader before returning, and exits zero only when every journal record is
+an eligible `MATCH`; invalid or bounded journal input and every comparison
+failure are fail-closed and exit nonzero.
