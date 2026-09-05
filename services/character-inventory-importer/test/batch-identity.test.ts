@@ -69,6 +69,12 @@ test('accepts strict SemVer prerelease and build metadata', () => {
   }
 })
 
+test('admits a 64-character canonical world ID but rejects a 65-character one', () => {
+  const longestSupportedWorldId = 'w'.repeat(64)
+  assert.equal(createBatchIdentity({ ...validInput(), worldId: longestSupportedWorldId }).worldId, longestSupportedWorldId)
+  assertRejected({ ...validInput(), worldId: 'w'.repeat(65) })
+})
+
 test('rejects unknown enumerable Symbol own keys', () => {
   const input = validInput()
   input[Symbol('unknown')] = true

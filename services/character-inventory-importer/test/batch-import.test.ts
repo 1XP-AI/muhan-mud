@@ -106,6 +106,20 @@ test('failure rolls back batch evidence and watermark with character inserts', a
   assert.equal(store.watermarks.size, 0)
 })
 
+test('an overlong batch world ID is rejected before any ledger, character, or watermark mutation', async () => {
+  const store = new BatchMemoryStore()
+  const valid = identity()
+  const overlongIdentity = { ...valid, worldId: 'w'.repeat(65) }
+  const before = JSON.stringify({ rows: [...store.rows], batches: [...store.batches], watermarks: [...store.watermarks] })
+
+  await assert.rejects(
+    () => importBatch(store, [record('Alice')], { identity: overlongIdentity, streamId: 'main', sequence: 0, apply: true }),
+    /invalid batch identity/,
+  )
+
+  assert.equal(JSON.stringify({ rows: [...store.rows], batches: [...store.batches], watermarks: [...store.watermarks] }), before)
+})
+
 test('watermarks are per stream, require strict contiguous sequences, and concurrent retry writes once', async () => {
   const store = new BatchMemoryStore()
   await assert.rejects(() => importBatch(store, [record('Alice')], { identity: identity('1'), streamId: 'main', sequence: 1, apply: true }),

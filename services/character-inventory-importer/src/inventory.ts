@@ -5,7 +5,7 @@ export const SHA256_RE = /^[0-9a-f]{64}$/
 const SHA1_SHARD_RE = /^[0-9a-f]{2}$/
 const MAX_NAME_CODEPOINTS = 12
 const MAX_NAME_BYTES = 14
-const MAX_WORLD_BYTES = 64
+const MAX_WORLD_CODEPOINTS = 64
 const MAX_FILE_BYTES = 64 * 1024 * 1024
 
 export interface InventoryRecord {
@@ -149,7 +149,7 @@ export function expectedShard(name: string): string {
 
 export function validateWorldId(worldId: string): boolean {
   return !hasUnpairedSurrogate(worldId)
-    && Buffer.byteLength(worldId, 'utf8') <= MAX_WORLD_BYTES && worldId.length >= 1 && !/[\x00-\x1f\x7f]/.test(worldId)
+    && Array.from(worldId).length <= MAX_WORLD_CODEPOINTS && worldId.length >= 1 && !/[\x00-\x1f\x7f]/.test(worldId)
 }
 
 function hasUnpairedSurrogate(value: string): boolean {

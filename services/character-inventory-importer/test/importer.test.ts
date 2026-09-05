@@ -10,6 +10,7 @@ import {
   canonicalNameKey,
   expectedShard,
   importInventory,
+  validateWorldId,
   type ExistingCharacter,
   type ImportStore,
   type ImportTransaction,
@@ -247,6 +248,17 @@ test('CLI permits exactly one metadata source and keeps apply opt-in', () => {
   for (const invalid of [[], ['--inventory', '/a', '--mud-home', '/b'], ['--mud-home'], ['--unknown']]) {
     assert.throws(() => parseArgs(invalid))
   }
+})
+
+test('world ID options match the character table 64-character boundary', () => {
+  assert.equal(validateWorldId('w'.repeat(64)), true)
+  assert.equal(validateWorldId('w'.repeat(65)), false)
+  assert.equal(validateWorldId('界'.repeat(64)), true)
+  assert.equal(validateWorldId('界'.repeat(65)), false)
+  assert.deepEqual(parseArgs(['--inventory', '/secure/inventory.jsonl', '--world-id', 'w'.repeat(64)]), {
+    input: { kind: 'inventory', path: '/secure/inventory.jsonl' }, worldId: 'w'.repeat(64), apply: false,
+  })
+  assert.throws(() => parseArgs(['--inventory', '/secure/inventory.jsonl', '--world-id', 'w'.repeat(65)]))
 })
 
 test('CLI batch mode requires an explicit bounded identity file, stream, and safe sequence', () => {

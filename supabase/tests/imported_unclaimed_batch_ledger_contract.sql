@@ -5,6 +5,34 @@
 \ir ../migrations/20260928000000_imported_unclaimed_batch_ledger.sql
 \ir ../migrations/20260928000000_imported_unclaimed_batch_ledger.sql
 
+-- Ledger worlds must remain insertable into public.game_characters: 64
+-- characters is admissible while 65 is rejected before any durable write.
+do $$
+begin
+  insert into private.game_imported_unclaimed_batches (
+    world_id, stream_id, batch_sequence, identity_key, source_manifest_id,
+    source_sha256, source_byte_size, parser_version, abi, start_marker,
+    end_marker, record_count
+  ) values (
+    repeat('w', 64), 'bounds', 0, 'world-boundary-64', 'manifest-bounds', repeat('d', 64),
+    0, '1.2.3', 1, 'range-start', 'range-end', 0
+  );
+
+  begin
+    insert into private.game_imported_unclaimed_batches (
+      world_id, stream_id, batch_sequence, identity_key, source_manifest_id,
+      source_sha256, source_byte_size, parser_version, abi, start_marker,
+      end_marker, record_count
+    ) values (
+      repeat('w', 65), 'bounds', 0, 'world-boundary-65', 'manifest-bounds', repeat('e', 64),
+      0, '1.2.3', 1, 'range-start', 'range-end', 0
+    );
+    raise exception 'overlong ledger world unexpectedly succeeded';
+  exception when check_violation then null;
+  end;
+end;
+$$;
+
 do $$
 declare
   v_rows integer;

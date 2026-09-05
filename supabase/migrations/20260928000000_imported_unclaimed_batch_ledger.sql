@@ -20,7 +20,7 @@ create table if not exists private.game_imported_unclaimed_batches (
   constraint game_imported_unclaimed_batches_stream_identity_key
     unique (world_id, stream_id, identity_key),
   constraint game_imported_unclaimed_batches_world_bounded
-    check (char_length(world_id) between 1 and 256
+    check (char_length(world_id) between 1 and 64
       and world_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
   constraint game_imported_unclaimed_batches_stream_bounded
     check (char_length(stream_id) between 1 and 256
@@ -57,6 +57,9 @@ create table if not exists private.game_imported_unclaimed_batch_watermarks (
   committed_batch_sequence bigint not null,
   observed_at timestamptz not null default clock_timestamp(),
   primary key (world_id, stream_id),
+  constraint game_imported_unclaimed_batch_watermarks_world_bounded
+    check (char_length(world_id) between 1 and 64
+      and world_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
   constraint game_imported_unclaimed_batch_watermarks_sequence_nonnegative
     check (watermark_sequence between 0 and 9007199254740991),
   constraint game_imported_unclaimed_batch_watermarks_committed_sequence_matches

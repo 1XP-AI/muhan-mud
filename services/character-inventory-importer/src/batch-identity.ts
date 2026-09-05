@@ -1,5 +1,6 @@
 const SHA256_RE = /^[0-9a-f]{64}$/
 const CANONICAL_IDENTIFIER_RE = /^[a-z0-9](?:[a-z0-9._:-]{0,254}[a-z0-9])?$/
+const MAX_WORLD_ID_CHARACTERS = 64
 const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 const INPUT_KEYS = [
@@ -69,6 +70,11 @@ export function isCanonicalBatchIdentifier(value: unknown): value is string {
   return typeof value === 'string' && CANONICAL_IDENTIFIER_RE.test(value)
 }
 
+/** The batch world key must remain admissible by public.game_characters. */
+export function isCanonicalBatchWorldId(value: unknown): value is string {
+  return isCanonicalBatchIdentifier(value) && value.length <= MAX_WORLD_ID_CHARACTERS
+}
+
 function canonicalParserVersion(value: unknown): value is string {
   return typeof value === 'string' && SEMVER_RE.test(value)
 }
@@ -104,7 +110,7 @@ function canonicalSerialization(input: BatchIdentityInput): string {
 export function createBatchIdentity(value: unknown): BatchIdentity {
   const input = object(value)
   if (!input || !hasExactKeys(input)
-    || !isCanonicalBatchIdentifier(input.worldId)
+    || !isCanonicalBatchWorldId(input.worldId)
     || !isCanonicalBatchIdentifier(input.sourceManifestId)
     || typeof input.sourceSha256 !== 'string' || !SHA256_RE.test(input.sourceSha256)
     || !safeNonNegativeInteger(input.sourceByteSize)
