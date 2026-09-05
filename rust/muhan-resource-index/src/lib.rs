@@ -126,7 +126,61 @@ pub struct PlayerShadow {
     pub inventory: Vec<ItemShadow>,
 }
 
+/// Closed, metadata-only identity evidence derived from an audited fixture projection.
+///
+/// This fixture-ABI-only view contains only a canonical name, that name's already-derived
+/// SHA-1 digest and shard, plus the raw unsigned legacy level. It is not a production legacy
+/// decoder, a source of authority, or a representation of a save, account, credential, or
+/// runtime state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyPlayerShadowIdentityV1 {
+    canonical_name: String,
+    name_sha1: String,
+    shard: String,
+    level: u8,
+}
+
+impl LegacyPlayerShadowIdentityV1 {
+    /// The fixture-canonicalized player name.
+    #[must_use]
+    pub fn canonical_name(&self) -> &str {
+        &self.canonical_name
+    }
+
+    /// The SHA-1 digest already derived from the canonical name by the fixture projection.
+    #[must_use]
+    pub fn name_sha1(&self) -> &str {
+        &self.name_sha1
+    }
+
+    /// The two-hex-character shard already derived from the name digest.
+    #[must_use]
+    pub fn shard(&self) -> &str {
+        &self.shard
+    }
+
+    /// The raw legacy unsigned-byte level.
+    #[must_use]
+    pub const fn level(&self) -> u8 {
+        self.level
+    }
+}
+
 impl PlayerShadow {
+    /// Derives closed fixture-ABI-only metadata evidence from this pure projection.
+    ///
+    /// This intentionally copies no source path, raw bytes, inventory, statistics other than
+    /// level, credential, database, runtime, writer, or deployment data.
+    #[must_use]
+    pub fn legacy_player_shadow_identity_v1(&self) -> LegacyPlayerShadowIdentityV1 {
+        LegacyPlayerShadowIdentityV1 {
+            canonical_name: self.canonical_name.clone(),
+            name_sha1: self.name_sha1.clone(),
+            shard: self.shard.clone(),
+            level: self.level,
+        }
+    }
+
     /// A stable, deliberately small test/oracle representation, not a storage format.
     pub fn oracle_line(&self) -> String {
         format!(
@@ -682,6 +736,77 @@ mod tests {
             .unwrap()
             .trim_end()
             .to_owned()
+    }
+
+    fn c_identity_line(oracle: &Path, path: &Path) -> String {
+        let expected = Command::new(oracle)
+            .arg("identity")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        String::from_utf8(expected.stdout)
+            .unwrap()
+            .trim_end()
+            .to_owned()
+    }
+
+    fn identity_line(identity: &LegacyPlayerShadowIdentityV1) -> String {
+        format!(
+            "OK|name={}|sha1={}|shard={}|level={}",
+            identity.canonical_name(),
+            identity.name_sha1(),
+            identity.shard(),
+            identity.level(),
+        )
+    }
+
+    #[test]
+    fn legacy_player_shadow_identity_v1_is_deterministic_fixture_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (bytes, _) = fixture(&oracle, temp.path(), "mixed-case");
+        let player =
+            project_legacy_player_shadow(&bytes, &fixture_abi(), LegacyProjectionLimits::default())
+                .unwrap();
+
+        let first = player.legacy_player_shadow_identity_v1();
+        let second = player.legacy_player_shadow_identity_v1();
+
+        assert_eq!(first, second);
+        assert_eq!(first.canonical_name(), "Alice");
+        assert_eq!(
+            first.name_sha1(),
+            "35318264c9a98faf79965c270ac80c5606774df1"
+        );
+        assert_eq!(first.shard(), "35");
+        assert_eq!(first.level(), 17);
+    }
+
+    #[test]
+    fn legacy_player_shadow_identity_v1_matches_c_oracle_at_u8_boundaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (mut bytes, _) = fixture(&oracle, temp.path(), "high-level");
+        let abi = fixture_abi();
+        let path = temp.path().join("identity-level.bin");
+
+        for level in [0, 1, 127, 128, 255] {
+            bytes[abi.player_level.offset] = level;
+            std::fs::write(&path, &bytes).unwrap();
+            let player =
+                project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default())
+                    .unwrap();
+            let identity = player.legacy_player_shadow_identity_v1();
+
+            assert_eq!(identity.canonical_name(), "Alice", "level={level}");
+            assert_eq!(identity.level(), level, "level={level}");
+            assert_eq!(
+                identity_line(&identity),
+                c_identity_line(&oracle, &path),
+                "level={level}"
+            );
+        }
     }
 
     #[test]
