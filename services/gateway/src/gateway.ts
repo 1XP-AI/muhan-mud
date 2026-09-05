@@ -904,12 +904,6 @@ class OnboardingSession {
         await this.completeFromEvidence(event, 'provision', reservation, 'MUD1O COMMIT\n', 'provisioned')
         return
       }
-      if (this.mode === 'provision' && this.controlPhase === 'provision-evidence' && event.type === 'EVIDENCE') {
-        const reservation = this.provisionReservation
-        if (!reservation || reservation.characterId !== this.characterId) throw new OnboardingProtocolError()
-        await this.completeFromEvidence(event, 'provision', reservation, 'MUD1O COMMIT\n', 'provisioned')
-        return
-      }
       if (this.mode === 'claim' && this.controlPhase === 'claim-challenge' && event.type === 'CHALLENGE') {
         this.pauseInput()
         const legacyNameKey = Buffer.from(event.nameHex, 'hex').toString('utf8')
@@ -954,16 +948,6 @@ class OnboardingSession {
         await this.writeControl(`MUD1O CLAIMED|${result.characterId}\n`)
         if (this.closed) return
         await this.startActivation(result.characterId)
-        return
-      }
-      if (this.config.mudOnboardingEvidenceEnabled && event.type === 'VERIFIED') throw new OnboardingProtocolError()
-      if (this.mode === 'claim' && this.controlPhase === 'claim-allow' && event.type === 'EVIDENCE') {
-        const challenge = this.claimChallenge
-        if (!challenge || challenge.allowExpiresAtMs <= this.now()) throw new OnboardingProtocolError()
-        await this.completeFromEvidence(event, 'claim', {
-          actorUserId: this.actorUserId!, correlationId: this.correlationId!,
-          characterId: challenge.characterId, legacyNameKey: challenge.legacyNameKey
-        }, `MUD1O CLAIMED|${challenge.characterId}\n`, 'claimed', challenge.fileSha256)
         return
       }
       if (this.config.mudOnboardingEvidenceEnabled && event.type === 'VERIFIED') throw new OnboardingProtocolError()
