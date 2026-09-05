@@ -1,6 +1,6 @@
 const SHA256_RE = /^[0-9a-f]{64}$/
 const CANONICAL_IDENTIFIER_RE = /^[a-z0-9](?:[a-z0-9._:-]{0,254}[a-z0-9])?$/
-const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:[0-9a-z-]*[a-z-][0-9a-z-]*|0|[1-9]\d*)(?:\.(?:[0-9a-z-]*[a-z-][0-9a-z-]*|0|[1-9]\d*))*)?$/
+const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 const INPUT_KEYS = [
   'worldId',
@@ -58,7 +58,11 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function hasExactKeys(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value)
-  return keys.length === INPUT_KEYS.length && keys.every((key) => (INPUT_KEYS as readonly string[]).includes(key))
+  return keys.length === INPUT_KEYS.length
+    && keys.every((key) => (INPUT_KEYS as readonly string[]).includes(key))
+    && !Object.getOwnPropertySymbols(value).some(
+      (key) => Object.prototype.propertyIsEnumerable.call(value, key),
+    )
 }
 
 function canonicalIdentifier(value: unknown): value is string {

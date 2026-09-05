@@ -63,6 +63,19 @@ test('uses the canonical field order rather than caller member order', () => {
   assert.equal(createBatchIdentity(reversed).stableKey, createBatchIdentity(validInput()).stableKey)
 })
 
+test('accepts strict SemVer prerelease and build metadata', () => {
+  for (const parserVersion of ['1.2.3-RC.1', '1.2.3+build.7']) {
+    assert.equal(createBatchIdentity({ ...validInput(), parserVersion }).parserVersion, parserVersion)
+  }
+})
+
+test('rejects unknown enumerable Symbol own keys', () => {
+  const input = validInput()
+  input[Symbol('unknown')] = true
+
+  assertRejected(input)
+})
+
 test('rejects missing, unknown, malformed, and noncanonical fields', () => {
   const missing = validInput() as Record<string, unknown>
   delete missing.endMarker
@@ -84,6 +97,9 @@ test('rejects missing, unknown, malformed, and noncanonical fields', () => {
     { ...validInput(), parserVersion: 'v1.2.3' },
     { ...validInput(), parserVersion: '01.2.3' },
     { ...validInput(), parserVersion: '1.2' },
+    { ...validInput(), parserVersion: '1.2.3-01' },
+    { ...validInput(), parserVersion: '1.2.3+' },
+    { ...validInput(), parserVersion: '1.2.3+build..7' },
     { ...validInput(), abi: 0 },
     { ...validInput(), abi: 1.5 },
     { ...validInput(), startMarker: 'Player:000001' },
