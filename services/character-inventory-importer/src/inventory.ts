@@ -50,7 +50,11 @@ export interface ImportTransaction {
   findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined>
   createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void>
   /** Appends a permanent, private link from a new character to its creating batch. */
-  recordBatchMember(input: { worldId: string, streamId: string, sequence: number, characterId: string }): Promise<void>
+  recordBatchMember(input: {
+    worldId: string, streamId: string, sequence: number, characterId: string
+    /** Optional additive evidence for a newly linked member; no player file digest belongs here. */
+    legacyLocator?: { canonicalName: string, legacyNameSha1: string, legacyShard: string }
+  }): Promise<void>
   readWatermark(worldId: string, streamId: string): Promise<number | undefined>
   advanceWatermark(worldId: string, streamId: string, sequence: number): Promise<void>
 }
@@ -226,6 +230,10 @@ function sameImportedIdentity(record: InventoryRecord, existing: ExistingCharact
   return undefined
 }
 
+function legacyNameSha1(canonicalName: string): string {
+  return createHash('sha1').update(canonicalName, 'utf8').digest('hex')
+}
+
 /**
  * Legacy non-ledger import: it has no batch evidence or watermark behavior.
  * Every candidate is locked and inspected before insertion; this routine
@@ -374,6 +382,11 @@ export async function importBatch(store: ImportStore, records: readonly Inventor
         streamId: validated.streamId,
         sequence: validated.sequence,
         characterId,
+        legacyLocator: {
+          canonicalName: record.canonicalNameKey,
+          legacyNameSha1: legacyNameSha1(record.canonicalNameKey),
+          legacyShard: record.expectedShard,
+        },
       })
     }
     await transaction.advanceWatermark(validated.identity.worldId, validated.streamId, validated.sequence)

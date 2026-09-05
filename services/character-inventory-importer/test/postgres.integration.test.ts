@@ -69,6 +69,17 @@ async function countBatchMembers(pool: DisposablePool, world: string): Promise<n
   return Number(result.rows[0]?.count ?? 0)
 }
 
+async function countBatchMemberLocators(pool: DisposablePool, world: string): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `select count(*)::text as count
+       from private.game_imported_unclaimed_batch_member_legacy_locators as locator
+       join public.game_characters as character on character.id = locator.character_id
+      where character.world_id = $1`,
+    [world],
+  )
+  return Number(result.rows[0]?.count ?? 0)
+}
+
 test('disposable Linux/Postgres importer contract is atomic and serializes retries', { skip: skipReason }, async (t) => {
   const databaseUrl = disposableDatabaseUrl()
   const pool = new Pool({ connectionString: databaseUrl, max: 2 })
@@ -157,16 +168,32 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   assert.equal(batchApplied.inserted, 2)
   assert.equal(await countWorld(pool, world), 6)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberLocators(pool, world), 2)
+  const locators = await pool.query<{ canonical_legacy_name: string, legacy_name_sha1: string, legacy_shard: string }>(
+    `select locator.canonical_legacy_name, locator.legacy_name_sha1, locator.legacy_shard
+       from private.game_imported_unclaimed_batch_member_legacy_locators as locator
+       join public.game_characters as character on character.id = locator.character_id
+      where character.world_id = $1
+      order by locator.canonical_legacy_name`,
+    [world],
+  )
+  assert.deepEqual(locators.rows, ledgerRecords.map((entry) => ({
+    canonical_legacy_name: entry.canonicalNameKey,
+    legacy_name_sha1: createHash('sha1').update(entry.canonicalNameKey, 'utf8').digest('hex'),
+    legacy_shard: entry.expectedShard,
+  })).sort((left, right) => left.canonical_legacy_name.localeCompare(right.canonical_legacy_name)))
   const batchRetry = await importBatch(importer, ledgerRecords, { identity: ledgerIdentity, streamId: 'main', sequence: 0, apply: true })
   assert.equal(batchRetry.ledger, 'idempotent')
   assert.equal(await countWorld(pool, world), 6)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberLocators(pool, world), 2)
   const secondBatch = await importBatch(importer, [ledgerRecords[0]!], {
     identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
     streamId: 'main', sequence: 1, apply: true,
   })
   assert.equal(secondBatch.idempotent, 1)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberLocators(pool, world), 2)
   await assert.rejects(
     () => importBatch(importer, [record('LedgerThree')], {
       identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),

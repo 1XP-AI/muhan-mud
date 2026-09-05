@@ -28,12 +28,15 @@ class BatchMemoryStore implements ImportStore {
   batches = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
   identities = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
   members = new Map<string, { worldId: string, streamId: string, sequence: number, characterId: string }>()
+  locators = new Map<string, { characterId: string, canonicalName: string, legacyNameSha1: string, legacyShard: string }>()
   watermarks = new Map<string, number>()
   writes = 0
   memberWrites = 0
+  locatorWrites = 0
   events: string[] = []
   failInsert = false
   failMember = false
+  failLocator = false
   private tail = Promise.resolve()
 
   async transaction<T>(work: (transaction: ImportTransaction) => Promise<T>): Promise<T> {
@@ -45,9 +48,11 @@ class BatchMemoryStore implements ImportStore {
     const batches = new Map(this.batches)
     const identities = new Map(this.identities)
     const members = new Map(this.members)
+    const locators = new Map(this.locators)
     const watermarks = new Map(this.watermarks)
     let writes = 0
     let memberWrites = 0
+    let locatorWrites = 0
     const events: string[] = []
     try {
       const result = await work({
@@ -67,14 +72,30 @@ class BatchMemoryStore implements ImportStore {
           identities.set(`${value.worldId}|${streamId}|${value.stableKey}`, batch)
           events.push('batch')
         },
-        recordBatchMember: async ({ worldId, streamId, sequence, characterId }) => {
+        recordBatchMember: async ({ worldId, streamId, sequence, characterId, legacyLocator }) => {
           if (this.failMember) throw new Error('injected member failure')
-          members.set(characterId, { worldId, streamId, sequence, characterId }); memberWrites++; events.push('member')
+          const previousMember = members.get(characterId)
+          if (previousMember) {
+            if (previousMember.worldId !== worldId || previousMember.streamId !== streamId || previousMember.sequence !== sequence) throw new Error('batch member conflict')
+          } else {
+            members.set(characterId, { worldId, streamId, sequence, characterId }); memberWrites++; events.push('member')
+          }
+          if (legacyLocator) {
+            if (this.failLocator) throw new Error('injected locator failure')
+            const previous = locators.get(characterId)
+            if (previous) {
+              if (previous.canonicalName !== legacyLocator.canonicalName || previous.legacyNameSha1 !== legacyLocator.legacyNameSha1 || previous.legacyShard !== legacyLocator.legacyShard) {
+                throw new Error('legacy locator conflict')
+              }
+              return
+            }
+            locators.set(characterId, { characterId, ...legacyLocator }); locatorWrites++; events.push('locator')
+          }
         },
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
         advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence); events.push('watermark') },
       })
-      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.events = events
+      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.locators = locators; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.locatorWrites += locatorWrites; this.events = events
       return result
     } finally { release?.() }
   }
@@ -91,7 +112,11 @@ test('batch import commits every new character as an immutable member of its exa
     { worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Alice' },
     { worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Bob' },
   ])
-  assert.deepEqual(store.events, ['batch', 'character', 'member', 'character', 'member', 'watermark'])
+  assert.deepEqual([...store.locators.values()], [
+    { characterId: 'character:batch-world:Alice', canonicalName: 'Alice', legacyNameSha1: createHash('sha1').update('Alice').digest('hex'), legacyShard: expectedShard('Alice') },
+    { characterId: 'character:batch-world:Bob', canonicalName: 'Bob', legacyNameSha1: createHash('sha1').update('Bob').digest('hex'), legacyShard: expectedShard('Bob') },
+  ])
+  assert.deepEqual(store.events, ['batch', 'character', 'member', 'locator', 'character', 'member', 'locator', 'watermark'])
   assert.equal(store.watermarks.get('batch-world|main'), 0)
 })
 
@@ -104,7 +129,9 @@ test('exact identity and sequence retry is ledger-idempotent with no character w
   assert.equal(retry.idempotent, 1)
   assert.equal(store.writes, 1)
   assert.equal(store.memberWrites, 1)
+  assert.equal(store.locatorWrites, 1)
   assert.equal(store.members.size, 1)
+  assert.equal(store.locators.size, 1)
   assert.equal(store.batches.size, 1)
 })
 
@@ -115,6 +142,7 @@ test('an already idempotent character is never retrospectively targeted to a lat
   assert.equal(second.inserted, 0)
   assert.equal(second.idempotent, 1)
   assert.equal(store.members.size, 1)
+  assert.equal(store.locators.size, 1)
   assert.deepEqual(store.members.get('character:batch-world:Alice'), {
     worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Alice',
   })
@@ -136,6 +164,7 @@ test('failure rolls back batch evidence and watermark with character inserts', a
   assert.equal(store.rows.size, 0)
   assert.equal(store.batches.size, 0)
   assert.equal(store.members.size, 0)
+  assert.equal(store.locators.size, 0)
   assert.equal(store.watermarks.size, 0)
 })
 
@@ -146,6 +175,18 @@ test('member-write failure rolls back the ledger, inserted character, member, an
   assert.equal(store.rows.size, 0)
   assert.equal(store.batches.size, 0)
   assert.equal(store.members.size, 0)
+  assert.equal(store.locators.size, 0)
+  assert.equal(store.watermarks.size, 0)
+})
+
+test('locator-write failure rolls back the ledger, character, member, and watermark together', async () => {
+  const store = new BatchMemoryStore()
+  store.failLocator = true
+  await assert.rejects(() => importBatch(store, [record('Alice')], { identity: identity(), streamId: 'main', sequence: 0, apply: true }))
+  assert.equal(store.rows.size, 0)
+  assert.equal(store.batches.size, 0)
+  assert.equal(store.members.size, 0)
+  assert.equal(store.locators.size, 0)
   assert.equal(store.watermarks.size, 0)
 })
 
@@ -157,9 +198,31 @@ test('dry-run, quarantine, and non-batch import remain provenance-member free', 
   assert.equal(quarantined.quarantined.invalid_metadata, 1)
   await importRecords(store, [record('Carol')], { worldId: 'batch-world', apply: true })
   assert.equal(store.members.size, 0)
+  assert.equal(store.locators.size, 0)
   assert.equal(store.batches.size, 0)
   assert.equal(store.watermarks.size, 0)
   assert.equal(store.rows.size, 1)
+})
+
+test('a batch-member locator is exact-retry idempotent and rejects a conflicting three-field locator', async () => {
+  const store = new BatchMemoryStore()
+  const candidate = record('Alice')
+  const locator = {
+    characterId: 'member:Alice',
+    canonicalName: candidate.canonicalNameKey,
+    legacyNameSha1: createHash('sha1').update(candidate.canonicalNameKey, 'utf8').digest('hex'),
+    legacyShard: candidate.expectedShard,
+  }
+  const member = { worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: locator.characterId }
+  await store.transaction((transaction) => transaction.recordBatchMember({ ...member, legacyLocator: locator }))
+  await store.transaction((transaction) => transaction.recordBatchMember({ ...member, legacyLocator: locator }))
+  assert.equal(store.locatorWrites, 1)
+  assert.equal(store.memberWrites, 1)
+  await assert.rejects(
+    () => store.transaction((transaction) => transaction.recordBatchMember({ ...member, legacyLocator: { ...locator, legacyShard: '00' } })),
+    /legacy locator conflict/,
+  )
+  assert.deepEqual(store.locators.get(locator.characterId), locator)
 })
 
 test('an overlong batch world ID is rejected before any ledger, character, or watermark mutation', async () => {

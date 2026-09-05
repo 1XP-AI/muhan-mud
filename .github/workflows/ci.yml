@@ -64,6 +64,7 @@ jobs:
           bash supabase/tests/imported_unclaimed_batch_schema_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_character_provenance_static_contract.sh
           bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
+          bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
@@ -248,6 +249,8 @@ jobs:
               --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20260930000000_imported_unclaimed_claim_provenance_gate.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_ledger_contract.sql
@@ -255,6 +258,8 @@ jobs:
             --file=supabase/tests/imported_unclaimed_batch_character_provenance_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_claim_provenance_gate_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_member_legacy_locator_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
@@ -351,6 +356,15 @@ jobs:
           INVENTORY_E2E_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
         run: |
           set -euo pipefail
+          # This primary disposable database has the identity checkpoint but
+          # not the later isolated-evidence migrations. Apply the importer's
+          # exact immutable batch/provenance/locator prerequisites before its
+          # store opens, replaying each as the contract lane does.
+          for pass in 1 2; do
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
+          done
           pnpm --filter @muhan/character-inventory-importer test:integration
 
   build-and-smoke:

@@ -297,6 +297,22 @@ select pg_temp.assert_true(
   'service role must not hold direct privileges on the game identity sequence'
 );
 select pg_temp.expect_invalid_legacy_name_rejection();
+do $$
+begin
+  insert into public.game_characters (
+    id, world_id, legacy_name, legacy_name_key, legacy_shard, lifecycle
+  ) values (
+    '20000000-0000-0000-0000-000000000095',
+    'contract-world-invalid-backslash',
+    E'Bad\\name', E'Bad\\name',
+    substr(encode(digest(convert_to(E'Bad\\name', 'UTF8'), 'sha1'), 'hex'), 1, 2),
+    'imported_unclaimed'
+  );
+  raise exception 'backslash legacy name unexpectedly stored';
+exception when check_violation then
+  null;
+end;
+$$;
 select pg_temp.expect_noncanonical_legacy_name_rejection();
 select pg_temp.expect_reserved_legacy_name_rejection(
   '.', '20000000-0000-0000-0000-000000000097', 'contract-world-reserved-dot'

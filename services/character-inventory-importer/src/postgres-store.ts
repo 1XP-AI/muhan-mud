@@ -25,6 +25,16 @@ interface BatchRow {
 
 interface WatermarkRow { watermark_sequence: string }
 interface InsertedCharacterRow { id: string }
+interface BatchMemberRow {
+  world_id: string
+  stream_id: string
+  batch_sequence: string
+}
+interface LegacyLocatorRow {
+  canonical_legacy_name: string
+  legacy_name_sha1: string
+  legacy_shard: string
+}
 
 const require = createRequire(import.meta.url)
 
@@ -191,13 +201,56 @@ class PostgresImportTransaction implements ImportTransaction {
     )
   }
 
-  async recordBatchMember(input: { worldId: string, streamId: string, sequence: number, characterId: string }): Promise<void> {
-    await this.client.query(
+  async recordBatchMember(input: {
+    worldId: string, streamId: string, sequence: number, characterId: string
+    legacyLocator?: { canonicalName: string, legacyNameSha1: string, legacyShard: string }
+  }): Promise<void> {
+    const inserted = await this.client.query<BatchMemberRow>(
       `insert into private.game_imported_unclaimed_batch_members (
         world_id, stream_id, batch_sequence, character_id
-      ) values ($1, $2, $3, $4::uuid)`,
+      ) values ($1, $2, $3, $4::uuid)
+      on conflict (character_id) do nothing
+      returning world_id, stream_id, batch_sequence::text`,
       [input.worldId, input.streamId, input.sequence, input.characterId],
     )
+    if (inserted.rows.length === 0) {
+      const existing = await this.client.query<BatchMemberRow>(
+        `select world_id, stream_id, batch_sequence::text
+           from private.game_imported_unclaimed_batch_members
+          where character_id = $1::uuid`,
+        [input.characterId],
+      )
+      const row = existing.rows[0]
+      if (!row || row.world_id !== input.worldId || row.stream_id !== input.streamId
+        || row.batch_sequence !== String(input.sequence)) throw new Error('batch member conflict')
+    }
+    if (input.legacyLocator) await this.recordBatchMemberLegacyLocator({ characterId: input.characterId, ...input.legacyLocator })
+  }
+
+  private async recordBatchMemberLegacyLocator(input: { characterId: string, canonicalName: string, legacyNameSha1: string, legacyShard: string }): Promise<void> {
+    const inserted = await this.client.query<LegacyLocatorRow>(
+      `insert into private.game_imported_unclaimed_batch_member_legacy_locators (
+        character_id, canonical_legacy_name, legacy_name_sha1, legacy_shard
+      ) values ($1::uuid, $2, $3, $4)
+      on conflict (character_id) do nothing
+      returning canonical_legacy_name, legacy_name_sha1, legacy_shard`,
+      [input.characterId, input.canonicalName, input.legacyNameSha1, input.legacyShard],
+    )
+    if (inserted.rows.length === 1) return
+
+    // The immutable relation can suppress only an exact retry. A missing or
+    // different existing row is a database-integrity conflict, never a repair.
+    const existing = await this.client.query<LegacyLocatorRow>(
+      `select canonical_legacy_name, legacy_name_sha1, legacy_shard
+         from private.game_imported_unclaimed_batch_member_legacy_locators
+        where character_id = $1::uuid`,
+      [input.characterId],
+    )
+    const row = existing.rows[0]
+    if (!row || row.canonical_legacy_name !== input.canonicalName
+      || row.legacy_name_sha1 !== input.legacyNameSha1 || row.legacy_shard !== input.legacyShard) {
+      throw new Error('legacy locator conflict')
+    }
   }
 
   async readWatermark(worldId: string, streamId: string): Promise<number | undefined> {
