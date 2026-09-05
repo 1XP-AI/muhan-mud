@@ -253,12 +253,17 @@ onboarding-activation-save-bridge-sanitizer-test:
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_bridge_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_save_bridge_static_test.py
 
-# PlayerStore dispatch seam: fake weak protocol hooks deliberately keep this
-# focused on dispatch and are not evidence that production V4 ran.
-onboarding-activation-save-v4-player-store-dispatch-seam-test:
+# Caller-owned runtime helper seam: fake weak protocol hooks deliberately keep
+# this focused on one active owner/store dispatch, not production wiring.
+onboarding-activation-save-runtime-helper-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_v4_player_store_dispatch_seam_test
-	/tmp/muhan-unit/onboarding_activation_save_v4_player_store_dispatch_seam_test
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_test
+	/tmp/muhan-unit/onboarding_activation_save_runtime_helper_test
+
+onboarding-activation-save-runtime-helper-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
 
 # Focused production-V4 composition with local journal fixtures and fake
 # lower-level route/serializer/receipt callbacks only; no live service linkage.

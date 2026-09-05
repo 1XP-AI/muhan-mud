@@ -1,6 +1,5 @@
 /* Explicit activation capability -> bridge -> PlayerStore V4 composition. */
-#include "character_save_journal_v2_player_store.h"
-#include "onboarding_activation_save_bridge.h"
+#include "onboarding_activation_save_runtime_helper.h"
 #include "mstruct.h"
 
 #include <stdio.h>
@@ -15,13 +14,10 @@ typedef enum fake_outcome {
 } fake_outcome;
 
 typedef struct fixture {
-    character_save_journal_v2_player_store store;
-    character_save_journal_v2_writer_context writer_context;
-    character_save_journal_v2_live_ops live_ops;
+    character_save_journal_v2_process_owner owner;
     character_save_journal_v2_rpc_transport transport;
     player_record_serializer_limits limits;
     onboarding_activation_save_capability capability;
-    onboarding_activation_save_bridge bridge;
     character_save_journal_v2_writer_tuple tuple;
     creature player;
     char buffer[256];
@@ -31,6 +27,12 @@ typedef struct fixture {
     int candidate_exact;
     fake_outcome outcome;
 } fixture;
+
+/* Keep this focused test on the public active-owner seam without starting a
+ * transport: all lower V4 callbacks remain deliberate local fakes. */
+#define store owner.player_store
+#define writer_context owner.held_writer
+#define live_ops owner.live_ops
 
 static fixture *fixtures[2];
 static int fixture_count;
@@ -112,6 +114,9 @@ static void setup(fixture *test, const char *actor, const char *correlation,
     test->live_ops.transport = &test->transport;
     test->limits.max_depth = 64;
     test->limits.max_objects = 8192;
+    test->owner.state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY;
+    test->owner.writer_held = 1;
+    test->owner.player_store_installed = 1;
     character_save_journal_v2_player_store_init(&test->store, &test->writer_context,
         &test->live_ops, test->buffer, sizeof(test->buffer), &test->limits,
         0, 0, 0, 0, 0, 0);
@@ -129,14 +134,23 @@ static int absent_bootstrap(void *opaque,
     return 0;
 }
 
-static int begin_explicit(fixture *test)
+static onboarding_activation_save_runtime_helper_result attempt_mode(fixture *test,
+    const char *command, const char *actor, const char *correlation,
+    const char *character, onboarding_activation_binding_mode mode,
+    const char *name)
 {
-    return onboarding_activation_save_bridge_begin(&test->bridge, &test->capability,
-        test->command, test->actor, test->correlation, test->character,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test->name) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY &&
-        character_save_journal_v2_player_store_set_candidate_resolver(&test->store,
-        onboarding_activation_save_bridge_resolve, &test->bridge) == 0;
+    return onboarding_activation_save_runtime_helper_attempt(&test->owner,
+        &test->capability, command, actor, correlation, character,
+        mode, name, test->name,
+        &test->player);
+}
+
+static onboarding_activation_save_runtime_helper_result attempt(fixture *test,
+    const char *command, const char *actor, const char *correlation,
+    const char *character, const char *name)
+{
+    return attempt_mode(test, command, actor, correlation, character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, name);
 }
 
 static int arm(fixture *test)
@@ -293,7 +307,7 @@ character_save_journal_v2_protocol_save_held_v4(
 
     if(!test || !request || !operations || !report ||
        operations->resolve_candidate != onboarding_activation_save_bridge_resolve ||
-       operations->resolve_candidate_opaque != &test->bridge) return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+       !operations->resolve_candidate_opaque) return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
     test->v4_calls++;
     memset(report, 0, sizeof(*report));
     candidate_writer = test->tuple;
@@ -356,20 +370,18 @@ static int test_exact_tuple_and_published_once(void)
         "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
     initialize_store_callbacks(&test);
-    failed += expect(arm(&test) &&
-        onboarding_activation_save_bridge_begin(&test.bridge, &test.capability,
+    failed += expect(arm(&test) && attempt(&test,
         "55555555-5555-4555-8555-555555555555", test.actor, test.correlation,
-        test.character, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test.name) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_REJECTED && test.capability.armed &&
-        begin_explicit(&test), "only the exact descriptor tuple and command may begin");
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        test.capability.armed && !test.store.resolve_candidate,
+        "only the exact descriptor command may begin");
     test.outcome = FAKE_PUBLISHED;
-    failed += expect(character_save_journal_v2_player_store_save(&test.store,
-        test.name, &test.player) == PLAYER_STORE_OK && test.candidate_exact &&
+    failed += expect(attempt(&test, test.command, test.actor, test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
+        test.candidate_exact &&
         test.v4_calls == 1 && !test.v3_calls &&
-        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !test.capability.armed &&
-        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_INVALID,
+        !test.capability.armed && !test.store.resolve_candidate &&
+        !test.store.resolve_candidate_opaque,
         "a published exact V4 candidate consumes its descriptor capability exactly once");
     return failed;
 }
@@ -385,20 +397,17 @@ static int test_prepared_retains_same_command_retry(void)
         "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
     initialize_store_callbacks(&test);
-    failed += expect(arm(&test) && begin_explicit(&test), "an armed descriptor begins its selected save");
     test.outcome = FAKE_PREPARED;
-    failed += expect(character_save_journal_v2_player_store_save(&test.store,
-        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.prepared_calls == 1 &&
-        !test.publish_calls && onboarding_activation_save_bridge_finish(&test.bridge,
-        &test.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED &&
-        test.capability.armed && begin_explicit(&test),
+    failed += expect(arm(&test) && attempt(&test, test.command, test.actor,
+        test.correlation, test.character, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED && test.prepared_calls == 1 &&
+        !test.publish_calls && test.capability.armed && !test.store.resolve_candidate,
         "PREPARED retains the exact descriptor capability for its command retry");
     test.outcome = FAKE_PUBLISHED;
-    failed += expect(character_save_journal_v2_player_store_save(&test.store,
-        test.name, &test.player) == PLAYER_STORE_OK && test.v4_calls == 2 &&
-        test.candidate_exact && onboarding_activation_save_bridge_finish(&test.bridge,
-        &test.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED &&
-        !test.capability.armed,
+    failed += expect(attempt(&test, test.command, test.actor, test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
+        test.v4_calls == 2 && test.candidate_exact && !test.capability.armed &&
+        !test.store.resolve_candidate,
         "the same command retries and consumes only after PUBLISHED");
     return failed;
 }
@@ -417,25 +426,23 @@ static int test_wrong_tuple_fails_closed(void)
     initialize_store_callbacks(&test);
     memset(test.buffer, 'W', sizeof(test.buffer));
     memcpy(before, test.buffer, sizeof(before));
-    failed += expect(arm(&test) && begin_explicit(&test), "the wrong-tuple case begins from an exact capability");
     test.outcome = FAKE_WRONG_TUPLE;
-    failed += expect(character_save_journal_v2_player_store_save(&test.store,
-        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.v4_calls == 1 &&
+    failed += expect(arm(&test) && attempt(&test, test.command, test.actor,
+        test.correlation, test.character, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED && test.v4_calls == 1 &&
         test.resolver_calls == 1 && !test.candidate_exact && !test.serializer_calls &&
         !test.route_calls && !test.prepared_calls && !test.publish_calls &&
         !memcmp(test.buffer, before, sizeof(before)) && test.capability.armed &&
-        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED,
+        !test.store.resolve_candidate,
         "a mismatched writer tuple fails closed before caller-buffer or durable mutation");
-    failed += expect(begin_explicit(&test), "a retained capability permits an exact command retry");
     test.outcome = FAKE_WRONG_NAME;
-    failed += expect(character_save_journal_v2_player_store_save(&test.store,
-        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.v4_calls == 2 &&
+    failed += expect(attempt(&test, test.command, test.actor, test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        test.v4_calls == 2 &&
         test.resolver_calls == 2 && !test.serializer_calls && !test.route_calls &&
         !test.prepared_calls && !test.publish_calls &&
         !memcmp(test.buffer, before, sizeof(before)) && test.capability.armed &&
-        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED,
+        !test.store.resolve_candidate,
         "a substituted route name also fails closed without mutation");
     return failed;
 }
@@ -454,7 +461,51 @@ static int test_v3_fallback_untouched(void)
     failed += expect(character_save_journal_v2_player_store_save(&test.store,
         test.name, &test.player) == PLAYER_STORE_OK && test.v3_calls == 1 &&
         !test.v4_calls && test.uuid_calls == 1 && test.serializer_calls == 1 &&
-        !test.capability.armed, "ordinary saves retain the original V3 fallback path");
+        !test.capability.armed && !test.store.resolve_candidate,
+        "the dormant helper leaves ordinary V3 saves without a resolver");
+    return failed;
+}
+
+static int test_exact_identity_feature_and_empty_capability_rejections(void)
+{
+    fixture test;
+    onboarding_activation_save_capability empty;
+    int failed = 0;
+
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    memset(&empty, 0, sizeof(empty));
+    failed += expect(onboarding_activation_save_runtime_helper_attempt(&test.owner,
+        &empty, test.command, test.actor, test.correlation, test.character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test.name, test.name,
+        &test.player) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        arm(&test) && attempt(&test, test.command,
+        "12111111-1111-4111-8111-111111111111", test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        attempt(&test, test.command, test.actor,
+        "23222222-2222-4222-8222-222222222222", test.character,
+        test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        attempt(&test, test.command, test.actor, test.correlation,
+        "34333333-3333-4333-8333-333333333333", test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        attempt_mode(&test, test.command, test.actor, test.correlation,
+        test.character, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        attempt(&test, test.command, test.actor, test.correlation,
+        test.character, "Other") == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        test.capability.armed && !test.v4_calls && !test.store.resolve_candidate,
+        "wrong command, actor, correlation, character, mode, name, or empty capability reject before save");
+    unsetenv("MUD_M3_MODE");
+    failed += expect(attempt(&test, test.command, test.actor, test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        test.capability.armed && !test.v4_calls && !test.store.resolve_candidate,
+        "feature-off rejects without installing a resolver or consuming capability");
+    setenv("MUD_M3_MODE", "shadow", 1);
     return failed;
 }
 
@@ -477,17 +528,14 @@ static int test_independent_fixtures_do_not_cross_contaminate(void)
     initialize_store_callbacks(&beta);
     alpha.outcome = FAKE_PUBLISHED;
     beta.outcome = FAKE_PUBLISHED;
-    failed += expect(arm(&alpha) && arm(&beta) && begin_explicit(&alpha) &&
-        begin_explicit(&beta) && character_save_journal_v2_player_store_save(
-        &alpha.store, alpha.name, &alpha.player) == PLAYER_STORE_OK &&
-        character_save_journal_v2_player_store_save(&beta.store, beta.name,
-        &beta.player) == PLAYER_STORE_OK && alpha.candidate_exact && beta.candidate_exact &&
+    failed += expect(arm(&alpha) && arm(&beta) && attempt(&alpha, alpha.command,
+        alpha.actor, alpha.correlation, alpha.character, alpha.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED && attempt(&beta,
+        beta.command, beta.actor, beta.correlation, beta.character, beta.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED && alpha.candidate_exact && beta.candidate_exact &&
         alpha.v4_calls == 1 && beta.v4_calls == 1 && alpha.route_calls == 1 &&
-        beta.route_calls == 1 && onboarding_activation_save_bridge_finish(&alpha.bridge,
-        &alpha.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED &&
-        onboarding_activation_save_bridge_finish(&beta.bridge, &beta.store.last_report) ==
-        ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !alpha.capability.armed &&
-        !beta.capability.armed,
+        beta.route_calls == 1 && !alpha.capability.armed && !beta.capability.armed &&
+        !alpha.store.resolve_candidate && !beta.store.resolve_candidate,
         "independent descriptor fixtures keep their candidates, tuples, and consumption isolated");
     return failed;
 }
@@ -500,6 +548,7 @@ int main(void)
     failed = test_exact_tuple_and_published_once() |
         test_prepared_retains_same_command_retry() |
         test_wrong_tuple_fails_closed() | test_v3_fallback_untouched() |
+        test_exact_identity_feature_and_empty_capability_rejections() |
         test_independent_fixtures_do_not_cross_contaminate();
     unsetenv("MUD_M3_MODE");
     unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
