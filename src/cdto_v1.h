@@ -24,6 +24,8 @@
 /* Complete, pointer-free projection of a successfully loaded legacy player,
  * including its canonical detached inventory graph. */
 #define CDTO_V1_KIND_PLAYER_SNAPSHOT 7
+/* Non-live bank artifact: exactly one detached ObjectGraphV1 root. */
+#define CDTO_V1_KIND_BANK_SNAPSHOT 8
 
 #define CDTO_V1_TYPE_U8 1
 #define CDTO_V1_TYPE_U16 2
@@ -44,6 +46,7 @@
 #define CDTO_V1_SESSION_PAYLOAD_LIMIT (1024U * 1024U)
 #define CDTO_V1_OBJECT_GRAPH_PAYLOAD_LIMIT (4U * 1024U * 1024U)
 #define CDTO_V1_PLAYER_SNAPSHOT_PAYLOAD_LIMIT (4U * 1024U * 1024U)
+#define CDTO_V1_BANK_SNAPSHOT_PAYLOAD_LIMIT (4U * 1024U * 1024U)
 #define CDTO_V1_MAX_ENVELOPE_SIZE \
     (CDTO_V1_ROOM_PAYLOAD_LIMIT + CDTO_V1_PREFIX_LENGTH + CDTO_V1_DIGEST_LENGTH)
 #define CDTO_V1_MAX_FIELDS 65536U

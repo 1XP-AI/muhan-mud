@@ -12,6 +12,7 @@
 #include "creature_v1.h"
 #include "object_v1.h"
 #include "object_graph_v1.h"
+#include "bank_snapshot_v1.h"
 #include "player_snapshot_v1.h"
 
 static void object_fixture(value)
@@ -416,6 +417,34 @@ char **argv;
         status = object_graph_v1_decode(wire, wire_length, &roots);
         printf("%d\n", status);
         object_graph_v1_free(roots); free(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "bank-snapshot-fixture") && argc == 2) {
+        object objects[4]; otag tags[4], *roots;
+        object_graph_fixture(&roots, objects, tags);
+        status = bank_snapshot_v1_encode(roots, &wire, &wire_length);
+        if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
+        else printf("err %d\n", status);
+        bank_snapshot_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "bank-snapshot-roundtrip") && argc == 3) {
+        otag *root;
+        if(!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = bank_snapshot_v1_decode(wire, wire_length, &root);
+        free(wire); wire = 0;
+        if(status == CDTO_V1_OK) status = bank_snapshot_v1_encode(root, &wire, &wire_length);
+        if(status == CDTO_V1_OK) { print_hex(wire, wire_length); putchar('\n'); }
+        else printf("err %d\n", status);
+        bank_snapshot_v1_free(root); bank_snapshot_v1_free_wire(wire);
+        return 0;
+    }
+    if (!strcmp(argv[1], "bank-snapshot-decode") && argc == 3) {
+        otag *root;
+        if(!parse_hex(argv[2], &wire, &wire_length)) return 2;
+        status = bank_snapshot_v1_decode(wire, wire_length, &root);
+        printf("%d\n", status);
+        bank_snapshot_v1_free(root); free(wire);
         return 0;
     }
     if (!strcmp(argv[1], "creature-fixture") && argc == 2) {

@@ -774,6 +774,16 @@ object-graph-v1-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -I. -DOBJECT_GRAPH_V1_TESTING $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/object_graph_v1_test.c object_graph_v1.c cdto_v1.c -o /tmp/muhan-unit/object_graph_v1_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/object_graph_v1_sanitizer_test
 
+bank-snapshot-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -DOBJECT_GRAPH_V1_TESTING $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/bank_snapshot_v1_test.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c -o /tmp/muhan-unit/bank_snapshot_v1_test
+	/tmp/muhan-unit/bank_snapshot_v1_test
+
+bank-snapshot-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -DOBJECT_GRAPH_V1_TESTING $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/bank_snapshot_v1_test.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c -o /tmp/muhan-unit/bank_snapshot_v1_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/bank_snapshot_v1_sanitizer_test
+
 creature-v1-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) ../tests/unit/creature_v1_test.c creature_v1.c cdto_v1.c -o /tmp/muhan-unit/creature_v1_test

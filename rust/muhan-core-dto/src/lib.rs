@@ -27,6 +27,7 @@ pub enum Kind {
     AbiFingerprint = 5,
     ObjectGraph = 6,
     PlayerSnapshot = 7,
+    BankSnapshot = 8,
 }
 
 impl Kind {
@@ -39,6 +40,7 @@ impl Kind {
             Self::AbiFingerprint => 1024 * 1024,
             Self::ObjectGraph => 4 * 1024 * 1024,
             Self::PlayerSnapshot => 4 * 1024 * 1024,
+            Self::BankSnapshot => 4 * 1024 * 1024,
         }
     }
 
@@ -55,6 +57,7 @@ impl Kind {
             5 => Ok(Self::AbiFingerprint),
             6 => Ok(Self::ObjectGraph),
             7 => Ok(Self::PlayerSnapshot),
+            8 => Ok(Self::BankSnapshot),
             _ => Err(Error::UnknownKind { kind: value }),
         }
     }
@@ -776,6 +779,58 @@ pub fn decode_object_graph_v1(wire: &[u8]) -> Result<ObjectGraphV1, Error> {
     Ok(ObjectGraphV1 { nodes })
 }
 
+/// A deterministic, non-live bank artifact containing exactly one detached
+/// ObjectGraphV1 root.  Values are fully owned and never represent pointers,
+/// a bank-store operation, or a gameplay transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BankSnapshotV1 {
+    pub root: ObjectGraphV1,
+}
+
+fn bank_snapshot_one_root(graph: &ObjectGraphV1) -> bool {
+    graph
+        .nodes
+        .first()
+        .is_some_and(|node| node.parent_index.is_none())
+        && graph
+            .nodes
+            .iter()
+            .filter(|node| node.parent_index.is_none())
+            .count()
+            == 1
+}
+
+/// Encode exactly one canonical ObjectGraphV1 envelope in one bytes field of
+/// a dedicated kind-8 envelope.
+pub fn encode_bank_snapshot_v1(input: &BankSnapshotV1) -> Result<Vec<u8>, Error> {
+    if !bank_snapshot_one_root(&input.root) {
+        return Err(Error::InvalidFieldLength { field_id: 1 });
+    }
+    let graph = encode_object_graph_v1(&input.root)?;
+    encode(&Record::new(
+        Kind::BankSnapshot,
+        vec![Field::bytes(1, graph)],
+    )?)
+}
+
+/// Decode a kind-8 artifact, reject schema drift and noncanonical embedded
+/// graph bytes, then return one fully-owned detached graph root.
+pub fn decode_bank_snapshot_v1(wire: &[u8]) -> Result<BankSnapshotV1, Error> {
+    let record = decode(wire)?;
+    if record.kind != Kind::BankSnapshot || record.fields.len() != 1 {
+        return Err(Error::InvalidFieldLength { field_id: 0 });
+    }
+    let graph_field = &record.fields[0];
+    if graph_field.id != 1 || graph_field.type_tag != TYPE_BYTES || graph_field.value.is_empty() {
+        return Err(Error::InvalidFieldLength { field_id: 1 });
+    }
+    let root = decode_object_graph_v1(&graph_field.value)?;
+    if !bank_snapshot_one_root(&root) || encode_object_graph_v1(&root)? != graph_field.value {
+        return Err(Error::InvalidFieldLength { field_id: 1 });
+    }
+    Ok(BankSnapshotV1 { root })
+}
+
 fn array<const N: usize>(value: &[u8]) -> [u8; N] {
     value
         .try_into()
@@ -1450,6 +1505,96 @@ mod tests {
         assert!(matches!(
             encode_object_graph_v1(&padded),
             Err(Error::InvalidFieldLength { .. })
+        ));
+    }
+
+    #[test]
+    fn bank_snapshot_v1_is_one_root_closed_and_byte_stable() {
+        let money = ObjectV1 {
+            name: object_fixed(b"bank-money"),
+            description: [0; 80],
+            key: [[0; 20]; 3],
+            use_output: [0; 80],
+            value: i64::MAX,
+            weight: 0,
+            type_code: 10,
+            adjustment: 0,
+            shots_max: 1,
+            shots_current: 1,
+            ndice: 0,
+            sdice: 0,
+            pdice: 0,
+            armor: 0,
+            wear_flag: 0,
+            magic_power: 0,
+            magic_realm: 0,
+            special: 0,
+            flags: [0; 8],
+            quest_num: 0,
+        };
+        let snapshot = BankSnapshotV1 {
+            root: ObjectGraphV1 {
+                nodes: vec![ObjectGraphNodeV1 {
+                    object: money,
+                    parent_index: None,
+                    child_index: 0,
+                }],
+            },
+        };
+        let wire = encode_bank_snapshot_v1(&snapshot).unwrap();
+        assert_eq!(&wire[10..12], &[0, 8]);
+        assert_eq!(decode_bank_snapshot_v1(&wire).unwrap(), snapshot);
+        assert_eq!(
+            encode_bank_snapshot_v1(&decode_bank_snapshot_v1(&wire).unwrap()).unwrap(),
+            wire
+        );
+
+        let two_roots = BankSnapshotV1 {
+            root: ObjectGraphV1 {
+                nodes: vec![
+                    ObjectGraphNodeV1 {
+                        object: snapshot.root.nodes[0].object.clone(),
+                        parent_index: None,
+                        child_index: 0,
+                    },
+                    ObjectGraphNodeV1 {
+                        object: snapshot.root.nodes[0].object.clone(),
+                        parent_index: None,
+                        child_index: 1,
+                    },
+                ],
+            },
+        };
+        assert!(matches!(
+            encode_bank_snapshot_v1(&two_roots),
+            Err(Error::InvalidFieldLength { field_id: 1 })
+        ));
+        assert!(matches!(
+            encode_bank_snapshot_v1(&BankSnapshotV1 {
+                root: ObjectGraphV1 { nodes: vec![] }
+            }),
+            Err(Error::InvalidFieldLength { field_id: 1 })
+        ));
+
+        let graph = encode_object_graph_v1(&two_roots.root).unwrap();
+        let non_single =
+            encode(&Record::new(Kind::BankSnapshot, vec![Field::bytes(1, graph)]).unwrap())
+                .unwrap();
+        assert!(matches!(
+            decode_bank_snapshot_v1(&non_single),
+            Err(Error::InvalidFieldLength { field_id: 1 })
+        ));
+        let extra = encode(
+            &Record::new(
+                Kind::BankSnapshot,
+                vec![Field::bytes(1, vec![1]), Field::bytes(2, vec![])],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            decode_bank_snapshot_v1(&extra),
+            Err(Error::InvalidFieldLength { field_id: 0 })
         ));
     }
 

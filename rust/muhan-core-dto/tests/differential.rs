@@ -8,9 +8,10 @@ use muhan_core_dto::player_snapshot_v1::{
     decode_player_snapshot_v1, encode_player_snapshot_v1, LastTimeV1, PlayerSnapshotV1,
 };
 use muhan_core_dto::{
-    decode, decode_creature_v1, decode_object_graph_v1, decode_object_v1, encode,
-    encode_creature_v1, encode_object_graph_v1, encode_object_v1, CreatureV1, DailyV1, Error,
-    Field, Kind, ObjectGraphNodeV1, ObjectGraphV1, ObjectV1, Record, TYPE_BOOL, TYPE_U8,
+    decode, decode_bank_snapshot_v1, decode_creature_v1, decode_object_graph_v1, decode_object_v1,
+    encode, encode_bank_snapshot_v1, encode_creature_v1, encode_object_graph_v1, encode_object_v1,
+    BankSnapshotV1, CreatureV1, DailyV1, Error, Field, Kind, ObjectGraphNodeV1, ObjectGraphV1,
+    ObjectV1, Record, TYPE_BOOL, TYPE_U8,
 };
 use std::env;
 use std::fs;
@@ -114,6 +115,7 @@ fn write_manifest(path: &Path, seed: u64) {
              corpus=synthetic-canonical-bytes-only\n\
              cases=64\n\
              player-snapshot-cases=64\n\
+             bank-snapshot-fixtures=one-root-canonical-object-graph\n\
              boundaries=max-fields,one-mib,one-mib-plus,count-overflow,player-roots-4096,player-list-4096,player-depth-64,player-nodes-8192\n\
              malformed=unknown-kind,truncated,duplicate,length-overflow,one-mib-plus,player-schema\n"
         ),
@@ -210,8 +212,41 @@ fn c_and_rust_match_the_fixed_seed_differential_corpus() {
     assert_malformed_rejections(&oracle);
     assert_object_v1(&oracle);
     assert_object_graph_v1(&oracle);
+    assert_bank_snapshot_v1(&oracle, &artifact_dir);
     assert_creature_v1(&oracle);
     assert_player_snapshot_v1(&oracle, &artifact_dir, seed);
+}
+
+fn assert_bank_snapshot_v1(oracle: &Path, artifact_dir: &Path) {
+    let c_wire = decode_hex(&run(oracle, &["bank-snapshot-fixture".into()]));
+    let graph_wire = decode_hex(&run(oracle, &["object-graph-fixture".into()]));
+    let snapshot = BankSnapshotV1 {
+        root: decode_object_graph_v1(&graph_wire).expect("C graph fixture must decode"),
+    };
+    let rust_wire = encode_bank_snapshot_v1(&snapshot).expect("one C root must wrap");
+    assert_wire_equal(artifact_dir, "bank-snapshot-fixture", &c_wire, &rust_wire);
+    assert_eq!(
+        decode_bank_snapshot_v1(&c_wire).expect("C bank snapshot must decode"),
+        snapshot,
+    );
+    assert_eq!(
+        decode_hex(&run(
+            oracle,
+            &["bank-snapshot-roundtrip".into(), hex(&rust_wire)]
+        )),
+        rust_wire,
+        "C must preserve Rust bank snapshot bytes",
+    );
+    assert_eq!(
+        status(oracle, &rust_wire),
+        "0",
+        "generic CDTO must recognize kind 8"
+    );
+    assert_eq!(
+        run(oracle, &["bank-snapshot-decode".into(), hex(&rust_wire)]),
+        "0",
+        "C bank boundary must accept Rust bytes",
+    );
 }
 
 #[test]
