@@ -77,6 +77,24 @@ const char *name;
         reservation->activation.command_id,name);
 }
 
+/* A held reservation is only a dispatch candidate while its durable ACTIVATED
+ * source still names the same full tuple.  This is deliberately local to the
+ * evidence harness: production has no owner for the reservation descriptor. */
+static int reservation_source_current(reservation)
+const onboarding_snapshot_command_reservation *reservation;
+{
+    onboarding_activation_binding source;
+
+    memset(&source,0,sizeof(source));
+    return reservation && onboarding_activation_binding_read(
+        reservation->activation.command_id,&source)==0 &&
+        !strcmp(source.actor_user_id,reservation->activation.actor_user_id) &&
+        !strcmp(source.correlation_id,reservation->activation.correlation_id) &&
+        !strcmp(source.character_id,reservation->activation.character_id) &&
+        source.mode==reservation->activation.mode &&
+        !strcmp(source.command_id,reservation->activation.command_id);
+}
+
 /* This is the missing adapter's narrow output boundary.  It uses the actual
  * V4 candidate type and bridge, but does not pretend that the local-only
  * consumer has a production owner or may install a PlayerStore resolver. */
@@ -93,6 +111,7 @@ character_save_journal_v2_protocol_candidate_v4 *candidate;
 
     if(candidate) memset(candidate,0,sizeof(*candidate));
     if(!capability || !reservation || !candidate) return -1;
+    if(!reservation_source_current(reservation)) return 0;
     memset(&bridge,0,sizeof(bridge)); memset(&writer,0,sizeof(writer));
     memset(&route,0,sizeof(route)); memset(&report,0,sizeof(report));
     if(onboarding_activation_save_bridge_begin(&bridge,capability,
@@ -137,13 +156,15 @@ int main(void)
     char root[]="/tmp/muhan-activated-command-snapshot.XXXXXX";
     char directory[512], path[512];
     onboarding_snapshot_command_reservation reservation, stale;
+    onboarding_activation_binding source;
     onboarding_activation_save_capability capability;
     character_save_journal_v2_protocol_candidate_v4 candidate;
     struct stat status;
     int directory_fd, failed;
 
     directory_fd=-1; failed=0; memset(&reservation,0,sizeof(reservation));
-    memset(&stale,0,sizeof(stale)); memset(&capability,0,sizeof(capability));
+    memset(&stale,0,sizeof(stale)); memset(&source,0,sizeof(source));
+    memset(&capability,0,sizeof(capability));
     memset(&candidate,0,sizeof(candidate));
     if(!mkdtemp(root) || setenv("MUHAN_HOME",root,1) ||
        snprintf(directory,sizeof(directory),"%s/reservations",root)>=(int)sizeof(directory) ||
@@ -214,11 +235,18 @@ int main(void)
         onboarding_snapshot_command_consumer_read(directory_fd,STALE_COMMAND,&stale)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         dispatch_candidate(&capability,&stale,&candidate)==0 && !candidate_dispatches &&
-        capture_reservation(&capability,&reservation,"Alice")==
+        capture_reservation(&capability,&stale,"Alice")==
         ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+        source_path(STALE_COMMAND,path,sizeof(path))==0 && unlink(path)==0 &&
+        onboarding_activation_binding_read(STALE_COMMAND,&source)!=0 &&
+        onboarding_snapshot_command_consumer_read(directory_fd,STALE_COMMAND,&stale)==
+        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
+        onboarding_snapshot_command_consumer_reserve(directory_fd,STALE_COMMAND,CHARACTER,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
+        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE &&
         dispatch_candidate(&capability,&stale,&candidate)==0 && capability.armed &&
-        !candidate_dispatches,
-        "unbound and stale reservation commands retain without a V4 dispatch");
+        !candidate_dispatches && !candidate.command_uuid[0],
+        "removed ACTIVATED source after reservation retains without V4 dispatch or consumption");
 
     if(directory_fd>=0) close(directory_fd);
     if(reservation_path(directory,COMMAND,path,sizeof(path))==0) unlink(path);
