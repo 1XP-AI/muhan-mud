@@ -4,6 +4,20 @@
 
 #include <string.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((weak)) character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v4(
+    writer, request, operations, report)
+const character_save_journal_v2_writer_context *writer;
+const character_save_journal_v2_protocol_held_request_v3 *request;
+const character_save_journal_v2_protocol_operations_v4 *operations;
+character_save_journal_v2_protocol_report *report;
+{
+    (void)writer; (void)request; (void)operations; (void)report;
+    return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+}
+#endif
+
 static unsigned long player_store_text_length(const char *text, unsigned long maximum)
 {
     unsigned long length;
@@ -156,6 +170,18 @@ int character_save_journal_v2_player_store_set_stage_observer(
     return 0;
 }
 
+int character_save_journal_v2_player_store_set_candidate_resolver(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_resolve_candidate resolver,
+    void *resolver_opaque)
+{
+    if(!store || store->state != CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE)
+        return -1;
+    store->resolve_candidate = resolver;
+    store->resolve_candidate_opaque = resolver_opaque;
+    return 0;
+}
+
 player_store_ops character_save_journal_v2_player_store_build(
     character_save_journal_v2_player_store *store)
 {
@@ -175,6 +201,7 @@ int character_save_journal_v2_player_store_save(
     character_save_journal_v2_writer_tuple tuple;
     character_save_journal_v2_protocol_held_request_v3 request;
     character_save_journal_v2_protocol_operations_v3 operations;
+    character_save_journal_v2_protocol_operations_v4 operations_v4;
     char deadline[CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX+1];
     char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH+1];
     unsigned long name_length, player_name_length;
@@ -215,12 +242,17 @@ int character_save_journal_v2_player_store_save(
     if(!store->absent_bootstrap || store->absent_bootstrap(
        store->absent_bootstrap_opaque,store->held_writer,store->live_ops,
        (const unsigned char *)name,(size_t)name_length)) goto failed;
-    memset(command_uuid,0,sizeof(command_uuid));
-    if(store->command_uuid(store->command_uuid_opaque,command_uuid)||
-       !player_store_uuid_valid(command_uuid)) goto failed;
     store->active_player=player;
-    if(player_store_serialize_bounded(store)) goto failed;
-    store->active_player=0;
+    if(!store->resolve_candidate) {
+        memset(command_uuid,0,sizeof(command_uuid));
+        if(store->command_uuid(store->command_uuid_opaque,command_uuid)||
+           !player_store_uuid_valid(command_uuid)) goto failed;
+        if(player_store_serialize_bounded(store)) goto failed;
+        store->active_player=0;
+    } else {
+        if(player_store_serialize_bounded(store)) goto failed;
+        store->active_player=0;
+    }
 
     memset(&request,0,sizeof(request));
     request.canonical_legacy_name=(const unsigned char *)name;
@@ -235,8 +267,27 @@ int character_save_journal_v2_player_store_save(
     operations.receipt_opaque=store->live_ops;
     operations.observe_prepared_stage=store->stage_observer;
     operations.observe_prepared_stage_opaque=store->stage_observer_opaque;
-    result=character_save_journal_v2_protocol_save_held_v3(store->held_writer,
-        &request,&operations,&store->last_report);
+    if(store->resolve_candidate) {
+        memset(&operations_v4, 0, sizeof(operations_v4));
+        operations_v4.route_lookup = operations.route_lookup;
+        operations_v4.route_opaque = operations.route_opaque;
+        operations_v4.serialize = operations.serialize;
+        operations_v4.serialize_opaque = operations.serialize_opaque;
+        operations_v4.receipt = operations.receipt;
+        operations_v4.receipt_opaque = operations.receipt_opaque;
+        operations_v4.observe_prepared_stage = operations.observe_prepared_stage;
+        operations_v4.observe_prepared_stage_opaque = operations.observe_prepared_stage_opaque;
+        operations_v4.resolve_candidate = store->resolve_candidate;
+        operations_v4.resolve_candidate_opaque = store->resolve_candidate_opaque;
+        operations_v4.generate_uuid = (character_save_journal_v2_protocol_generate_uuid_v4)
+            store->command_uuid;
+        operations_v4.generate_uuid_opaque = store->command_uuid_opaque;
+        result=character_save_journal_v2_protocol_save_held_v4(store->held_writer,
+            &request,&operations_v4,&store->last_report);
+    } else {
+        result=character_save_journal_v2_protocol_save_held_v3(store->held_writer,
+            &request,&operations,&store->last_report);
+    }
     (void)result;
     /* After PUBLISHED the legacy file and its local journal evidence are the
      * durable authority.  Receipt defer/freeze/local-marker repair belongs to

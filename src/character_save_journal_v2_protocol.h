@@ -7,6 +7,7 @@
  * receipt seams, while this module only composes the local 091 evidence APIs.
  */
 #include "character_save_journal_v2_recovery.h"
+#include "character_save_journal_v2_uuid.h"
 
 #include <stddef.h>
 
@@ -102,6 +103,43 @@ typedef struct character_save_journal_v2_protocol_held_request_v3 {
     const char *command_uuid;
 } character_save_journal_v2_protocol_held_request_v3;
 
+/* v4 is an opt-in resolver seam.  The resolver receives the already-bound
+ * route and held writer and may return a candidate; the echoed fields make
+ * the candidate self-authenticating at this boundary. */
+typedef struct character_save_journal_v2_protocol_candidate_v4 {
+    char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
+    character_save_journal_v2_writer_tuple writer;
+    char character_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN + 1];
+    unsigned char canonical_legacy_name[CHARACTER_SAVE_JOURNAL_V2_ROUTE_NAME_MAX + 1];
+    size_t canonical_legacy_name_length;
+} character_save_journal_v2_protocol_candidate_v4;
+
+/* Return 0 for no candidate (native generation is then used), 1 for a
+ * candidate, and any other value for an invalid resolver result. */
+typedef int (*character_save_journal_v2_protocol_resolve_candidate_v4)(
+    void *opaque, const character_save_journal_v2_writer_tuple *writer,
+    const character_save_journal_v2_bound_route_v3 *route,
+    const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length,
+    character_save_journal_v2_protocol_candidate_v4 *candidate_out);
+
+typedef int (*character_save_journal_v2_protocol_generate_uuid_v4)(
+    void *opaque, char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1]);
+
+typedef struct character_save_journal_v2_protocol_operations_v4 {
+    character_save_journal_v2_route_lookup_v3 route_lookup;
+    void *route_opaque;
+    character_save_journal_v2_protocol_serialize_v3 serialize;
+    void *serialize_opaque;
+    character_save_journal_v2_receipt_callback receipt;
+    void *receipt_opaque;
+    character_save_journal_v2_prepared_stage_observer observe_prepared_stage;
+    void *observe_prepared_stage_opaque;
+    character_save_journal_v2_protocol_resolve_candidate_v4 resolve_candidate;
+    void *resolve_candidate_opaque;
+    character_save_journal_v2_protocol_generate_uuid_v4 generate_uuid;
+    void *generate_uuid_opaque;
+} character_save_journal_v2_protocol_operations_v4;
+
 /* The ordered success path is held writer validation, route/epoch, serializer,
  * writer revalidation, stage/fsync/hash, live precondition through the same
  * held-root descriptor, tuple revalidation, PREPARED, publish, then ack. */
@@ -119,6 +157,13 @@ character_save_journal_v2_protocol_save_held_v3(
     const character_save_journal_v2_writer_context *writer,
     const character_save_journal_v2_protocol_held_request_v3 *request,
     const character_save_journal_v2_protocol_operations_v3 *operations,
+    character_save_journal_v2_protocol_report *report_out);
+
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v4(
+    const character_save_journal_v2_writer_context *writer,
+    const character_save_journal_v2_protocol_held_request_v3 *request,
+    const character_save_journal_v2_protocol_operations_v4 *operations,
     character_save_journal_v2_protocol_report *report_out);
 
 /* Runs the real recovery engine under a writer lease.  The receipt callback

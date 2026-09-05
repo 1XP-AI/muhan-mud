@@ -430,6 +430,122 @@ done:
     return result;
 }
 
+typedef struct protocol_v4_bound_route {
+    character_save_journal_v2_bound_route_v3 route;
+} protocol_v4_bound_route;
+
+static character_save_journal_v2_route_lookup_result
+protocol_v4_bound_route_lookup(opaque, world, name, length, reply)
+void *opaque;
+const char *world;
+const unsigned char *name;
+size_t length;
+character_save_journal_v2_route_reply_v3 *reply;
+{
+    protocol_v4_bound_route *bound = opaque;
+    if(!bound || !world || !name || !reply || strcmp(world, bound->route.world_id) ||
+       length != bound->route.legacy_name_length ||
+       memcmp(name, bound->route.legacy_name, length))
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    memset(reply, 0, sizeof(*reply));
+    reply->status = CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
+    reply->row_count = 1;
+    snprintf(reply->world_id, sizeof(reply->world_id), "%s", bound->route.world_id);
+    snprintf(reply->character_id, sizeof(reply->character_id), "%s", bound->route.character_id);
+    memcpy(reply->legacy_name, bound->route.legacy_name, bound->route.legacy_name_length);
+    reply->legacy_name_length = bound->route.legacy_name_length;
+    snprintf(reply->legacy_shard, sizeof(reply->legacy_shard), "%s", bound->route.legacy_shard);
+    reply->storage_format = bound->route.storage_format;
+    reply->lifecycle = bound->route.lifecycle;
+    reply->head_state = bound->route.head_state;
+    reply->head_revision = bound->route.head_revision;
+    snprintf(reply->head_sha256, sizeof(reply->head_sha256), "%s", bound->route.head_sha256);
+    return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
+}
+
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v4(writer, request, operations, report_out)
+const character_save_journal_v2_writer_context *writer;
+const character_save_journal_v2_protocol_held_request_v3 *request;
+const character_save_journal_v2_protocol_operations_v4 *operations;
+character_save_journal_v2_protocol_report *report_out;
+{
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_bound_route_v3 route;
+    character_save_journal_v2_protocol_candidate_v4 candidate;
+    character_save_journal_v2_protocol_held_request_v3 selected_request;
+    character_save_journal_v2_protocol_operations_v3 selected_operations;
+    protocol_v4_bound_route bound;
+    char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
+    int candidate_result;
+
+    protocol_report_zero(report_out);
+    if(!writer || !request || !operations || !report_out ||
+       !request->canonical_legacy_name || !request->canonical_legacy_name_length ||
+       !operations->route_lookup || !operations->serialize || !operations->receipt ||
+       !operations->resolve_candidate || !operations->generate_uuid)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    memset(&tuple, 0, sizeof(tuple));
+    memset(&route, 0, sizeof(route));
+    memset(&candidate, 0, sizeof(candidate));
+    if(character_save_journal_v2_writer_validate_held(writer, &tuple) !=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
+    report_out->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_WRITER_LOCKED;
+    if(character_save_journal_v2_route_bind_v3(writer,
+       request->canonical_legacy_name, request->canonical_legacy_name_length,
+       operations->route_lookup, operations->route_opaque, &route) !=
+       CHARACTER_SAVE_JOURNAL_V2_ROUTE_OK)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+    report_out->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;
+    if(route.head_state == CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_UNINITIALIZED ||
+       route.head_revision >= (uint64_t)INT64_MAX)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+
+    candidate_result = operations->resolve_candidate(
+        operations->resolve_candidate_opaque, &tuple, &route,
+        request->canonical_legacy_name, request->canonical_legacy_name_length,
+        &candidate);
+    if(candidate_result < 0 || candidate_result > 1)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+    memset(command_uuid, 0, sizeof(command_uuid));
+    if(candidate_result == 0) {
+        if(operations->generate_uuid(operations->generate_uuid_opaque, command_uuid) ||
+           !protocol_uuid(command_uuid))
+            return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+    } else {
+        if(!protocol_uuid(candidate.command_uuid) ||
+           !protocol_tuple_matches(&tuple, &candidate.writer) ||
+           strcmp(candidate.character_id, route.character_id) ||
+           candidate.canonical_legacy_name_length != request->canonical_legacy_name_length ||
+           memcmp(candidate.canonical_legacy_name, request->canonical_legacy_name,
+                  request->canonical_legacy_name_length))
+            return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
+        snprintf(command_uuid, sizeof(command_uuid), "%s", candidate.command_uuid);
+    }
+
+    /* Reuse the battle-tested v3 staging engine while freezing the exact
+     * route selected above.  No second external route lookup can substitute a
+     * different character between resolution and PREPARED. */
+    memset(&bound, 0, sizeof(bound));
+    bound.route = route;
+    memset(&selected_request, 0, sizeof(selected_request));
+    selected_request.canonical_legacy_name = request->canonical_legacy_name;
+    selected_request.canonical_legacy_name_length = request->canonical_legacy_name_length;
+    selected_request.command_uuid = command_uuid;
+    memset(&selected_operations, 0, sizeof(selected_operations));
+    selected_operations.route_lookup = protocol_v4_bound_route_lookup;
+    selected_operations.route_opaque = &bound;
+    selected_operations.serialize = operations->serialize;
+    selected_operations.serialize_opaque = operations->serialize_opaque;
+    selected_operations.receipt = operations->receipt;
+    selected_operations.receipt_opaque = operations->receipt_opaque;
+    selected_operations.observe_prepared_stage = operations->observe_prepared_stage;
+    selected_operations.observe_prepared_stage_opaque = operations->observe_prepared_stage_opaque;
+    return character_save_journal_v2_protocol_save_held_v3(
+        writer, &selected_request, &selected_operations, report_out);
+}
+
 character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save(request, operations, report_out)
 const character_save_journal_v2_protocol_request *request;

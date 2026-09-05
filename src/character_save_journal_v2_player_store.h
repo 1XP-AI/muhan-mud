@@ -36,6 +36,9 @@ typedef int (*character_save_journal_v2_player_store_absent_bootstrap)(
     character_save_journal_v2_live_ops *live_ops,
     const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length);
 
+typedef character_save_journal_v2_protocol_resolve_candidate_v4
+    character_save_journal_v2_player_store_resolve_candidate;
+
 typedef enum character_save_journal_v2_player_store_state {
     CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE = 0,
     CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING = 1
@@ -57,6 +60,8 @@ typedef struct character_save_journal_v2_player_store {
     void *absent_bootstrap_opaque;
     character_save_journal_v2_prepared_stage_observer stage_observer;
     void *stage_observer_opaque;
+    character_save_journal_v2_player_store_resolve_candidate resolve_candidate;
+    void *resolve_candidate_opaque;
 
     /* Observable caller-owned state.  Transient references are reset after
      * every dispatched save.  last_report is reset before each non-reentrant
@@ -100,6 +105,11 @@ int character_save_journal_v2_player_store_set_absent_bootstrap(
     character_save_journal_v2_player_store *store,
     character_save_journal_v2_player_store_absent_bootstrap bootstrap,
     void *bootstrap_opaque);
+
+int character_save_journal_v2_player_store_set_candidate_resolver(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_resolve_candidate resolver,
+    void *resolver_opaque);
 
 /* Produces an opaque PlayerStore dispatch value.  No heap allocation, global
  * registration, connection ownership, or libpq dependency is involved. */
