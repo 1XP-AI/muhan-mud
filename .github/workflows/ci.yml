@@ -181,6 +181,17 @@ jobs:
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/legacy_identity_evidence_binding_contract.sql
+          # Keep the legacy evidence contract pinned at its 210 checkpoint.
+          # The handoff gate is deliberately applied only after that contract,
+          # then replayed before its own pending-to-active contract runs.
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260922000000_onboarding_handoff_lifecycle.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260922100000_onboarding_handoff_gate.sql
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/onboarding_handoff_gate_contract.sql
 
       - name: Run M4 file snapshot manifest PostgreSQL 17 contract
         if: runner.os == 'Linux'
