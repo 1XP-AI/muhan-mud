@@ -20,6 +20,7 @@ typedef struct feature_off_environment {
 
 typedef struct failing_shadow {
     int start_calls;
+    player_store_binding binding;
 } failing_shadow;
 
 static int write_calls;
@@ -97,21 +98,50 @@ static const char *feature_off_getenv(void *opaque, const char *name)
     return !strcmp(name, "MUD_M3_MODE") ? environment->mode : 0;
 }
 
+/* This is the one side effect the real shadow process owner would make to
+ * legacy save authority.  A deliberately failing starter installs it first,
+ * so absent/off modes prove that runtime dispatch never reaches an owner
+ * which could bind PlayerStore. */
+static int shadow_owner_save(void *opaque, char *name, creature *player)
+{
+    (void)opaque;
+    (void)name;
+    (void)player;
+    return PLAYER_STORE_IO_ERROR;
+}
+
+static int shadow_owner_load(void *opaque, char *name, creature **player)
+{
+    (void)opaque;
+    (void)name;
+    if(player) *player=0;
+    return PLAYER_STORE_IO_ERROR;
+}
+
 static int failing_shadow_start(void *opaque, const char *muhan_home,
     const char *world_id, const char *conninfo)
 {
     failing_shadow *shadow=(failing_shadow *)opaque;
+    player_store_ops owner_store;
 
     (void)muhan_home;
     (void)world_id;
     (void)conninfo;
     shadow->start_calls++;
+    owner_store.save=shadow_owner_save;
+    owner_store.load=shadow_owner_load;
+    owner_store.opaque=shadow;
+    if(player_store_bind(&owner_store,&shadow->binding))
+        return -1;
     return -1;
 }
 
 static void failing_shadow_shutdown(void *opaque)
 {
-    (void)opaque;
+    failing_shadow *shadow=(failing_shadow *)opaque;
+
+    if(shadow && shadow->binding.active)
+        (void)player_store_unbind(&shadow->binding);
 }
 
 static const character_save_journal_v2_runtime_shadow_operations
@@ -166,13 +196,15 @@ int main(void)
 
     character_save_journal_v2_runtime_init(&runtime, &dependencies);
     failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
-        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED && shadow.start_calls==0,
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED && shadow.start_calls==0 &&
+        !shadow.binding.active,
         "absent mode must not activate the failing shadow authority");
     environment.mode="off";
     character_save_journal_v2_runtime_init(&runtime, &dependencies);
     failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
-        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED && shadow.start_calls==0,
-        "off mode must not activate the failing shadow authority");
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "off mode must not let the shadow owner bind PlayerStore");
 
     memset(&input, 0, sizeof(input));
     strcpy(input.name, "Legacy");
