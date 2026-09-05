@@ -239,6 +239,20 @@ onboarding-activation-save-capability-sanitizer-test:
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_capability_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_save_capability_static_test.py
 
+# This bridge remains a caller-owned composition seam: it does not join
+# OBJECTS or install a resolver for default, claim, recovery, or legacy saves.
+onboarding-activation-save-bridge-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_bridge_test.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_bridge_test
+	/tmp/muhan-unit/onboarding_activation_save_bridge_test
+	python3 ../tests/unit/onboarding_activation_save_bridge_static_test.py
+
+onboarding-activation-save-bridge-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_bridge_test.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_bridge_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_bridge_sanitizer_test
+	python3 ../tests/unit/onboarding_activation_save_bridge_static_test.py
+
 # Local-only command reservation seam.  This deliberately stays out of both
 # OBJECTS and M3_RUNTIME_OBJECTS until a separate runtime wiring slice exists.
 onboarding-snapshot-command-consumer-test:

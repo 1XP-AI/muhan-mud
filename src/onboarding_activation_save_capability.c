@@ -63,6 +63,37 @@ const char *source;
     return 0;
 }
 
+static int oasc_equal(left, right, limit)
+const char *left;
+const char *right;
+unsigned long limit;
+{
+    unsigned long left_length, right_length;
+    left_length=oasc_bounded(left,limit);
+    right_length=oasc_bounded(right,limit);
+    return left_length<=limit && right_length==left_length &&
+        !memcmp(left,right,left_length);
+}
+
+static int oasc_record_matches(record, command_id, actor_user_id,
+                               correlation_id, character_id, mode, canonical_name)
+const onboarding_activation_save_capability_record *record;
+const char *command_id;
+const char *actor_user_id;
+const char *correlation_id;
+const char *character_id;
+onboarding_activation_binding_mode mode;
+const char *canonical_name;
+{
+    return record && oasc_equal(record->command_id,command_id,
+        ONBOARDING_ADMISSION_UUID_LEN) && oasc_equal(record->actor_user_id,
+        actor_user_id,ONBOARDING_ADMISSION_UUID_LEN) && oasc_equal(
+        record->correlation_id,correlation_id,ONBOARDING_ADMISSION_UUID_LEN) &&
+        oasc_equal(record->character_id,character_id,
+        ONBOARDING_ADMISSION_UUID_LEN) && record->mode==mode &&
+        oasc_equal(record->canonical_name,canonical_name,PLAYER_NAME_MAX_BYTES);
+}
+
 void onboarding_activation_save_capability_clear(capability)
 onboarding_activation_save_capability *capability;
 {
@@ -126,6 +157,44 @@ onboarding_activation_save_capability_record *record;
         return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE;
     }
     *record = capability->record;
+    onboarding_activation_save_capability_clear(capability);
+    return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
+}
+
+onboarding_activation_save_capability_status
+onboarding_activation_save_capability_peek_for_explicit_save(capability,
+                                                               command_id, record)
+const onboarding_activation_save_capability *capability;
+const char *command_id;
+onboarding_activation_save_capability_record *record;
+{
+    if(record) memset(record, 0, sizeof(*record));
+    if(!capability || !record || !oasc_enabled() || !capability->armed ||
+       !oasc_uuid(command_id) || strcmp(capability->record.command_id, command_id))
+        return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE;
+    *record = capability->record;
+    return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
+}
+
+onboarding_activation_save_capability_status
+onboarding_activation_save_capability_consume_published_explicit_save(capability,
+    command_id, actor_user_id, correlation_id, character_id, mode,
+    canonical_name, record)
+onboarding_activation_save_capability *capability;
+const char *command_id;
+const char *actor_user_id;
+const char *correlation_id;
+const char *character_id;
+onboarding_activation_binding_mode mode;
+const char *canonical_name;
+onboarding_activation_save_capability_record *record;
+{
+    if(record) memset(record,0,sizeof(*record));
+    if(!capability || !record || !oasc_enabled() || !capability->armed ||
+       !oasc_record_matches(&capability->record,command_id,actor_user_id,
+       correlation_id,character_id,mode,canonical_name))
+        return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE;
+    *record=capability->record;
     onboarding_activation_save_capability_clear(capability);
     return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
 }

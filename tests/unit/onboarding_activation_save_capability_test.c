@@ -93,6 +93,23 @@ int main(void)
             &capability, OTHER_COMMAND, &record) ==
             ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE && empty(&capability),
         "a mismatched future command must fail closed and consume nothing reusable");
+
+    failed += expect(capture(&capability,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+        onboarding_activation_save_capability_consume_published_explicit_save(
+            &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+            ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, "Alicf", &record) ==
+            ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE && capability.armed &&
+        onboarding_activation_save_capability_consume_published_explicit_save(
+            &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+            ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, "Alice", &record) ==
+            ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+        !strcmp(record.actor_user_id, ACTOR) && !strcmp(record.correlation_id, CORRELATION) &&
+        !strcmp(record.character_id, CHARACTER) &&
+        record.mode == ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION &&
+        !strcmp(record.command_id, COMMAND) && !strcmp(record.canonical_name, "Alice") &&
+        empty(&capability),
+        "published consumption must verify the full captured tuple before clearing it");
     failed += expect(capture(&capability,
         ONBOARDING_ACTIVATION_BINDING_MODE_INVALID) ==
         ONBOARDING_ACTIVATION_SAVE_CAPABILITY_INVALID && empty(&capability),

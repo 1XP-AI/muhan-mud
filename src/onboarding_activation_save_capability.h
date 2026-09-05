@@ -48,4 +48,23 @@ onboarding_activation_save_capability_consume_for_explicit_save(
     onboarding_activation_save_capability *capability, const char *command_id,
     onboarding_activation_save_capability_record *record);
 
+/* Inspect the exact session proof without consuming it.  An explicit-save
+ * bridge uses this before V4 has reached PUBLISHED, then calls the consuming
+ * operation above only after that durable publication edge. */
+onboarding_activation_save_capability_status
+onboarding_activation_save_capability_peek_for_explicit_save(
+    const onboarding_activation_save_capability *capability,
+    const char *command_id, onboarding_activation_save_capability_record *record);
+
+/* The bridge calls this only after V4 PUBLISHED.  Unlike the legacy
+ * command-only helper, all captured identity fields and the canonical name
+ * must still match at the consumption edge. */
+onboarding_activation_save_capability_status
+onboarding_activation_save_capability_consume_published_explicit_save(
+    onboarding_activation_save_capability *capability, const char *command_id,
+    const char *actor_user_id, const char *correlation_id,
+    const char *character_id, onboarding_activation_binding_mode mode,
+    const char *canonical_name,
+    onboarding_activation_save_capability_record *record);
+
 #endif
