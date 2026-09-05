@@ -75,16 +75,65 @@ static void setup(int directory_fd)
     current.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
 }
 
+static int owner_is_unchanged(
+    const character_save_journal_v2_process_owner *before)
+{
+    return !memcmp(&current.owner,before,sizeof(current.owner));
+}
+
 int main(void)
 {
     onboarding_activation_binding expected;
     onboarding_activation_save_capability capability;
     onboarding_activation_save_bridge bridge;
+    character_save_journal_v2_process_owner owner_before;
     int directory_fd, failed;
 
     directory_fd=open(".",O_RDONLY);
     if(directory_fd<0) return 1;
     failed=0; binding(&expected); memset(&capability,0,sizeof(capability));
+
+    setup(directory_fd); owner_before=current.owner; memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(0,
+        directory_fd,&expected,&capability,"Alice",&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "null owner is rejected without adapter use or owner lifecycle mutation");
+
+    setup(directory_fd); owner_before=current.owner; memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        -1,&expected,&capability,"Alice",&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "invalid directory FD is rejected without adapter use or owner lifecycle mutation");
+
+    setup(directory_fd); owner_before=current.owner; memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        directory_fd,0,&capability,"Alice",&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "null expected binding is rejected without adapter use or owner lifecycle mutation");
+
+    setup(directory_fd); owner_before=current.owner; memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        directory_fd,&expected,0,"Alice",&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "null capability is rejected without adapter use or owner lifecycle mutation");
+
+    setup(directory_fd); owner_before=current.owner; memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        directory_fd,&expected,&capability,0,&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "null canonical name is rejected without adapter use or owner lifecycle mutation");
+
+    setup(directory_fd); owner_before=current.owner;
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        directory_fd,&expected,&capability,"Alice",0)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT &&
+        !current.adapter_calls && owner_is_unchanged(&owner_before),
+        "null bridge output is rejected without adapter use or owner lifecycle mutation");
 
     setup(directory_fd); current.owner.state=CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
     memset(&bridge,0,sizeof(bridge));
