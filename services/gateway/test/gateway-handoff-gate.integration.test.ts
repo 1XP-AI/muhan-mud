@@ -192,6 +192,9 @@ function messages(ws: WebSocket): Array<{ data: RawData, binary: boolean }> {
 function hasText(received: Array<{ data: RawData, binary: boolean }>, value: string): boolean {
   return received.some(({ data, binary }) => !binary && Buffer.from(data).toString() === value)
 }
+function hasPrivateClaimControl(received: Array<{ data: RawData, binary: boolean }>): boolean {
+  return received.some(({ data }) => /CHALLENGE|ALLOW/.test(Buffer.from(data).toString('utf8')))
+}
 async function eventually(check: () => void, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -209,6 +212,15 @@ function cEvidence(canonicalName: string, playerFileSha256: string): LegacyIdent
     playerFileSha256, storageFormat: 'player-v1',
   }
 }
+
+test('claim privacy detector scans binary frames without rejecting ordinary game data', () => {
+  const ordinaryGameData = [{ data: Buffer.from('비밀번호? '), binary: true }]
+  assert.equal(hasPrivateClaimControl(ordinaryGameData), false)
+
+  for (const control of ['MUD1O CHALLENGE|416c696365|' + 'b'.repeat(64) + '\n', 'MUD1O ALLOW\n']) {
+    assert.equal(hasPrivateClaimControl([{ data: Buffer.from(control), binary: true }]), true, `binary ${control.trim()} must be detected`)
+  }
+})
 
 test('normal admission remains locked until the held COMMIT callback activates the pending handoff', async (t) => {
   const onboardingMud = new HeldCommitMudSocket()
@@ -370,7 +382,8 @@ test('claim evidence keeps private controls and normal admission locked until CL
   await eventually(() => assert.ok(hasText(onboardingMessages, '{"type":"onboarding-ready","mode":"claim"}')))
   onboarding.send(Buffer.from('Alice\n'))
   await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === 'MUD1O ALLOW\n')))
-  assert.equal(onboardingMessages.some(({ data, binary }) => !binary && /CHALLENGE|ALLOW/.test(Buffer.from(data).toString())), false, 'claim controls remain C-private')
+  await eventually(() => assert.ok(onboardingMessages.some(({ data, binary }) => binary && Buffer.from(data).toString('utf8') === '비밀번호? ')), 'ordinary binary game data still reaches the browser')
+  assert.equal(hasPrivateClaimControl(onboardingMessages), false, 'claim controls remain C-private in text and binary frames')
   assert.deepEqual(authorizer.calls, ['begin', 'challenge'], 'browser auth alone cannot fabricate or claim a character')
   assert.deepEqual(finalizer.calls, [])
 
