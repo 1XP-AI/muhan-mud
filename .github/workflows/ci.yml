@@ -61,6 +61,7 @@ jobs:
           DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
         run: |
           set -euo pipefail
+          bash supabase/tests/imported_unclaimed_batch_schema_static_contract.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
@@ -237,6 +238,10 @@ jobs:
           for pass in 1 2; do
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20260927000000_onboarding_snapshot_command_binding.sql
+          done
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
