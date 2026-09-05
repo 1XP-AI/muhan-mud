@@ -30,6 +30,8 @@ STATIC_ASSERT(creature_size, sizeof(creature) == 1952);
 STATIC_ASSERT(object_size, sizeof(object) == 376);
 STATIC_ASSERT(creature_name, offsetof(creature, name) == 0);
 STATIC_ASSERT(creature_level, offsetof(creature, level) == 318);
+STATIC_ASSERT(creature_level_is_unsigned_char,
+              _Generic(((creature *)0)->level, unsigned char: 1, default: 0));
 STATIC_ASSERT(creature_gold, offsetof(creature, gold) == 352);
 STATIC_ASSERT(creature_hpmax, offsetof(creature, hpmax) == 332);
 STATIC_ASSERT(creature_hpcur, offsetof(creature, hpcur) == 334);
@@ -70,11 +72,11 @@ static int read_exact(FILE *file, void *buf, size_t size)
     return fread(buf, 1, size, file) == size ? 0 : -1;
 }
 
-static void set_player(creature *player, const char *name)
+static void set_player(creature *player, const char *name, unsigned char level)
 {
     memset(player, 0, sizeof(*player));
     strncpy(player->name, name, sizeof(player->name) - 1);
-    player->level = 17;
+    player->level = level;
     player->gold = 4242;
     player->hpmax = 40;
     player->hpcur = 31;
@@ -120,13 +122,15 @@ static int emit_fixture(const char *fixture, const char *path)
     object inner;
     int count;
     const char *name;
+    unsigned char level;
 
     file = fopen(path, "wb");
     if (!file)
         return -1;
     name = strcmp(fixture, "nested") == 0 ? "Beatrice" :
            strcmp(fixture, "mixed-case") == 0 ? "aLiCe" : "Alice";
-    set_player(&player, name);
+    level = strcmp(fixture, "high-level") == 0 ? UCHAR_MAX : 17;
+    set_player(&player, name, level);
 
     if (strcmp(fixture, "truncated") == 0) {
         if (write_exact(file, &player, 64) < 0) {
@@ -140,7 +144,8 @@ static int emit_fixture(const char *fixture, const char *path)
             fclose(file);
             return -1;
         }
-    } else if (strcmp(fixture, "empty") == 0 || strcmp(fixture, "mixed-case") == 0) {
+    } else if (strcmp(fixture, "empty") == 0 || strcmp(fixture, "mixed-case") == 0 ||
+               strcmp(fixture, "high-level") == 0) {
         count = 0;
         if (write_exact(file, &player, sizeof(player)) < 0 ||
             write_exact(file, &count, sizeof(count)) < 0) {
@@ -393,6 +398,6 @@ int main(int argc, char **argv)
         return emit_fixture(argv[2], argv[3]) == 0 ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "project") == 0)
         return project_fixture(argv[2]);
-    fprintf(stderr, "usage: %s emit <empty|mixed-case|nested|truncated|invalid-count> <path> | project <path>\n", argv[0]);
+    fprintf(stderr, "usage: %s emit <empty|mixed-case|high-level|nested|truncated|invalid-count> <path> | project <path>\n", argv[0]);
     return 2;
 }

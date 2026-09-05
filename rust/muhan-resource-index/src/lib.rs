@@ -117,7 +117,7 @@ pub struct PlayerShadow {
     pub shard: String,
     /// A diagnostic fixture-relative path; this crate never opens it.
     pub relative_source_path: String,
-    pub level: i64,
+    pub level: u8,
     pub gold: i64,
     pub hp_max: i64,
     pub hp_current: i64,
@@ -206,7 +206,7 @@ pub fn project_legacy_player_shadow(
         canonical_name,
         name_sha1,
         shard,
-        level: read_scalar(player, abi.player_level, abi.byte_order)?,
+        level: read_unsigned_byte(player, abi.player_level)?,
         gold: read_scalar(player, abi.player_gold, abi.byte_order)?,
         hp_max: read_scalar(player, abi.player_hp_max, abi.byte_order)?,
         hp_current: read_scalar(player, abi.player_hp_current, abi.byte_order)?,
@@ -286,6 +286,9 @@ fn validate_abi(abi: &LegacyPlayerAbi) -> Result<(), LegacyProjectionError> {
         abi.player_name_offset,
         abi.player_name_bytes,
     )?;
+    if abi.player_level.width != 1 {
+        return Err(error(LegacyProjectionErrorKind::Abi));
+    }
     for field in [
         abi.player_level,
         abi.player_gold,
@@ -385,6 +388,16 @@ fn read_scalar(
         _ => return Err(error(LegacyProjectionErrorKind::Abi)),
     };
     Ok(value)
+}
+
+fn read_unsigned_byte(
+    record: &[u8],
+    field: LegacyScalarField,
+) -> Result<u8, LegacyProjectionError> {
+    if field.width != 1 {
+        return Err(error(LegacyProjectionErrorKind::Abi));
+    }
+    Ok(record[field.offset])
 }
 
 fn error(kind: LegacyProjectionErrorKind) -> LegacyProjectionError {
@@ -658,6 +671,19 @@ mod tests {
         )
     }
 
+    fn c_projection_line(oracle: &Path, path: &Path) -> String {
+        let expected = Command::new(oracle)
+            .arg("project")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        String::from_utf8(expected.stdout)
+            .unwrap()
+            .trim_end()
+            .to_owned()
+    }
+
     #[test]
     fn legacy_player_empty_fixture_matches_c_oracle_and_is_idempotent() {
         let temp = tempfile::tempdir().unwrap();
@@ -695,6 +721,34 @@ mod tests {
         assert_eq!(player.name_sha1, "35318264c9a98faf79965c270ac80c5606774df1");
         assert_eq!(player.shard, "35");
         assert_eq!(player.relative_source_path, "player/35/Alice");
+    }
+
+    #[test]
+    fn legacy_player_high_bit_levels_match_the_unsigned_c_oracle_exactly() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (mut bytes, c_line) = fixture(&oracle, temp.path(), "high-level");
+        let abi = fixture_abi();
+
+        let player =
+            project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default()).unwrap();
+        assert_eq!(player.level, u8::MAX);
+        assert_eq!(player.oracle_line(), c_line);
+
+        let path = temp.path().join("high-bit-level.bin");
+        for level in 128u8..=u8::MAX {
+            bytes[abi.player_level.offset] = level;
+            std::fs::write(&path, &bytes).unwrap();
+            let player =
+                project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default())
+                    .unwrap();
+            assert_eq!(player.level, level, "level={level}");
+            assert_eq!(
+                player.oracle_line(),
+                c_projection_line(&oracle, &path),
+                "level={level}"
+            );
+        }
     }
 
     #[test]
