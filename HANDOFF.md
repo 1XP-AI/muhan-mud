@@ -2,8 +2,8 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `9710b85c38085fdb3cd152b58c125b7710d00824`
-- 최신 전체 CI 검증: [`9710b85`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33932493006)
+- 포팅 기능 기준 커밋: `959361cd902d44a96e32fb397737a102360b1262`
+- 최신 전체 CI 검증: [`959361c`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33934527031)
 
 ## 먼저 알아야 할 상태
 
@@ -161,14 +161,33 @@ projection 행 불변성, 주입된 projection 실패의 격리, legacy/evidence
 확인한다. migration은 payload를 복제하지 않는 projection만 추가하며, journal v1에는
 level이 없으므로 이를 억지로 replay source로 사용하지 않는다.
 
-### 5. M4 manifest relay
+### 5. PlayerSnapshotV1 replay journal v2 level metadata
+
+- `rust/muhan-core-dto/src/bin/player_snapshot_v2_replay_verify.rs`
+- `services/m4-file-snapshot-manifest-relay/src/player-snapshot-v2-replay-verifier.ts`
+- `services/m4-file-snapshot-manifest-relay/src/player-snapshot-v2-replay-observer.ts`
+- `services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-replay-differential.ts`
+
+`959361c`은 기존 v1 runner, Node parser, observer, journal API의 7-line/version-1
+계약을 그대로 보존했다. raw U8 level을 포함하는 8-line/version-2 report와 v2 journal은
+별도 이름의 Rust runner·Node verifier·observer·writer로만 만들 수 있으며, 기존 relay
+CLI/runtime/configuration은 이를 import하거나 선택하지 않는다.
+
+v2 observer는 한 번의 canonical CDTO decode 결과에서 raw level 0/42/255을 그대로
+기록한다. v2 journal은 command/character/receipt/source hash와 snapshot digest·octets,
+raw level만 담는 닫힌 metadata이고 payload, legacy file, DB write를 읽거나 만들지 않는다.
+level input reader는 v2 journal만 입력으로 허용하고 v1 journal은 level source로 승격하지
+않는다. 기존 artifact differential은 v1·v2 journal 모두의 identity/digest metadata를
+읽어 비교할 수 있다.
+
+### 6. M4 manifest relay
 
 - `services/m4-file-snapshot-manifest-relay/`
 
 strict 13-line manifest를 lexical order로 읽고 direct PostgreSQL RPC를 호출하는 one-shot
 Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수정하지 않는다.
 
-### 6. Durable handoff consumer의 idle lifecycle
+### 7. Durable handoff consumer의 idle lifecycle
 
 `USE_M3_RUNTIME` build에서만 `main.c`가 optional native runtime을 시작한다. exact
 `MUD_M3_PLAYER_SNAPSHOT_V1=handoff` opt-in일 때 `io.c`의 serialized game loop가
@@ -184,7 +203,7 @@ serialized `PlayerSnapshotV1` bytes가 아니라 relay가 재확인할 legacy so
 (`artifact.source_octets`)이며, 이 consumer는 DB 권위나 legacy save 결과를 바꾸지
 않는다.
 
-### 7. M3 helper wake protocol v1
+### 8. M3 helper wake protocol v1
 
 `dfcaace`의 `m3_wake_v1.*`와 `rust/muhan-m3-wake-protocol/`은 identity나 durable-state
 참조가 전혀 없는 exact 16-byte wake frame을 C/Rust differential test로 고정한다. 이는
@@ -220,12 +239,13 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** raw-U8 level projection의 production activation 경계를 설계하고
-   RED 테스트부터 추가한다. 기본 no-projection, artifact 우선 확인, non-gating 오류 격리,
-   legacy authority를 반드시 유지하며 실제 활성화·배포는 이 작업의 권한이 아니다.
-2. **Terra/고난도:** closed replay journal v2 metadata-only level differential의 입력 계약을
-   설계·구현한다. journal v1의 level 부재를 우회하거나 payload를 다시 읽는 경로는 만들지
-   않는다.
+1. **Terra/고난도:** immutable v1 artifact metadata와 v2 journal level metadata를 비교하는
+   dedicated read-only comparator를 RED 테스트부터 구현한다. writer RPC·payload·legacy file·DB
+   write를 사용하지 않고, identity mismatch는 level verdict보다 먼저 처리한다.
+2. **Terra/고난도:** comparator가 PG17 read-only E2E를 통과한 뒤에만 raw-U8 level projection의
+   production activation configuration/operational 경계를 설계한다. 기본 no-projection,
+   artifact 우선 확인, non-gating 오류 격리, legacy authority를 반드시 유지하며 실제
+   활성화·배포는 이 작업의 권한이 아니다.
 3. **Luna/중간 난도:** Linux CI와 C↔Rust differential, feature-OFF chart 값, browser/xterm
    smoke guard의 독립 재현과 regression review를 맡긴다.
 
@@ -315,6 +335,8 @@ bash -n supabase/tests/m3_process_owner_pg17_integration.sh \
 make -C src character-save-journal-v2-bootstrap-test CC=cc
 make -C src unit-test CC=cc
 ./scripts/run-m3-wake-differential.sh
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+cargo test --manifest-path rust/Cargo.toml -p muhan-core-dto
 pnpm --filter @muhan/m4-file-snapshot-manifest-relay test
 pnpm --filter @muhan/m4-file-snapshot-manifest-relay typecheck
 pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
@@ -322,7 +344,7 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 
 - focused bootstrap과 전체 C unit: pass.
 - C ASan/UBSan wake oracle, Rust unit, C↔Rust malformed corpus differential: pass.
-- relay: 53 pass, 3 expected skip; typecheck/build: pass.
+- relay: 59 pass, 3 expected skip; typecheck/build: pass.
 - `PlayerSnapshotV1` full DB contract의 독립 Terra 검토는 P0/P1 구현 누락 없음으로
   판정했다. 선택적 P2 negative fixture 증강은 다음 별도 slice다.
 - 이 handoff와 함께 들어가는 bounded bootstrap fixture 수정은 GitHub Ubuntu GCC의
@@ -389,6 +411,24 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
   Supabase ownership contract, Ubuntu ARM, Ubuntu, Windows, macOS도 모두 GREEN이다.
 - 이 slice는 production CLI 기본 경로, M3 runtime, C save path, DB authority, chart,
   testnet 설정과 데이터를 바꾸지 않았다. `m3.mode=off`와 legacy file authority는 그대로다.
+
+### PlayerSnapshotV1 replay journal v2 level metadata `959361c`
+
+- 기존 `player_snapshot_v1_replay_verify`와 v1 Node parser/observer/journal은 exact
+  version-1 7-line contract를 유지한다. v2는 별도 `player_snapshot_v2_replay_verify`,
+  `PlayerSnapshotV2ReplayObserver`, v2 verifier 및 v2 journal writer로만 생성되며 기본 relay
+  CLI, runtime, configuration은 이를 import하거나 활성화하지 않는다.
+- v2 report/journal은 동일 canonical decode에서 field 7 raw U8 0/42/255을 metadata로만
+  전달한다. `readPlayerSnapshotV1ReplayLevelDifferentialInputs`는 v2 journal만 level input으로
+  허용하고, v1 journal은 level 부재 때문에 `JOURNAL_INVALID`로 닫힌다. artifact differential은
+  v1·v2의 identity/digest·octets metadata를 모두 비교할 수 있다.
+- 로컬 Rust 전체 `muhan-core-dto` test, relay 59 pass/3 expected skip, typecheck, build,
+  cargo fmt와 scoped diff check가 통과했다. independent Luna final review에는 P0/P1/P2 blocker가
+  없었다. private GitHub Actions
+  [run 33934527031](https://github.com/1XP-Inc/muhan-mud/actions/runs/33934527031)도
+  Supabase ownership contract, Ubuntu ARM, Ubuntu, Windows, macOS 모두 GREEN이다.
+- 이 slice는 migration, C runtime, M3 activation, chart, testnet, live DB data를 바꾸지 않았고
+  legacy player file authority를 유지한다.
 
 ### M3 wake supervisor 계약 기반 `8e8d09e`
 
@@ -485,11 +525,13 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
    smoke로 검증한다. harness/guard/CI는 준비됐고, 이제 명시 승인된 disposable web users,
    provision name, imported unclaimed character fixture 및 전역 uniqueness 확인이 있어야
    실행한다. game account와 Auth account의 분리는 유지한다.
-2. raw-U8 PlayerSnapshotV1 level proof와 receipt-bound immutable projection gate는
-   완료됐다. 다음 slice는 별도 production activation configuration/operational gate와
-   closed journal v2 metadata-only level differential이다. 기본 no-projection, artifact
-   우선 확인, 오류 격리, legacy file authority를 유지하고 journal v1의 level 부재를
-   payload 재읽기나 순환 참조로 우회하지 않는다.
+2. raw-U8 PlayerSnapshotV1 level proof, receipt-bound immutable projection, v2 closed journal
+   metadata input gate는 완료됐다. 다음 slice는 dedicated `mud_replay_reader` 경계의
+   non-persisting comparator다. immutable v1 artifact와 v2 journal의 exact identity bindings가
+   먼저 맞을 때만 raw U8을 비교해 `MATCH`, `MISMATCH_LEVEL`, `MISSING_V1`, `MISSING_V2`,
+   `IDENTITY_MISMATCH`, `INVALID_INPUT`을 반환한다. 별도 additive read-only DB view/function과
+   PG17 RED→GREEN E2E가 필요하며, writer RPC·payload·legacy file·runtime activation을 쓰지
+   않는다. production activation configuration은 그 다음 별도 gate다.
 3. 실제 Linux helper transport/process supervision은 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
    Linux fake-ops/FD hygiene RED gate를 추가한 뒤 별도 slice로 시작한다. wake protocol
