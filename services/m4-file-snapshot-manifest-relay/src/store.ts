@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
+import type { ImmutablePlayerSnapshotLevelProjectionEvidence, ImmutablePlayerSnapshotLevelProjectionReader } from './player-snapshot-v1-level-comparator.js'
 
 export type StoreOutcome = 'RECORDED' | 'EXACT_RETRY'
 
@@ -58,6 +59,8 @@ export interface PgPool { connect(): Promise<PgClient>; end(): Promise<void> }
 interface PgModule { Pool: new (options: { connectionString: string, max: number }) => PgPool }
 
 const require = createRequire(import.meta.url)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const SHA256_RE = /^[0-9a-f]{64}$/
 
 /** Direct PostgreSQL adapter. It performs no retries and never writes anything except through the M4 function. */
 export class PostgresManifestStore implements ManifestStore {
@@ -178,6 +181,40 @@ export class PostgresPlayerSnapshotV1ArtifactDifferentialReader implements Playe
   async close(): Promise<void> { await this.pool.end() }
 }
 
+/**
+ * Dedicated PostgreSQL read boundary for the pure v2 level comparator.  It
+ * shares only the dedicated replay-reader login and read-only contract; it
+ * exposes the closed level-projection metadata and no mutation operation.
+ */
+export class PostgresPlayerSnapshotV1LevelProjectionReader implements ImmutablePlayerSnapshotLevelProjectionReader {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertReplayDifferentialDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async findByCommandId(commandId: string): Promise<readonly ImmutablePlayerSnapshotLevelProjectionEvidence[]> {
+    const client = await this.pool.connect()
+    try {
+      await assertReplayLevelProjectionConnectionContract(client)
+      const result = await client.query<Record<string, unknown>>(
+        `select command_id::text as "commandId", character_id::text as "characterId",
+          receipt_request_sha256 as "receiptRequestSha256", source_post_sha256 as "sourcePostSha256",
+          snapshot_sha256 as "snapshotSha256", snapshot_octets::text as "snapshotOctets",
+          raw_level_u8::text as "rawLevelU8"
+         from private.game_character_player_snapshot_v1_level_projections
+         where command_id = $1::uuid
+         order by character_id`,
+        [commandId],
+      )
+      return result.rows.map(parseReplayLevelProjectionEvidence)
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
 interface ReplayDifferentialConnectionCheck {
   currentUser: unknown
   sessionUser: unknown
@@ -217,6 +254,29 @@ async function assertReplayDifferentialConnectionContract(client: PgClient): Pro
   }
 }
 
+/** Enforce the same dedicated reader contract against the level projection table. */
+async function assertReplayLevelProjectionConnectionContract(client: PgClient): Promise<void> {
+  const result = await client.query<ReplayDifferentialConnectionCheck>(
+    `select current_user as "currentUser", session_user as "sessionUser",
+      current_setting('default_transaction_read_only', true) as "defaultTransactionReadOnly",
+      current_setting('transaction_read_only', true) as "transactionReadOnly",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'INSERT') as "canInsert",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'UPDATE') as "canUpdate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'DELETE') as "canDelete",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'TRUNCATE') as "canTruncate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'REFERENCES') as "canReferences",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_level_projections', 'TRIGGER') as "canTrigger"`,
+  )
+  const check = result.rows[0]
+  if (!check
+    || check.currentUser !== 'mud_replay_reader_login' || check.sessionUser !== 'mud_replay_reader_login'
+    || check.defaultTransactionReadOnly !== 'on' || check.transactionReadOnly !== 'on'
+    || check.canInsert !== false || check.canUpdate !== false || check.canDelete !== false
+    || check.canTruncate !== false || check.canReferences !== false || check.canTrigger !== false) {
+    throw new Error('invalid replay level projection database connection')
+  }
+}
+
 function parseReplayDifferentialArtifactEvidence(value: Record<string, unknown>): PlayerSnapshotV1ReplayArtifactEvidence {
   const octets = typeof value.snapshotOctets === 'string' && /^\d+$/.test(value.snapshotOctets) ? Number(value.snapshotOctets) : NaN
   if (typeof value.commandId !== 'string' || typeof value.characterId !== 'string'
@@ -227,6 +287,25 @@ function parseReplayDifferentialArtifactEvidence(value: Record<string, unknown>)
     commandId: value.commandId, characterId: value.characterId,
     receiptRequestSha256: value.receiptRequestSha256, sourcePostSha256: value.sourcePostSha256,
     snapshotFormat: value.snapshotFormat, snapshotSha256: value.snapshotSha256, snapshotOctets: octets,
+  }
+}
+
+function parseReplayLevelProjectionEvidence(value: Record<string, unknown>): ImmutablePlayerSnapshotLevelProjectionEvidence {
+  const snapshotOctets = typeof value.snapshotOctets === 'string' && /^\d+$/.test(value.snapshotOctets) ? Number(value.snapshotOctets) : NaN
+  const rawLevelU8 = typeof value.rawLevelU8 === 'string' && /^\d+$/.test(value.rawLevelU8) ? Number(value.rawLevelU8) : NaN
+  if (typeof value.commandId !== 'string' || !UUID_RE.test(value.commandId)
+    || typeof value.characterId !== 'string' || !UUID_RE.test(value.characterId)
+    || typeof value.receiptRequestSha256 !== 'string' || !SHA256_RE.test(value.receiptRequestSha256)
+    || typeof value.sourcePostSha256 !== 'string' || !SHA256_RE.test(value.sourcePostSha256)
+    || typeof value.snapshotSha256 !== 'string' || !SHA256_RE.test(value.snapshotSha256)
+    || !Number.isSafeInteger(snapshotOctets) || snapshotOctets < 0
+    || !Number.isSafeInteger(rawLevelU8) || rawLevelU8 < 0 || rawLevelU8 > 255) {
+    throw new Error('invalid replay level projection database result')
+  }
+  return {
+    commandId: value.commandId, characterId: value.characterId,
+    receiptRequestSha256: value.receiptRequestSha256, sourcePostSha256: value.sourcePostSha256,
+    snapshotSha256: value.snapshotSha256, snapshotOctets, rawLevelU8,
   }
 }
 

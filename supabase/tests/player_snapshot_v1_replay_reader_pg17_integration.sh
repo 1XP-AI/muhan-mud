@@ -101,11 +101,16 @@ artifact_ownership_after_replay="$(run_super --tuples-only --no-align --command=
 [[ "$artifact_ownership_before_first_m5e" == "$artifact_ownership_after_replay" ]] || { echo "reader migration replay changed artifact ownership" >&2; exit 1; }
 
 run_super --file=/workspace/supabase/tests/player_snapshot_v1_replay_reader_contract.sql
+run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+run_super --file=/workspace/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
+run_super --file=/workspace/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
+run_super --file=/workspace/supabase/tests/player_snapshot_v1_level_projection_replay_reader_contract.sql
 
 # Seed one valid immutable artifact as the disposable database owner.  The
 # reader never needs the payload, and the before/after fingerprint proves its
 # blocked mutation attempts leave this evidence untouched.
 run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_artifacts (character_id, command_id, world_id, legacy_name_key, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, storage_format, receipt_acknowledged_at, snapshot_format, snapshot_sha256, snapshot_octets, payload) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', 'm5e-reader', 'M5ereader', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')); set session_replication_role = origin;"
+run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_level_projections (character_id, command_id, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, snapshot_sha256, snapshot_octets, raw_level_u8) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42); set session_replication_role = origin;"
 before_fingerprint="$(run_super --tuples-only --no-align --command="select count(*)::text || ':' || coalesce(string_agg(character_id::text || command_id::text || snapshot_sha256 || md5(payload), ',' order by character_id, command_id), '') from private.game_character_player_snapshot_v1_artifacts")"
 
 reader_contract="$(run_reader --tuples-only --no-align --command="select (current_user = 'mud_replay_reader_login' and session_user = 'mud_replay_reader_login' and current_user = session_user and current_setting('default_transaction_read_only') = 'on' and current_setting('transaction_read_only') = 'on' and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'insert') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'update') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'delete') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'truncate') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'references') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'trigger'))::text")"
@@ -114,11 +119,20 @@ reader_contract="$(run_reader --tuples-only --no-align --command="select (curren
 metadata_count="$(run_reader --tuples-only --no-align --command="select count(*) from (select command_id, character_id, receipt_request_sha256, source_post_sha256, snapshot_format, snapshot_sha256, snapshot_octets from private.game_character_player_snapshot_v1_artifacts where command_id = 'c9500000-0000-0000-0000-000000000001'::uuid order by character_id) evidence")"
 [[ "$metadata_count" == 1 ]] || { echo "reader metadata SELECT did not return seeded evidence" >&2; exit 1; }
 
+level_projection_metadata_count="$(run_reader --tuples-only --no-align --command="select count(*) from (select command_id, character_id, receipt_request_sha256, source_post_sha256, snapshot_sha256, snapshot_octets, raw_level_u8 from private.game_character_player_snapshot_v1_level_projections where command_id = 'c9500000-0000-0000-0000-000000000001'::uuid order by character_id) evidence")"
+[[ "$level_projection_metadata_count" == 1 ]] || { echo "reader level projection metadata SELECT did not return seeded evidence" >&2; exit 1; }
+
 if run_reader --command="select payload from private.game_character_player_snapshot_v1_artifacts" >/dev/null 2>&1; then
   echo "reader unexpectedly selected a restricted column" >&2; exit 1
 fi
 if run_reader --command="insert into private.game_character_player_snapshot_v1_artifacts default values" >/dev/null 2>&1; then
   echo "reader unexpectedly mutated artifacts" >&2; exit 1
+fi
+if run_reader --command="select writer_revision from private.game_character_player_snapshot_v1_level_projections" >/dev/null 2>&1; then
+  echo "reader unexpectedly selected restricted level projection metadata" >&2; exit 1
+fi
+if run_reader --command="insert into private.game_character_player_snapshot_v1_level_projections default values" >/dev/null 2>&1; then
+  echo "reader unexpectedly mutated level projections" >&2; exit 1
 fi
 if run_reader --command="set role mud_writer" >/dev/null 2>&1; then
   echo "reader unexpectedly SET ROLE mud_writer" >&2; exit 1
@@ -131,6 +145,9 @@ if run_reader --command='set role "m5e quoted ""capability"" role"' >/dev/null 2
 fi
 if run_reader --command="select * from private.record_player_snapshot_v1_artifact_for_receipt(null, null, null, null, null, null, null, null, null)" >/dev/null 2>&1; then
   echo "reader unexpectedly executed artifact mutation RPC" >&2; exit 1
+fi
+if run_reader --command="select * from private.record_player_snapshot_v1_level_projection_for_receipt(null, null, null, null, null)" >/dev/null 2>&1; then
+  echo "reader unexpectedly executed level projection mutation RPC" >&2; exit 1
 fi
 
 after_fingerprint="$(run_super --tuples-only --no-align --command="select count(*)::text || ':' || coalesce(string_agg(character_id::text || command_id::text || snapshot_sha256 || md5(payload), ',' order by character_id, command_id), '') from private.game_character_player_snapshot_v1_artifacts")"
