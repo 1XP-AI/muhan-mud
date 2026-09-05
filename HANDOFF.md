@@ -2,8 +2,8 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `51dd7be1d8985a251f910d572dfda8f90917dba1`
-- 최신 전체 CI 검증: [`51dd7be`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33936856759)
+- 포팅 기능 기준 커밋: `6055ab0`
+- 최신 전체 CI 검증: 기존 [`51dd7be`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33936856759)가 마지막 확인 완료 run이다. `6055ab0`의 PG17 CI 결과는 아직 이 문서에 기록하지 않는다.
 
 ## 먼저 알아야 할 상태
 
@@ -233,6 +233,27 @@ serialized `PlayerSnapshotV1` bytes가 아니라 relay가 재확인할 legacy so
 loss/duplicate/reorder에 의존하지 않는다. production transport, Unix socket, helper
 process, database work, chart와 MUD runtime linkage는 이 slice에 포함되지 않는다.
 
+### 10. 웹 onboarding의 활성화-명령 binding `6055ab0`
+
+웹 xterm의 가입/claim 완료는 이제 DB handoff activation만으로 browser에 성공을 알리지
+않는다. Gateway가 lowercase UUID command id를 만들어 `MUD1O ACTIVATED|id`를 C에 보내고,
+C는 COMMIT 또는 CLAIMED 뒤에만 이를 받아 actor/correlation/character/mode/id의
+non-secret binding을 private local evidence로 먼저 durable write한 뒤
+`MUD1O ACTIVE|id`를 보낸다. Gateway는 같은 id의 ACTIVE를 확인한 뒤에만 service-role
+RPC `register_game_character_onboarding_snapshot_command_binding`을 호출하고 browser
+completion/close를 진행한다.
+
+PostgreSQL migration `20260927000000_onboarding_snapshot_command_binding.sql`은
+correlation 당 하나의 immutable command binding과 service-only registration RPC를
+추가했다. fulfillment는 artifact 후보를 추론하지 않고, supplied command id의 exact
+binding 및 binding 이후 receipt acknowledgement만 받아들인다. Gateway adapter는
+`BOUND` 또는 `EXACT_RETRY` 한 행만 허용하고 그 밖의 응답은 fail-closed한다.
+
+이것은 M3 command consumption을 아직 연결하지 않은 안전한 seam이다. 따라서 새
+activation id가 실제 save artifact command id로 소비되는 경로, production fulfillment,
+DB authority 전환은 다음 별도 slice의 RED-first 증거 없이는 켜지지 않는다. default
+legacy player-file authority와 feature-OFF runtime은 유지된다.
+
 ## 남은 선행 작업
 
 1. helper transport/process supervision은 별도 설계와 RED 테스트로 시작한다. wake frame은
@@ -259,6 +280,20 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 ## 다음 위임 권장안
 
+### onboarding 우선 slice
+
+1. **Terra/고난도:** M3 journal/capture/manifest/relay에서 artifact `command_id`가
+   생성·보존·ACK되는 전체 경로를 추적한다. Gateway activation id를 한 번만 안전하게
+   소비할 수 있는 최소 경계와 failure/retry/rollback matrix, RED tests를 설계한다.
+   default-OFF, legacy file authority, payload/credential 비노출을 유지하고 live DB·배포를
+   건드리지 않는다.
+2. **Luna/중간 난도:** 위 설계의 C↔Gateway control framing과 Gateway RPC adapter를
+   read-only로 교차 검토한다. packet coalescing, UUID substitution, duplicate ACTIVE,
+   timeout, browser close ordering을 표로 확인한다.
+3. **Terra/고난도:** M3 command consumption 설계와 PG17 contract가 모두 GREEN이 된
+   뒤에만 opt-in shadow artifact wiring을 별도 TDD slice로 구현한다. activation id를
+   generic save command 또는 authority signal로 바꾸지 않는다.
+
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
 1. **Terra/고난도:** v2 level journal reader, pure comparator, dedicated PostgreSQL reader를
@@ -278,6 +313,18 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
 
 ## 현재 검증 증거
+
+### Activation command binding `6055ab0`
+
+- C: `make -C src onboarding-admission-test onboarding-admission-sanitizer-test
+  onboarding-activation-binding-test onboarding-activation-binding-sanitizer-test
+  command1.o onboarding_admission.o onboarding_activation_binding.o` 통과.
+  기존 K&R-style non-prototype 경고는 출력되지만 새 컴파일 오류는 없다.
+- Gateway: `npm test` 102/102 pass, `npm run typecheck` pass.
+- SQL: migration replay와 command-binding contract 실행은 GitHub Actions의 disposable
+  PostgreSQL 17 job에 연결했다. 이 checkout에서는 live DB 또는 container를 실행하지
+  않았으므로 해당 CI 결과를 아직 GREEN으로 주장하지 않는다.
+- `src/frp.new`는 이 커밋에 stage/commit되지 않았다.
 
 ### 리소스 경로 리팩터링 `9f7bf24`
 
