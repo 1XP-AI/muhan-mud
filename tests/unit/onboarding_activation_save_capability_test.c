@@ -73,26 +73,35 @@ int main(void)
         ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK,
         "accepted provision ACTIVATED must capture the exact tuple");
     memset(&record, 0, sizeof(record));
-    failed += expect(onboarding_activation_save_capability_consume_for_explicit_save(
-        &capability, COMMAND, &record) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+    failed += expect(onboarding_activation_save_capability_consume_published_explicit_save(
+        &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, "Alice", &record) ==
+        ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
         !strcmp(record.actor_user_id, ACTOR) &&
         !strcmp(record.correlation_id, CORRELATION) &&
         !strcmp(record.character_id, CHARACTER) &&
         record.mode == ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION &&
         !strcmp(record.command_id, COMMAND) && !strcmp(record.canonical_name, "Alice") &&
         empty(&capability),
-        "the one-shot future save call must receive only the exact captured tuple");
-    failed += expect(onboarding_activation_save_capability_consume_for_explicit_save(
-        &capability, COMMAND, &record) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE,
-        "a consumed capability must not arm a later arbitrary save");
+        "published consumption must receive only the exact captured tuple");
+    failed += expect(onboarding_activation_save_capability_consume_published_explicit_save(
+        &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, "Alice", &record) ==
+        ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE,
+        "a published consumption must not arm a later arbitrary save");
 
     memset(&capability, 0, sizeof(capability));
     failed += expect(capture(&capability,
         ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
-        onboarding_activation_save_capability_consume_for_explicit_save(
-            &capability, OTHER_COMMAND, &record) ==
-            ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE && empty(&capability),
-        "a mismatched future command must fail closed and consume nothing reusable");
+        onboarding_activation_save_capability_consume_published_explicit_save(
+            &capability, OTHER_COMMAND, ACTOR, CORRELATION, CHARACTER,
+            ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, "Alice", &record) ==
+            ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE && capability.armed &&
+        onboarding_activation_save_capability_consume_published_explicit_save(
+            &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+            ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, "Alice", &record) ==
+            ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK && empty(&capability),
+        "a wrong published command must fail closed without consuming the capability");
 
     failed += expect(capture(&capability,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
@@ -123,8 +132,10 @@ int main(void)
         ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK,
         "claim success may create a new session-local capability");
     onboarding_activation_save_capability_clear(&capability);
-    failed += expect(onboarding_activation_save_capability_consume_for_explicit_save(
-        &capability, COMMAND, &record) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE &&
+    failed += expect(onboarding_activation_save_capability_consume_published_explicit_save(
+        &capability, COMMAND, ACTOR, CORRELATION, CHARACTER,
+        ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, "Alice", &record) ==
+        ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE &&
         empty(&capability),
         "disconnect/claim cleanup must leave no capability to revive");
 

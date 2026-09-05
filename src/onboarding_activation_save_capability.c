@@ -144,24 +144,6 @@ const char *canonical_name;
 }
 
 onboarding_activation_save_capability_status
-onboarding_activation_save_capability_consume_for_explicit_save(capability,
-                                                                  command_id, record)
-onboarding_activation_save_capability *capability;
-const char *command_id;
-onboarding_activation_save_capability_record *record;
-{
-    if(record) memset(record, 0, sizeof(*record));
-    if(!capability || !record || !oasc_enabled() || !capability->armed ||
-       !oasc_uuid(command_id) || strcmp(capability->record.command_id, command_id)) {
-        onboarding_activation_save_capability_clear(capability);
-        return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_UNAVAILABLE;
-    }
-    *record = capability->record;
-    onboarding_activation_save_capability_clear(capability);
-    return ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
-}
-
-onboarding_activation_save_capability_status
 onboarding_activation_save_capability_peek_for_explicit_save(capability,
                                                                command_id, record)
 const onboarding_activation_save_capability *capability;
