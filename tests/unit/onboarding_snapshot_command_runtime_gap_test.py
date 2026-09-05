@@ -22,10 +22,29 @@ CONFIGURATION = OWNER_HEADER[
 ]
 SNAPSHOT_TICK = OWNER[OWNER.index(
     "character_save_journal_v2_process_owner_snapshot_tick("):]
+STARTUP = OWNER[OWNER.index(
+    "character_save_journal_v2_process_owner_start(\n"):
+    OWNER.index("\ncharacter_save_journal_v2_process_owner_shutdown(\n")]
+SHUTDOWN = OWNER[OWNER.index(
+    "character_save_journal_v2_process_owner_shutdown(\n"):
+    OWNER.index("\ncharacter_save_journal_v2_process_owner_snapshot_tick(\n")]
+CANCEL_START = OWNER[OWNER.index("process_owner_cancel_start("):
+                     OWNER.index("\nvoid character_save_journal_v2_process_owner_init(")]
+UNBIND = OWNER[OWNER.index("process_owner_unbind_store("):
+               OWNER.index("\nstatic character_save_journal_v2_process_owner_startup_result\nprocess_owner_stop_start(")]
+UNWIND = OWNER[OWNER.index("process_owner_unwind("):
+               OWNER.index("\nstatic void process_owner_unbind_store(")]
 
 def require(value: bool, message: str) -> None:
     if not value:
         raise SystemExit(message)
+
+def require_ordered(source: str, terms: tuple[str, ...], message: str) -> None:
+    positions = []
+    for term in terms:
+        require(term in source, f"{message}: missing {term}")
+        positions.append(source.index(term))
+    require(positions == sorted(positions), message)
 
 require("onboarding_snapshot_command_consumer_reserve" in CONSUMER and
         "int reservation_directory_fd" in CONSUMER,
@@ -59,11 +78,69 @@ for source, label in ((OWNER_HEADER, "process-owner configuration"),
             f"{label} must not claim the local reservation consumer or descriptor")
 require(not re.search(r"\b(?:open|openat|dup|dup2|fcntl|close)\s*\(", OWNER),
         "the process owner must not open, duplicate, or close a reservation descriptor")
+require(not re.search(r"\b(?:reservation_directory_fd|reservation_descriptor|reservation_fd)\b",
+                      OWNER_HEADER + OWNER),
+        "the process owner must not add or manage a reservation descriptor")
+require_ordered(STARTUP, (
+    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTING;",
+    "configuration->acquire_deadline(",
+    "configuration->candidate_uuid(",
+    "character_save_journal_v2_live_ops_init(",
+    "character_save_journal_v2_writer_bootstrap(",
+    "character_save_journal_v2_recovery_run_with_stage_observer(",
+    "character_save_journal_v2_player_store_init(",
+    "character_save_journal_v2_player_store_set_stage_observer(",
+    "character_save_journal_v2_player_store_build(",
+    "player_store_bind(",
+    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY;"),
+    "startup must acquire and install the existing owner lifecycle before READY")
+require("character_player_snapshot_v1_handoff_drain(" not in STARTUP and
+        not re.search(r"\b(?:character_save_journal_v2_publish|"
+                      r"character_save_journal_v2_ack|player_store_save|"
+                      r"onboarding_snapshot_command_consumer)\s*\(", OWNER),
+        "owner startup must not implicitly save, publish, ACK, or dispatch a reservation consumer")
 require("owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY" in SNAPSHOT_TICK and
         "owner->player_store.state !=\n       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE" in SNAPSHOT_TICK and
         "character_player_snapshot_v1_handoff_drain(" in SNAPSHOT_TICK and
         "onboarding_snapshot_command_consumer" not in SNAPSHOT_TICK,
         "the safe READY/idle owner boundary drains only the configured handoff")
+require_ordered(SNAPSHOT_TICK, (
+    "if(!owner->configuration.snapshot_handoff)",
+    "owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY",
+    "owner->player_store.state !=\n       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE",
+    "owner->operation_active = 1;",
+    "character_player_snapshot_v1_handoff_drain("),
+    "snapshot drain must remain opt-in and occur only after READY/idle guards")
+require(not re.search(r"\b(?:character_save_journal_v2_publish|"
+                      r"character_save_journal_v2_ack|player_store_save|"
+                      r"onboarding_snapshot_command_consumer|player_store_bind|"
+                      r"player_store_unbind)\s*\(", SNAPSHOT_TICK),
+        "the explicit snapshot tick must not save, publish, ACK, bind, or dispatch a consumer")
+require("player_store_unbind(&owner->player_store_binding);" in UNBIND and
+        "owner->player_store_installed = 0;" in UNBIND,
+        "owner shutdown must remove its PlayerStore binding before writer release")
+require_ordered(SHUTDOWN, (
+    "owner->operation_active = 1;",
+    "process_owner_unbind_store(owner);",
+    "character_save_journal_v2_writer_close(&owner->held_writer)",
+    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;",
+    "owner->operation_active = 0;"),
+    "shutdown must unbind before closing the writer and then stop the owner")
+require("if(owner->operation_active)" in SHUTDOWN and
+        "owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTING" in SHUTDOWN and
+        "owner->shutdown_requested = 1;" in SHUTDOWN and
+        SHUTDOWN.index("if(owner->operation_active)") <
+        SHUTDOWN.index("process_owner_unbind_store(owner);") and
+        "owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED" in SHUTDOWN and
+        SHUTDOWN.count("character_save_journal_v2_writer_close(") == 1,
+        "active startup shutdown must defer cancellation and stopped shutdown must be idempotent")
+require_ordered(CANCEL_START, (
+    "process_owner_unbind_store(owner);",
+    "process_owner_stop_start(owner,",
+    "CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED, 1)"),
+    "deferred startup cancellation must unbind before unwinding the writer")
+require("character_save_journal_v2_writer_close(&owner->held_writer)" in UNWIND,
+        "cancelled startup must release only the held writer during unwind")
 require("memcpy(candidate_out->command_uuid, bridge->selected.command_id" in BRIDGE and
         "snprintf(command_uuid, sizeof(command_uuid), \"%s\", candidate.command_uuid)" in PROTOCOL and
         "request->command_uuid" in PROTOCOL[PROTOCOL.index("observe_prepared_stage"):],
