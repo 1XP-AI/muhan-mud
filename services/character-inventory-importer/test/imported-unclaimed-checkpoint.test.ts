@@ -66,6 +66,19 @@ test('resumes strictly after a persisted ordered cursor with neither skips nor d
   assert.equal(new Set([...firstPass.slice(0, 2), ...resumed].map((value) => value.legacyNameKey)).size, 3)
 })
 
+test('restarts only when a checkpoint is omitted and rejects malformed runtime checkpoint values', () => {
+  const plan = createImportedUnclaimedCheckpointPlan(manifest([
+    validCandidate('Alice', digest('a'), 1),
+    validCandidate('Bob', digest('b'), 2),
+  ]))
+
+  assert.deepEqual(resumeImportedUnclaimedCandidates(plan).map((value) => value.legacyNameKey), ['Alice', 'Bob'])
+
+  for (const checkpoint of [null, false, 0, '', true, 1, 'checkpoint', Number.NaN]) {
+    assertRejected(() => resumeImportedUnclaimedCandidates(plan, checkpoint as never))
+  }
+})
+
 test('rejects a fingerprint mismatch and unknown or invalid persisted cursors', () => {
   const plan = createImportedUnclaimedCheckpointPlan(manifest([
     validCandidate('Alice', digest('a'), 1),

@@ -158,7 +158,8 @@ export function resumeImportedUnclaimedCandidates(
   checkpoint?: ImportedUnclaimedCheckpoint,
 ): readonly ImportedUnclaimedManifestCandidate[] {
   const canonicalPlan = canonicalizeImportedUnclaimedCheckpointPlan(plan)
-  if (!checkpoint) return canonicalPlan.candidates
+  if (checkpoint === undefined) return canonicalPlan.candidates
+  if (typeof checkpoint !== 'object' || checkpoint === null) return invalid()
   if (checkpoint.sourceManifestSha256 !== canonicalPlan.sourceManifestSha256
     || !Number.isSafeInteger(checkpoint.cursor) || checkpoint.cursor < 0
     || checkpoint.cursor >= canonicalPlan.candidates.length
