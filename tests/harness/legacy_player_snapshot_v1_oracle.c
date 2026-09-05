@@ -26,6 +26,26 @@ typedef enum fixture_profile {
     FIXTURE_PROFILE_PERSISTED_GRAPH
 } fixture_profile;
 
+typedef enum legacy_negative_mutation {
+    LEGACY_NEGATIVE_CREATURE_PREFIX_TRUNCATED,
+    LEGACY_NEGATIVE_ROOT_COUNT_NEGATIVE,
+    LEGACY_NEGATIVE_TRAILING_OCTET
+} legacy_negative_mutation;
+
+typedef struct legacy_negative_case {
+    const char *name;
+    legacy_negative_mutation mutation;
+} legacy_negative_case;
+
+/* Every corpus member begins as the serializer's valid rich record.  The
+ * decoder must fail twice with no returned player, proving rejection is both
+ * deterministic and free of a publishable partial result. */
+static const legacy_negative_case LEGACY_NEGATIVE_CORPUS[] = {
+    { "creature-prefix-truncated", LEGACY_NEGATIVE_CREATURE_PREFIX_TRUNCATED },
+    { "root-count-negative", LEGACY_NEGATIVE_ROOT_COUNT_NEGATIVE },
+    { "trailing-octet-at-eof", LEGACY_NEGATIVE_TRAILING_OCTET }
+};
+
 /* Link-only hooks for dead legacy sections retained in files1.c. */
 void merror(char *message, char kind)
 { (void)message; (void)kind; }
@@ -516,37 +536,88 @@ fail:
     return -1;
 }
 
+static int make_negative_legacy_case(case_info, legacy, legacy_length, changed,
+    changed_length)
+const legacy_negative_case *case_info;
+const unsigned char *legacy;
+unsigned long legacy_length;
+unsigned char **changed;
+unsigned long *changed_length;
+{
+    int invalid_count;
+
+    *changed = 0;
+    *changed_length = 0UL;
+    if (case_info->mutation == LEGACY_NEGATIVE_CREATURE_PREFIX_TRUNCATED) {
+        if (legacy_length <= (unsigned long)sizeof(creature))
+            return -1;
+        *changed_length = (unsigned long)sizeof(creature) - 1UL;
+    }
+    else if (case_info->mutation == LEGACY_NEGATIVE_ROOT_COUNT_NEGATIVE) {
+        if (legacy_length < (unsigned long)sizeof(creature) + (unsigned long)sizeof(int))
+            return -1;
+        *changed_length = legacy_length;
+    }
+    else if (case_info->mutation == LEGACY_NEGATIVE_TRAILING_OCTET)
+        *changed_length = legacy_length + 1UL;
+    else
+        return -1;
+    *changed = (unsigned char *)malloc(*changed_length);
+    if (!*changed)
+        return -1;
+    if (case_info->mutation == LEGACY_NEGATIVE_CREATURE_PREFIX_TRUNCATED)
+        memcpy(*changed, legacy, (size_t)*changed_length);
+    else {
+        memcpy(*changed, legacy, (size_t)legacy_length);
+        if (case_info->mutation == LEGACY_NEGATIVE_ROOT_COUNT_NEGATIVE) {
+            invalid_count = -1;
+            memcpy(*changed + sizeof(creature), &invalid_count, sizeof(invalid_count));
+        }
+        else
+            (*changed)[legacy_length] = 0x7f;
+    }
+    return 0;
+}
+
+static int legacy_case_rejected_without_player(bytes, length)
+const unsigned char *bytes;
+unsigned long length;
+{
+    creature *player;
+    int attempt;
+
+    for (attempt = 0; attempt < 2; ++attempt) {
+        player = 0;
+        if (decode_legacy(bytes, length, &player) == 0) {
+            free_decoded_player(player);
+            return -1;
+        }
+        if (player)
+            return -1;
+    }
+    return 0;
+}
+
 static int reject_cases(legacy, legacy_length)
 const unsigned char *legacy;
 unsigned long legacy_length;
 {
     unsigned char *changed;
-    creature *player;
-    int result;
+    unsigned long changed_length;
+    size_t index;
 
-    if (legacy_length < 2UL || decode_legacy(legacy, legacy_length - 1UL, &player) == 0) {
-        free_decoded_player(player);
-        return -1;
-    }
-    changed = (unsigned char *)malloc(legacy_length + 1UL);
-    if (!changed)
-        return -1;
-    memcpy(changed, legacy, legacy_length);
-    changed[offsetof(creature, type)] = MONSTER;
-    result = decode_legacy(changed, legacy_length, &player);
-    if (result == 0)
-        free_decoded_player(player);
-    if (result == 0) {
+    for (index = 0U; index < sizeof(LEGACY_NEGATIVE_CORPUS) /
+        sizeof(LEGACY_NEGATIVE_CORPUS[0]); ++index) {
+        if (make_negative_legacy_case(&LEGACY_NEGATIVE_CORPUS[index], legacy,
+            legacy_length, &changed, &changed_length))
+            return -1;
+        if (legacy_case_rejected_without_player(changed, changed_length)) {
+            free(changed);
+            return -1;
+        }
         free(changed);
-        return -1;
     }
-    memcpy(changed, legacy, legacy_length);
-    changed[legacy_length] = 0x7f;
-    result = decode_legacy(changed, legacy_length + 1UL, &player);
-    if (result == 0)
-        free_decoded_player(player);
-    free(changed);
-    return result == 0 ? -1 : 0;
+    return 0;
 }
 
 static int verify(profile, path)

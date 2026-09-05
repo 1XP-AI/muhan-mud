@@ -257,21 +257,33 @@ fn replay_runner_is_version_pinned_deterministic_and_metadata_only() {
 }
 
 #[test]
-fn replay_runner_rejects_mutated_input_with_a_single_generic_diagnostic() {
-    let (mut wire, _) = fixtures()[1].clone();
-    let last = wire.len() - 1;
-    wire[last] ^= 1;
+fn replay_runner_rejects_negative_corpus_without_partial_output() {
+    let (wire, _) = fixtures()[1].clone();
+    let mut digest_mutation = wire.clone();
+    let last = digest_mutation.len() - 1;
+    digest_mutation[last] ^= 1;
+    let mut trailing = wire.clone();
+    trailing.push(0x7f);
 
-    let output = run_replay_runner(&wire);
-    assert!(!output.status.success(), "mutated input is rejected");
-    assert!(output.stdout.is_empty(), "rejections have no report");
-    let diagnostic = String::from_utf8(output.stderr).expect("runner diagnostic is text");
-    assert_eq!(
-        diagnostic.lines().collect::<Vec<_>>(),
-        ["rejected: invalid player snapshot CDTO"],
-        "rejection is a single generic diagnostic"
-    );
-    assert!(diagnostic.ends_with('\n'), "diagnostic is line-terminated");
+    for (name, malformed) in [
+        ("truncated", wire[..wire.len() - 1].to_vec()),
+        ("trailing-octet", trailing),
+        ("digest-mutation", digest_mutation),
+    ] {
+        let output = run_replay_runner(&malformed);
+        assert!(!output.status.success(), "{name} is rejected");
+        assert!(output.stdout.is_empty(), "{name} has no partial report");
+        let diagnostic = String::from_utf8(output.stderr).expect("runner diagnostic is text");
+        assert_eq!(
+            diagnostic.lines().collect::<Vec<_>>(),
+            ["rejected: invalid player snapshot CDTO"],
+            "{name} has one generic diagnostic"
+        );
+        assert!(
+            diagnostic.ends_with('\n'),
+            "{name} diagnostic is line-terminated"
+        );
+    }
 }
 
 #[test]

@@ -2,7 +2,10 @@
 //!
 //! The paired shell harness generates this exact CDTO byte sequence only by
 //! serializing a native legacy record and passing it through read_crt_player.
-use muhan_core_dto::player_snapshot_v1::{decode_player_snapshot_v1, encode_player_snapshot_v1};
+use muhan_core_dto::player_snapshot_v1::{
+    decode_player_snapshot_v1, encode_player_snapshot_v1, verify_player_snapshot_replay_v1,
+};
+use muhan_core_dto::{decode, encode, Field, Kind, Record};
 
 fn fixture(text: &str) -> Vec<u8> {
     let text = text.trim();
@@ -11,6 +14,26 @@ fn fixture(text: &str) -> Vec<u8> {
         .step_by(2)
         .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("fixture hex"))
         .collect()
+}
+
+fn negative_snapshot_corpus(wire: &[u8]) -> [(&'static str, Vec<u8>); 3] {
+    let mut trailing = wire.to_vec();
+    trailing.push(0x7f);
+
+    let record = decode(wire).expect("C-derived fixture has a generic envelope");
+    let mut fields = record.fields().to_vec();
+    fields[7] = Field::i8(8, -1);
+    let canonical_invalid_type = encode(
+        &Record::new(Kind::PlayerSnapshot, fields)
+            .expect("test-only invalid player type remains a generic CDTO record"),
+    )
+    .expect("test-only invalid player type has a valid envelope digest");
+
+    [
+        ("truncated", wire[..wire.len() - 1].to_vec()),
+        ("trailing-octet", trailing),
+        ("canonical-invalid-player-type", canonical_invalid_type),
+    ]
 }
 
 #[test]
@@ -90,4 +113,22 @@ fn persisted_graph_legacy_decoder_fixture_normalizes_and_orders_the_forest() {
         encode_player_snapshot_v1(&snapshot).expect("reencode"),
         wire
     );
+}
+
+#[test]
+fn c_derived_negative_snapshot_corpus_rejects_without_a_snapshot() {
+    let wire = fixture(include_str!(
+        "../../../tests/fixtures/player_snapshot_v1_legacy_decoder_canonical.hex"
+    ));
+
+    for (name, malformed) in negative_snapshot_corpus(&wire) {
+        assert!(
+            decode_player_snapshot_v1(&malformed).is_err(),
+            "{name} must not return a partial PlayerSnapshotV1"
+        );
+        assert!(
+            verify_player_snapshot_replay_v1(&malformed).is_err(),
+            "{name} must not produce a replay report"
+        );
+    }
 }
