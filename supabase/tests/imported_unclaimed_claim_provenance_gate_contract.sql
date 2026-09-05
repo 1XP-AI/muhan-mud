@@ -18,14 +18,48 @@ $$;
 
 create or replace function pg_temp.expect_unavailable(statement text, expected_message text default null)
 returns void language plpgsql as $$
+declare
+  unavailable_raised boolean := false;
+  unavailable_message text;
 begin
-  execute statement;
-  raise exception 'provenance-gated operation unexpectedly succeeded';
-exception when sqlstate 'P0001' then
-  if expected_message is not null and SQLERRM <> expected_message then
-    raise exception 'expected generic unavailable %, got %', expected_message, SQLERRM;
+  begin
+    execute statement;
+  exception when sqlstate 'P0001' then
+    unavailable_raised := true;
+    unavailable_message := SQLERRM;
+  end;
+
+  if not unavailable_raised then
+    raise exception using
+      errcode = 'P0004',
+      message = 'provenance-gated operation unexpectedly succeeded';
   end if;
-  return;
+
+  if expected_message is not null and unavailable_message <> expected_message then
+    raise exception using
+      errcode = 'P0004',
+      message = format('expected generic unavailable %s, got %s', expected_message, unavailable_message);
+  end if;
+end;
+$$;
+
+-- Guard the helper itself: a successfully executed negative statement must
+-- surface a non-P0001 assertion failure rather than being accepted as unavailable.
+do $$
+declare
+  assertion_raised boolean := false;
+  assertion_message text;
+begin
+  begin
+    perform pg_temp.expect_unavailable('select 1');
+  exception when sqlstate 'P0004' then
+    assertion_raised := true;
+    assertion_message := SQLERRM;
+  end;
+  perform pg_temp.assert_true(
+    assertion_raised and assertion_message = 'provenance-gated operation unexpectedly succeeded',
+    'expect_unavailable rejects a successfully executed negative statement'
+  );
 end;
 $$;
 
