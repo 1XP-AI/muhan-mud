@@ -11,6 +11,20 @@
 
 `game_characters`의 `legacy_shard`는 `SHA-1(UTF-8 legacy_name_key)` 첫 바이트의 lowercase hex 두 글자다. 이는 C player path의 shard와 맞아야 한다. canonicalizer 불일치·payload/file mismatch와 예약 이름 `.`/`..`는 거부되며, backfill 도구가 위반 row를 quarantine해야 한다. migration은 이를 자동 보정하지 않는다.
 
+## imported_unclaimed 검토 manifest (dry-run 전용)
+
+DB backfill이나 claim/link 전에, 격리된 legacy host에서 만든 metadata-only inventory JSONL을 다음 도구로 검토용 manifest로 바꾼다.
+
+```sh
+python3 scripts/build-imported-unclaimed-manifest.py \
+  --inventory /secure/player-inventory.jsonl \
+  --output /secure/imported-unclaimed-manifest.json
+```
+
+이 도구는 DB·Supabase·network·player file을 열거나 변경하지 않으며 `--apply` 옵션도 없다. Manifest v1에는 canonical `legacy_name_key`, 계산된 shard, source SHA-256/size만 candidate로 남고, path·raw payload·password·credential·game state는 포함하지 않는다. 중복 canonical key, 이름/shard/digest/metadata 오류는 candidate 대신 deterministic rejection record로 분리하며, rejection이 하나라도 있으면 exit code 1이다.
+
+`--output`은 아직 존재하지 않는 최종 파일명에만 사용할 수 있다. 도구는 지정한 trusted parent 안에 owner read/write 전용(`0600`) temporary regular file을 만들고, deterministic closed JSON을 모두 write·`fsync`·close한 뒤 hard-link no-replace로 최종 이름을 원자적으로 publish한다. 따라서 write/encoding/`fsync` 실패나 publish 경쟁 시 기존 일반 파일·symlink·hardlink·directory를 truncate·replace·follow하지 않으며, 최종 이름이 없던 경우에는 불완전 manifest가 최종 이름으로 나타나지 않는다. 오류 때 temporary artifact는 최선으로 삭제하지만, 프로세스 강제 종료·storage/cleanup 오류 뒤에는 trusted parent에 `.final-name.*.tmp`가 남을 수 있으므로 운영자가 검토·삭제해야 한다; link가 이미 성공한 뒤 cleanup 오류가 나면 최종 manifest는 완전한 상태로 남을 수 있다. 지정한 parent directory는 사전에 존재하고 운영자가 신뢰·접근 통제해야 하며, 실행 중 비신뢰 주체가 parent 또는 그 경로 구성요소를 쓰거나 rename할 수 없어야 한다. 도구는 parent를 만들거나 보호하지 않는다.
+
 ## 적용
 
 배포 전 production DB snapshot을 만든 뒤 staging에서 먼저 실행한다.
