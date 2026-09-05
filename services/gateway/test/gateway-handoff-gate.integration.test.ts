@@ -192,8 +192,10 @@ function messages(ws: WebSocket): Array<{ data: RawData, binary: boolean }> {
 function hasText(received: Array<{ data: RawData, binary: boolean }>, value: string): boolean {
   return received.some(({ data, binary }) => !binary && Buffer.from(data).toString() === value)
 }
+const privateClaimControlFrame = /^MUD1O (?:CHALLENGE\|(?:[0-9a-f]{2}){1,14}\|[0-9a-f]{64}|ALLOW)\n$/
+
 function hasPrivateClaimControl(received: Array<{ data: RawData, binary: boolean }>): boolean {
-  return received.some(({ data }) => /CHALLENGE|ALLOW/.test(Buffer.from(data).toString('utf8')))
+  return received.some(({ data }) => privateClaimControlFrame.test(Buffer.from(data).toString('ascii')))
 }
 async function eventually(check: () => void, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -213,12 +215,17 @@ function cEvidence(canonicalName: string, playerFileSha256: string): LegacyIdent
   }
 }
 
-test('claim privacy detector scans binary frames without rejecting ordinary game data', () => {
-  const ordinaryGameData = [{ data: Buffer.from('비밀번호? '), binary: true }]
-  assert.equal(hasPrivateClaimControl(ordinaryGameData), false)
+test('claim privacy detector recognizes only exact private controls in text and binary frames', () => {
+  for (const data of ['ALLOWANCE earned', 'CHALLENGE accepted', 'MUD1O ALLOW\nextra', 'MUD1O CHALLENGE|416c696365|' + 'b'.repeat(64) + '\nextra']) {
+    for (const binary of [false, true]) {
+      assert.equal(hasPrivateClaimControl([{ data: binary ? Buffer.from(data) : data, binary }]), false, `${binary ? 'binary' : 'text'} incidental game data must not be detected: ${data}`)
+    }
+  }
 
   for (const control of ['MUD1O CHALLENGE|416c696365|' + 'b'.repeat(64) + '\n', 'MUD1O ALLOW\n']) {
-    assert.equal(hasPrivateClaimControl([{ data: Buffer.from(control), binary: true }]), true, `binary ${control.trim()} must be detected`)
+    for (const binary of [false, true]) {
+      assert.equal(hasPrivateClaimControl([{ data: binary ? Buffer.from(control) : control, binary }]), true, `${binary ? 'binary' : 'text'} ${control.trim()} must be detected`)
+    }
   }
 })
 
