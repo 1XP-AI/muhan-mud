@@ -190,6 +190,20 @@ legacy-identity-evidence-wire-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/legacy_identity_evidence_wire_test.c legacy_identity_evidence_wire.c -o /tmp/muhan-unit/legacy_identity_evidence_wire_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/legacy_identity_evidence_wire_sanitizer_test
 
+# Feature-off metadata envelope.  This stays outside OBJECTS and is not wired
+# into the live session, game relay, or onboarding state machine.
+onboarding-evidence-control-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/onboarding_evidence_control_test.c onboarding_evidence_control.c legacy_identity_evidence_wire.c onboarding_admission.c player_path.c utf8_text.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_evidence_control_test
+	/tmp/muhan-unit/onboarding_evidence_control_test
+	python3 ../tests/unit/onboarding_evidence_control_no_live_link_test.py
+
+onboarding-evidence-control-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_evidence_control_test.c onboarding_evidence_control.c legacy_identity_evidence_wire.c onboarding_admission.c player_path.c utf8_text.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_evidence_control_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_evidence_control_sanitizer_test
+	python3 ../tests/unit/onboarding_evidence_control_no_live_link_test.py
+
 m3-feature-off-legacy-authority-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/m3_feature_off_legacy_authority_test.c character_save_journal_v2_runtime.c player_store.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/m3_feature_off_legacy_authority_test
