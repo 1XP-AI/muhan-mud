@@ -282,9 +282,11 @@ function fixture(name, files) {
   }
 }
 fixture('match', {
-  '00.json': entry('c9500000-0000-0000-0000-000000000010', 'a9500000-0000-0000-0000-000000000010', 0),
-  '42.json': entry('c9500000-0000-0000-0000-000000000001', 'a9500000-0000-0000-0000-000000000001', 42),
-  '255.json': entry('c9500000-0000-0000-0000-000000000011', 'a9500000-0000-0000-0000-000000000011', 255),
+  // The comparator contract is bytewise lexical filename order: 1, 10, 2.
+  // Keep raw levels deliberately non-numeric so this catches numeric sorting.
+  '1.json': entry('c9500000-0000-0000-0000-000000000001', 'a9500000-0000-0000-0000-000000000001', 42),
+  '10.json': entry('c9500000-0000-0000-0000-000000000011', 'a9500000-0000-0000-0000-000000000011', 255),
+  '2.json': entry('c9500000-0000-0000-0000-000000000010', 'a9500000-0000-0000-0000-000000000010', 0),
 })
 fixture('mismatch', {
   'entry.json': entry('c9500000-0000-0000-0000-000000000001', 'a9500000-0000-0000-0000-000000000001', 41),
@@ -305,7 +307,7 @@ fixture('sanitized', {
 })
 NODE
 
-run_comparator_case match 0 MATCH MATCH,MATCH,MATCH 0,42,255
+run_comparator_case match 0 MATCH MATCH,MATCH,MATCH 42,255,0
 run_comparator_case mismatch 1 INCONSISTENT MISMATCH_LEVEL 41
 run_comparator_case missing 1 INCONSISTENT MISSING_PROJECTION 42
 run_comparator_case duplicate 1 INCONSISTENT UNEXPECTED_DUPLICATE 42
