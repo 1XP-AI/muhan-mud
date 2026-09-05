@@ -86,5 +86,5 @@ M4_PLAYER_SNAPSHOT_V2_JOURNAL_LEVEL_SHADOW_COMPARATOR_DATABASE_URL="$MUD_REPLAY_
 The supplied URL must be the dedicated read-only replay-reader URL and must
 not equal `DATABASE_URL`. The command emits one metadata-only JSON line, closes
 its reader before returning, and exits zero only when every journal record is
-an eligible `MATCH`; invalid or bounded journal input and every comparison
-failure are fail-closed and exit nonzero.
+an eligible `MATCH`. An empty journal, invalid or bounded journal input, and
+every comparison failure are fail-closed and exit nonzero.

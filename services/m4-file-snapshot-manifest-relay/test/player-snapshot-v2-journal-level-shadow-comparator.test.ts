@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -105,6 +105,46 @@ test('v2 level shadow comparator preserves every pure comparator classification 
     assert.equal(result.classification, 'INCONSISTENT')
     assert.equal(readerCalls, 0)
   })
+})
+
+test('v2 level shadow comparator fails closed when its journal provides no evidence', async () => {
+  await withJournal({}, async (path) => {
+    let readerCalls = 0
+    const result = await comparePlayerSnapshotV2JournalLevelShadowJournal(path, {
+      findByCommandId: async () => { readerCalls++; return [input] },
+    })
+
+    assert.deepEqual(result, {
+      format: 'player-snapshot-v2-journal-level-shadow-comparison', version: '1',
+      classification: 'INCONSISTENT', records: [],
+    })
+    assert.equal(readerCalls, 0)
+
+    const output: string[] = []
+    let closed = false
+    assert.equal(await shadowComparatorMain({
+      M4_PLAYER_SNAPSHOT_V2_JOURNAL_LEVEL_SHADOW_COMPARATOR_JOURNAL_PATH: path,
+      M4_PLAYER_SNAPSHOT_V2_JOURNAL_LEVEL_SHADOW_COMPARATOR_DATABASE_URL: readerDatabaseUrl,
+    }, ['--once'], {
+      createReader: () => ({
+        findByCommandId: async () => { readerCalls++; return [input] },
+        close: async () => { closed = true },
+      }),
+      writeStdout: (line) => { output.push(line) },
+    }), 1)
+    assert.equal(closed, true)
+    assert.deepEqual(output, ['{"format":"player-snapshot-v2-journal-level-shadow-comparison","version":"1","classification":"INCONSISTENT","records":[]}\n'])
+    assert.equal(readerCalls, 0)
+  })
+})
+
+test('default relay entrypoints remain independent of the opt-in shadow comparator', async () => {
+  const [relayCli, image] = await Promise.all([
+    readFile(new URL('../src/cli.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../Dockerfile', import.meta.url), 'utf8'),
+  ])
+  assert.doesNotMatch(relayCli, /v2-journal-level-shadow-comparator/i)
+  assert.doesNotMatch(image, /v2-journal-level-shadow-comparator/i)
 })
 
 test('one-shot v2 level shadow CLI is separately opt-in, emits exactly one closed JSON line, closes its reader, and exits zero only for MATCH', async () => {

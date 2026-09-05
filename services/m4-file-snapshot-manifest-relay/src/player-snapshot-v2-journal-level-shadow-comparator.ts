@@ -66,7 +66,12 @@ export async function comparePlayerSnapshotV2JournalLevelShadowJournal(
   return {
     format: 'player-snapshot-v2-journal-level-shadow-comparison',
     version: '1',
-    classification: records.every((record) => record.classification === 'MATCH') ? 'MATCH' : 'INCONSISTENT',
+    // An empty directory provides no evidence to compare, so it cannot prove
+    // a match.  Keep the stable empty record list, but fail the one-shot
+    // command closed rather than treating a vacuous match as success.
+    classification: records.length > 0 && records.every((record) => record.classification === 'MATCH')
+      ? 'MATCH'
+      : 'INCONSISTENT',
     records,
   }
 }
