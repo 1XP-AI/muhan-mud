@@ -43,11 +43,14 @@ export interface ExistingCharacter {
 export interface ImportTransaction {
   lockIdentity(worldId: string, legacyNameKey: string): Promise<void>
   findCharacter(worldId: string, legacyNameKey: string): Promise<ExistingCharacter | undefined>
-  insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<void>
+  /** Returns the opaque UUID assigned to this newly inserted character only. */
+  insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<string>
   lockBatchStream(worldId: string, streamId: string): Promise<void>
   findBatchBySequence(worldId: string, streamId: string, sequence: number): Promise<LedgerBatch | undefined>
   findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined>
   createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void>
+  /** Appends a permanent, private link from a new character to its creating batch. */
+  recordBatchMember(input: { worldId: string, streamId: string, sequence: number, characterId: string }): Promise<void>
   readWatermark(worldId: string, streamId: string): Promise<number | undefined>
   advanceWatermark(worldId: string, streamId: string, sequence: number): Promise<void>
 }
@@ -364,7 +367,15 @@ export async function importBatch(store: ImportStore, records: readonly Inventor
     if (!validated.apply) return { ...base(), ...inspected.summary, wouldInsert: inspected.absent.length }
 
     await transaction.createBatch({ identity: validated.identity, streamId: validated.streamId, sequence: validated.sequence, recordCount: admitted.ordered.length })
-    for (const record of inspected.absent) await transaction.insertImportedUnclaimed({ worldId: validated.identity.worldId, record })
+    for (const record of inspected.absent) {
+      const characterId = await transaction.insertImportedUnclaimed({ worldId: validated.identity.worldId, record })
+      await transaction.recordBatchMember({
+        worldId: validated.identity.worldId,
+        streamId: validated.streamId,
+        sequence: validated.sequence,
+        characterId,
+      })
+    }
     await transaction.advanceWatermark(validated.identity.worldId, validated.streamId, validated.sequence)
     return { ...base(), ...inspected.summary, inserted: inspected.absent.length, ledger: 'committed' }
   })

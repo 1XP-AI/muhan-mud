@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createBatchIdentity } from '../src/batch-identity.js'
-import { BatchImportError, expectedShard, importBatch, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
+import { BatchImportError, expectedShard, importBatch, importRecords, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 
@@ -27,9 +27,13 @@ class BatchMemoryStore implements ImportStore {
   rows = new Map<string, ExistingCharacter>()
   batches = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
   identities = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
+  members = new Map<string, { worldId: string, streamId: string, sequence: number, characterId: string }>()
   watermarks = new Map<string, number>()
   writes = 0
+  memberWrites = 0
+  events: string[] = []
   failInsert = false
+  failMember = false
   private tail = Promise.resolve()
 
   async transaction<T>(work: (transaction: ImportTransaction) => Promise<T>): Promise<T> {
@@ -40,15 +44,19 @@ class BatchMemoryStore implements ImportStore {
     const rows = new Map(this.rows)
     const batches = new Map(this.batches)
     const identities = new Map(this.identities)
+    const members = new Map(this.members)
     const watermarks = new Map(this.watermarks)
     let writes = 0
+    let memberWrites = 0
+    const events: string[] = []
     try {
       const result = await work({
         lockIdentity: async () => undefined,
         findCharacter: async (world, name) => rows.get(`${world}|${name}`),
         insertImportedUnclaimed: async ({ worldId, record: row }) => {
           if (this.failInsert) throw new Error('injected insert failure')
-          rows.set(`${worldId}|${row.canonicalNameKey}`, existing(row)); writes++
+          rows.set(`${worldId}|${row.canonicalNameKey}`, existing(row)); writes++; events.push('character')
+          return `character:${worldId}:${row.canonicalNameKey}`
         },
         lockBatchStream: async () => undefined,
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
@@ -57,23 +65,33 @@ class BatchMemoryStore implements ImportStore {
           const batch = { stableKey: value.stableKey, sequence, recordCount }
           batches.set(`${value.worldId}|${streamId}|${sequence}`, batch)
           identities.set(`${value.worldId}|${streamId}|${value.stableKey}`, batch)
+          events.push('batch')
+        },
+        recordBatchMember: async ({ worldId, streamId, sequence, characterId }) => {
+          if (this.failMember) throw new Error('injected member failure')
+          members.set(characterId, { worldId, streamId, sequence, characterId }); memberWrites++; events.push('member')
         },
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
-        advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence) },
+        advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence); events.push('watermark') },
       })
-      this.rows = rows; this.batches = batches; this.identities = identities; this.watermarks = watermarks; this.writes += writes
+      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.events = events
       return result
     } finally { release?.() }
   }
 }
 
-test('batch import commits characters, immutable evidence, then a stream watermark', async () => {
+test('batch import commits every new character as an immutable member of its exact ledger batch before the watermark', async () => {
   const store = new BatchMemoryStore()
   const result = await importBatch(store, [record('Alice'), record('Bob')], { identity: identity(), streamId: 'main', sequence: 0, apply: true })
   assert.equal(result.inserted, 2)
   assert.equal(result.ledger, 'committed')
   assert.equal(store.writes, 2)
   assert.equal(store.batches.size, 1)
+  assert.deepEqual([...store.members.values()], [
+    { worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Alice' },
+    { worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Bob' },
+  ])
+  assert.deepEqual(store.events, ['batch', 'character', 'member', 'character', 'member', 'watermark'])
   assert.equal(store.watermarks.get('batch-world|main'), 0)
 })
 
@@ -85,7 +103,21 @@ test('exact identity and sequence retry is ledger-idempotent with no character w
   assert.equal(retry.ledger, 'idempotent')
   assert.equal(retry.idempotent, 1)
   assert.equal(store.writes, 1)
+  assert.equal(store.memberWrites, 1)
+  assert.equal(store.members.size, 1)
   assert.equal(store.batches.size, 1)
+})
+
+test('an already idempotent character is never retrospectively targeted to a later batch', async () => {
+  const store = new BatchMemoryStore()
+  await importBatch(store, [record('Alice')], { identity: identity('0'), streamId: 'main', sequence: 0, apply: true })
+  const second = await importBatch(store, [record('Alice')], { identity: identity('1'), streamId: 'main', sequence: 1, apply: true })
+  assert.equal(second.inserted, 0)
+  assert.equal(second.idempotent, 1)
+  assert.equal(store.members.size, 1)
+  assert.deepEqual(store.members.get('character:batch-world:Alice'), {
+    worldId: 'batch-world', streamId: 'main', sequence: 0, characterId: 'character:batch-world:Alice',
+  })
 })
 
 test('changed identity at an occupied sequence rejects without ledger, character, or watermark mutation', async () => {
@@ -103,7 +135,31 @@ test('failure rolls back batch evidence and watermark with character inserts', a
   await assert.rejects(() => importBatch(store, [record('Alice')], { identity: identity(), streamId: 'main', sequence: 0, apply: true }))
   assert.equal(store.rows.size, 0)
   assert.equal(store.batches.size, 0)
+  assert.equal(store.members.size, 0)
   assert.equal(store.watermarks.size, 0)
+})
+
+test('member-write failure rolls back the ledger, inserted character, member, and watermark together', async () => {
+  const store = new BatchMemoryStore()
+  store.failMember = true
+  await assert.rejects(() => importBatch(store, [record('Alice')], { identity: identity(), streamId: 'main', sequence: 0, apply: true }))
+  assert.equal(store.rows.size, 0)
+  assert.equal(store.batches.size, 0)
+  assert.equal(store.members.size, 0)
+  assert.equal(store.watermarks.size, 0)
+})
+
+test('dry-run, quarantine, and non-batch import remain provenance-member free', async () => {
+  const store = new BatchMemoryStore()
+  const dryRun = await importBatch(store, [record('Alice')], { identity: identity(), streamId: 'main', sequence: 0, apply: false })
+  assert.equal(dryRun.wouldInsert, 1)
+  const quarantined = await importBatch(store, [{ ...record('Bob'), sha256: 'invalid' }], { identity: identity(), streamId: 'main', sequence: 0, apply: true })
+  assert.equal(quarantined.quarantined.invalid_metadata, 1)
+  await importRecords(store, [record('Carol')], { worldId: 'batch-world', apply: true })
+  assert.equal(store.members.size, 0)
+  assert.equal(store.batches.size, 0)
+  assert.equal(store.watermarks.size, 0)
+  assert.equal(store.rows.size, 1)
 })
 
 test('an overlong batch world ID is rejected before any ledger, character, or watermark mutation', async () => {

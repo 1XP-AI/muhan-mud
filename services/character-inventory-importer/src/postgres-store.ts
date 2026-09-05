@@ -24,6 +24,7 @@ interface BatchRow {
 }
 
 interface WatermarkRow { watermark_sequence: string }
+interface InsertedCharacterRow { id: string }
 
 const require = createRequire(import.meta.url)
 
@@ -133,15 +134,19 @@ class PostgresImportTransaction implements ImportTransaction {
     }
   }
 
-  async insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<void> {
+  async insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<string> {
     const { record } = input
-    await this.client.query(
+    const result = await this.client.query<InsertedCharacterRow>(
       `insert into public.game_characters (
         world_id, legacy_name, legacy_name_key, legacy_shard, lifecycle,
         storage_format, imported_file_sha256, owner_user_id
-      ) values ($1, $2, $3, $4, 'imported_unclaimed', 1, $5, null)`,
+      ) values ($1, $2, $3, $4, 'imported_unclaimed', 1, $5, null)
+        returning id::text as id`,
       [input.worldId, record.name, record.canonicalNameKey, record.expectedShard, record.sha256],
     )
+    const id = result.rows[0]?.id
+    if (typeof id !== 'string' || id === '') throw new Error('character insert did not return an identifier')
+    return id
   }
 
   async lockBatchStream(worldId: string, streamId: string): Promise<void> {
@@ -183,6 +188,15 @@ class PostgresImportTransaction implements ImportTransaction {
         identity.sourceManifestId, identity.sourceSha256, identity.sourceByteSize,
         identity.parserVersion, identity.abi, identity.startMarker, identity.endMarker,
         input.recordCount],
+    )
+  }
+
+  async recordBatchMember(input: { worldId: string, streamId: string, sequence: number, characterId: string }): Promise<void> {
+    await this.client.query(
+      `insert into private.game_imported_unclaimed_batch_members (
+        world_id, stream_id, batch_sequence, character_id
+      ) values ($1, $2, $3, $4::uuid)`,
+      [input.worldId, input.streamId, input.sequence, input.characterId],
     )
   }
 

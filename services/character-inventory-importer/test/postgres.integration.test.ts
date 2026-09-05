@@ -64,6 +64,11 @@ async function countWorld(pool: DisposablePool, world: string): Promise<number> 
   return Number(result.rows[0]?.count ?? 0)
 }
 
+async function countBatchMembers(pool: DisposablePool, world: string): Promise<number> {
+  const result = await pool.query<{ count: string }>('select count(*)::text as count from private.game_imported_unclaimed_batch_members where world_id = $1', [world])
+  return Number(result.rows[0]?.count ?? 0)
+}
+
 test('disposable Linux/Postgres importer contract is atomic and serializes retries', { skip: skipReason }, async (t) => {
   const databaseUrl = disposableDatabaseUrl()
   const pool = new Pool({ connectionString: databaseUrl, max: 2 })
@@ -73,11 +78,9 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   const concurrentLeft = new PostgresImportStore(databaseUrl)
   const concurrentRight = new PostgresImportStore(databaseUrl)
   t.after(async () => {
-    // This predicate can only match this run's unique world id; cleanup is
-    // narrowly scoped and never targets an existing world.
-    await pool.query('delete from private.game_imported_unclaimed_batch_watermarks where world_id = $1', [world])
-    await pool.query('delete from private.game_imported_unclaimed_batches where world_id = $1', [world])
-    await pool.query('delete from public.game_characters where world_id = $1', [world])
+    // S4/S5a evidence is deliberately non-deletable. This guarded test uses
+    // a per-run world identifier and expects its disposable database to be
+    // discarded by its explicit runner rather than bypassing immutability.
     await Promise.all([importer.close(), concurrentLeft.close(), concurrentRight.close(), pool.end(), rm(root, { recursive: true, force: true })])
   })
 
@@ -153,9 +156,17 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   const batchApplied = await importBatch(importer, ledgerRecords, { identity: ledgerIdentity, streamId: 'main', sequence: 0, apply: true })
   assert.equal(batchApplied.inserted, 2)
   assert.equal(await countWorld(pool, world), 6)
+  assert.equal(await countBatchMembers(pool, world), 2)
   const batchRetry = await importBatch(importer, ledgerRecords, { identity: ledgerIdentity, streamId: 'main', sequence: 0, apply: true })
   assert.equal(batchRetry.ledger, 'idempotent')
   assert.equal(await countWorld(pool, world), 6)
+  assert.equal(await countBatchMembers(pool, world), 2)
+  const secondBatch = await importBatch(importer, [ledgerRecords[0]!], {
+    identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
+    streamId: 'main', sequence: 1, apply: true,
+  })
+  assert.equal(secondBatch.idempotent, 1)
+  assert.equal(await countBatchMembers(pool, world), 2)
   await assert.rejects(
     () => importBatch(importer, [record('LedgerThree')], {
       identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
@@ -166,7 +177,7 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   await assert.rejects(
     () => importBatch(importer, [record('LedgerThree')], {
       identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-2', sourceSha256: digest('integration-source-2'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-2', endMarker: 'range-end-2' }),
-      streamId: 'main', sequence: 2, apply: true,
+      streamId: 'main', sequence: 3, apply: true,
     }),
     (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_out_of_order',
   )

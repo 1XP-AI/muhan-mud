@@ -83,6 +83,7 @@ class MemoryStore implements ImportStore {
           if (rows.has(key)) throw new Error('duplicate insert')
           inserts++
           rows.set(key, existing(record.name, record.sha256))
+          return `character:${worldId}:${record.canonicalNameKey}`
         },
         lockBatchStream: async () => undefined,
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
@@ -92,6 +93,7 @@ class MemoryStore implements ImportStore {
           batches.set(`${identity.worldId}|${streamId}|${sequence}`, batch)
           batchIdentities.set(`${identity.worldId}|${streamId}|${identity.stableKey}`, batch)
         },
+        recordBatchMember: async () => undefined,
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
         advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence) },
       })
