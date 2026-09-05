@@ -31,9 +31,10 @@ typedef enum onboarding_snapshot_command_consumer_result {
 
 /* Consume exactly the pending activation metadata named by command_id.  No
  * lookup by character, correlation, or save candidate exists: every caller
- * must present the command id plus the exact expected tuple.  A complete
- * RESERVED record is hard-linked into the supplied directory and retained;
- * neither this call nor the reader deletes the activation source binding. */
+ * must present the command id plus the exact expected tuple.  The private
+ * deterministic PENDING name is resumed only when it is the same validated
+ * reservation transition; a complete RESERVED record is retained, and neither
+ * this call nor the reader deletes or repurposes the activation source binding. */
 onboarding_snapshot_command_consumer_result
 onboarding_snapshot_command_consumer_reserve(
     int reservation_directory_fd,

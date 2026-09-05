@@ -133,15 +133,17 @@ int directory_fd;
     return duplicate;
 }
 
-static int oscc_file_safe(fd, directory_status)
+static int oscc_file_safe(fd, directory_status, record_status)
 int fd;
 const struct stat *directory_status;
+struct stat *record_status;
 {
     struct stat status;
-    return directory_status && !fstat(fd,&status) && S_ISREG(status.st_mode) &&
-        status.st_uid == directory_status->st_uid && (status.st_mode & 0777) == 0600 &&
-        status.st_nlink == 1 && status.st_size >= 0 &&
-        (unsigned long)status.st_size < OSCC_TEXT_MAX;
+    if(!directory_status || fstat(fd,&status) || !S_ISREG(status.st_mode) ||
+       status.st_uid != directory_status->st_uid || (status.st_mode & 0777) != 0600 ||
+       status.st_size < 0 || (unsigned long)status.st_size >= OSCC_TEXT_MAX) return 0;
+    if(record_status) *record_status=status;
+    return 1;
 }
 
 static int oscc_write_all(fd, bytes, length)
@@ -229,16 +231,18 @@ bad:
 }
 
 static onboarding_snapshot_command_consumer_result oscc_read_at(directory, name,
-    reservation)
+    reservation, record_status)
 int directory;
 const char *name;
 onboarding_snapshot_command_reservation *reservation;
+struct stat *record_status;
 {
     char text[OSCC_TEXT_MAX];
     struct stat directory_status;
     int fd, count, extra, result;
     fd=-1; result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
     memset(text,0,sizeof(text));
+    if(record_status) memset(record_status,0,sizeof(*record_status));
     if(directory < 0 || !name || !reservation || fstat(directory,&directory_status)) goto out;
     fd=openat(directory,name,O_RDONLY|O_BINARY|O_NOFOLLOW|O_CLOEXEC);
     if(fd < 0) {
@@ -246,7 +250,9 @@ onboarding_snapshot_command_reservation *reservation;
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
         goto out;
     }
-    if(!oscc_file_safe(fd,&directory_status)) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT; goto out; }
+    if(!oscc_file_safe(fd,&directory_status,record_status)) {
+        result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT; goto out;
+    }
     count=read(fd,text,sizeof(text)-1U);
     if(count < 0) goto out;
     text[count]=0; extra=read(fd,text+count,1);
@@ -274,7 +280,14 @@ onboarding_snapshot_command_reservation *reservation;
         return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID;
     directory=oscc_dup_directory(reservation_directory_fd);
     if(directory < 0) return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
-    result=oscc_read_at(directory,name,reservation);
+    {
+        struct stat status;
+        result=oscc_read_at(directory,name,reservation,&status);
+        if(result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED && status.st_nlink != 1) {
+            memset(reservation,0,sizeof(*reservation));
+            result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT;
+        }
+    }
     if(close(directory) && result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED)
         result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
     if(result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
@@ -297,6 +310,60 @@ const onboarding_snapshot_command_reservation *right;
         !strcmp(left->activation.command_id,right->activation.command_id);
 }
 
+/* The temporary name is a deterministic PENDING state.  It may be removed
+ * only after proving it is either the one safe singleton to publish, or the
+ * second name of the same safe inode which linkat already published. */
+static onboarding_snapshot_command_consumer_result oscc_resume(directory, name,
+    temporary, expected, pending_result)
+int directory;
+const char *name;
+const char *temporary;
+const onboarding_snapshot_command_reservation *expected;
+onboarding_snapshot_command_consumer_result pending_result;
+{
+    onboarding_snapshot_command_reservation final, pending;
+    onboarding_snapshot_command_consumer_result final_result, pending_result_read;
+    struct stat final_status, pending_status;
+    int same_inode;
+    memset(&final,0,sizeof(final)); memset(&pending,0,sizeof(pending));
+    memset(&final_status,0,sizeof(final_status)); memset(&pending_status,0,sizeof(pending_status));
+    final_result=oscc_read_at(directory,name,&final,&final_status);
+    pending_result_read=oscc_read_at(directory,temporary,&pending,&pending_status);
+    if(final_result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE) {
+        if(pending_result_read == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE)
+            return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE;
+        if(pending_result_read != ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED ||
+           pending_status.st_nlink != 1) return pending_result_read ==
+            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED ?
+            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT:pending_result_read;
+        if(!oscc_same(expected,&pending)) return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CONFLICT;
+        if(linkat(directory,temporary,directory,name,0))
+            return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
+        /* Preserve a durable final before removing the only other name. */
+        if(fsync(directory)) return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
+        if(unlinkat(directory,temporary,0) || fsync(directory))
+            return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
+        return pending_result;
+    }
+    if(final_result != ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED) return final_result;
+    if(final_status.st_nlink == 1) {
+        if(pending_result_read != ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE)
+            return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT;
+        return oscc_same(expected,&final) ? ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY:
+            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CONFLICT;
+    }
+    same_inode=final_status.st_dev == pending_status.st_dev &&
+        final_status.st_ino == pending_status.st_ino;
+    if(final_status.st_nlink != 2 || pending_result_read !=
+       ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED || pending_status.st_nlink != 2 ||
+       !same_inode || !oscc_same(&final,&pending))
+        return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT;
+    if(!oscc_same(expected,&final)) return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CONFLICT;
+    if(unlinkat(directory,temporary,0) || fsync(directory))
+        return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
+    return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY;
+}
+
 onboarding_snapshot_command_consumer_result
 onboarding_snapshot_command_consumer_reserve(reservation_directory_fd, command_id,
     expected_character_id, expected_mode, expected_correlation_id)
@@ -307,11 +374,11 @@ onboarding_activation_binding_mode expected_mode;
 const char *expected_correlation_id;
 {
     onboarding_activation_binding source;
-    onboarding_snapshot_command_reservation next, prior;
-    onboarding_snapshot_command_consumer_result prior_result, result;
+    onboarding_snapshot_command_reservation next;
+    onboarding_snapshot_command_consumer_result result;
     char name[OSCC_NAME_MAX], temporary[OSCC_NAME_MAX], text[OSCC_TEXT_MAX];
     int directory, fd, text_length;
-    memset(&source,0,sizeof(source)); memset(&next,0,sizeof(next)); memset(&prior,0,sizeof(prior));
+    memset(&source,0,sizeof(source)); memset(&next,0,sizeof(next));
     memset(temporary,0,sizeof(temporary)); memset(text,0,sizeof(text)); directory=-1; fd=-1;
     if(!oscc_uuid(command_id) || !oscc_uuid(expected_character_id) ||
        !oscc_uuid(expected_correlation_id) || !oscc_mode_name(expected_mode)) {
@@ -339,37 +406,27 @@ const char *expected_correlation_id;
     }
     directory=oscc_dup_directory(reservation_directory_fd);
     if(directory < 0) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out; }
-    prior_result=oscc_read_at(directory,name,&prior);
-    if(prior_result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED) {
-        result=oscc_same(&next,&prior) ? ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY:
-            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CONFLICT;
-        goto out;
-    }
-    if(prior_result != ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE) {
-        result=prior_result; goto out;
-    }
+    result=oscc_resume(directory,name,temporary,&next,
+        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY);
+    if(result != ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE) goto out;
     fd=openat(directory,temporary,O_WRONLY|O_CREAT|O_EXCL|O_BINARY|O_NOFOLLOW|O_CLOEXEC,0600);
-    if(fd < 0 || fchmod(fd,0600) || oscc_write_all(fd,text,(unsigned long)text_length) ||
-       fsync(fd) || close(fd)) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out; }
-    fd=-1;
-    if(linkat(directory,temporary,directory,name,0)) {
-        if(errno != EEXIST || oscc_read_at(directory,name,&prior) !=
-           ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED) {
-            result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out;
-        }
-        result=oscc_same(&next,&prior) ? ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY:
-            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CONFLICT;
+    if(fd < 0) {
+        if(errno == EEXIST) result=oscc_resume(directory,name,temporary,&next,
+            ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY);
+        else result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR;
         goto out;
     }
-    if(unlinkat(directory,temporary,0)) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out; }
-    temporary[0]=0;
-    result=fsync(directory) ? ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR:
-        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED;
+    if(fchmod(fd,0600) || oscc_write_all(fd,text,(unsigned long)text_length) || fsync(fd) ||
+       close(fd)) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out; }
+    fd=-1;
+    /* Make the PENDING directory entry durable before publishing it. */
+    if(fsync(directory)) { result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_IO_ERROR; goto out; }
+    result=oscc_resume(directory,name,temporary,&next,
+        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED);
 out:
     if(fd >= 0) close(fd);
-    if(directory >= 0 && temporary[0]) unlinkat(directory,temporary,0);
     if(directory >= 0) close(directory);
-    memset(&source,0,sizeof(source)); memset(&next,0,sizeof(next)); memset(&prior,0,sizeof(prior));
+    memset(&source,0,sizeof(source)); memset(&next,0,sizeof(next));
     memset(text,0,sizeof(text));
     return result;
 }
