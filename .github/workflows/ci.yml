@@ -63,6 +63,7 @@ jobs:
           set -euo pipefail
           bash supabase/tests/imported_unclaimed_batch_schema_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_character_provenance_static_contract.sh
+          bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
@@ -245,11 +246,15 @@ jobs:
               --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260930000000_imported_unclaimed_claim_provenance_gate.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_ledger_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_character_provenance_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_claim_provenance_gate_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
