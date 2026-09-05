@@ -2,8 +2,8 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `959361cd902d44a96e32fb397737a102360b1262`
-- 최신 전체 CI 검증: [`959361c`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33934527031)
+- 포팅 기능 기준 커밋: `4a7df8921eee80f5ea771db1a5efeffe71a38fa4`
+- 최신 전체 CI 검증: [`4a7df89`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33935442808)
 
 ## 먼저 알아야 할 상태
 
@@ -239,10 +239,11 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** immutable v1 artifact metadata와 v2 journal level metadata를 비교하는
-   dedicated read-only comparator를 RED 테스트부터 구현한다. writer RPC·payload·legacy file·DB
-   write를 사용하지 않고, identity mismatch는 level verdict보다 먼저 처리한다.
-2. **Terra/고난도:** comparator가 PG17 read-only E2E를 통과한 뒤에만 raw-U8 level projection의
+1. **Terra/고난도:** pure comparator에 주입할 dedicated `mud_replay_reader` PostgreSQL adapter를
+   RED 테스트부터 구현한다. immutable projection을 command ID로 한 번 read-only 조회하고,
+   PG17 E2E에서 missing/duplicate/read-failure와 raw U8 boundary를 검증한다. writer RPC·payload·
+   legacy file·DB write는 사용하지 않는다.
+2. **Terra/고난도:** adapter와 comparator가 PG17 read-only E2E를 통과한 뒤에만 raw-U8 level projection의
    production activation configuration/operational 경계를 설계한다. 기본 no-projection,
    artifact 우선 확인, non-gating 오류 격리, legacy authority를 반드시 유지하며 실제
    활성화·배포는 이 작업의 권한이 아니다.
@@ -430,6 +431,26 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - 이 slice는 migration, C runtime, M3 activation, chart, testnet, live DB data를 바꾸지 않았고
   legacy player file authority를 유지한다.
 
+### PlayerSnapshotV1 level projection comparator `4a7df89`
+
+- `player-snapshot-v1-level-comparator.ts`는 v2 journal에서 이미 닫힌 level metadata만 받고,
+  injected `findByCommandId` reader로 immutable projection evidence를 읽는 순수 비교 경계다.
+  PostgreSQL client, writer RPC, payload, legacy file, CLI, runtime activation을 import하거나
+  호출하지 않는다. v1 journal은 raw U8 level source가 될 수 없다.
+- `characterId`, `commandId`, receipt request SHA-256, source post SHA-256, snapshot SHA-256,
+  snapshot octets의 여섯 binding을 raw U8 비교보다 먼저 exact하게 검사한다. 결과는
+  `MATCH`, `MISMATCH_LEVEL`, `MISSING_PROJECTION`, `IDENTITY_MISMATCH`, `INVALID_INPUT`,
+  `UNEXPECTED_DUPLICATE`, `PROJECTION_READ_ERROR`으로 안정적으로 분류된다.
+- TDD는 raw U8 0/42/255 exactness, identity-first ordering, missing/duplicate/reader failure,
+  malformed input/evidence fail-closed를 포함한다. relay local test는 63 pass/3 expected skip,
+  typecheck와 build가 통과했다. private GitHub Actions
+  [run 33935442808](https://github.com/1XP-Inc/muhan-mud/actions/runs/33935442808)의 재실행은
+  Supabase ownership contract, Ubuntu ARM, Ubuntu, Windows, macOS 모두 GREEN이다. 최초 실행의
+  M3 disposable-container readiness 실패는 비교기 단계 이전의 일시 실행 환경 문제였고, 동일
+  커밋 재실행에서 전체 contract가 통과했다.
+- 이 slice는 migration, PG adapter, C runtime, M3 activation, chart, testnet, live DB data를
+  바꾸지 않았고 legacy player file authority를 유지한다.
+
 ### M3 wake supervisor 계약 기반 `8e8d09e`
 
 - `m3_wake_supervisor.*`에는 injected operations만 사용하는 test-only 감독 계약을
@@ -526,12 +547,11 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
    provision name, imported unclaimed character fixture 및 전역 uniqueness 확인이 있어야
    실행한다. game account와 Auth account의 분리는 유지한다.
 2. raw-U8 PlayerSnapshotV1 level proof, receipt-bound immutable projection, v2 closed journal
-   metadata input gate는 완료됐다. 다음 slice는 dedicated `mud_replay_reader` 경계의
-   non-persisting comparator다. immutable v1 artifact와 v2 journal의 exact identity bindings가
-   먼저 맞을 때만 raw U8을 비교해 `MATCH`, `MISMATCH_LEVEL`, `MISSING_V1`, `MISSING_V2`,
-   `IDENTITY_MISMATCH`, `INVALID_INPUT`을 반환한다. 별도 additive read-only DB view/function과
-   PG17 RED→GREEN E2E가 필요하며, writer RPC·payload·legacy file·runtime activation을 쓰지
-   않는다. production activation configuration은 그 다음 별도 gate다.
+   metadata input gate와 non-persisting pure comparator는 완료됐다. 다음 slice는 comparator에
+   주입할 dedicated `mud_replay_reader` PostgreSQL adapter다. command ID 기반 read-only query와
+   PG17 RED→GREEN E2E로 missing/duplicate/read failure 및 raw U8 0/42/255을 검증한다. writer
+   RPC·payload·legacy file·runtime activation을 쓰지 않으며, production activation configuration은
+   그 다음 별도 gate다.
 3. 실제 Linux helper transport/process supervision은 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
    Linux fake-ops/FD hygiene RED gate를 추가한 뒤 별도 slice로 시작한다. wake protocol
