@@ -34,8 +34,14 @@ def main() -> None:
         end = COMMAND.find("\nvoid ", start + 1)
         section = COMMAND[start:end if end >= 0 else len(COMMAND)]
         capture = section.index("onboarding_capture_activation_save_capability")
-        finish = section.index("onboarding_finish_activation")
-        expect(capture < finish, function + " captures before onboarding tuple clearing")
+        advance = section.index("onboarding_activation_lifecycle_advance")
+        expect(capture < advance,
+               function + " captures before activation lifecycle advance")
+    completion_start = COMMAND.index("static int onboarding_activation_complete")
+    completion_end = COMMAND.index("#ifdef USE_M3_RUNTIME", completion_start)
+    completion = COMMAND[completion_start:completion_end]
+    expect(completion.count("onboarding_finish_activation(fd)") == 2,
+           "tuple clearing occurs only after either activation completion path")
     expect("onboarding_activation_save_capability.o" in MAKEFILE,
            "the session seam is linked only into the legacy live object graph")
     legacy_consume = "onboarding_activation_save_capability_consume_for_explicit_save"
