@@ -479,12 +479,12 @@ character-save-journal-v2-player-store-static-test:
 
 character-save-journal-v2-player-store-test: character-save-journal-v2-player-store-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_test
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c player_recovery.c player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_test
 	/tmp/muhan-unit/character_save_journal_v2_player_store_test
 
 character-save-journal-v2-player-store-sanitizer-test: character-save-journal-v2-player-store-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c player_recovery.c player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
 
 character-save-journal-v2-player-store-live-observer-test: character-save-journal-v2-player-store-static-test
