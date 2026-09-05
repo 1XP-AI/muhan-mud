@@ -2,7 +2,13 @@ import { parseManifest, type Manifest } from './manifest.js'
 import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX, commandFromPlayerSnapshotV1Filename, parsePlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import { MAX_MANIFEST_BYTES, isManifestFilename } from './manifest.js'
 import { scanImmutableOutboxFiles } from './relay.js'
-import { classifyDatabaseError, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore } from './store.js'
+import {
+  classifyDatabaseError,
+  type PlayerSnapshotV1ArtifactFulfillmentOutcome,
+  type PlayerSnapshotV1ArtifactFulfillmentStore,
+  type PlayerSnapshotV1ArtifactStore,
+  type PlayerSnapshotV1LevelProjectionStore,
+} from './store.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver as PlayerSnapshotV1ReplayObserverContract } from './player-snapshot-v1-replay-observer.js'
 
 export interface PlayerSnapshotV1ArtifactRelaySummary {
@@ -25,6 +31,15 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   projectionConflict: number
   projectionRetryable: number
   projectionUnknown: number
+  fulfillmentDelivered?: number
+  fulfillmentFulfilled?: number
+  fulfillmentExactRetry?: number
+  fulfillmentAlreadyFulfilled?: number
+  fulfillmentNotEligible?: number
+  fulfillmentInvalid?: number
+  fulfillmentConflict?: number
+  fulfillmentRetryable?: number
+  fulfillmentUnknown?: number
 }
 
 export interface PlayerSnapshotV1ArtifactFilesystem {
@@ -78,6 +93,34 @@ function summary(): PlayerSnapshotV1ArtifactRelaySummary {
   }
 }
 
+function withFulfillmentCounters(result: PlayerSnapshotV1ArtifactRelaySummary): void {
+  result.fulfillmentDelivered = 0
+  result.fulfillmentFulfilled = 0
+  result.fulfillmentExactRetry = 0
+  result.fulfillmentAlreadyFulfilled = 0
+  result.fulfillmentNotEligible = 0
+  result.fulfillmentInvalid = 0
+  result.fulfillmentConflict = 0
+  result.fulfillmentRetryable = 0
+  result.fulfillmentUnknown = 0
+}
+
+function incrementFulfillmentOutcome(
+  result: PlayerSnapshotV1ArtifactRelaySummary,
+  outcome: PlayerSnapshotV1ArtifactFulfillmentOutcome,
+): void {
+  result.fulfillmentDelivered = (result.fulfillmentDelivered ?? 0) + 1
+  if (outcome === 'FULFILLED') result.fulfillmentFulfilled = (result.fulfillmentFulfilled ?? 0) + 1
+  else if (outcome === 'EXACT_RETRY') result.fulfillmentExactRetry = (result.fulfillmentExactRetry ?? 0) + 1
+  else if (outcome === 'ALREADY_FULFILLED') result.fulfillmentAlreadyFulfilled = (result.fulfillmentAlreadyFulfilled ?? 0) + 1
+  else result.fulfillmentNotEligible = (result.fulfillmentNotEligible ?? 0) + 1
+}
+
+function isFulfillmentOutcome(value: unknown): value is PlayerSnapshotV1ArtifactFulfillmentOutcome {
+  return value === 'FULFILLED' || value === 'EXACT_RETRY'
+    || value === 'ALREADY_FULFILLED' || value === 'NOT_ELIGIBLE'
+}
+
 /**
  * Relay header-wrapped .player-snapshot-v1 evidence using an artifact-aware
  * filesystem adapter. The paired legacy manifest is read only as canonical
@@ -88,9 +131,20 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   store: PlayerSnapshotV1ArtifactStore,
   filesystem: PlayerSnapshotV1ArtifactFilesystem = new NodePlayerSnapshotV1ArtifactFilesystem(),
   replayObserver: PlayerSnapshotV1ReplayObserverContract = new PlayerSnapshotV1ReplayObserver(undefined),
-  projectionStore?: PlayerSnapshotV1LevelProjectionStore,
+  fulfillmentStoreOrProjection?: PlayerSnapshotV1ArtifactFulfillmentStore | PlayerSnapshotV1LevelProjectionStore,
+  projectionStoreOrFulfillment?: PlayerSnapshotV1LevelProjectionStore | PlayerSnapshotV1ArtifactFulfillmentStore,
 ): Promise<PlayerSnapshotV1ArtifactRelaySummary> {
   const result = summary()
+  // Accept either side-effect ordering so existing projection callers remain
+  // source-compatible while fulfillment can be inserted before projection.
+  let fulfillmentStore: PlayerSnapshotV1ArtifactFulfillmentStore | undefined
+  let projectionStore: PlayerSnapshotV1LevelProjectionStore | undefined
+  for (const sideEffect of [fulfillmentStoreOrProjection, projectionStoreOrFulfillment]) {
+    if (!sideEffect) continue
+    if ('fulfillGameCharacterOnboardingSnapshotEligibility' in sideEffect) fulfillmentStore = sideEffect
+    else if ('recordPlayerSnapshotV1LevelProjection' in sideEffect) projectionStore = sideEffect
+  }
+  if (fulfillmentStore) withFulfillmentCounters(result)
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>
   try { files = await filesystem.scan(outboxPath) }
   catch { result.ioError++; return result }
@@ -122,6 +176,21 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
       else if (outcome === 'EXACT_RETRY') { result.exactRetry++; result.delivered++; artifactSettled = true }
       else result.unknown++
     } catch (error) { result[classifyDatabaseError(error)]++ }
+    if (artifactSettled && fulfillmentStore) {
+      try {
+        const outcome = await fulfillmentStore.fulfillGameCharacterOnboardingSnapshotEligibility(
+          artifact.characterId, artifact.commandId,
+        )
+        if (!isFulfillmentOutcome(outcome)) throw new Error('unexpected database fulfillment outcome')
+        incrementFulfillmentOutcome(result, outcome)
+      } catch (error) {
+        const category = classifyDatabaseError(error)
+        if (category === 'invalid') result.fulfillmentInvalid = (result.fulfillmentInvalid ?? 0) + 1
+        else if (category === 'conflict') result.fulfillmentConflict = (result.fulfillmentConflict ?? 0) + 1
+        else if (category === 'retryable') result.fulfillmentRetryable = (result.fulfillmentRetryable ?? 0) + 1
+        else result.fulfillmentUnknown = (result.fulfillmentUnknown ?? 0) + 1
+      }
+    }
     // Immutable artifact evidence is authoritative; this projection is only a
     // best-effort migration-190 side effect after that evidence has settled.
     if (!artifactSettled || !projectionStore) continue

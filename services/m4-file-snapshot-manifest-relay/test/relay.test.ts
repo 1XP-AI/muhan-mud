@@ -11,7 +11,7 @@ import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../s
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
-import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
+import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
 const second = '22222222-2222-4222-8222-222222222222'
@@ -540,6 +540,111 @@ test('PlayerSnapshotV1 postgres adapter parameterizes the immutable artifact rec
     parsed.characterId, parsed.commandId, parsed.receiptRequestSha256, parsed.sourcePostSha256,
     parsed.sourceOctets, parsed.snapshotFormat, parsed.snapshotSha256, parsed.snapshotOctets, parsed.payload,
   ])
+})
+
+test('PlayerSnapshotV1 postgres adapter fulfills eligibility with only character and artifact command identities', async () => {
+  const outcomes: Array<string | undefined> = ['FULFILLED', 'EXACT_RETRY', 'ALREADY_FULFILLED', 'NOT_ELIGIBLE', 'UNKNOWN', undefined]
+  for (const expected of outcomes) {
+    const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+    const client: PgClient = {
+      query: async <Row>(sql: string, values?: readonly unknown[]) => {
+        queries.push({ sql, values })
+        return { rows: sql.startsWith('select outcome') && expected ? [{ outcome: expected } as Row] : [] }
+      },
+      release: () => undefined,
+    }
+    const pool: PgPool = { connect: async () => client, end: async () => undefined }
+    const store = new PostgresPlayerSnapshotV1ArtifactStore('postgresql://mud_writer_login@localhost/postgres', pool)
+    const operation = store as PlayerSnapshotV1ArtifactFulfillmentStore
+    if (expected && expected !== 'UNKNOWN') {
+      assert.equal(await operation.fulfillGameCharacterOnboardingSnapshotEligibility(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', first,
+      ), expected as PlayerSnapshotV1ArtifactFulfillmentOutcome)
+    } else {
+      await assert.rejects(() => operation.fulfillGameCharacterOnboardingSnapshotEligibility(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', first,
+      ), /unexpected database fulfillment outcome/)
+    }
+    assert.deepEqual(queries.map((query) => query.sql), [
+      'set role mud_writer',
+      'select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility($1::uuid, $2::uuid)',
+    ])
+    assert.deepEqual(queries[1]?.values, ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', first])
+  }
+})
+
+test('fulfillment runs only after a recorded artifact and accepts every terminal outcome', async () => {
+  const manifest = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }],
+  }
+  const nonRecordCalls: string[] = []
+  const nonRecordFulfillment: PlayerSnapshotV1ArtifactFulfillmentStore = {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => { nonRecordCalls.push('fulfillment'); return 'FULFILLED' },
+  }
+  const nonRecordResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', {
+    recordPlayerSnapshotV1Artifact: async () => { nonRecordCalls.push('artifact'); throw Object.assign(new Error('conflict'), { code: 'P0001' }) },
+  }, filesystem, undefined, nonRecordFulfillment)
+  assert.deepEqual(nonRecordCalls, ['artifact'])
+  assert.equal(nonRecordResult.fulfillmentDelivered, 0)
+
+  for (const outcome of ['FULFILLED', 'EXACT_RETRY', 'ALREADY_FULFILLED', 'NOT_ELIGIBLE'] as const) {
+    const calls: string[] = []
+    const fulfillment: PlayerSnapshotV1ArtifactFulfillmentStore = {
+      fulfillGameCharacterOnboardingSnapshotEligibility: async (characterId, commandId) => {
+        calls.push(`${characterId}:${commandId}`)
+        return outcome
+      },
+    }
+    const projection: PlayerSnapshotV1LevelProjectionStore = {
+      recordPlayerSnapshotV1LevelProjection: async () => { calls.push('projection'); return 'RECORDED' },
+    }
+    const result = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', {
+      recordPlayerSnapshotV1Artifact: async () => { calls.unshift('artifact'); return 'RECORDED' },
+    }, filesystem, undefined, fulfillment, projection)
+    assert.deepEqual(calls, ['artifact', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:' + first, 'projection'])
+    assert.equal(result.fulfillmentDelivered, 1)
+    assert.equal(result.fulfillmentFulfilled, outcome === 'FULFILLED' ? 1 : 0)
+    assert.equal(result.fulfillmentExactRetry, outcome === 'EXACT_RETRY' ? 1 : 0)
+    assert.equal(result.fulfillmentAlreadyFulfilled, outcome === 'ALREADY_FULFILLED' ? 1 : 0)
+    assert.equal(result.fulfillmentNotEligible, outcome === 'NOT_ELIGIBLE' ? 1 : 0)
+  }
+})
+
+test('repeat artifact delivery remains idempotent while retrying fulfillment failures', async () => {
+  const manifest = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const originalArtifact = Buffer.from(artifact)
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: manifest }],
+  }
+  let artifactAttempts = 0
+  let fulfillmentAttempts = 0
+  const calls: string[] = []
+  const resultStore: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => {
+      artifactAttempts++
+      calls.push(`artifact:${artifactAttempts}`)
+      return artifactAttempts === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+  }
+  const fulfillment: PlayerSnapshotV1ArtifactFulfillmentStore = {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => {
+      fulfillmentAttempts++
+      calls.push(`fulfillment:${fulfillmentAttempts}`)
+      if (fulfillmentAttempts === 1) throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' })
+      return 'ALREADY_FULFILLED'
+    },
+  }
+  const firstResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', resultStore, filesystem, undefined, fulfillment)
+  const secondResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', resultStore, filesystem, undefined, fulfillment)
+  assert.deepEqual(calls, ['artifact:1', 'fulfillment:1', 'artifact:2', 'fulfillment:2'])
+  assert.equal(firstResult.delivered, 1)
+  assert.equal(firstResult.fulfillmentRetryable, 1)
+  assert.equal(secondResult.exactRetry, 1)
+  assert.equal(secondResult.fulfillmentAlreadyFulfilled, 1)
+  assert.deepEqual(artifact, originalArtifact)
 })
 
 test('PlayerSnapshotV1 raw-U8 level projection adapter uses SET ROLE and one parameterized migration-190 call', async () => {

@@ -16,9 +16,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly 
   if (!isAbsolute(outboxPath)) throw new Error('invalid relay configuration')
   const store = new PostgresPlayerSnapshotV1ArtifactStore(assertDatabaseUrl(env.DATABASE_URL))
   try {
-    const result = await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, undefined, playerSnapshotV1ReplayObserverFromEnvironment(env))
+    const result = await relayPlayerSnapshotV1ArtifactsOnce(
+      outboxPath, store, undefined, playerSnapshotV1ReplayObserverFromEnvironment(env), store,
+    )
     process.stdout.write(`${JSON.stringify(result)}\n`)
-    return result.invalid > 0 || result.conflict > 0 || result.ioError > 0 || result.retryable > 0 || result.unknown > 0 ? 1 : 0
+    return result.invalid > 0 || result.conflict > 0 || result.ioError > 0 || result.retryable > 0 || result.unknown > 0
+      || (result.fulfillmentInvalid ?? 0) > 0 || (result.fulfillmentConflict ?? 0) > 0
+      || (result.fulfillmentRetryable ?? 0) > 0 || (result.fulfillmentUnknown ?? 0) > 0 ? 1 : 0
   } finally { await store.close?.() }
 }
 

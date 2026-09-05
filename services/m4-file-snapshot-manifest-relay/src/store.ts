@@ -16,6 +16,23 @@ export interface PlayerSnapshotV1ArtifactStore {
   close?(): Promise<void>
 }
 
+export type PlayerSnapshotV1ArtifactFulfillmentOutcome =
+  | 'FULFILLED'
+  | 'EXACT_RETRY'
+  | 'ALREADY_FULFILLED'
+  | 'NOT_ELIGIBLE'
+
+/**
+ * The relay supplies only the immutable artifact's character and command
+ * identities. The database resolves correlation, actor, and mode itself.
+ */
+export interface PlayerSnapshotV1ArtifactFulfillmentStore {
+  fulfillGameCharacterOnboardingSnapshotEligibility(
+    characterId: string,
+    artifactCommandId: string,
+  ): Promise<PlayerSnapshotV1ArtifactFulfillmentOutcome>
+}
+
 /**
  * Raw-U8 source metadata already validated by the PlayerSnapshotV1 artifact
  * parser. This is a best-effort, non-authoritative projection input only.
@@ -92,7 +109,7 @@ export class PostgresManifestStore implements ManifestStore {
 }
 
 /** Direct PostgreSQL adapter for immutable PlayerSnapshotV1 evidence only. */
-export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1ArtifactStore {
+export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1ArtifactStore, PlayerSnapshotV1ArtifactFulfillmentStore {
   private readonly pool: PgPool
 
   constructor(databaseUrl: string, pool?: PgPool) {
@@ -111,6 +128,26 @@ export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1Ar
       )
       const outcome = result.rows[0]?.outcome
       if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
+
+  async fulfillGameCharacterOnboardingSnapshotEligibility(
+    characterId: string,
+    artifactCommandId: string,
+  ): Promise<PlayerSnapshotV1ArtifactFulfillmentOutcome> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility($1::uuid, $2::uuid)',
+        [characterId, artifactCommandId],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'FULFILLED' && outcome !== 'EXACT_RETRY'
+        && outcome !== 'ALREADY_FULFILLED' && outcome !== 'NOT_ELIGIBLE') {
+        throw new Error('unexpected database fulfillment outcome')
+      }
       return outcome
     } finally { client.release() }
   }
