@@ -248,8 +248,8 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
   })
   onboardingWebSocketServer.on('connection', (ws, request) => {
     activeConnections += 1
-    const session = new OnboardingSession(ws, request, config, authenticator, characterAuthorizer, onboardingAuthorizer, connectTcp, logger,
-      now, dependencies.randomBytes, dependencies.randomUuid ?? randomUUID, dependencies.timers ?? systemTimers, () => { sessions.delete(session); activeConnections -= 1 })
+    const session = new OnboardingSession(ws, request, config, authenticator, onboardingAuthorizer, connectTcp, logger,
+      now, dependencies.randomBytes, dependencies.timers ?? systemTimers, () => { sessions.delete(session); activeConnections -= 1 })
     sessions.add(session)
     allSessions.add(session)
   })
@@ -657,21 +657,20 @@ class OnboardingSession {
   private connectTimer?: NodeJS.Timeout
   private admissionTimer?: NodeJS.Timeout
   private expiryTimer?: NodeJS.Timeout
-  private renewalTimer?: NodeJS.Timeout
   private actorUserId?: string
   private correlationId?: string
   private mode?: 'provision' | 'claim'
   private characterId?: string
-  private reservedLegacyNameKey?: string
-  private tokenExpiresAtMs = 0
-  private sessionId?: string
-  private leaseMayExist = false
   private unreservedIntentMayExist = false
   private unreservedCancellationStarted = false
   private controlPhase: 'admission' | 'provision-reserve' | 'provision-saved' | 'claim-challenge' | 'claim-allow' | 'done' = 'admission'
   private claimChallenge?: { characterId: string; legacyNameKey: string; fileSha256: string; allowExpiresAtMs: number }
   private controlQueue: Promise<void> = Promise.resolve()
   private paused = false
+  // Once C has provided the success evidence that starts finalization, this
+  // one-shot connection carries controls only. It must never become a game
+  // relay while the browser is being handed back to normal /ws admission.
+  private completionControlOnly = false
   private closed = false
   private failed = false
   private normalClosing = false
@@ -679,11 +678,10 @@ class OnboardingSession {
 
   constructor(
     private readonly ws: WebSocket, private readonly request: IncomingMessage, private readonly config: GatewayConfig,
-    private readonly authenticator: Authenticator, private readonly characterAuthorizer: CharacterAuthorizer,
-    private readonly authorizer: OnboardingAuthorizer,
+    private readonly authenticator: Authenticator, private readonly authorizer: OnboardingAuthorizer,
     private readonly connectTcp: (host: string, port: number) => Socket,
     private readonly logger: Pick<Console, 'info' | 'warn' | 'error'>, private readonly now: () => number,
-    private readonly randomBytes: ((size: number) => Buffer) | undefined, private readonly randomUuid: () => string,
+    private readonly randomBytes: ((size: number) => Buffer) | undefined,
     private readonly timers: GatewayTimers,
     private readonly onClosed: () => void,
   ) {
@@ -736,7 +734,7 @@ class OnboardingSession {
         const identity = await this.authenticator.verify(frame.accessToken)
         if (this.closed || !isStrictLowerUuid(identity.sub) || identity.expiresAtMs <= this.now()) throw new AuthenticationError('invalid onboarding identity')
         const expiresAt = new Date(Math.min(identity.expiresAtMs, this.now() + 15 * 60_000))
-        this.actorUserId = identity.sub; this.correlationId = frame.correlationId; this.mode = frame.mode; this.tokenExpiresAtMs = identity.expiresAtMs
+        this.actorUserId = identity.sub; this.correlationId = frame.correlationId; this.mode = frame.mode
         await this.authorizer.begin({ actorUserId: identity.sub, correlationId: frame.correlationId, mode: frame.mode, expiresAt })
         this.unreservedIntentMayExist = true
         if (this.closed || this.ws.readyState !== WebSocket.OPEN) { this.cancelUnreservedIntent(); return }
@@ -771,29 +769,31 @@ class OnboardingSession {
     })
   }
   private onMudData(data: Buffer): void {
+    if (this.closed || this.state === 'closed') return
     if (this.state === 'ready') {
       this.relayMudData(data)
       return
     }
-    let result: { controls: OnboardingControl[], game: Buffer[] }
+    let result: ReturnType<OnboardingControlDemultiplexer['push']>
     try { result = this.controls.push(data) } catch { this.fail(CLOSE_INTERNAL, 'invalid MUD onboarding control'); return }
-    if (result.controls.length === 0) {
-      // A reserved control prefix may be split across TCP packets. The
-      // demultiplexer retains that prefix and deliberately returns no bytes.
-      if (result.game.length === 0) return
-      if (!this.canRelayGameBytes()) return this.fail(CLOSE_INTERNAL, 'unexpected MUD game bytes')
-      for (const game of result.game) this.relayMudData(game)
-      return
-    }
-    // Serialize controls/RPCs and defer a coalesced trailing game fragment until
-    // the state transition that permits it has committed.
+    // A reserved control prefix may be split across TCP packets. The
+    // demultiplexer retains that prefix and deliberately returns no bytes.
+    if (result.ordered.length === 0) return
+    // Preserve C byte ordering here: game bytes preceding a completion control
+    // keep their ordinary behavior, while bytes following it are discarded.
+    // Queue game-only events too, so a later TCP event cannot overtake a SAVED
+    // or VERIFIED control whose finalizer is still pending.
     this.controlQueue = this.track(this.controlQueue.then(async () => {
-      for (const event of result.controls) await this.onControl(event)
-      if (result.game.length) {
-        if (!this.canRelayGameBytes()) return this.fail(CLOSE_INTERNAL, 'unexpected MUD game bytes')
-        for (const game of result.game) this.relayMudData(game)
+      for (const item of result.ordered) {
+        if (item.type === 'control') await this.onControl(item.control)
+        else this.handleOnboardingGameBytes(item.data)
       }
     }).catch(() => this.fail(CLOSE_INTERNAL, 'invalid MUD onboarding control')))
+  }
+  private handleOnboardingGameBytes(game: Buffer): void {
+    if (this.completionControlOnly) return
+    if (!this.canRelayGameBytes()) { this.fail(CLOSE_INTERNAL, 'unexpected MUD game bytes'); return }
+    this.relayMudData(game)
   }
   private canRelayGameBytes(): boolean {
     return !this.paused && (this.state === 'awaiting-control' || this.state === 'ready')
@@ -821,11 +821,12 @@ class OnboardingSession {
         // this point on, only provisioning reconciliation may change DB state.
         this.unreservedIntentMayExist = false
         const result = await this.authorizer.reserve({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, worldId: 'muhan', legacyName })
-        this.characterId = result.characterId; this.reservedLegacyNameKey = result.legacyNameKey
+        this.characterId = result.characterId
         await this.writeControl(`MUD1O RESERVED|${result.characterId}\n`); this.resumeInput(); return
       }
       if (this.mode === 'provision' && this.controlPhase === 'provision-saved' && event.type === 'SAVED') {
         if (event.characterId !== this.characterId) throw new OnboardingProtocolError()
+        this.completionControlOnly = true
         this.pauseInput()
         const finalizeRequest = { actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: event.characterId, fileSha256: event.fileSha256, storageFormat: event.storageFormat }
         let result: { characterId: string }
@@ -837,29 +838,18 @@ class OnboardingSession {
         }
         if (this.closed) return
         if (result.characterId !== event.characterId) throw new OnboardingProtocolError()
-        const leaseExpiryMs = Math.min(this.tokenExpiresAtMs, this.now() + LEASE_TTL_MS)
-        if (leaseExpiryMs <= this.now()) throw new AuthenticationError('token has expired')
-        const sessionId = this.randomUuid()
-        if (!isStrictLowerUuid(sessionId) || !this.reservedLegacyNameKey) throw new CharacterAuthorizationError()
-        this.sessionId = sessionId
-        this.leaseMayExist = true
-        const leasedCharacter = await this.characterAuthorizer.beginSession({
-          actorUserId: this.actorUserId!,
-          characterId: event.characterId,
-          sessionId,
-          gatewayInstanceId: this.config.gatewayInstanceId!,
-          expiresAt: new Date(leaseExpiryMs),
-        })
-        if (this.closed) { this.releaseLease(); return }
-        if (leasedCharacter.legacyNameKey !== this.reservedLegacyNameKey) throw new CharacterAuthorizationError()
         // Do not tell the browser that the character is live until the exact
         // COMMIT control has been accepted by the C socket write path.
         await this.writeControl('MUD1O COMMIT\n')
         if (this.closed) return
-        this.controlPhase = 'done'; this.state = 'ready'; this.resumeInput(); this.scheduleLeaseRenewal()
-        const retainedGame = this.controls.drainGame()
-        if (retainedGame.length) this.relayMudData(retainedGame)
+        // Provisioning owns only the one-shot C wizard transaction. The
+        // refreshed browser roster must re-enter through /ws, where the
+        // normal owner-active lease creates the normal MUD1 admission ticket.
+        this.controlPhase = 'done'; this.state = 'closed'
         this.sendText({ type: 'provisioned', characterId: event.characterId })
+        closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
+        this.normalClosing = true
+        this.mud?.end()
         return
       }
       if (this.mode === 'claim' && this.controlPhase === 'claim-challenge' && event.type === 'CHALLENGE') {
@@ -886,6 +876,7 @@ class OnboardingSession {
         const legacyNameKey = Buffer.from(event.nameHex, 'hex').toString('utf8')
         if (Buffer.from(legacyNameKey, 'utf8').toString('hex') !== event.nameHex || legacyNameKey !== challenge.legacyNameKey || event.fileSha256 !== challenge.fileSha256) throw new OnboardingProtocolError()
         this.controlPhase = 'done'
+        this.completionControlOnly = true
         this.pauseInput()
         // A claim RPC is an irreversible ownership boundary when its transport
         // outcome is indeterminate. Retry the exact request once so a committed
@@ -902,7 +893,17 @@ class OnboardingSession {
         }
         if (this.closed) return
         if (result.characterId !== challenge.characterId) throw new OnboardingProtocolError()
-        await this.writeControl(`MUD1O CLAIMED|${result.characterId}\n`); this.sendText({ type: 'claimed', characterId: result.characterId }); closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete'); this.mud?.end(); return
+        await this.writeControl(`MUD1O CLAIMED|${result.characterId}\n`)
+        // end() can synchronously emit C error/end. Mark the one-shot
+        // onboarding connection terminal before invoking it so those events
+        // cannot turn a completed claim into a failed session.
+        this.controlPhase = 'done'
+        this.state = 'closed'
+        this.normalClosing = true
+        this.sendText({ type: 'claimed', characterId: result.characterId })
+        closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
+        this.mud?.end()
+        return
       }
       if (event.type === 'ERR') return this.fail(CLOSE_POLICY, 'onboarding failed')
       throw new OnboardingProtocolError()
@@ -935,7 +936,7 @@ class OnboardingSession {
     closeWhenDue()
   }
   private fail(code: number, reason: string): void { if (this.closed || this.failed) return; this.failed = true; this.sendText({ type: 'error', reason }); closeSocket(this.ws, code, reason); this.mud?.destroy() }
-  private finish(): void { if (this.closed) return; this.closed = true; this.state = 'closed'; this.pendingMessages.length = 0; this.pendingMessageBytes = 0; this.timers.clearTimeout(this.authTimer); if (this.connectTimer) this.timers.clearTimeout(this.connectTimer); if (this.admissionTimer) this.timers.clearTimeout(this.admissionTimer); if (this.expiryTimer) this.timers.clearTimeout(this.expiryTimer); if (this.renewalTimer) this.timers.clearTimeout(this.renewalTimer); this.mud?.destroy(); this.cancelUnreservedIntent(); this.releaseLease(); this.onClosed() }
+  private finish(): void { if (this.closed) return; this.closed = true; this.state = 'closed'; this.pendingMessages.length = 0; this.pendingMessageBytes = 0; this.timers.clearTimeout(this.authTimer); if (this.connectTimer) this.timers.clearTimeout(this.connectTimer); if (this.admissionTimer) this.timers.clearTimeout(this.admissionTimer); if (this.expiryTimer) this.timers.clearTimeout(this.expiryTimer); this.mud?.destroy(); this.cancelUnreservedIntent(); this.onClosed() }
   private cancelUnreservedIntent(attempt = 0): void {
     if (!this.unreservedIntentMayExist || this.unreservedCancellationStarted || !this.actorUserId || !this.correlationId) return
     this.unreservedCancellationStarted = true
@@ -956,42 +957,6 @@ class OnboardingSession {
       this.unreservedCancellationStarted = false
       return this.cancelUnreservedAttempt(attempt + 1)
     }
-  }
-  private releaseLease(attempt = 0): void {
-    if (!this.leaseMayExist || !this.sessionId) return
-    void this.track(this.releaseLeaseAttempt(attempt)).catch(() => undefined)
-  }
-
-  private async releaseLeaseAttempt(attempt: number): Promise<void> {
-    try {
-      await this.characterAuthorizer.endSession(this.sessionId!, this.config.gatewayInstanceId!)
-    } catch {
-      const delay = LEASE_RELEASE_RETRY_DELAYS_MS[attempt]
-      if (delay === undefined) { this.logger.warn('character session lease release failed after bounded retries'); return }
-      await new Promise<void>((resolve) => {
-        const timer = this.timers.setTimeout(resolve, delay)
-        unrefTimer(timer)
-      })
-      return this.releaseLeaseAttempt(attempt + 1)
-    }
-  }
-  private scheduleLeaseRenewal(): void {
-    const renew = async () => {
-      if (this.closed || this.state !== 'ready' || !this.sessionId || !this.actorUserId || !this.characterId || !this.reservedLegacyNameKey) return
-      const expiresAtMs = Math.min(this.tokenExpiresAtMs, this.now() + LEASE_TTL_MS)
-      if (expiresAtMs - this.now() < LEASE_MIN_REMAINING_MS) { this.fail(CLOSE_TOKEN_EXPIRED, 'token expires too soon to renew session'); return }
-      try {
-        const renewed = await this.characterAuthorizer.renewSession({ sessionId: this.sessionId, gatewayInstanceId: this.config.gatewayInstanceId!, expiresAt: new Date(expiresAtMs) })
-        if (this.closed) { this.releaseLease(); return }
-        if (renewed.sessionId !== this.sessionId || renewed.actorUserId !== this.actorUserId || renewed.characterId !== this.characterId ||
-          renewed.legacyNameKey !== this.reservedLegacyNameKey || renewed.lifecycle !== 'active' ||
-          renewed.expiresAtMs < expiresAtMs - 1_000 || renewed.expiresAtMs > expiresAtMs + 1_000 || renewed.expiresAtMs <= this.now()) {
-          throw new CharacterAuthorizationError()
-        }
-      } catch { this.fail(CLOSE_INTERNAL, 'character session renewal failed'); return }
-      this.renewalTimer = this.timers.setTimeout(() => { void this.track(renew()).catch(() => undefined) }, LEASE_RENEW_INTERVAL_MS); unrefTimer(this.renewalTimer)
-    }
-    this.renewalTimer = this.timers.setTimeout(() => { void this.track(renew()).catch(() => undefined) }, LEASE_RENEW_INTERVAL_MS); unrefTimer(this.renewalTimer)
   }
 }
 

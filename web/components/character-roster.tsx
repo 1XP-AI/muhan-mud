@@ -79,10 +79,15 @@ export function CharacterRoster({
             </p>
           </>
         ) : (
-          <p>
-            운영자가 캐릭터를 연결하거나 claim 단계를 열어야 이곳에 표시됩니다.
-            지금은 게임 데이터를 변경할 수 없습니다.
-          </p>
+          <>
+            <p>
+              이 서버에서는 아직 웹 캐릭터 연결을 직접 시작할 수 없습니다.
+              이미 연결을 요청했다면 목록을 다시 확인하세요.
+            </p>
+            <button className="secondary-action" onClick={onRetry} type="button">
+              캐릭터 목록 다시 확인
+            </button>
+          </>
         )}
       </div>
     );

@@ -13,6 +13,12 @@ import {
   useCharacterRoster,
 } from "@/lib/character-roster";
 import { shouldOpenGatewaySocket } from "@/lib/gateway-contract";
+import {
+  completeOnboardingHandoff,
+  resolvePlayAdmission,
+  type OnboardingCompletion,
+  type PlayAdmissionHandoff,
+} from "@/lib/play-admission";
 import { getBrowserSupabase } from "@/lib/supabase";
 import { useLobbyPresence } from "@/lib/use-lobby-presence";
 
@@ -71,6 +77,8 @@ export function MudPortal({ configResult }: MudPortalProps) {
     mode: OnboardingMode;
     correlationId: string;
   } | null>(null);
+  const [onboardingHandoff, setOnboardingHandoff] =
+    useState<PlayAdmissionHandoff | null>(null);
   const presence = useLobbyPresence(supabase, session);
   const roster = useCharacterRoster(supabase, session?.user.id ?? null);
 
@@ -105,7 +113,22 @@ export function MudPortal({ configResult }: MudPortalProps) {
     setActiveOwnerId(null);
     setGatewayStatus(initialGatewayStatus);
     setOnboardingFlow(null);
+    setOnboardingHandoff(null);
   }, [session?.user.id]);
+
+  useEffect(() => {
+    const handoff = resolvePlayAdmission(
+      session?.user.id ?? "",
+      roster.status,
+      roster.characters,
+      onboardingHandoff,
+    );
+    if (!handoff) return;
+
+    setActiveCharacterId(handoff.characterId);
+    setActiveOwnerId(handoff.ownerUserId);
+    setOnboardingHandoff(null);
+  }, [onboardingHandoff, roster.characters, roster.status, session?.user.id]);
 
   const onGatewayStatus = useCallback((status: GatewayStatus) => {
     setGatewayStatus(status);
@@ -124,11 +147,23 @@ export function MudPortal({ configResult }: MudPortalProps) {
     roster.retry();
   }, [roster.retry]);
 
-  const provisionedOnboarding = useCallback((_characterId: string) => {
-    // Keep the onboarding terminal mounted; the active character appears on
-    // the next roster fetch when the same game connection eventually ends.
+  const completedOnboarding = useCallback((
+    completion: OnboardingCompletion,
+    characterId: string,
+  ) => {
+    const ownerUserId = session?.user.id;
+    if (!ownerUserId) return;
+
+    setOnboardingHandoff((existing) =>
+      completeOnboardingHandoff(ownerUserId, characterId, completion, existing),
+    );
+    setOnboardingFlow(null);
     roster.retry();
-  }, [roster.retry]);
+  }, [roster.retry, session?.user.id]);
+
+  const provisionedOnboarding = useCallback((characterId: string) => {
+    completedOnboarding("provisioned", characterId);
+  }, [completedOnboarding]);
 
   const terminateOnboarding = useCallback(() => {
     setOnboardingFlow(null);
@@ -138,13 +173,9 @@ export function MudPortal({ configResult }: MudPortalProps) {
     roster.retry();
   }, [roster.retry]);
 
-  const claimOnboarding = useCallback(() => {
-    setOnboardingFlow(null);
-    setActiveCharacterId(null);
-    setActiveOwnerId(null);
-    setGatewayStatus(initialGatewayStatus);
-    roster.retry();
-  }, [roster.retry]);
+  const claimOnboarding = useCallback((characterId: string) => {
+    completedOnboarding("claimed", characterId);
+  }, [completedOnboarding]);
 
   if (!configResult.config || !supabase) {
     return (

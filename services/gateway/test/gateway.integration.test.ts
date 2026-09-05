@@ -197,7 +197,7 @@ test('normal MUD TCP end after admission sends closed without an error and relea
   await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
 })
 
-test('non-owner authorization rejection never opens MUD TCP and releases the exact attempted session', async (t) => {
+test('an authenticated account without an owned active character never reaches MUD ticket admission', async (t) => {
   let mudConnections = 0
   const mud = createServer(() => { mudConnections += 1 })
   mud.listen(0, '127.0.0.1')
@@ -209,7 +209,7 @@ test('non-owner authorization rejection never opens MUD TCP and releases the exa
   const { ws, messages } = await openWs(gateway)
   ws.send(authFrame())
   await once(ws, 'close')
-  assert.equal(mudConnections, 0)
+  assert.equal(mudConnections, 0, 'a rejected owner-active lease must prevent ticket issuance')
   assert.ok(messages.some(({ data }) => Buffer.from(data).toString().includes('authentication or character authorization failed')))
   await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
 })

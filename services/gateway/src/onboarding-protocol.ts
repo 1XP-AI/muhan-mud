@@ -201,9 +201,9 @@ export class OnboardingControlDemultiplexer {
   private pending = Buffer.alloc(0)
   private readonly controls = new OnboardingControlLineParser()
 
-  push(chunk: Uint8Array): { controls: OnboardingControl[], game: Buffer[] } {
+  push(chunk: Uint8Array): { controls: OnboardingControl[], game: Buffer[], ordered: Array<{ type: 'control', control: OnboardingControl } | { type: 'game', data: Buffer }> } {
     this.pending = Buffer.concat([this.pending, Buffer.from(chunk)])
-    const output: { controls: OnboardingControl[], game: Buffer[] } = { controls: [], game: [] }
+    const output: { controls: OnboardingControl[], game: Buffer[], ordered: Array<{ type: 'control', control: OnboardingControl } | { type: 'game', data: Buffer }> } = { controls: [], game: [], ordered: [] }
     while (this.pending.length > 0) {
       const index = this.pending.indexOf('MUD1O ', 0, 'ascii')
       if (index < 0) {
@@ -212,15 +212,22 @@ export class OnboardingControlDemultiplexer {
           if (this.pending.subarray(this.pending.length - size).equals(Buffer.from('MUD1O '.slice(0, size), 'ascii'))) { retain = size; break }
         }
         const game = this.pending.subarray(0, this.pending.length - retain)
-        if (game.length) output.game.push(game)
+        if (game.length) { output.game.push(game); output.ordered.push({ type: 'game', data: game }) }
         this.pending = this.pending.subarray(this.pending.length - retain)
         break
       }
-      if (index > 0) { output.game.push(this.pending.subarray(0, index)); this.pending = this.pending.subarray(index); continue }
+      if (index > 0) {
+        const game = this.pending.subarray(0, index)
+        output.game.push(game); output.ordered.push({ type: 'game', data: game })
+        this.pending = this.pending.subarray(index)
+        continue
+      }
       const newline = this.pending.indexOf(0x0a)
       if (newline < 0) { if (this.pending.length > MAX_CONTROL_LINE_BYTES) fail(); break }
       const line = this.pending.subarray(0, newline + 1)
-      output.controls.push(...this.controls.push(line))
+      const controls = this.controls.push(line)
+      output.controls.push(...controls)
+      for (const control of controls) output.ordered.push({ type: 'control', control })
       this.pending = this.pending.subarray(newline + 1)
     }
     return output

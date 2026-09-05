@@ -24,7 +24,7 @@ interface OnboardingTerminalProps {
   onCancel: () => void;
   onProvisioned: (characterId: string) => void;
   onTerminated: () => void;
-  onClaimed: () => void;
+  onClaimed: (characterId: string) => void;
 }
 
 const textEncoder = new TextEncoder();
@@ -200,9 +200,10 @@ export function OnboardingTerminal({
           break;
         }
         case "provisioned": {
-          // Gateway keeps this game connection open after provisioning. Record
-          // success and refresh the roster while leaving xterm mounted.
+          // Provisioning has committed its C-side wizard transaction. Return
+          // to the refreshed roster for the normal Gateway admission socket.
           phaseRef.current = "provisioned";
+          settledRef.current = true;
           readyRef.current = true;
           setReady(true);
           setMobileLine("");
@@ -222,7 +223,7 @@ export function OnboardingTerminal({
           phaseRef.current = "ready";
           settledRef.current = true;
           clearInputState();
-          onClaimed();
+          onClaimed(decision.characterId);
           break;
         }
         case "terminated":

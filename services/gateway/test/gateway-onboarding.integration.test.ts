@@ -91,6 +91,12 @@ class CommitCallbackMudSocket extends EventEmitter {
   readonly writes: Buffer[] = []
   private commitCallback?: (error?: Error | null) => void
 
+  constructor(
+    private readonly savedLeadingGame = Buffer.alloc(0),
+    private readonly savedTrailingGame = Buffer.alloc(0),
+    private readonly preAdmissionGame = Buffer.alloc(0),
+  ) { super() }
+
   connect(): void { queueMicrotask(() => this.emit('connect')) }
 
   write(data: Uint8Array | string, callback?: (error?: Error | null) => void): boolean {
@@ -99,7 +105,7 @@ class CommitCallbackMudSocket extends EventEmitter {
     const text = frame.toString()
     if (text.startsWith('MUD1O|P|')) {
       callback?.()
-      queueMicrotask(() => this.emit('data', Buffer.from('MUD1O OK\n이름? ')))
+      queueMicrotask(() => this.emit('data', this.preAdmissionGame.length ? this.preAdmissionGame : Buffer.from('MUD1O OK\n이름? ')))
     } else if (text === 'Hero\n') {
       callback?.()
       queueMicrotask(() => this.emit('data', Buffer.from('MUD1O RESERVE|4865726f\n')))
@@ -108,7 +114,9 @@ class CommitCallbackMudSocket extends EventEmitter {
       setImmediate(() => this.emit('data', Buffer.from('성별? ')))
     } else if (text === 'm\n') {
       callback?.()
-      queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O SAVED|${character}|${'f'.repeat(64)}|player-v1\n`)))
+      queueMicrotask(() => this.emit('data', Buffer.concat([
+        this.savedLeadingGame, Buffer.from(`MUD1O SAVED|${character}|${'f'.repeat(64)}|player-v1\n`), this.savedTrailingGame,
+      ])))
     } else if (text === 'MUD1O COMMIT\n') {
       this.commitCallback = callback
     } else {
@@ -127,17 +135,56 @@ class CommitCallbackMudSocket extends EventEmitter {
   destroy(): this { this.destroyed = true; return this }
 }
 
-class DeferredLeaseAuthorizer extends RecordingOnboardingAuthorizer {
-  private releaseGate!: () => void
-  private readonly gate = new Promise<void>((resolve) => { this.releaseGate = resolve })
+class ClaimCompletionRaceMudSocket extends EventEmitter {
+  destroyed = false
+  destroyDuringEnd = 0
+  readonly writes: Buffer[] = []
+  private stage = 0
+  private ending = false
 
-  override async beginSession(request: BeginCharacterSessionRequest): Promise<AuthorizedCharacter> {
-    this.leaseBegins.push(request)
-    await this.gate
-    return { legacyNameKey: 'Hero' }
+  connect(): void { queueMicrotask(() => this.emit('connect')) }
+
+  write(data: Uint8Array | string, callback?: (error?: Error | null) => void): boolean {
+    const frame = Buffer.from(data)
+    const text = frame.toString()
+    this.writes.push(frame)
+    if (text.startsWith('MUD1O|C|')) {
+      this.stage = 1
+      callback?.()
+      queueMicrotask(() => this.emit('data', Buffer.from('MUD1O OK\n기존 이름? ')))
+    } else if (this.stage === 1 && text === 'Alice\n') {
+      this.stage = 2
+      callback?.()
+      queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O CHALLENGE|416c696365|${'b'.repeat(64)}\n`)))
+    } else if (this.stage === 2 && text === 'MUD1O ALLOW\n') {
+      this.stage = 3
+      callback?.()
+    } else if (this.stage === 3 && text === 'old-secret\n') {
+      this.stage = 4
+      callback?.()
+      queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O VERIFIED|416c696365|${'b'.repeat(64)}\n`)))
+    } else if (this.stage === 4 && text === `MUD1O CLAIMED|${character}\n`) {
+      this.stage = 5
+      callback?.()
+    } else {
+      callback?.()
+    }
+    return true
   }
 
-  finishLeaseBegin(): void { this.releaseGate() }
+  end(): this {
+    this.ending = true
+    this.emit('error', new Error('simulated C close error'))
+    this.emit('end')
+    this.ending = false
+    return this
+  }
+
+  destroy(): this {
+    if (this.ending) this.destroyDuringEnd += 1
+    this.destroyed = true
+    return this
+  }
 }
 
 class DeferredFinalizeAuthorizer extends RecordingOnboardingAuthorizer {
@@ -152,6 +199,19 @@ class DeferredFinalizeAuthorizer extends RecordingOnboardingAuthorizer {
   }
 
   finishFinalize(): void { this.releaseGate() }
+}
+
+class DeferredClaimAuthorizer extends RecordingOnboardingAuthorizer {
+  private releaseGate!: () => void
+  private readonly gate = new Promise<void>((resolve) => { this.releaseGate = resolve })
+
+  override async claim(request: { legacyNameKey: string, fileSha256: string }): Promise<{ characterId: string }> {
+    this.calls.push('claim'); this.claimNames.push(request.legacyNameKey); this.claimFingerprints.push(request.fileSha256)
+    await this.gate
+    return { characterId: character }
+  }
+
+  finishClaim(): void { this.releaseGate() }
 }
 
 class DeferredBeginAuthorizer extends RecordingOnboardingAuthorizer {
@@ -195,16 +255,14 @@ class DeferredReserveAuthorizer extends RecordingOnboardingAuthorizer {
 
 test('provision relays the original wizard before DB finalize and blocks only at reserve/finalize boundaries', async (t) => {
   const toMud: Buffer[] = []
-  const postCommitGame = Buffer.concat([Buffer.alloc(3 * 1024, 0x78), Buffer.from('\n게임 텍스트: MUD1O COMMIT\n끝', 'utf8')])
   let stage = 0
-  let leaseCountAtCommit = -1
   const mud = createServer((socket) => socket.on('data', (data) => {
     const frame = Buffer.from(data); toMud.push(frame)
     if (stage === 0) { stage = 1; socket.write('MUD1O OK\n이름? ') }
     else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
     else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
     else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'a'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { leaseCountAtCommit = authorizer.leaseBegins.length; stage = 5; socket.write(postCommitGame) }
+    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
   }))
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
   const address = mud.address(); assert.ok(address && typeof address !== 'string')
@@ -227,10 +285,9 @@ test('provision relays the original wizard before DB finalize and blocks only at
   ws.send(Buffer.from('m\n'))
   await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize']))
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
-  await eventually(() => assert.ok(binaryText(messages).includes(postCommitGame.toString('utf8'))))
   assert.match(toMud[0]!.toString('ascii'), /^MUD1O\|P\|\d+\|000102030405060708090a0b0c0d0e0f\|123e4567-e89b-12d3-a456-426614174000\|123e4567-e89b-12d3-a456-426614174001\|[0-9a-f]{64}\n$/)
   assert.equal(toMud.filter((value) => value.toString('ascii').startsWith('MUD1O ')).length, 2)
-  assert.equal(leaseCountAtCommit, 1, 'the gameplay lease must be acquired before C receives COMMIT')
+  assert.equal(authorizer.leaseBegins.length, 0, 'the normal game socket owns the gameplay lease')
   assert.equal(stage, 5)
   ws.close()
 })
@@ -240,37 +297,6 @@ test('onboarding bounds only a pending pre-ready control line, not an arbitrary 
   const game = Buffer.alloc(4 * 1024, 0x78)
   assert.deepEqual(demultiplexer.push(game).game, [game])
   assert.deepEqual(demultiplexer.push(Buffer.from('MUD1O OK\n')).controls, [{ type: 'OK' }])
-})
-
-test('a mismatched acquired lease canonical name never commits the provision transaction', async (t) => {
-  const toMud: Buffer[] = []
-  let stage = 0
-  const mud = createServer((socket) => socket.on('data', (data) => {
-    const frame = Buffer.from(data); toMud.push(frame)
-    if (stage === 0) { stage = 1; socket.write('MUD1O OK\n') }
-    else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
-    else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
-    else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'a'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
-  }))
-  mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
-  const address = mud.address(); assert.ok(address && typeof address !== 'string')
-  const authorizer = new RecordingOnboardingAuthorizer(false, false, 'DifferentCanonicalName')
-  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(address.port), ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
-  const gateway = createGateway(config, { onboardingAuthorizer: authorizer, characterAuthorizer: authorizer, authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) } })
-  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
-  t.after(async () => { await gateway.close(); await new Promise<void>((resolve) => mud.close(() => resolve())) })
-  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
-  await once(ws, 'open')
-  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
-  await eventually(() => assert.equal(stage, 1))
-  ws.send(Buffer.from('Hero\n'))
-  await eventually(() => assert.equal(stage, 3))
-  ws.send(Buffer.from('m\n'))
-  await eventually(() => assert.ok(stage === 5 || ws.readyState !== WebSocket.OPEN))
-  assert.equal(stage, 4)
-  assert.equal(toMud.some((frame) => frame.toString('ascii') === 'MUD1O COMMIT\n'), false)
-  assert.equal(authorizer.leaseBegins.length, 1)
 })
 
 test('fragmented onboarding admission control is buffered without rejecting the C connection', async (t) => {
@@ -295,18 +321,21 @@ test('fragmented onboarding admission control is buffered without rejecting the 
   ws.close()
 })
 
-test('uncertain provision finalize reconciles exactly once, provisions the browser, and keeps the C game connection', async (t) => {
+test('uncertain provision finalize reconciles exactly once, provisions the browser, and closes the one-shot C connection', async (t) => {
   const toMud: Buffer[] = []
   let stage = 0
-  const mud = createServer((socket) => socket.on('data', (data) => {
-    const frame = Buffer.from(data); toMud.push(frame)
-    if (stage === 0) { stage = 1; socket.write('MUD1O OK\n') }
-    else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
-    else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
-    else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'c'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5; socket.write('명령> ') }
-    else if (stage === 5 && frame.toString() === 'look\n') { stage = 6; socket.write('보인다\n') }
-  }))
+  let mudClosed = false
+  const mud = createServer((socket) => {
+    socket.once('close', () => { mudClosed = true })
+    socket.on('data', (data) => {
+      const frame = Buffer.from(data); toMud.push(frame)
+      if (stage === 0) { stage = 1; socket.write('MUD1O OK\n') }
+      else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
+      else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
+      else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'c'.repeat(64)}|player-v1\n`) }
+      else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
+    })
+  })
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
   const address = mud.address(); assert.ok(address && typeof address !== 'string')
   const authorizer = new RecordingOnboardingAuthorizer(true)
@@ -330,11 +359,11 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
   assert.deepEqual(authorizer.reconciliations, [expectedFinalize])
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
-  ws.send(Buffer.from('look\n'))
-  await eventually(() => assert.equal(stage, 6))
-  await eventually(() => assert.match(binaryText(messages), /보인다/))
-  assert.equal(ws.readyState, WebSocket.OPEN)
-  ws.close()
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1000)
+  await eventually(() => assert.equal(mudClosed, true))
+  assert.equal(stage, 5)
+  assert.equal(toMud.some((value) => value.toString() === 'look\n'), false)
 })
 
 test('browser is provisioned only after the C COMMIT write callback succeeds', async (t) => {
@@ -365,7 +394,135 @@ test('browser is provisioned only after the C COMMIT write callback succeeds', a
   ws.close()
 })
 
-test('ready provision keeps the lease through renewal, rejects regular /ws, and releases it on close', async (t) => {
+test('provision completion silently drops game bytes coalesced with SAVED', async (t) => {
+  const trailingGame = Buffer.from('trailing C gameplay fragment')
+  const mud = new CommitCallbackMudSocket(Buffer.alloc(0), trailingGame)
+  const authorizer = new RecordingOnboardingAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /이름\? /))
+  ws.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.match(binaryText(messages), /성별\? /))
+  ws.send(Buffer.from('m\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
+  mud.releaseCommit()
+
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1000)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
+  assert.equal(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(trailingGame)), false)
+  assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize'])
+})
+
+test('provision completion drops a later C game event while SAVED finalization is pending', async (t) => {
+  const trailingGame = Buffer.from('later C gameplay fragment')
+  const mud = new CommitCallbackMudSocket()
+  const authorizer = new DeferredFinalizeAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { authorizer.finishFinalize(); await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /이름\? /))
+  ws.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.match(binaryText(messages), /성별\? /))
+  ws.send(Buffer.from('m\n'))
+  await eventually(() => assert.equal(authorizer.finalizations.length, 1))
+
+  mud.emit('data', trailingGame)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(ws.readyState, WebSocket.OPEN)
+  assert.equal(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(trailingGame)), false)
+  assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
+  authorizer.finishFinalize()
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
+  mud.releaseCommit()
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1000)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
+})
+
+test('game bytes ordered before SAVED in a coalesced C event are relayed before provision completion', async (t) => {
+  const leadingGame = Buffer.from('pre-SAVED gameplay fragment')
+  const mud = new CommitCallbackMudSocket(leadingGame)
+  const authorizer = new RecordingOnboardingAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /이름\? /))
+  ws.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.match(binaryText(messages), /성별\? /))
+  ws.send(Buffer.from('m\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
+  assert.ok(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(leadingGame)))
+  mud.releaseCommit()
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1000)
+  assert.equal(authorizer.finalizations.length, 1)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
+})
+
+test('unexpected C game bytes before a valid SAVED still fail closed', async (t) => {
+  const mud = new CommitCallbackMudSocket(Buffer.alloc(0), Buffer.alloc(0), Buffer.from('unexpected pre-admission gameplay'))
+  const authorizer = new RecordingOnboardingAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1011)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === '{"type":"error","reason":"unexpected MUD game bytes"}'))
+  assert.equal(authorizer.finalizations.length, 0)
+})
+
+test('provision completion closes onboarding and hands the owned active character to normal /ws lease and ticket admission', async (t) => {
   const timers = new FakeTimers(1_700_000_000_000)
   const mud = new CommitCallbackMudSocket()
   const authorizer = new RecordingOnboardingAuthorizer()
@@ -378,7 +535,6 @@ test('ready provision keeps the lease through renewal, rejects regular /ws, and 
     authenticator: { verify: async () => ({ sub: actor, expiresAtMs: timers.nowMs + 3_600_000, claims: {} }) },
     connectTcp: () => {
       tcpConnections += 1
-      if (tcpConnections > 1) throw new Error('regular session reached TCP despite the onboarding lease')
       mud.connect()
       return mud as unknown as Socket
     },
@@ -401,54 +557,18 @@ test('ready provision keeps the lease through renewal, rejects regular /ws, and 
   await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   mud.releaseCommit()
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
-  assert.equal(authorizer.leaseBegins.length, 1)
+  await once(ws, 'close')
+  assert.equal(authorizer.leaseBegins.length, 0, 'onboarding must not retain the gameplay lease')
 
   const regular = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
   await once(regular, 'open')
   regular.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token-not-for-logs', characterId: character }))
-  const [regularCloseCode] = await once(regular, 'close') as [number]
-  assert.equal(regularCloseCode, 1008)
-  assert.equal(tcpConnections, 1)
-
-  timers.advance(60_000)
-  await eventually(() => assert.equal(authorizer.leaseRenewals.length, 1))
-  assert.equal(authorizer.leaseRenewals[0]!.sessionId, authorizer.leaseBegins[0]!.sessionId)
-  ws.close()
-  await once(ws, 'close')
-  await eventually(() => assert.ok(authorizer.leaseReleases.includes(authorizer.leaseBegins[0]!.sessionId)))
-})
-
-test('closing during an in-flight lease acquire releases again after the acquire response', async (t) => {
-  const mud = new CommitCallbackMudSocket()
-  const authorizer = new DeferredLeaseAuthorizer()
-  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
-  const gateway = createGateway(config, {
-    onboardingAuthorizer: authorizer,
-    characterAuthorizer: authorizer,
-    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
-    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
-    randomUuid: () => '123e4567-e89b-12d3-a456-426614174003',
-  })
-  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
-  t.after(async () => { await gateway.close() })
-
-  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
-  await once(ws, 'open')
-  const messages: Array<{ data: RawData, binary: boolean }> = []
-  ws.on('message', (data, binary) => messages.push({ data, binary }))
-  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
-  await eventually(() => assert.match(binaryText(messages), /이름\? /))
-  ws.send(Buffer.from('Hero\n'))
-  await eventually(() => assert.match(binaryText(messages), /성별\? /))
-  ws.send(Buffer.from('m\n'))
   await eventually(() => assert.equal(authorizer.leaseBegins.length, 1))
-
-  ws.close()
-  await once(ws, 'close')
-  await eventually(() => assert.equal(authorizer.leaseReleases.length, 1))
-  authorizer.finishLeaseBegin()
-  await eventually(() => assert.equal(authorizer.leaseReleases.length, 2))
-  assert.equal(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n'), false)
+  await eventually(() => assert.equal(tcpConnections, 2))
+  assert.match(mud.writes.at(-1)!.toString('ascii'), /^MUD1\|/)
+  regular.close()
+  await once(regular, 'close')
+  await eventually(() => assert.ok(authorizer.leaseReleases.includes(authorizer.leaseBegins[0]!.sessionId)))
 })
 
 test('closing while begin is in flight cancels the exact intent after begin succeeds', async (t) => {
@@ -505,7 +625,7 @@ test('closing after the reserve RPC starts never uses the unreserved cancellatio
   assert.deepEqual(authorizer.cancellations, [])
 })
 
-test('binary input received during finalize is bounded and relayed only after C COMMIT', async (t) => {
+test('input queued during finalize is not relayed after the provisioning handoff closes', async (t) => {
   const mud = new CommitCallbackMudSocket()
   const authorizer = new DeferredFinalizeAuthorizer()
   const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
@@ -534,12 +654,42 @@ test('binary input received during finalize is bounded and relayed only after C 
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(mud.writes.some((value) => value.toString() === 'look\n'), false)
   authorizer.finishFinalize()
-  await eventually(() => assert.equal(authorizer.leaseBegins.length, 1))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
   assert.equal(mud.writes.some((value) => value.toString() === 'look\n'), false)
   mud.releaseCommit()
-  await eventually(() => assert.equal(mud.writes.some((value) => value.toString() === 'look\n'), true))
-  ws.close()
   await once(ws, 'close')
+  assert.equal(mud.writes.some((value) => value.toString() === 'look\n'), false)
+})
+
+test('ready provision reports completion before closing the one-shot onboarding socket', async (t) => {
+  let stage = 0
+  const mud = createServer((socket) => socket.on('data', (data) => {
+    const frame = Buffer.from(data)
+    if (stage === 0) { stage = 1; socket.write('MUD1O OK\n') }
+    else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
+    else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3 }
+    else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'e'.repeat(64)}|player-v1\n`) }
+    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
+  }))
+  mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
+  const address = mud.address(); assert.ok(address && typeof address !== 'string')
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(address.port), ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const authorizer = new RecordingOnboardingAuthorizer()
+  const gateway = createGateway(config, { onboardingAuthorizer: authorizer, characterAuthorizer: authorizer, authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) } })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close(); await new Promise<void>((resolve) => mud.close(() => resolve())) })
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === '{"type":"onboarding-ready","mode":"provision"}')))
+  ws.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.equal(stage, 3))
+  ws.send(Buffer.from('m\n'))
+  await once(ws, 'close')
+  assert.equal(stage, 5)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
 })
 
 test('input queued during finalize fail-closes when the bounded buffer is exceeded', async (t) => {
@@ -601,38 +751,6 @@ test('a failed provision reconcile never commits the C transaction', async (t) =
   assert.equal(code, 1008)
   assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile'])
   assert.equal(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n'), false)
-})
-
-test('ready provision closes normally with a closed frame when the C game connection ends', async (t) => {
-  let stage = 0
-  const mud = createServer((socket) => socket.on('data', (data) => {
-    const frame = Buffer.from(data)
-    if (stage === 0) { stage = 1; socket.write('MUD1O OK\n') }
-    else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
-    else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3 }
-    else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'e'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5; socket.end() }
-  }))
-  mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
-  const address = mud.address(); assert.ok(address && typeof address !== 'string')
-  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(address.port), ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
-  const authorizer = new RecordingOnboardingAuthorizer()
-  const gateway = createGateway(config, { onboardingAuthorizer: authorizer, characterAuthorizer: authorizer, authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) } })
-  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
-  t.after(async () => { await gateway.close(); await new Promise<void>((resolve) => mud.close(() => resolve())) })
-  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
-  await once(ws, 'open')
-  const messages: Array<{ data: RawData, binary: boolean }> = []
-  ws.on('message', (data, binary) => messages.push({ data, binary }))
-  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token-not-for-logs', mode: 'provision', correlationId: correlation }))
-  await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === '{"type":"onboarding-ready","mode":"provision"}')))
-  ws.send(Buffer.from('Hero\n'))
-  await eventually(() => assert.equal(stage, 3))
-  ws.send(Buffer.from('m\n'))
-  const [code] = await once(ws, 'close') as [number]
-  assert.equal(code, 1000)
-  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === '{"type":"closed","reason":"MUD connection closed"}'))
-  assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
 })
 
 test('onboarding expiry timer fail-closes with 4001', async (t) => {
@@ -723,6 +841,73 @@ test('claim relays the legacy password prompt, calls only the name-bound claim R
   assert.deepEqual(authorizer.claimFingerprints, ['b'.repeat(64), 'b'.repeat(64)])
   assert.deepEqual(authorizer.leaseBegins, [])
   assert.equal(stage, 5)
+})
+
+test('claim completion ignores synchronous C error and end events after CLAIMED', async (t) => {
+  const mud = new ClaimCompletionRaceMudSocket()
+  const authorizer = new RecordingOnboardingAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /기존 이름\? /))
+  ws.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
+  ws.send(Buffer.from('old-secret\n'))
+  const [code] = await once(ws, 'close') as [number]
+
+  assert.equal(code, 1000)
+  assert.equal(mud.destroyDuringEnd, 0, 'C close events after CLAIMED must not enter fail()')
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim'])
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
+})
+
+test('claim completion drops later C game bytes while ownership finalization is pending', async (t) => {
+  const trailingGame = Buffer.from('later C gameplay fragment')
+  const mud = new ClaimCompletionRaceMudSocket()
+  const authorizer = new DeferredClaimAuthorizer()
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { authorizer.finishClaim(); await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /기존 이름\? /))
+  ws.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
+  ws.send(Buffer.from('old-secret\n'))
+  await eventually(() => assert.equal(authorizer.calls.filter((call) => call === 'claim').length, 1))
+
+  mud.emit('data', trailingGame)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(ws.readyState, WebSocket.OPEN)
+  assert.equal(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(trailingGame)), false)
+  assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
+  authorizer.finishClaim()
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === `MUD1O CLAIMED|${character}\n`)))
+  const [closeCode] = await once(ws, 'close') as [number]
+  assert.equal(closeCode, 1000)
+  assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
 })
 
 test('claim rejects out-of-order VERIFIED and never exposes private claim controls to the browser', async (t) => {
