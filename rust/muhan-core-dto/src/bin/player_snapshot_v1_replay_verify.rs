@@ -3,6 +3,7 @@
 use muhan_core_dto::player_snapshot_v1::{
     format_replay_verification_v1_report, verify_player_snapshot_replay_v1,
 };
+use muhan_core_dto::MAX_ENVELOPE_SIZE;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
@@ -20,7 +21,11 @@ fn run_replay_verifier(
     stderr: &mut impl Write,
 ) -> ExitCode {
     let mut wire = Vec::new();
-    if input.read_to_end(&mut wire).is_err() {
+    let max_input_octets =
+        u64::try_from(MAX_ENVELOPE_SIZE).expect("CDTO envelope limit fits u64") + 1;
+    if input.take(max_input_octets).read_to_end(&mut wire).is_err()
+        || wire.len() > MAX_ENVELOPE_SIZE
+    {
         return reject(stderr);
     }
 
@@ -45,6 +50,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{run_replay_verifier, REJECTION};
+    use muhan_core_dto::MAX_ENVELOPE_SIZE;
     use std::io::{self, Cursor, Read, Write};
     use std::process::ExitCode;
 
@@ -78,6 +84,21 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Err(io::Error::other("untrusted flush detail"))
+        }
+    }
+
+    struct OversizedReader {
+        bytes_read: usize,
+    }
+
+    impl Read for OversizedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let total = MAX_ENVELOPE_SIZE + 2;
+            let remaining = total.saturating_sub(self.bytes_read);
+            let count = remaining.min(buffer.len());
+            buffer[..count].fill(0);
+            self.bytes_read += count;
+            Ok(count)
         }
     }
 
@@ -130,5 +151,19 @@ mod tests {
             run_replay_verifier(&mut input, &mut stdout, &mut stderr),
             &stderr,
         );
+    }
+
+    #[test]
+    fn runner_stops_reading_once_the_envelope_bound_is_exceeded() {
+        let mut input = OversizedReader { bytes_read: 0 };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        assert_rejected(
+            run_replay_verifier(&mut input, &mut stdout, &mut stderr),
+            &stderr,
+        );
+        assert!(stdout.is_empty());
+        assert_eq!(input.bytes_read, MAX_ENVELOPE_SIZE + 1);
     }
 }
