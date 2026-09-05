@@ -2,8 +2,8 @@
 
 - 최종 갱신: 2026-09-05 KST
 - 브랜치: `codex/mud-identity-foundation`
-- 포팅 기능 기준 커밋: `4a7df8921eee80f5ea771db1a5efeffe71a38fa4`
-- 최신 전체 CI 검증: [`4a7df89`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33935442808)
+- 포팅 기능 기준 커밋: `51dd7be1d8985a251f910d572dfda8f90917dba1`
+- 최신 전체 CI 검증: [`51dd7be`](https://github.com/1XP-Inc/muhan-mud/actions/runs/33936856759)
 
 ## 먼저 알아야 할 상태
 
@@ -180,14 +180,36 @@ level input reader는 v2 journal만 입력으로 허용하고 v1 journal은 leve
 않는다. 기존 artifact differential은 v1·v2 journal 모두의 identity/digest metadata를
 읽어 비교할 수 있다.
 
-### 6. M4 manifest relay
+### 6. PlayerSnapshotV1 level projection comparator와 replay reader
+
+- `services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-level-comparator.ts`
+- `services/m4-file-snapshot-manifest-relay/src/store.ts`
+- `supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql`
+
+`4a7df89`의 pure comparator는 v2 journal의 닫힌 level metadata와 injected immutable
+projection evidence만 비교한다. 여섯 identity binding을 raw U8 level보다 먼저 검사하고
+`MATCH`, `MISMATCH_LEVEL`, `MISSING_PROJECTION`, `IDENTITY_MISMATCH`, `INVALID_INPUT`,
+`UNEXPECTED_DUPLICATE`, `PROJECTION_READ_ERROR`으로 결과를 고정한다.
+
+`51dd7be`는 `PostgresPlayerSnapshotV1LevelProjectionReader`를 추가했다. 이 reader는
+전용 replay-reader URL과 read-only session에서 `command_id` 기준으로 정확히 일곱 metadata
+열만 한 번 SELECT한다. additive migration은 `mud_replay_reader_login`에 그 일곱 열의
+SELECT만 부여하며, payload, writer revision, writer RPC, legacy file, DB write와 runtime
+activation은 이 경계에 포함하지 않는다. PG17 contract는 migration replay, exact column
+grant, no mutation과 raw U8 `0/42/255` reader/comparator 결과를 고정한다.
+
+이 reader는 아직 production CLI나 기본 relay에 연결되지 않았다. 다음 slice의 명시적
+`--once` shadow comparator만 이를 dependency injection으로 사용할 수 있으며, legacy
+player file authority와 기본 OFF 동작은 유지한다.
+
+### 7. M4 manifest relay
 
 - `services/m4-file-snapshot-manifest-relay/`
 
 strict 13-line manifest를 lexical order로 읽고 direct PostgreSQL RPC를 호출하는 one-shot
 Node service다. player payload를 읽지 않고 outbox evidence를 삭제·수정하지 않는다.
 
-### 7. Durable handoff consumer의 idle lifecycle
+### 8. Durable handoff consumer의 idle lifecycle
 
 `USE_M3_RUNTIME` build에서만 `main.c`가 optional native runtime을 시작한다. exact
 `MUD_M3_PLAYER_SNAPSHOT_V1=handoff` opt-in일 때 `io.c`의 serialized game loop가
@@ -203,7 +225,7 @@ serialized `PlayerSnapshotV1` bytes가 아니라 relay가 재확인할 legacy so
 (`artifact.source_octets`)이며, 이 consumer는 DB 권위나 legacy save 결과를 바꾸지
 않는다.
 
-### 8. M3 helper wake protocol v1
+### 9. M3 helper wake protocol v1
 
 `dfcaace`의 `m3_wake_v1.*`와 `rust/muhan-m3-wake-protocol/`은 identity나 durable-state
 참조가 전혀 없는 exact 16-byte wake frame을 C/Rust differential test로 고정한다. 이는
@@ -239,16 +261,18 @@ process, database work, chart와 MUD runtime linkage는 이 slice에 포함되�
 
 서로 다른 checkout/worktree에서 다음 세 묶음을 병렬화할 수 있다.
 
-1. **Terra/고난도:** pure comparator에 주입할 dedicated `mud_replay_reader` PostgreSQL adapter를
-   RED 테스트부터 구현한다. immutable projection을 command ID로 한 번 read-only 조회하고,
-   PG17 E2E에서 missing/duplicate/read-failure와 raw U8 boundary를 검증한다. writer RPC·payload·
-   legacy file·DB write는 사용하지 않는다.
-2. **Terra/고난도:** adapter와 comparator가 PG17 read-only E2E를 통과한 뒤에만 raw-U8 level projection의
-   production activation configuration/operational 경계를 설계한다. 기본 no-projection,
-   artifact 우선 확인, non-gating 오류 격리, legacy authority를 반드시 유지하며 실제
-   활성화·배포는 이 작업의 권한이 아니다.
-3. **Luna/중간 난도:** Linux CI와 C↔Rust differential, feature-OFF chart 값, browser/xterm
-   smoke guard의 독립 재현과 regression review를 맡긴다.
+1. **Terra/고난도:** v2 level journal reader, pure comparator, dedicated PostgreSQL reader를
+   explicit `--once` shadow CLI로만 연결한다. RED-first Node tests에서 stable JSON result,
+   index ordering, missing/duplicate/read-error/mismatch, nonzero exit 및 reader close를
+   고정한다. 기본 relay, M3 runtime, telnet/login, writer URL, payload·legacy file·DB write는
+   절대로 연결하지 않는다.
+2. **Luna/중간 난도:** 위 CLI의 dependency boundary와 default-OFF 보존을 읽기 전용으로
+   리뷰한다. reader가 exact seven metadata columns 외의 것을 읽지 않는지, CLI가 v2 journal
+   이외의 level source를 받지 않는지, default production entrypoint가 import하지 않는지를
+   확인한다.
+3. **Terra/고난도:** CLI와 PG17/replay CI evidence가 쌓인 뒤에만 raw-U8 level projection의
+   production activation configuration/operational 경계를 별도 설계한다. 실제 활성화·배포는
+   이 작업의 권한이 아니다.
 
 각 에이전트는 자기 묶음만 수정하고, 커밋하지 않은 다른 에이전트 파일을 정리하거나
 덮어쓰지 않는다. 결과 회수 후 실행 세션과 Orca terminal을 0개로 정리한다.
@@ -451,6 +475,26 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
 - 이 slice는 migration, PG adapter, C runtime, M3 activation, chart, testnet, live DB data를
   바꾸지 않았고 legacy player file authority를 유지한다.
 
+### PlayerSnapshotV1 level projection replay reader `51dd7be`
+
+- `PostgresPlayerSnapshotV1LevelProjectionReader`는 replay-reader 전용 URL과 read-only
+  session을 사용해 `private.game_character_player_snapshot_v1_level_projections`에서
+  `commandId`, `characterId`, receipt/source/snapshot SHA-256, `snapshotOctets`, `rawLevelU8`
+  일곱 metadata만 parameterized one-shot SELECT한다. reader는 payload, legacy file, writer
+  RPC, SET ROLE, mutation API를 노출하지 않는다.
+- additive migration `20260920000000`은 projection table의 기존 wide 권한을 회수하고
+  `mud_replay_reader_login`에 정확히 위 일곱 열의 SELECT만 준다. PG17 fixture는 migration
+  idempotence, column grant, RLS, restricted `writer_revision` read 거부와 mutation/RPC 거부를
+  확인한다.
+- focused reader/comparator tests는 raw U8 `0/42/255`, missing, duplicate, read failure와
+  malformed evidence를 확인한다. 로컬 relay test는 67 pass/3 expected skip, typecheck,
+  build, PG17 shell syntax가 통과했다.
+- private GitHub Actions [run 33936856759](https://github.com/1XP-Inc/muhan-mud/actions/runs/33936856759)는
+  replay-reader PostgreSQL 17 contract, relay E2E, Linux/ARM, Windows, macOS, browser xterm,
+  Rust CDTO 및 scenario contracts까지 모두 GREEN이다.
+- 이 slice는 production CLI, default relay, C/M3 runtime, MUD save path, chart, testnet와
+  live data를 바꾸지 않았다. legacy player file authority와 feature-OFF 상태를 유지한다.
+
 ### M3 wake supervisor 계약 기반 `8e8d09e`
 
 - `m3_wake_supervisor.*`에는 injected operations만 사용하는 test-only 감독 계약을
@@ -547,11 +591,11 @@ pnpm --filter @muhan/m4-file-snapshot-manifest-relay build
    provision name, imported unclaimed character fixture 및 전역 uniqueness 확인이 있어야
    실행한다. game account와 Auth account의 분리는 유지한다.
 2. raw-U8 PlayerSnapshotV1 level proof, receipt-bound immutable projection, v2 closed journal
-   metadata input gate와 non-persisting pure comparator는 완료됐다. 다음 slice는 comparator에
-   주입할 dedicated `mud_replay_reader` PostgreSQL adapter다. command ID 기반 read-only query와
-   PG17 RED→GREEN E2E로 missing/duplicate/read failure 및 raw U8 0/42/255을 검증한다. writer
-   RPC·payload·legacy file·runtime activation을 쓰지 않으며, production activation configuration은
-   그 다음 별도 gate다.
+   metadata input gate, pure comparator와 dedicated `mud_replay_reader` PostgreSQL adapter는
+   완료됐다. 다음 slice는 이 세 경계를 explicit `--once` shadow CLI로만 조합하는 것이다.
+   stable JSON records/index/comparison 결과와 missing/duplicate/read failure/mismatch의
+   fail-closed 분류를 RED→GREEN으로 고정하며, writer RPC·payload·legacy file·runtime activation은
+   쓰지 않는다. production activation configuration은 그 다음 별도 gate다.
 3. 실제 Linux helper transport/process supervision은 endpoint, helper
    identity, credential inheritance, shutdown policy를 명시 설계하고 test-only contract에
    Linux fake-ops/FD hygiene RED gate를 추가한 뒤 별도 slice로 시작한다. wake protocol
