@@ -48,6 +48,25 @@ fn deterministic_malformed_corpus_matches_c_oracle() {
 }
 
 #[test]
+fn every_wire_octet_rejects_a_single_bit_mutation_like_c_oracle() {
+    let canonical = encode();
+
+    for offset in 0..FRAME_LENGTH {
+        let mut mutated = canonical;
+        mutated[offset] ^= 1;
+
+        let rust_accepts = decode(&mutated).is_ok();
+        let oracle_accepts = c_oracle(&["decode", &hex(&mutated)]) == "accept";
+        assert_eq!(
+            rust_accepts,
+            oracle_accepts,
+            "single-bit mutation at wire offset {offset}: {}",
+            hex(&mutated)
+        );
+    }
+}
+
+#[test]
 fn canonical_decoder_is_exactly_sixteen_bytes() {
     assert_eq!(encode().len(), FRAME_LENGTH);
     assert!(decode(&encode()).is_ok());
