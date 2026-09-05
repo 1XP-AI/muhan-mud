@@ -65,8 +65,9 @@ typedef struct character_save_journal_v2_process_owner_configuration {
     character_save_journal_v2_prepared_stage_observer stage_observer;
     void *stage_observer_opaque;
     /* Optional durable replacement for stage_observer.  When present it wins
-     * for both startup recovery and live saves, while the owner retains no
-     * ownership; callers must keep it alive through shutdown. */
+     * for both startup recovery and live saves; the two observers are never
+     * combined.  The owner retains no ownership, so callers must keep it alive
+     * through shutdown. */
     character_player_snapshot_v1_handoff *snapshot_handoff;
 } character_save_journal_v2_process_owner_configuration;
 

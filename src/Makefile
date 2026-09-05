@@ -142,6 +142,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-live-ops-test
 	$(MAKE) character-save-journal-v2-bootstrap-test
 	$(MAKE) character-save-journal-v2-player-store-test
+	$(MAKE) character-save-journal-v2-player-store-live-observer-test
 	$(MAKE) character-save-journal-v2-deadline-test
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
@@ -337,6 +338,8 @@ character-save-journal-v2-player-store-static-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_prod.o
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_bootstrap.c -o /tmp/muhan-unit/character_save_journal_v2_bootstrap_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_live_ops.c -o /tmp/muhan-unit/character_save_journal_v2_live_ops_prod.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_save_journal_v2_rpc_transport.c -o /tmp/muhan-unit/character_save_journal_v2_rpc_transport_prod.o
 
 character-save-journal-v2-player-store-test: character-save-journal-v2-player-store-static-test
 	mkdir -p /tmp/muhan-unit
@@ -347,6 +350,16 @@ character-save-journal-v2-player-store-sanitizer-test: character-save-journal-v2
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_test.c character_save_journal_v2_player_store.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_player_store_sanitizer_test
+
+character-save-journal-v2-player-store-live-observer-test: character-save-journal-v2-player-store-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. ../tests/unit/character_save_journal_v2_player_store_live_observer_test.c character_save_journal_v2_player_store.c character_save_journal_v2_bootstrap.c character_save_journal_v2_live_ops.c character_save_journal_v2_rpc_transport.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_live_observer_test
+	/tmp/muhan-unit/character_save_journal_v2_player_store_live_observer_test
+
+character-save-journal-v2-player-store-live-observer-sanitizer-test: character-save-journal-v2-player-store-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_player_store_live_observer_test.c character_save_journal_v2_player_store.c character_save_journal_v2_bootstrap.c character_save_journal_v2_live_ops.c character_save_journal_v2_rpc_transport.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_save_journal_v2_player_store_live_observer_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_player_store_live_observer_sanitizer_test
 
 character-save-journal-v2-deadline-static-test:
 	mkdir -p /tmp/muhan-unit

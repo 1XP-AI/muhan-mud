@@ -55,6 +55,13 @@ process_owner_stage_observer(
         *observer_opaque=owner->configuration.snapshot_handoff;
         return character_player_snapshot_v1_handoff_observe;
     }
+    if(!owner->configuration.stage_observer) {
+        /* Keep the default composition observably inert even when a caller
+         * incrementally populated an opaque value before selecting a direct
+         * observer. */
+        *observer_opaque=0;
+        return 0;
+    }
     *observer_opaque=owner->configuration.stage_observer_opaque;
     return owner->configuration.stage_observer;
 }

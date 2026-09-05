@@ -19,7 +19,8 @@ typedef struct fixture {
     int shutdown_during_deadline, shutdown_during_recovery;
     int close_fail, finish_calls, deadline_calls, uuid_calls, live_init_calls;
     int bootstrap_calls, recovery_calls, store_init_calls, build_calls, set_calls;
-    int observer_set_calls, reset_calls, close_calls, global_store_installed;
+    int observer_set_calls, observer_invoke_calls, direct_observer_calls;
+    int handoff_observer_calls, reset_calls, close_calls, global_store_installed;
     int handoff_drain_calls, handoff_drain_result;
     int bound_previous_store, binding_current;
     char trace[32];
@@ -185,6 +186,11 @@ character_save_journal_v2_recovery_run_with_stage_observer(
         return CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INVALID_ARGUMENT;
     current->recovery_observer = stage_observer;
     current->recovery_observer_opaque = stage_observer_opaque;
+    if(stage_observer) {
+        current->observer_invoke_calls++;
+        (void)stage_observer(stage_observer_opaque, writer,
+            "20000000-0000-4000-8000-000000000002");
+    }
     report->discovered = 2;
     report->visited = 2;
     return current->recovery_fail ? CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE :
@@ -321,9 +327,10 @@ static int fake_stage_observer(void *opaque,
     const character_save_journal_v2_writer_context *writer,
     const char *command_uuid)
 {
-    (void)opaque;
-    (void)writer;
-    (void)command_uuid;
+    fixture *test=(fixture *)opaque;
+    if(test!=current||writer!=&test->owner.held_writer||
+       strcmp(command_uuid,"20000000-0000-4000-8000-000000000002")) return -99;
+    test->direct_observer_calls++;
     return -73;
 }
 
@@ -331,9 +338,9 @@ int character_player_snapshot_v1_handoff_observe(void *opaque,
     const character_save_journal_v2_writer_context *writer,
     const char *command_uuid)
 {
-    (void)opaque;
-    (void)writer;
-    (void)command_uuid;
+    if(opaque!=&current->handoff||writer!=&current->owner.held_writer||
+       strcmp(command_uuid,"20000000-0000-4000-8000-000000000002")) return -99;
+    current->handoff_observer_calls++;
     return 0;
 }
 
@@ -539,6 +546,19 @@ static int test_stage_observer_reaches_recovery_and_player_store(void)
     int failed = 0;
 
     setup(&test);
+    test.configuration.stage_observer_opaque=&test;
+    character_save_journal_v2_process_owner_init(&test.owner,
+        &test.configuration);
+    failed += expect(character_save_journal_v2_process_owner_start(&test.owner) ==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
+        !test.recovery_observer && !test.recovery_observer_opaque &&
+        !test.store_observer && !test.store_observer_opaque &&
+        !test.observer_invoke_calls && !test.direct_observer_calls &&
+        !test.handoff_observer_calls,
+        "absent observer configuration must discard opaque data and stay inert");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+
+    setup(&test);
     test.configuration.stage_observer = fake_stage_observer;
     test.configuration.stage_observer_opaque = &test;
     character_save_journal_v2_process_owner_init(&test.owner,
@@ -549,7 +569,9 @@ static int test_stage_observer_reaches_recovery_and_player_store(void)
         test.recovery_observer_opaque == &test &&
         test.observer_set_calls == 1 &&
         test.store_observer == fake_stage_observer &&
-        test.store_observer_opaque == &test,
+        test.store_observer_opaque == &test &&
+        test.observer_invoke_calls == 1 && test.direct_observer_calls == 1 &&
+        !test.handoff_observer_calls,
         "one optional stage observer must cover restart recovery and live saves");
     failed += expect(character_save_journal_v2_process_owner_snapshot_tick(
         &test.owner,1)==CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF&&
@@ -579,6 +601,9 @@ static int test_handoff_replaces_generic_observer_and_ticks_only_explicitly(void
         test.store_observer_opaque==&test.handoff&&
         !test.handoff_drain_calls,
         "durable handoff must replace generic observer for recovery and live saves without draining during startup");
+    failed+=expect(test.observer_invoke_calls==1&&!test.direct_observer_calls&&
+        test.handoff_observer_calls==1,
+        "durable handoff precedence must execute only the handoff observer");
     trace_length=test.trace_length;
     failed+=expect(character_save_journal_v2_process_owner_snapshot_tick(
         &test.owner,0)==
