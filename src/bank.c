@@ -2,6 +2,7 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "resource_path.h"
+#include "bank_store.h"
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -13,7 +14,7 @@
 #define UTF8_PREFIX_ALL "모든"
 #define UTF8_PREFIX_ALL_LEN ((int)(sizeof(UTF8_PREFIX_ALL) - 1))
 
-int load_bank(str, obj_ptr)
+int file_bank_store_load(str, obj_ptr)
 char	*str;
 object 	**obj_ptr;
 {
@@ -43,7 +44,7 @@ object 	**obj_ptr;
 	return(0);
 }
 
-int save_bank(str, obj_ptr)
+int file_bank_store_save(str, obj_ptr)
 char	*str;
 object  *obj_ptr;
 {
@@ -66,6 +67,22 @@ object  *obj_ptr;
 	close(fd);
 
 	return(0);
+}
+
+/* Preserve the legacy ABI while routing ordinary callers through the
+ * FileStore-backed facade by default. */
+int load_bank(str, obj_ptr)
+char	*str;
+object 	**obj_ptr;
+{
+	return(bank_store_load(str, obj_ptr));
+}
+
+int save_bank(str, obj_ptr)
+char	*str;
+object  *obj_ptr;
+{
+	return(bank_store_save(str, obj_ptr));
 }
 
 
@@ -591,7 +608,6 @@ char *part_obj;
 		free_obj(cnt_ptr);
 		savegame_nomsg(ply_ptr);
 }
-
 
 
 

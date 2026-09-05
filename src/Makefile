@@ -48,7 +48,7 @@ EXTRA_LIBS += $(RUST_FFI_LIB) -ldl -lpthread
 endif
 
 
-OBJECTS = global.o main.o files1.o files2.o files3.o bank.o command1.o command2.o \
+OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o command1.o command2.o \
 	  command3.o command4.o command5.o command6.o command7.o \
 	  command8.o command9.o command10.o command11.o command12.o magic1.o magic2.o \
 	 magic3.o magic4.o  magic5.o magic6.o magic7.o magic8.o \
@@ -97,6 +97,7 @@ clean:
 unit-test:
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/resource_tree_manifest_test.py
+	$(MAKE) bank-store-test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_test.c player_store.c -o /tmp/muhan-unit/player_store_test
 	/tmp/muhan-unit/player_store_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_file_test.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/player_store_file_test
@@ -156,6 +157,13 @@ unit-test:
 	$(MAKE) character-player-snapshot-v1-capture-test
 	$(MAKE) character-player-snapshot-v1-capture-native-test
 	$(MAKE) character-player-snapshot-v1-handoff-test
+
+bank-store-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/bank_store_test.c bank_store.c -o /tmp/muhan-unit/bank_store_test
+	/tmp/muhan-unit/bank_store_test
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/bank_legacy_abi_test.c bank.c bank_store.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_legacy_abi_test
+	/tmp/muhan-unit/bank_legacy_abi_test
 
 m3-feature-off-legacy-authority-test:
 	mkdir -p /tmp/muhan-unit
