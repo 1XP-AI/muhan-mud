@@ -5,6 +5,7 @@ import type {
   OwnedCharacter,
 } from "@/lib/character-roster";
 import type { OnboardingMode } from "@/lib/onboarding-contract";
+import { decideClaimEntry } from "@/lib/claim-transparency";
 
 interface CharacterRosterProps {
   status: CharacterRosterStatus;
@@ -49,11 +50,17 @@ export function CharacterRoster({
   }
 
   if (status === "empty") {
+    const claimEntry = decideClaimEntry(status, onboardingEnabled);
+    if (claimEntry.kind === "hidden") return null;
+
     return (
       <div className="roster-state roster-empty">
         <p className="roster-empty-title">이 계정에 연결된 캐릭터가 없습니다</p>
-        {onboardingEnabled && onStartOnboarding ? (
+        {claimEntry.kind === "claim-start" && onStartOnboarding ? (
           <>
+            <p className="claim-boundary" role="status">
+              웹 로그인만으로는 MUD 캐릭터를 소유하지 않습니다.
+            </p>
             <p>
               새 캐릭터를 만들거나 기존 텔넷 캐릭터를 이 계정에 연결할 수 있습니다.
               진행 과정은 안전한 터미널에서 계속됩니다.
@@ -71,19 +78,17 @@ export function CharacterRoster({
                 onClick={() => onStartOnboarding("claim")}
                 type="button"
               >
-                기존 캐릭터 연결
+                {claimEntry.actionLabel}
               </button>
             </div>
             <p className="onboarding-note">
-              게임 비밀번호는 웹 계정 비밀번호와 다른 값을 사용하세요.
+              {claimEntry.detail} 게임 비밀번호는 웹 계정 비밀번호와 다른 값을 사용하세요.
             </p>
           </>
         ) : (
           <>
-            <p>
-              이 서버에서는 아직 웹 캐릭터 연결을 직접 시작할 수 없습니다.
-              이미 연결을 요청했다면 목록을 다시 확인하세요.
-            </p>
+            <p className="claim-boundary" role="status">{claimEntry.title}</p>
+            <p>{claimEntry.kind === "unavailable" ? claimEntry.detail : "캐릭터 목록을 다시 확인하세요."}</p>
             <button className="secondary-action" onClick={onRetry} type="button">
               캐릭터 목록 다시 확인
             </button>

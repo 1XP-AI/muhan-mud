@@ -790,6 +790,13 @@ code {
   padding-inline: clamp(1.25rem, 4vw, 3rem);
 }
 
+.claim-boundary {
+  color: var(--brass);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+}
+
 .onboarding-actions {
   display: grid;
   max-width: 32rem;

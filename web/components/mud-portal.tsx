@@ -352,7 +352,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
               onSelect={roster.selectCharacter}
               selectedId={roster.selectedId}
               status={roster.status}
-              onboardingEnabled={onboardingEnabled && roster.status === "empty"}
+              onboardingEnabled={onboardingEnabled}
               onStartOnboarding={(mode) => {
                 if (!onboardingEnabled || roster.status !== "empty") return;
                 // One correlation identifies a user-started flow and is reused

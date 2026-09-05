@@ -369,15 +369,17 @@ export function OnboardingTerminal({
     <div className="onboarding-terminal">
       <div className="onboarding-heading">
         <div>
-          <p className="eyebrow">{mode === "provision" ? "NEW CHARACTER" : "CONNECT CHARACTER"}</p>
-          <h2>{mode === "provision" ? "새 캐릭터 만들기" : "기존 캐릭터 연결"}</h2>
+          <p className="eyebrow">{mode === "provision" ? "NEW CHARACTER" : "EXISTING MUD VERIFICATION"}</p>
+          <h2>{mode === "provision" ? "새 캐릭터 만들기" : "기존 캐릭터 연결 확인"}</h2>
         </div>
         <button className="secondary-action" onClick={cancelOnboarding} type="button">
           취소하고 캐릭터 선택
         </button>
       </div>
       <p className="onboarding-hint" aria-live="polite">
-        기존 텔넷 절차를 그대로 진행합니다. 입력 안내가 나타날 때까지 잠시 기다려 주세요.
+        {mode === "claim"
+          ? "기존 MUD 확인 절차는 이 xterm 안에서 끝까지 진행해야 합니다. 확인이 끝나고 활성 목록에 나타난 캐릭터만 플레이할 수 있습니다."
+          : "온보딩 절차를 터미널에서 진행합니다. 입력 안내가 나타날 때까지 잠시 기다려 주세요."}
       </p>
       <div
         aria-label="캐릭터 온보딩 터미널"
