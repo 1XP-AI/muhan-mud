@@ -71,7 +71,11 @@ class HeldEvidenceCompletionMudSocket extends EventEmitter {
   private stage = 0
   private completionCallback?: (error?: Error | null) => void
 
-  constructor(private readonly mode: 'provision' | 'claim', private readonly completionEvidence: LegacyIdentityEvidenceV1) { super() }
+  constructor(
+    private readonly mode: 'provision' | 'claim',
+    private readonly completionEvidence: LegacyIdentityEvidenceV1,
+    private readonly trace?: string[],
+  ) { super() }
   connect(): void { queueMicrotask(() => this.emit('connect')) }
   write(data: Uint8Array | string, callback?: (error?: Error | null) => void): boolean {
     const frame = Buffer.from(data)
@@ -99,7 +103,11 @@ class HeldEvidenceCompletionMudSocket extends EventEmitter {
     } else callback?.()
     return true
   }
-  releaseCompletion(): void { this.completionCallback?.(); this.completionCallback = undefined }
+  releaseCompletion(): void {
+    this.trace?.push('completion-callback')
+    this.completionCallback?.()
+    this.completionCallback = undefined
+  }
   end(): this { return this }
   destroy(): this { this.destroyed = true; return this }
 }
@@ -331,6 +339,77 @@ for (const scenario of [
     assert.ok(hasText(received, `{"type":"${scenario.browser}","characterId":"${character}"}`))
   })
 }
+
+test('claim evidence keeps private controls and normal admission locked until CLAIMED activates the handoff', async (t) => {
+  const trace: string[] = []
+  const mud = new HeldEvidenceCompletionMudSocket('claim', cEvidence('Alice', 'b'.repeat(64)), trace)
+  const authorizer = new PendingHandoffAuthorizer(false, 'claim', trace)
+  const finalizer = new RecordingEvidenceFinalizer(trace)
+  let connections = 0
+  const gateway = createGateway(config(true), {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    evidenceFinalizer: finalizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => {
+      connections += 1
+      const socket = connections === 1 ? mud : new AdmissionMudSocket(authorizer.admissionTickets)
+      socket.connect()
+      return socket as unknown as import('node:net').Socket
+    },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+  const base = gateway.address().replace('http:', 'ws:')
+
+  const onboarding = new WebSocket(`${base}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(onboarding, 'open')
+  const onboardingClosed = once(onboarding, 'close')
+  const onboardingMessages = messages(onboarding)
+  onboarding.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.ok(hasText(onboardingMessages, '{"type":"onboarding-ready","mode":"claim"}')))
+  onboarding.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === 'MUD1O ALLOW\n')))
+  assert.equal(onboardingMessages.some(({ data, binary }) => !binary && /CHALLENGE|ALLOW/.test(Buffer.from(data).toString())), false, 'claim controls remain C-private')
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge'], 'browser auth alone cannot fabricate or claim a character')
+  assert.deepEqual(finalizer.calls, [])
+
+  onboarding.send(Buffer.from('old-secret\n'))
+  await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === `MUD1O CLAIMED|${character}\n`)))
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge'])
+  assert.deepEqual(trace, [], 'CLAIMED write acceptance gates evidence finalization and activation')
+
+  const before = new WebSocket(`${base}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+  await once(before, 'open')
+  const beforeClosed = once(before, 'close')
+  before.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token', characterId: character }))
+  await beforeClosed
+  assert.equal(authorizer.beginSessionCalls, 1)
+  assert.equal(authorizer.readyLeases, 0)
+  assert.deepEqual(authorizer.admissionTickets, [], 'pending handoff cannot mint a normal MUD admission ticket')
+
+  mud.releaseCompletion()
+  await onboardingClosed
+  assert.deepEqual(trace, ['completion-callback', 'evidence', 'activate', 'bind'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'activate'])
+  assert.deepEqual(finalizer.calls, [{
+    actorUserId: actor, correlationId: correlation, characterId: character, mode: 'claim',
+    worldId: 'muhan', evidence: cEvidence('Alice', 'b'.repeat(64)),
+  }])
+  assert.ok(hasText(onboardingMessages, `{"type":"claimed","characterId":"${character}"}`))
+
+  const after = new WebSocket(`${base}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+  await once(after, 'open')
+  const afterClosed = once(after, 'close')
+  const afterMessages = messages(after)
+  after.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token', characterId: character }))
+  await eventually(() => assert.equal(authorizer.admissionTickets.length, 1))
+  await eventually(() => assert.ok(hasText(afterMessages, '{"type":"ready"}')))
+  assert.equal(authorizer.readyLeases, 1)
+  after.close()
+  await afterClosed
+  await eventually(() => assert.equal(authorizer.leaseReleases, 1))
+})
 
 for (const scenario of [
   { label: 'evidence finalization', finalizerFails: true, activationFails: false, expectedCalls: ['begin', 'reserve'] },
