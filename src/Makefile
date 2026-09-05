@@ -149,6 +149,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-deadline-test
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) onboarding-activation-reservation-adapter-test
+	$(MAKE) onboarding-activation-reservation-owner-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) m3-feature-off-legacy-authority-test
 	$(MAKE) m3-runtime-idle-hook-static-test
@@ -349,6 +350,16 @@ onboarding-activation-reservation-adapter-sanitizer-test: onboarding-activation-
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_reservation_adapter_test.c onboarding_activation_reservation_adapter.c -o /tmp/muhan-unit/onboarding_activation_reservation_adapter_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_reservation_adapter_sanitizer_test
+
+onboarding-activation-reservation-owner-test: onboarding-activation-reservation-adapter-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_reservation_owner_test.c onboarding_activation_reservation_owner.c -o /tmp/muhan-unit/onboarding_activation_reservation_owner_test
+	/tmp/muhan-unit/onboarding_activation_reservation_owner_test
+
+onboarding-activation-reservation-owner-sanitizer-test: onboarding-activation-reservation-adapter-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_reservation_owner_test.c onboarding_activation_reservation_owner.c -o /tmp/muhan-unit/onboarding_activation_reservation_owner_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_reservation_owner_sanitizer_test
 
 onboarding-admission-test:
 	mkdir -p /tmp/muhan-unit
