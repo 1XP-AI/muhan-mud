@@ -366,9 +366,11 @@ onboarding_snapshot_command_consumer_result pending_result;
 
 onboarding_snapshot_command_consumer_result
 onboarding_snapshot_command_consumer_reserve(reservation_directory_fd, command_id,
-    expected_character_id, expected_mode, expected_correlation_id)
+    expected_actor_user_id, expected_character_id, expected_mode,
+    expected_correlation_id)
 int reservation_directory_fd;
 const char *command_id;
+const char *expected_actor_user_id;
 const char *expected_character_id;
 onboarding_activation_binding_mode expected_mode;
 const char *expected_correlation_id;
@@ -380,7 +382,8 @@ const char *expected_correlation_id;
     int directory, fd, text_length;
     memset(&source,0,sizeof(source)); memset(&next,0,sizeof(next));
     memset(temporary,0,sizeof(temporary)); memset(text,0,sizeof(text)); directory=-1; fd=-1;
-    if(!oscc_uuid(command_id) || !oscc_uuid(expected_character_id) ||
+    if(!oscc_uuid(command_id) || !oscc_uuid(expected_actor_user_id) ||
+       !oscc_uuid(expected_character_id) ||
        !oscc_uuid(expected_correlation_id) || !oscc_mode_name(expected_mode)) {
         result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID; goto out;
     }
@@ -393,7 +396,8 @@ const char *expected_correlation_id;
     if(!oscc_activation_valid(&source) || strcmp(source.command_id,command_id)) {
         result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT; goto out;
     }
-    if(strcmp(source.character_id,expected_character_id) ||
+    if(strcmp(source.actor_user_id,expected_actor_user_id) ||
+       strcmp(source.character_id,expected_character_id) ||
        strcmp(source.correlation_id,expected_correlation_id) || source.mode != expected_mode) {
         result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH; goto out;
     }

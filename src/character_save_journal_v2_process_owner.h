@@ -10,6 +10,7 @@
 #include "character_save_journal_v2_player_store.h"
 #include "character_save_journal_v2_recovery.h"
 #include "character_player_snapshot_v1_handoff.h"
+#include "onboarding_snapshot_command_consumer.h"
 
 typedef enum character_save_journal_v2_process_owner_state {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_NEW = 0,
@@ -28,7 +29,8 @@ typedef enum character_save_journal_v2_process_owner_startup_result {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_BOOTSTRAP = 6,
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RECOVERY = 7,
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_PLAYER_STORE = 8,
-    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED = 9
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED = 9,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY = 10
 } character_save_journal_v2_process_owner_startup_result;
 
 typedef enum character_save_journal_v2_process_owner_shutdown_result {
@@ -47,6 +49,17 @@ typedef enum character_save_journal_v2_process_owner_snapshot_tick_result {
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_INVALID_ARGUMENT = 4,
     CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED = 5
 } character_save_journal_v2_process_owner_snapshot_tick_result;
+
+/* Local-only, explicit activation reservation result.  No result here
+ * authorizes a PlayerStore save, publish, ACK, or any later M3 action. */
+typedef enum character_save_journal_v2_process_owner_reservation_result {
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_RESERVED = 0,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_EXACT_RETRY = 1,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_OFF = 2,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_NOT_READY = 3,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_BUSY = 4,
+    CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_FAILED_CLOSED = 5
+} character_save_journal_v2_process_owner_reservation_result;
 
 typedef struct character_save_journal_v2_process_owner_configuration {
     const char *root;
@@ -69,6 +82,11 @@ typedef struct character_save_journal_v2_process_owner_configuration {
      * combined.  The owner retains no ownership, so callers must keep it alive
      * through shutdown. */
     character_player_snapshot_v1_handoff *snapshot_handoff;
+    /* Explicit opt-in only.  When enabled, start duplicates this already-open
+     * private 0700 directory descriptor and never takes pathname ownership.
+     * A disabled configuration never inspects or duplicates this descriptor. */
+    int snapshot_reservation_enabled;
+    int snapshot_reservation_directory_fd;
 } character_save_journal_v2_process_owner_configuration;
 
 typedef struct character_save_journal_v2_process_owner {
@@ -85,6 +103,10 @@ typedef struct character_save_journal_v2_process_owner {
     character_save_journal_v2_process_owner_shutdown_result shutdown_result;
     character_save_journal_v2_process_owner_snapshot_tick_result snapshot_tick_result;
     int snapshot_handoff_result;
+    int snapshot_reservation_directory_fd;
+    onboarding_snapshot_command_consumer_result snapshot_reservation_consumer_result;
+    character_save_journal_v2_process_owner_reservation_result
+        snapshot_reservation_result;
     int writer_held;
     int player_store_installed;
     int operation_active;
@@ -117,5 +139,18 @@ character_save_journal_v2_process_owner_shutdown(
 character_save_journal_v2_process_owner_snapshot_tick_result
 character_save_journal_v2_process_owner_snapshot_tick(
     character_save_journal_v2_process_owner *owner, unsigned int limit);
+
+/* Explicit owner boundary for an already accepted ACTIVATED tuple.  This
+ * reserves only through the owner-held private directory descriptor, and only
+ * while the owner is READY, writer-held, and PlayerStore-idle.  It performs no
+ * PlayerStore dispatch, capture, artifact, publish, ACK, DB, or network work. */
+character_save_journal_v2_process_owner_reservation_result
+character_save_journal_v2_process_owner_reserve_activated(
+    character_save_journal_v2_process_owner *owner,
+    const char *actor_user_id,
+    const char *correlation_id,
+    const char *character_id,
+    onboarding_activation_binding_mode mode,
+    const char *command_id);
 
 #endif

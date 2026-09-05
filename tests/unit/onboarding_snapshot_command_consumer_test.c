@@ -110,14 +110,14 @@ int main(void)
 
     /* A missing activation binding is not a candidate and must not create a
      * reservation that an ordinary save could later reuse. */
-    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND,
+    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR,
         CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE,
         "no activation candidate must not reserve a command");
 
     failed += expect(onboarding_activation_binding_write(ACTOR, CORRELATION,
         CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, COMMAND) == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         onboarding_snapshot_command_consumer_read(fd, COMMAND, &reservation) ==
@@ -129,32 +129,36 @@ int main(void)
         status.st_nlink == 1,
         "an exact pending activation candidate must become one private reservation");
 
-    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND,
+    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR,
         "55555555-5555-4555-8555-555555555555",
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH &&
-        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH &&
-        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,
             "66666666-6666-4666-8666-666666666666") ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH &&
+        onboarding_snapshot_command_consumer_reserve(fd, COMMAND,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CHARACTER,
+            ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
+        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH &&
         onboarding_snapshot_command_consumer_read(fd, COMMAND, &reservation) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED && reservation_matches(&reservation),
-        "a character, mode, or correlation substitution must leave the reservation intact");
+        "an actor, character, mode, or correlation substitution must leave the reservation intact");
 
-    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, "not-a-uuid",
+    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, "not-a-uuid", ACTOR,
         CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID &&
-        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, "not-a-uuid",
+        onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR, "not-a-uuid",
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID &&
         onboarding_snapshot_command_consumer_read(fd, "not-a-uuid", &reservation) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID,
         "malformed identifiers must never become a descriptor-relative name");
 
-    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND,
+    failed += expect(onboarding_snapshot_command_consumer_reserve(fd, COMMAND, ACTOR,
         CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY &&
         onboarding_snapshot_command_consumer_read(fd, COMMAND, &reservation) ==
@@ -177,7 +181,7 @@ int main(void)
      * that one transition, retain the source, and leave no PENDING name. */
     failed += expect(onboarding_activation_binding_write(ACTOR, CORRELATION, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, TEMP_ONLY_COMMAND) == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, TEMP_ONLY_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, TEMP_ONLY_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         reservation_paths(directory, TEMP_ONLY_COMMAND, reservation_path, temporary_path) == 0 &&
@@ -185,7 +189,7 @@ int main(void)
         stat(temporary_path, &status) == 0 && status.st_nlink == 1 &&
         onboarding_snapshot_command_consumer_read(fd, TEMP_ONLY_COMMAND, &reservation) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE &&
-        onboarding_snapshot_command_consumer_reserve(fd, TEMP_ONLY_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, TEMP_ONLY_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY &&
         onboarding_snapshot_command_consumer_read(fd, TEMP_ONLY_COMMAND, &reservation) ==
@@ -199,7 +203,7 @@ int main(void)
      * valid, recoverable intermediate only when they are the same safe inode. */
     failed += expect(onboarding_activation_binding_write(ACTOR, CORRELATION, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, LINKED_COMMAND) == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, LINKED_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, LINKED_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         reservation_paths(directory, LINKED_COMMAND, reservation_path, temporary_path) == 0 &&
@@ -207,7 +211,7 @@ int main(void)
         status.st_nlink == 2 && onboarding_snapshot_command_consumer_read(fd,
             LINKED_COMMAND, &reservation) == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT &&
         onboarding_snapshot_command_consumer_reserve(fd,
-            LINKED_COMMAND, CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,
+        LINKED_COMMAND, ACTOR, CHARACTER, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,
             CORRELATION) == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY &&
         lstat(temporary_path, &status) != 0 && stat(reservation_path, &status) == 0 &&
         status.st_nlink == 1 && source_exists(LINKED_COMMAND),
@@ -219,7 +223,7 @@ int main(void)
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, MALFORMED_COMMAND) == 0 &&
         reservation_paths(directory, MALFORMED_COMMAND, reservation_path, temporary_path) == 0 &&
         write_text(temporary_path, "not-a-reservation\n") == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, MALFORMED_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, MALFORMED_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT &&
         lstat(temporary_path, &status) == 0 && source_exists(MALFORMED_COMMAND),
@@ -229,12 +233,12 @@ int main(void)
      * intermediate may be finalized. */
     failed += expect(onboarding_activation_binding_write(ACTOR, CORRELATION, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, AMBIGUOUS_COMMAND) == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, AMBIGUOUS_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, AMBIGUOUS_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         reservation_paths(directory, AMBIGUOUS_COMMAND, reservation_path, temporary_path) == 0 &&
         copy_file(reservation_path, temporary_path) == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, AMBIGUOUS_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, AMBIGUOUS_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_CORRUPT &&
         stat(reservation_path, &status) == 0 && lstat(temporary_path, &status) == 0 &&
@@ -245,7 +249,7 @@ int main(void)
      * exists; the consumer must neither adopt nor remove it by default. */
     failed += expect(reservation_paths(directory, NO_CANDIDATE_COMMAND, reservation_path,
             temporary_path) == 0 && write_text(temporary_path, "orphan\n") == 0 &&
-        onboarding_snapshot_command_consumer_reserve(fd, NO_CANDIDATE_COMMAND, CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(fd, NO_CANDIDATE_COMMAND, ACTOR, CHARACTER,
             ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, CORRELATION) ==
             ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE &&
         onboarding_snapshot_command_consumer_read(fd, NO_CANDIDATE_COMMAND, &reservation) ==
