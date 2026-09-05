@@ -257,6 +257,8 @@ static int oa_c_control_valid(control)
 const onboarding_control *control;
 {
     if(!control) return 0;
+    if(control->kind != ONBOARDING_CONTROL_ACTIVE &&
+       !oa_empty(control->command_id, sizeof(control->command_id))) return 0;
     switch(control->kind) {
     case ONBOARDING_CONTROL_OK:
     case ONBOARDING_CONTROL_ERR:
@@ -282,6 +284,12 @@ const onboarding_control *control;
                oa_lower_hex_value(control->file_sha256,
                                   ONBOARDING_ADMISSION_SHA256_HEX_LEN) &&
                oa_storage_format(control->storage_format);
+    case ONBOARDING_CONTROL_ACTIVE:
+        return oa_empty(control->name_hex, sizeof(control->name_hex)) &&
+               oa_empty(control->character_id, sizeof(control->character_id)) &&
+               oa_empty(control->file_sha256, sizeof(control->file_sha256)) &&
+               oa_empty(control->storage_format, sizeof(control->storage_format)) &&
+               oa_uuid(control->command_id);
     default:
         return 0;
     }
@@ -291,6 +299,8 @@ static int oa_gateway_control_valid(control)
 const onboarding_control *control;
 {
     if(!control) return 0;
+    if(control->kind != ONBOARDING_CONTROL_ACTIVATED &&
+       !oa_empty(control->command_id, sizeof(control->command_id))) return 0;
     switch(control->kind) {
     case ONBOARDING_CONTROL_RESERVED:
     case ONBOARDING_CONTROL_CLAIMED:
@@ -305,6 +315,12 @@ const onboarding_control *control;
                oa_empty(control->character_id, sizeof(control->character_id)) &&
                oa_empty(control->file_sha256, sizeof(control->file_sha256)) &&
                oa_empty(control->storage_format, sizeof(control->storage_format));
+    case ONBOARDING_CONTROL_ACTIVATED:
+        return oa_empty(control->name_hex, sizeof(control->name_hex)) &&
+               oa_empty(control->character_id, sizeof(control->character_id)) &&
+               oa_empty(control->file_sha256, sizeof(control->file_sha256)) &&
+               oa_empty(control->storage_format, sizeof(control->storage_format)) &&
+               oa_uuid(control->command_id);
     default:
         return 0;
     }
@@ -389,6 +405,13 @@ onboarding_control *control;
                          part[3]) != 0)
             control->kind = ONBOARDING_CONTROL_INVALID;
     }
+    else if(oa_prepare_control_line(line, copy, part, 1) == 0 &&
+            !strcmp(part[0], "MUD1O ACTIVE")) {
+        control->kind = ONBOARDING_CONTROL_ACTIVE;
+        if(oa_copy_value(control->command_id, sizeof(control->command_id),
+                         part[1]) != 0)
+            control->kind = ONBOARDING_CONTROL_INVALID;
+    }
     if(oa_c_control_valid(control)) result = 0;
 out:
     if(result != 0 && control) memset(control, 0, sizeof(*control));
@@ -415,9 +438,11 @@ onboarding_control *control;
     else if(oa_prepare_control_line(line, copy, part, 1) == 0) {
         if(!strcmp(part[0], "MUD1O RESERVED")) control->kind = ONBOARDING_CONTROL_RESERVED;
         else if(!strcmp(part[0], "MUD1O CLAIMED")) control->kind = ONBOARDING_CONTROL_CLAIMED;
+        else if(!strcmp(part[0], "MUD1O ACTIVATED")) control->kind = ONBOARDING_CONTROL_ACTIVATED;
         if(control->kind &&
-           oa_copy_value(control->character_id, sizeof(control->character_id),
-                         part[1]) != 0)
+           oa_copy_value(control->kind == ONBOARDING_CONTROL_ACTIVATED ?
+                         control->command_id : control->character_id,
+                         ONBOARDING_ADMISSION_UUID_LEN + 1, part[1]) != 0)
             control->kind = ONBOARDING_CONTROL_INVALID;
     }
     if(oa_gateway_control_valid(control)) result = 0;
@@ -456,6 +481,9 @@ int gateway;
                            control->character_id, control->file_sha256,
                            control->storage_format);
         break;
+    case ONBOARDING_CONTROL_ACTIVE:
+        written = snprintf(out, out_size, "MUD1O ACTIVE|%s\n", control->command_id);
+        break;
     case ONBOARDING_CONTROL_ERR:
         written = snprintf(out, out_size, "MUD1O ERR\n");
         break;
@@ -475,6 +503,9 @@ int gateway;
         break;
     case ONBOARDING_CONTROL_ALLOW:
         written = snprintf(out, out_size, "MUD1O ALLOW\n");
+        break;
+    case ONBOARDING_CONTROL_ACTIVATED:
+        written = snprintf(out, out_size, "MUD1O ACTIVATED|%s\n", control->command_id);
         break;
     default:
         return -1;
@@ -510,10 +541,12 @@ onboarding_state state;
            state == ONBOARDING_STATE_PROVISION_AWAIT_RESERVED ||
            state == ONBOARDING_STATE_PROVISION_RESERVED ||
            state == ONBOARDING_STATE_PROVISION_AWAIT_COMMIT ||
+           state == ONBOARDING_STATE_PROVISION_AWAIT_ACTIVATED ||
            state == ONBOARDING_STATE_CLAIM_READY ||
            state == ONBOARDING_STATE_CLAIM_AWAIT_ALLOW ||
            state == ONBOARDING_STATE_CLAIM_PASSWORD_READY ||
-           state == ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED;
+           state == ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED ||
+           state == ONBOARDING_STATE_CLAIM_AWAIT_ACTIVATED;
 }
 
 int onboarding_state_accept_ticket(state, ticket)
@@ -559,6 +592,8 @@ const onboarding_control *control;
     if(control->kind == ONBOARDING_CONTROL_OK &&
        (*state == ONBOARDING_STATE_PROVISION_READY ||
         *state == ONBOARDING_STATE_CLAIM_READY)) return 0;
+    if(control->kind == ONBOARDING_CONTROL_ACTIVE &&
+       *state == ONBOARDING_STATE_READY) return 0;
     if(control->kind == ONBOARDING_CONTROL_RESERVE &&
        *state == ONBOARDING_STATE_PROVISION_READY) {
         *state = ONBOARDING_STATE_PROVISION_AWAIT_RESERVED;
@@ -598,7 +633,7 @@ const onboarding_control *control;
     }
     if(control->kind == ONBOARDING_CONTROL_COMMIT &&
        *state == ONBOARDING_STATE_PROVISION_AWAIT_COMMIT) {
-        *state = ONBOARDING_STATE_READY;
+        *state = ONBOARDING_STATE_PROVISION_AWAIT_ACTIVATED;
         return 0;
     }
     if(control->kind == ONBOARDING_CONTROL_ALLOW &&
@@ -608,6 +643,12 @@ const onboarding_control *control;
     }
     if(control->kind == ONBOARDING_CONTROL_CLAIMED &&
        *state == ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED) {
+        *state = ONBOARDING_STATE_CLAIM_AWAIT_ACTIVATED;
+        return 0;
+    }
+    if(control->kind == ONBOARDING_CONTROL_ACTIVATED &&
+       (*state == ONBOARDING_STATE_PROVISION_AWAIT_ACTIVATED ||
+        *state == ONBOARDING_STATE_CLAIM_AWAIT_ACTIVATED)) {
         *state = ONBOARDING_STATE_READY;
         return 0;
     }

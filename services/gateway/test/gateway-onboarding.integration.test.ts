@@ -58,6 +58,7 @@ class RecordingOnboardingAuthorizer implements OnboardingAuthorizer, CharacterAu
     this.calls.push('activate')
     return { characterId: request.characterId }
   }
+  async bindSnapshotCommand(): Promise<void> { this.calls.push('bind') }
   async challenge(request: ChallengeOnboardingRequest): Promise<{ characterId: string, legacyNameKey: string, fileSha256: string, allowExpiresAtMs: number }> {
     this.calls.push('challenge'); this.challenges.push(request)
     return { characterId: character, legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + 90_000 }
@@ -121,6 +122,8 @@ class CommitCallbackMudSocket extends EventEmitter {
       queueMicrotask(() => this.emit('data', Buffer.concat([
         this.savedLeadingGame, Buffer.from(`MUD1O SAVED|${character}|${'f'.repeat(64)}|player-v1\n`), this.savedTrailingGame,
       ])))
+    } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(text)) {
+      callback?.(); setImmediate(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
     } else if (text === 'MUD1O COMMIT\n') {
       this.commitCallback = callback
     } else {
@@ -167,6 +170,8 @@ class ClaimCompletionRaceMudSocket extends EventEmitter {
       this.stage = 4
       callback?.()
       queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O VERIFIED|416c696365|${'b'.repeat(64)}\n`)))
+    } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(text)) {
+      callback?.(); setImmediate(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
     } else if (this.stage === 4 && text === `MUD1O CLAIMED|${character}\n`) {
       this.stage = 5
       callback?.()
@@ -259,15 +264,28 @@ class DeferredReserveAuthorizer extends RecordingOnboardingAuthorizer {
 
 test('provision relays the original wizard before DB finalize and blocks only at reserve/finalize boundaries', async (t) => {
   const toMud: Buffer[] = []
+  let activationCommandId: string | undefined
+  let clientSocket: Socket | undefined
   let stage = 0
-  const mud = createServer((socket) => socket.on('data', (data) => {
+  const mud = createServer((socket) => {
+    clientSocket = socket
+    socket.on('data', (data) => {
     const frame = Buffer.from(data); toMud.push(frame)
     if (stage === 0) { stage = 1; socket.write('MUD1O OK\n이름? ') }
     else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
     else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
     else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'a'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
-  }))
+    else if (stage === 4 && frame.toString('ascii').includes('MUD1O COMMIT\n')) {
+      stage = 5
+      const activation = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)
+      if (activation) { activationCommandId = activation[1]; stage = 6 }
+    }
+    else if (stage === 5 && /MUD1O ACTIVATED\|[0-9a-f-]+\n/.test(frame.toString('ascii'))) {
+      activationCommandId = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)![1]
+      stage = 6
+    }
+    })
+  })
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
   const address = mud.address(); assert.ok(address && typeof address !== 'string')
   const authorizer = new RecordingOnboardingAuthorizer()
@@ -287,12 +305,16 @@ test('provision relays the original wizard before DB finalize and blocks only at
   await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve']))
   await eventually(() => assert.match(binaryText(messages), /성별\? /))
   ws.send(Buffer.from('m\n'))
-  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate']))
-  await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
+  await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii').includes('MUD1O COMMIT\n'))))
+  await eventually(() => assert.equal(activationCommandId !== undefined, true))
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
+  assert.equal(authorizer.calls.includes('bind'), false)
+  clientSocket!.write(`MUD1O ACTIVE|${activationCommandId}\n`)
+  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate', 'bind']))
   assert.match(toMud[0]!.toString('ascii'), /^MUD1O\|P\|\d+\|000102030405060708090a0b0c0d0e0f\|123e4567-e89b-12d3-a456-426614174000\|123e4567-e89b-12d3-a456-426614174001\|[0-9a-f]{64}\n$/)
-  assert.equal(toMud.filter((value) => value.toString('ascii').startsWith('MUD1O ')).length, 2)
+  assert.equal(toMud.reduce((count, value) => count + (value.toString('ascii').match(/MUD1O (?:COMMIT|ACTIVATED)\|?/g) ?? []).length, 0), 2)
   assert.equal(authorizer.leaseBegins.length, 0, 'the normal game socket owns the gameplay lease')
-  assert.equal(stage, 5)
+  assert.equal(stage, 6)
   ws.close()
 })
 
@@ -327,9 +349,12 @@ test('fragmented onboarding admission control is buffered without rejecting the 
 
 test('uncertain provision finalize reconciles exactly once, provisions the browser, and closes the one-shot C connection', async (t) => {
   const toMud: Buffer[] = []
+  let activationCommandId: string | undefined
+  let clientSocket: Socket | undefined
   let stage = 0
   let mudClosed = false
   const mud = createServer((socket) => {
+    clientSocket = socket
     socket.once('close', () => { mudClosed = true })
     socket.on('data', (data) => {
       const frame = Buffer.from(data); toMud.push(frame)
@@ -337,7 +362,15 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
       else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
       else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3; socket.write('성별? ') }
       else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'c'.repeat(64)}|player-v1\n`) }
-      else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
+      else if (stage === 4 && frame.toString('ascii').includes('MUD1O COMMIT\n')) {
+        stage = 5
+        const activation = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)
+        if (activation) { activationCommandId = activation[1]; stage = 6 }
+      }
+      else if (stage === 5 && /MUD1O ACTIVATED\|[0-9a-f-]+\n/.test(frame.toString('ascii'))) {
+        activationCommandId = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)![1]
+        stage = 6
+      }
     })
   })
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
@@ -359,16 +392,20 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
   await eventually(() => assert.match(binaryText(messages), /성별\? /))
   ws.send(Buffer.from('m\n'))
 
-  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate']))
   const expectedFinalize: FinalizeOnboardingRequest = { actorUserId: actor, correlationId: correlation, characterId: character, fileSha256: 'c'.repeat(64), storageFormat: 'player-v1' }
-  assert.deepEqual(authorizer.finalizations, [expectedFinalize])
-  assert.deepEqual(authorizer.reconciliations, [expectedFinalize])
-  await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii') === 'MUD1O COMMIT\n')))
+  await eventually(() => assert.deepEqual(authorizer.finalizations, [expectedFinalize]))
+  await eventually(() => assert.deepEqual(authorizer.reconciliations, [expectedFinalize]))
+  await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii').includes('MUD1O COMMIT\n'))))
+  await eventually(() => assert.equal(activationCommandId !== undefined, true))
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate'])
+  assert.equal(authorizer.calls.includes('bind'), false)
+  clientSocket!.write(`MUD1O ACTIVE|${activationCommandId}\n`)
+  await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate', 'bind']))
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
   const [closeCode] = await uncertainProvisionClose as [number]
   assert.equal(closeCode, 1000)
   await eventually(() => assert.equal(mudClosed, true))
-  assert.equal(stage, 5)
+  assert.equal(stage, 6)
   assert.equal(toMud.some((value) => value.toString() === 'look\n'), false)
 })
 
@@ -431,7 +468,7 @@ test('provision completion silently drops game bytes coalesced with SAVED', asyn
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
   assert.equal(messages.some(({ data, binary }) => binary && Buffer.from(data).equals(trailingGame)), false)
   assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"error"')), false)
-  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate', 'bind'])
 })
 
 test('provision completion drops a later C game event while SAVED finalization is pending', async (t) => {
@@ -677,7 +714,14 @@ test('ready provision reports completion before closing the one-shot onboarding 
     else if (stage === 1 && frame.toString() === 'Hero\n') { stage = 2; socket.write('MUD1O RESERVE|4865726f\n') }
     else if (stage === 2 && frame.toString('ascii') === `MUD1O RESERVED|${character}\n`) { stage = 3 }
     else if (stage === 3 && frame.toString() === 'm\n') { stage = 4; socket.write(`MUD1O SAVED|${character}|${'e'.repeat(64)}|player-v1\n`) }
-    else if (stage === 4 && frame.toString('ascii') === 'MUD1O COMMIT\n') { stage = 5 }
+    else if (stage === 4 && frame.toString('ascii').includes('MUD1O COMMIT\n')) {
+      stage = 5
+      const activation = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)
+      if (activation) { stage = 6; socket.write(`MUD1O ACTIVE|${activation[1]}\n`) }
+    }
+    else if (stage === 5 && /^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(frame.toString('ascii'))) {
+      stage = 6; socket.write(frame.toString('ascii').replace('ACTIVATED', 'ACTIVE'))
+    }
   }))
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
   const address = mud.address(); assert.ok(address && typeof address !== 'string')
@@ -696,7 +740,7 @@ test('ready provision reports completion before closing the one-shot onboarding 
   await eventually(() => assert.equal(stage, 3))
   ws.send(Buffer.from('m\n'))
   await once(ws, 'close')
-  assert.equal(stage, 5)
+  assert.equal(stage, 6)
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`))
 })
 
@@ -816,8 +860,12 @@ test('claim relays the legacy password prompt, calls only the name-bound claim R
       stage = 3; allowReceived = true
     } else if (stage === 3 && frame.toString() === 'old-secret\n') {
       stage = 4; socket.write(`MUD1O VERIFIED|416c696365|${'b'.repeat(64)}\n`)
-    } else if (stage === 4 && frame.toString('ascii') === `MUD1O CLAIMED|${character}\n`) {
-      stage = 5; socket.end()
+    } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(frame.toString('ascii'))) {
+      setImmediate(() => socket.write(frame.toString('ascii').replace('ACTIVATED', 'ACTIVE'), () => socket.end()))
+    } else if (stage === 4 && frame.toString('ascii').includes(`MUD1O CLAIMED|${character}\n`)) {
+      stage = 5
+      const activation = frame.toString('ascii').match(/MUD1O ACTIVATED\|([0-9a-f-]+)\n/)
+      if (activation) socket.write(`MUD1O ACTIVE|${activation[1]}\n`, () => socket.end())
     }
   }) })
   mud.listen(0, '127.0.0.1'); await once(mud, 'listening')
@@ -843,7 +891,7 @@ test('claim relays the legacy password prompt, calls only the name-bound claim R
   ws.send(Buffer.from('old-secret\n'))
   const [code] = await once(ws, 'close')
   assert.equal(code, 1000)
-  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'claim', 'activate'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'claim', 'activate', 'bind'])
   assert.deepEqual(authorizer.challenges.map(({ legacyNameKey, fileSha256 }) => ({ legacyNameKey, fileSha256 })), [{ legacyNameKey: 'Alice', fileSha256: 'b'.repeat(64) }])
   assert.deepEqual(authorizer.claimNames, ['Alice', 'Alice'])
   assert.deepEqual(authorizer.claimFingerprints, ['b'.repeat(64), 'b'.repeat(64)])
@@ -877,7 +925,7 @@ test('claim completion ignores synchronous C error and end events after CLAIMED'
 
   assert.equal(code, 1000)
   assert.equal(mud.destroyDuringEnd, 0, 'C close events after CLAIMED must not enter fail()')
-  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'activate'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'activate', 'bind'])
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
 })
 

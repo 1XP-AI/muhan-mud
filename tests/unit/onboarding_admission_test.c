@@ -225,6 +225,7 @@ static int test_controls(void)
         "MUD1O CHALLENGE|416c696365|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         "MUD1O VERIFIED|416c696365|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         "MUD1O SAVED|11111111-1111-4111-8111-111111111111|0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|player-v1\n",
+        "MUD1O ACTIVE|44444444-4444-4444-8444-444444444444\n",
         "MUD1O ERR\n"
     };
     static const char gateway_lines[][64] = {
@@ -232,7 +233,8 @@ static int test_controls(void)
         "MUD1O ALLOW\n",
         "MUD1O CLAIMED|22222222-2222-4222-8222-222222222222\n",
         "MUD1O COMMIT\n",
-        "MUD1O ABORT\n"
+        "MUD1O ABORT\n",
+        "MUD1O ACTIVATED|44444444-4444-4444-8444-444444444444\n"
     };
     struct guarded_control {
         onboarding_control value;
@@ -243,13 +245,13 @@ static int test_controls(void)
     char oversized[ONBOARDING_ADMISSION_MAX_LINE + 1];
     int i, fence_ok, failed = 0;
 
-    for(i=0; i<6; i++) {
+    for(i=0; i<7; i++) {
         failed += expect(onboarding_parse_c_control(c_lines[i], &control) == 0 &&
                          onboarding_format_c_control(output, sizeof(output), &control) == 0 &&
                          strcmp(output, c_lines[i]) == 0,
                          "every fixture C-to-Gateway control must parse and format exactly");
     }
-    for(i=0; i<5; i++) {
+    for(i=0; i<6; i++) {
         failed += expect(onboarding_parse_gateway_control(gateway_lines[i], &control) == 0 &&
                          onboarding_format_gateway_control(output, sizeof(output), &control) == 0 &&
                          strcmp(output, gateway_lines[i]) == 0,
@@ -263,6 +265,7 @@ static int test_controls(void)
                                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|bad value\n", &control) < 0 &&
                      onboarding_parse_gateway_control("MUD1O COMMIT", &control) < 0 &&
                      onboarding_parse_gateway_control("MUD1O ALLOW|extra\n", &control) < 0 &&
+                     onboarding_parse_gateway_control("MUD1O ACTIVATED|44444444-4444-4444-8444-44444444444A\n", &control) < 0 &&
                      onboarding_parse_gateway_control("MUD1O CLAIMED|11111111-1111-4111-8111-111111111111|x\n", &control) < 0,
                      "control parser must reject CRLF, unknown fields, and malformed values");
 
@@ -323,8 +326,16 @@ static int test_state_guard(void)
                      "SAVED is accepted only after RESERVED");
     onboarding_parse_gateway_control("MUD1O COMMIT\n", &control);
     failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
+                     state == ONBOARDING_STATE_PROVISION_AWAIT_ACTIVATED,
+                     "COMMIT must wait for ACTIVATED before provision is ready");
+    onboarding_parse_gateway_control("MUD1O ACTIVATED|44444444-4444-4444-8444-444444444444\n", &control);
+    failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
                      state == ONBOARDING_STATE_READY,
-                     "COMMIT makes provision ready");
+                     "ACTIVATED makes committed provision ready");
+    onboarding_parse_c_control("MUD1O ACTIVE|44444444-4444-4444-8444-444444444444\n", &control);
+    failed += expect(onboarding_state_apply_c_control(&state, &control) == 0 &&
+                     state == ONBOARDING_STATE_READY,
+                     "ACTIVE is acknowledged only after accepted ACTIVATED");
 
     state = ONBOARDING_STATE_NEW;
     ticket.mode = ONBOARDING_ADMISSION_MODE_CLAIM;
@@ -357,14 +368,26 @@ static int test_state_guard(void)
                      "claim must verify only after ALLOW and password comparison");
     onboarding_parse_gateway_control("MUD1O CLAIMED|22222222-2222-4222-8222-222222222222\n", &control);
     failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
+                     state == ONBOARDING_STATE_CLAIM_AWAIT_ACTIVATED,
+                     "CLAIMED must wait for ACTIVATED before claim is ready");
+    onboarding_parse_gateway_control("MUD1O ACTIVATED|44444444-4444-4444-8444-444444444444\n", &control);
+    failed += expect(onboarding_state_apply_gateway_control(&state, &control) == 0 &&
                      state == ONBOARDING_STATE_READY,
-                     "CLAIMED makes claim ready");
+                     "ACTIVATED makes claimed session ready");
 
     state = ONBOARDING_STATE_NEW;
     onboarding_parse_gateway_control("MUD1O COMMIT\n", &control);
     failed += expect(onboarding_state_apply_gateway_control(&state, &control) < 0 &&
                      state == ONBOARDING_STATE_NEW,
                      "out-of-order control must leave state unchanged");
+    onboarding_parse_gateway_control("MUD1O ACTIVATED|44444444-4444-4444-8444-444444444444\n", &control);
+    failed += expect(onboarding_state_apply_gateway_control(&state, &control) < 0 &&
+                     state == ONBOARDING_STATE_NEW,
+                     "ACTIVATED before COMMIT or CLAIMED must fail closed");
+    onboarding_parse_c_control("MUD1O ACTIVE|44444444-4444-4444-8444-444444444444\n", &control);
+    failed += expect(onboarding_state_apply_c_control(&state, &control) < 0 &&
+                     state == ONBOARDING_STATE_NEW,
+                     "ACTIVE before accepted ACTIVATED must fail closed");
     state = ONBOARDING_STATE_CLAIM_READY;
     onboarding_parse_c_control("MUD1O RESERVE|416c696365\n", &control);
     failed += expect(onboarding_state_apply_c_control(&state, &control) < 0 &&

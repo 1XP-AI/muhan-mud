@@ -15,6 +15,7 @@
 #include "player_recovery.h"
 #include "trusted_admission.h"
 #include "onboarding_admission.h"
+#include "onboarding_activation_binding.h"
 #include "onboarding_evidence_control.h"
 #include "onboarding_evidence_emission.h"
 #include "onboarding_receipt.h"
@@ -171,11 +172,63 @@ int fd;
 onboarding_control *control;
 {
 	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	unsigned long length;
+	int written;
 
 	if(!control || onboarding_apply_control(fd, control, 0) != 0 ||
 	   onboarding_format_c_control(line, sizeof(line), control) != 0) return -1;
-	if(scwrite(fd, line, (unsigned int)strlen(line)) < 0) return -1;
+	length = (unsigned long)strlen(line);
+	written = scwrite(fd, line, (unsigned int)length);
+	if(written < 0 || (unsigned long)written != length) return -1;
 	return 0;
+}
+
+/* The command UUID is bound only after the protocol state machine accepted
+ * ACTIVATED.  This durable non-secret record is deliberately not an M3
+ * consumption call; M3 remains unmodified until its separate integration. */
+static int onboarding_write_activation_binding(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_activation_binding_mode mode;
+	if(!onboarding_fd_active(fd) || !command_id) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	return onboarding_activation_binding_write(
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, command_id);
+}
+
+static int onboarding_send_active(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_control control;
+	if(!command_id) return -1;
+	memset(&control, 0, sizeof(control));
+	control.kind = ONBOARDING_CONTROL_ACTIVE;
+	strcpy(control.command_id, command_id);
+	return onboarding_send_control(fd, &control);
+}
+
+static void onboarding_finish_activation(fd)
+int fd;
+{
+	if(!onboarding_fd_active(fd)) return;
+	strcpy(Ply[fd].extr->auth_user_id, Ply[fd].extr->onboarding_actor_id);
+	strcpy(Ply[fd].extr->character_id, Ply[fd].extr->onboarding_character_id);
+	memset(Ply[fd].extr->onboarding_actor_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_actor_id));
+	memset(Ply[fd].extr->onboarding_correlation_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_correlation_id));
+	memset(Ply[fd].extr->onboarding_character_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_character_id));
+	Ply[fd].extr->onboarding_mode = 0;
+	Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_NEW;
 }
 
 /* The EVIDENCE lane carries the separately canonical metadata envelope, not a
@@ -237,9 +290,11 @@ unsigned char *str;
 	if(!onboarding_fd_active(fd) || !onboarding_session_is_protocol_line(str) ||
 	   !Ply[fd].io) return 0;
 	if((Ply[fd].io->fn == onboarding_provision &&
-	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 4)) ||
+	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 4 ||
+	     Ply[fd].io->fnparam == 5)) ||
 	   (Ply[fd].io->fn == onboarding_claim &&
-	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 5)))
+	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 5 ||
+	     Ply[fd].io->fnparam == 6)))
 		return 0;
 	if(onboarding_parse_gateway_line(str, &control) == 0 &&
 	   control.kind == ONBOARDING_CONTROL_ABORT)
@@ -681,24 +736,26 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
+		/* COMMIT is a completion prerequisite, not the publication edge. */
+		RETURN(fd, onboarding_provision, 5);
+	case 5:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
+		   onboarding_apply_control(fd, &control, 1) != 0 ||
+		   !Ply[fd].ply || !Ply[fd].extr->onboarding_world_staged ||
+		   Ply[fd].ply->parent_rom ||
+		   onboarding_write_activation_binding(fd, control.command_id) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
 		Ply[fd].ply->fd = fd;
-		if(activate_staged_ply(Ply[fd].ply) < 0) {
+		if(activate_staged_ply(Ply[fd].ply) < 0 ||
+		   onboarding_send_active(fd, control.command_id) != 0) {
 			onboarding_fail(fd);
 			return;
 		}
 		Ply[fd].extr->onboarding_world_staged = 0;
-		strcpy(Ply[fd].extr->auth_user_id,
-		       Ply[fd].extr->onboarding_actor_id);
-		strcpy(Ply[fd].extr->character_id,
-		       Ply[fd].extr->onboarding_character_id);
-		memset(Ply[fd].extr->onboarding_actor_id, 0,
-		       sizeof(Ply[fd].extr->onboarding_actor_id));
-		memset(Ply[fd].extr->onboarding_correlation_id, 0,
-		       sizeof(Ply[fd].extr->onboarding_correlation_id));
-		memset(Ply[fd].extr->onboarding_character_id, 0,
-		       sizeof(Ply[fd].extr->onboarding_character_id));
-		Ply[fd].extr->onboarding_mode = 0;
-		Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_NEW;
+		onboarding_finish_activation(fd);
 		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
 		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
 		RETURN(fd, command, 1);
@@ -844,6 +901,17 @@ unsigned char *str;
 		}
 		strcpy(Ply[fd].extr->onboarding_character_id, control.character_id);
 		onboarding_zero_claim_credentials(fd, 0);
+		RETURN(fd, onboarding_claim, 6);
+	case 6:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
+		   onboarding_apply_control(fd, &control, 1) != 0 ||
+		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
+		   onboarding_send_active(fd, control.command_id) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		onboarding_finish_activation(fd);
 		disconnect(fd);
 		return;
 	default:

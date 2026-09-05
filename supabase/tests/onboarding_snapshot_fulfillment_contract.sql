@@ -1,9 +1,8 @@
 \set ON_ERROR_STOP on
 
--- RED: run after migration 20260925000000 only; the prior writer raises for
--- ordinary terminal delivery states.  GREEN: apply 20260926000000 twice, then
--- rerun this disposable PG17 contract.  The terminal-semantics migration is
--- forward-only and its replay safety is asserted below.
+-- RED: run after migration 20260926000000 only; the prior writer has no
+-- service-only immutable command binding.  GREEN: apply 20260927000000 twice,
+-- then rerun this disposable PG17 contract.
 begin;
 
 create or replace function pg_temp.assert_true(p_condition boolean, p_message text)
@@ -35,8 +34,10 @@ $$;
 
 select pg_temp.assert_true(
   to_regclass('private.game_character_onboarding_snapshot_fulfillments') is not null
+  and to_regclass('private.game_character_onboarding_snapshot_command_bindings') is not null
   and to_regprocedure('private.fulfill_game_character_onboarding_snapshot_eligibility(uuid,uuid)') is not null
   and to_regprocedure('private.fulfill_game_character_onboarding_snapshot_eligibility(uuid,uuid,uuid)') is null
+  and to_regprocedure('public.register_game_character_onboarding_snapshot_command_binding(uuid,uuid,uuid,text,uuid)') is not null
   and (select relrowsecurity from pg_class
          where oid = 'private.game_character_onboarding_snapshot_fulfillments'::regclass)
   and (select count(*) = 1 from pg_constraint
@@ -46,6 +47,13 @@ select pg_temp.assert_true(
         where tgrelid = 'private.game_character_onboarding_snapshot_fulfillments'::regclass
           and tgname = 'game_character_onboarding_snapshot_fulfillments_immutable'
           and not tgisinternal)
+  and (select count(*) = 1 from pg_trigger
+        where tgrelid = 'private.game_character_onboarding_snapshot_command_bindings'::regclass
+          and tgname = 'game_character_onboarding_snapshot_command_bindings_immutable'
+          and not tgisinternal)
+  and (select count(*) = 1 from pg_constraint
+        where conrelid = 'private.game_character_onboarding_snapshot_command_bindings'::regclass
+          and contype = 'p')
   and (select count(*) = 1 from pg_constraint
         where conrelid = 'private.game_character_onboarding_snapshot_eligibility_outbox'::regclass
           and conname = 'game_character_onboarding_snapshot_eligibility_outbox_status')
@@ -53,7 +61,7 @@ select pg_temp.assert_true(
         where table_schema = 'private'
           and table_name = 'game_character_onboarding_snapshot_eligibility_outbox'
           and column_name = 'fulfilled_at'),
-  'twice-applied migration leaves one RLS fulfillment receipt table, one immutable trigger, and one fulfilled outbox shape'
+  'twice-applied migration leaves immutable command-keyed bindings and fulfillment receipts with one fulfilled outbox shape'
 );
 
 select pg_temp.assert_true(
@@ -73,8 +81,21 @@ select pg_temp.assert_true(
   and not has_table_privilege('mud_writer',
         'private.game_character_onboarding_snapshot_fulfillments', 'select')
   and not has_table_privilege('service_role',
-        'private.game_character_onboarding_snapshot_fulfillments', 'insert'),
-  'only the narrow correlation-free mud_writer RPC surface is exposed; the receipt table remains private'
+        'private.game_character_onboarding_snapshot_fulfillments', 'insert')
+  and (select p.prosecdef and p.proconfig = array['search_path=pg_catalog, private']::text[]
+         from pg_proc p
+        where p.oid = 'public.register_game_character_onboarding_snapshot_command_binding(uuid,uuid,uuid,text,uuid)'::regprocedure)
+  and has_function_privilege('service_role',
+        'public.register_game_character_onboarding_snapshot_command_binding(uuid,uuid,uuid,text,uuid)', 'execute')
+  and not has_function_privilege('anon',
+        'public.register_game_character_onboarding_snapshot_command_binding(uuid,uuid,uuid,text,uuid)', 'execute')
+  and not has_function_privilege('authenticated',
+        'public.register_game_character_onboarding_snapshot_command_binding(uuid,uuid,uuid,text,uuid)', 'execute')
+  and not has_table_privilege('service_role',
+        'private.game_character_onboarding_snapshot_command_bindings', 'insert')
+  and not has_table_privilege('mud_writer',
+        'private.game_character_onboarding_snapshot_command_bindings', 'select'),
+  'only service_role may register a private immutable command binding and only mud_writer may fulfill it'
 );
 
 select pg_temp.assert_true(
@@ -115,6 +136,22 @@ select pg_temp.assert_true(
     ), '[[:space:]]+', ' ', 'g')
   ),
   'fulfillment acquires overlapping intent, handoff, character, and outbox row locks in activation order'
+);
+
+select pg_temp.assert_true(
+  position(
+    'from private.game_character_onboarding_snapshot_command_bindings where command_id = p_artifact_command_id and character_id = p_character_id'
+    in regexp_replace(pg_get_functiondef(
+      'private.fulfill_game_character_onboarding_snapshot_eligibility(uuid,uuid)'::regprocedure
+    ), '[[:space:]]+', ' ', 'g')
+  ) > 0
+  and position(
+    'v_receipt.acknowledged_at <= v_binding.bound_at'
+    in regexp_replace(pg_get_functiondef(
+      'private.fulfill_game_character_onboarding_snapshot_eligibility(uuid,uuid)'::regprocedure
+    ), '[[:space:]]+', ' ', 'g')
+  ) > 0,
+  'fulfillment resolves only the supplied command-keyed binding and requires a receipt acknowledged strictly after it'
 );
 
 insert into auth.users (
@@ -234,11 +271,11 @@ select pg_temp.assert_true(
 );
 reset role;
 
--- An acknowledgement from before enqueue is not an eligibility match, even
--- when character/name/hash values otherwise agree.
+-- Artifact evidence cannot nominate itself: only a previously bound command
+-- is eligible, even when its receipt otherwise has matching facts.
 select pg_temp.add_artifact(
   'e2400000-0000-0000-0000-000000000002', 2,
-  (select enqueued_at - interval '1 microsecond'
+  (select enqueued_at + interval '1 microsecond'
      from private.game_character_onboarding_snapshot_eligibility_outbox
     where correlation_id = 'c2400000-0000-0000-0000-000000000001')
 );
@@ -249,7 +286,7 @@ select pg_temp.assert_true(
      from private.fulfill_game_character_onboarding_snapshot_eligibility(
        'b2400000-0000-0000-0000-000000000001',
        'e2400000-0000-0000-0000-000000000002')),
-  'a stale candidate is a NOT_ELIGIBLE terminal outcome'
+  'an unbound artifact command is a NOT_ELIGIBLE terminal outcome'
 );
 reset role;
 reset session authorization;
@@ -258,22 +295,61 @@ select pg_temp.assert_true(
      from private.game_character_onboarding_snapshot_eligibility_outbox
     where correlation_id = 'c2400000-0000-0000-0000-000000000001')
   and (select count(*) = 0 from private.game_character_onboarding_snapshot_fulfillments),
-  'old acknowledgement rejection rolls back with no receipt or outbox transition'
+  'unbound command rejection rolls back with no receipt or outbox transition'
 );
 
--- Several rows now exist for this character.  The RPC receives the exact
--- immutable command identity; it must not infer which candidate to use.
+-- Gateway registers the exact command after activation and before writer
+-- acknowledgement.  Exact replay is allowed; every tuple substitution fails
+-- closed and cannot replace the command key.
+set local role service_role;
+select pg_temp.assert_true(
+  (select outcome = 'BOUND'
+     from public.register_game_character_onboarding_snapshot_command_binding(
+       'a2400000-0000-0000-0000-000000000001',
+       'c2400000-0000-0000-0000-000000000001',
+       'b2400000-0000-0000-0000-000000000001', 'claim',
+       'e2400000-0000-0000-0000-000000000003')),
+  'the service binds one exact activated onboarding tuple to one command id'
+);
+select pg_temp.assert_true(
+  (select outcome = 'EXACT_RETRY'
+     from public.register_game_character_onboarding_snapshot_command_binding(
+       'a2400000-0000-0000-0000-000000000001',
+       'c2400000-0000-0000-0000-000000000001',
+       'b2400000-0000-0000-0000-000000000001', 'claim',
+       'e2400000-0000-0000-0000-000000000003')),
+  'the exact command binding registration replay is idempotent'
+);
+select pg_temp.expect_rejection(
+  'select * from public.register_game_character_onboarding_snapshot_command_binding(''a2400000-0000-0000-0000-000000000001'', ''c2400000-0000-0000-0000-000000000001'', ''b2400000-0000-0000-0000-000000000001'', ''claim'', ''e2400000-0000-0000-0000-000000000004'')'
+);
+select pg_temp.expect_rejection(
+  'select * from public.register_game_character_onboarding_snapshot_command_binding(''a2400000-0000-0000-0000-000000000099'', ''c2400000-0000-0000-0000-000000000001'', ''b2400000-0000-0000-0000-000000000001'', ''claim'', ''e2400000-0000-0000-0000-000000000003'')'
+);
+select pg_temp.expect_rejection(
+  'select * from public.register_game_character_onboarding_snapshot_command_binding(''a2400000-0000-0000-0000-000000000001'', ''c2400000-0000-0000-0000-000000000099'', ''b2400000-0000-0000-0000-000000000001'', ''claim'', ''e2400000-0000-0000-0000-000000000003'')'
+);
+select pg_temp.expect_rejection(
+  'select * from public.register_game_character_onboarding_snapshot_command_binding(''a2400000-0000-0000-0000-000000000001'', ''c2400000-0000-0000-0000-000000000001'', ''b2400000-0000-0000-0000-000000000099'', ''claim'', ''e2400000-0000-0000-0000-000000000003'')'
+);
+select pg_temp.expect_rejection(
+  'select * from public.register_game_character_onboarding_snapshot_command_binding(''a2400000-0000-0000-0000-000000000001'', ''c2400000-0000-0000-0000-000000000001'', ''b2400000-0000-0000-0000-000000000001'', ''provision'', ''e2400000-0000-0000-0000-000000000003'')'
+);
+reset role;
+select pg_temp.expect_rejection(
+  'delete from private.game_character_onboarding_snapshot_command_bindings where command_id = ''e2400000-0000-0000-0000-000000000003'''
+);
+
+-- Multiple post-binding artifacts now exist for the character, but only the
+-- registered command can fulfill.  The receipt for that command is created
+-- after bound_at by construction.
 select pg_temp.add_artifact(
   'e2400000-0000-0000-0000-000000000003', 3,
-  (select enqueued_at + interval '1 microsecond'
-     from private.game_character_onboarding_snapshot_eligibility_outbox
-    where correlation_id = 'c2400000-0000-0000-0000-000000000001')
+  clock_timestamp()
 );
 select pg_temp.add_artifact(
   'e2400000-0000-0000-0000-000000000004', 4,
-  (select enqueued_at + interval '2 microseconds'
-     from private.game_character_onboarding_snapshot_eligibility_outbox
-    where correlation_id = 'c2400000-0000-0000-0000-000000000001'),
+  clock_timestamp(),
   'wrong-world'
 );
 set local session authorization mud_writer_login;
@@ -283,14 +359,14 @@ select pg_temp.assert_true(
      from private.fulfill_game_character_onboarding_snapshot_eligibility(
        'b2400000-0000-0000-0000-000000000001',
        'e2400000-0000-0000-0000-000000000004')),
-  'a nonmatching candidate is a NOT_ELIGIBLE terminal outcome'
+  'an unbound command cannot fulfill even when its artifact is supplied'
 );
 select pg_temp.assert_true(
   (select outcome = 'FULFILLED'
      from private.fulfill_game_character_onboarding_snapshot_eligibility(
        'b2400000-0000-0000-0000-000000000001',
        'e2400000-0000-0000-0000-000000000003')),
-  'the relay supplies only character and exact immutable artifact identity to fulfill the active pending handoff'
+  'the writer fulfills only the exact service-bound command after its receipt acknowledgement'
 );
 select pg_temp.assert_true(
   (select outcome = 'EXACT_RETRY'
@@ -306,11 +382,11 @@ select pg_temp.add_artifact(
     where correlation_id = 'c2400000-0000-0000-0000-000000000001')
 );
 select pg_temp.assert_true(
-  (select outcome = 'ALREADY_FULFILLED'
+  (select outcome = 'NOT_ELIGIBLE'
      from private.fulfill_game_character_onboarding_snapshot_eligibility(
        'b2400000-0000-0000-0000-000000000001',
        'e2400000-0000-0000-0000-000000000005')),
-  'a later distinct exact immutable artifact reports ALREADY_FULFILLED'
+  'a later unbound artifact cannot substitute for the immutable command binding'
 );
 reset role;
 reset session authorization;
@@ -340,7 +416,21 @@ select pg_temp.assert_true(
           and legacy_name_key = 'Fulfillhero'
           and storage_format = 1
           and artifact_command_id = 'e2400000-0000-0000-0000-000000000003'),
-  'exact fulfillment records one correlation-keyed immutable receipt and closes only that outbox row'
+  'exact fulfillment records the one command-bound immutable receipt and closes only that outbox row'
+);
+
+select pg_temp.assert_true(
+  (select command_id = 'e2400000-0000-0000-0000-000000000003'::uuid
+              and correlation_id = 'c2400000-0000-0000-0000-000000000001'::uuid
+              and actor_user_id = 'a2400000-0000-0000-0000-000000000001'::uuid
+              and character_id = 'b2400000-0000-0000-0000-000000000001'::uuid
+              and mode = 'claim'
+              and bound_at < (select receipt_acknowledged_at
+                                from private.game_character_onboarding_snapshot_fulfillments
+                               where correlation_id = 'c2400000-0000-0000-0000-000000000001')
+         from private.game_character_onboarding_snapshot_command_bindings
+        where command_id = 'e2400000-0000-0000-0000-000000000003'),
+  'the immutable command-keyed binding proves the exact tuple and predates the acknowledged receipt'
 );
 
 -- After fulfillment, every substituted activation tuple must fail and leave

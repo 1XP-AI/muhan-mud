@@ -79,6 +79,40 @@ test('handoff activation invokes only the exact service RPC and validates its ac
   await assert.rejects(() => unexpectedColumn.activateHandoff({ actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' }), OnboardingAuthorizationError)
 })
 
+test('snapshot command binding uses the migration RPC contract and accepts only BOUND outcomes', async () => {
+  const calls: Array<{ url: URL, init?: RequestInit }> = []
+  const request = {
+    actorUserId: actor,
+    correlationId: correlation,
+    characterId: character,
+    mode: 'provision' as const,
+    commandId: '123e4567-e89b-12d3-a456-426614174003',
+  }
+  const client = new SupabaseOnboardingAuthorizer(config(), async (url, init) => {
+    calls.push({ url: new URL(url), init })
+    return Response.json([{ outcome: 'BOUND' }])
+  })
+
+  await client.bindSnapshotCommand(request)
+  assert.equal(calls[0]!.url.pathname, '/rpc/register_game_character_onboarding_snapshot_command_binding')
+  assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), {
+    p_actor_user_id: actor,
+    p_correlation_id: correlation,
+    p_character_id: character,
+    p_mode: 'provision',
+    p_command_id: request.commandId,
+  })
+
+  const exactRetry = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{ outcome: 'EXACT_RETRY' }]))
+  await exactRetry.bindSnapshotCommand(request)
+
+  const unknownOutcome = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{ outcome: 'ALREADY_BOUND' }]))
+  await assert.rejects(() => unknownOutcome.bindSnapshotCommand(request), OnboardingAuthorizationError)
+
+  const unknownColumn = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{ outcome: 'BOUND', extra: true }]))
+  await assert.rejects(() => unknownColumn.bindSnapshotCommand(request), OnboardingAuthorizationError)
+})
+
 test('onboarding RPC rejects oversized, non-JSON, and unknown-column responses', async () => {
   const now = () => new Date('2026-09-01T23:50:00.000Z').getTime()
   const oversized = new SupabaseOnboardingAuthorizer(config(), async () => new Response(new Uint8Array(65_537), { headers: { 'content-type': 'application/json' } }), now)

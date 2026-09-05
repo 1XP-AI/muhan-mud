@@ -139,12 +139,14 @@ type HexNameControl =
   | { type: 'VERIFIED'; nameHex: string; fileSha256: string }
 type CharacterControl = { type: 'RESERVED' | 'CLAIMED'; characterId: string }
 type SavedControl = { type: 'SAVED'; characterId: string; fileSha256: string; storageFormat: string }
+type ActivationControl = { type: 'ACTIVE'; commandId: string }
 export type OnboardingEvidenceControl = { type: 'EVIDENCE'; version: 1; evidence: LegacyIdentityEvidenceV1 }
 export type OnboardingControl =
   | { type: 'OK' | 'ALLOW' | 'ERR' | 'COMMIT' | 'ABORT' }
   | HexNameControl
   | CharacterControl
   | SavedControl
+  | ActivationControl
   | OnboardingEvidenceControl
 
 export interface OnboardingControlParserOptions {
@@ -218,6 +220,9 @@ function parseControlLine(line: Buffer, evidenceEnabled: boolean): OnboardingCon
       /^[0-9a-f]{64}$/.test(parts[2]!) && Buffer.byteLength(parts[3]!, 'ascii') > 0 &&
       Buffer.byteLength(parts[3]!, 'ascii') <= MAX_STORAGE_FORMAT_BYTES && /^[\x20-\x7e]+$/.test(parts[3]!)) {
     return { type: 'SAVED', characterId: parts[1]!, fileSha256: parts[2]!, storageFormat: parts[3]! }
+  }
+  if (parts[0] === 'ACTIVE' && parts.length === 2 && isStrictLowerUuid(parts[1])) {
+    return { type: 'ACTIVE', commandId: parts[1]! }
   }
   fail()
 }

@@ -15,7 +15,7 @@ import {
 } from './character-authorizer.js'
 import { TelnetParser } from './telnet.js'
 import { createOnboardingTicket, OnboardingControlDemultiplexer, OnboardingProtocolError, parseOnboardingAuthFrame, type OnboardingControl } from './onboarding-protocol.js'
-import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
+import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type BindSnapshotCommandRequest, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
 import { GatewayEvidenceFinalizer, SupabaseEvidenceFinalizerTransport, type FinalizeLegacyIdentityEvidenceRequest } from './evidence-finalizer.js'
 
 const PROTOCOL = 'muhan.v1'
@@ -270,7 +270,7 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
   onboardingWebSocketServer.on('connection', (ws, request) => {
     activeConnections += 1
     const session = new OnboardingSession(ws, request, config, authenticator, onboardingAuthorizer, evidenceFinalizer, connectTcp, logger,
-      now, dependencies.randomBytes, dependencies.timers ?? systemTimers, () => { sessions.delete(session); activeConnections -= 1 })
+      now, dependencies.randomBytes, dependencies.randomUuid ?? randomUUID, dependencies.timers ?? systemTimers, () => { sessions.delete(session); activeConnections -= 1 })
     sessions.add(session)
     allSessions.add(session)
   })
@@ -693,7 +693,8 @@ class OnboardingSession {
   private provisionReservation?: TrustedOnboardingCompletion
   private unreservedIntentMayExist = false
   private unreservedCancellationStarted = false
-  private controlPhase: 'admission' | 'provision-reserve' | 'provision-saved' | 'provision-evidence' | 'claim-challenge' | 'claim-allow' | 'completing' | 'done' = 'admission'
+  private controlPhase: 'admission' | 'provision-reserve' | 'provision-saved' | 'provision-evidence' | 'claim-challenge' | 'claim-allow' | 'activation' | 'completing' | 'done' = 'admission'
+  private activationCommandId?: string
   private claimChallenge?: { characterId: string; legacyNameKey: string; fileSha256: string; allowExpiresAtMs: number }
   private controlQueue: Promise<void> = Promise.resolve()
   private paused = false
@@ -712,7 +713,7 @@ class OnboardingSession {
     private readonly evidenceFinalizer: EvidenceFinalizer | undefined,
     private readonly connectTcp: (host: string, port: number) => Socket,
     private readonly logger: Pick<Console, 'info' | 'warn' | 'error'>, private readonly now: () => number,
-    private readonly randomBytes: ((size: number) => Buffer) | undefined,
+    private readonly randomBytes: ((size: number) => Buffer) | undefined, private readonly randomUuid: () => string,
     private readonly timers: GatewayTimers,
     private readonly onClosed: () => void,
   ) {
@@ -845,6 +846,20 @@ class OnboardingSession {
     }
     if (this.state !== 'awaiting-control') return this.fail(CLOSE_INTERNAL, 'invalid MUD onboarding control')
     try {
+      if (this.controlPhase === 'activation') {
+        if (event.type !== 'ACTIVE' || event.commandId !== this.activationCommandId) throw new OnboardingProtocolError()
+        const request: BindSnapshotCommandRequest = {
+          actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: this.characterId!,
+          mode: this.mode!, commandId: this.activationCommandId!,
+        }
+        await this.authorizer.bindSnapshotCommand(request)
+        if (this.closed) return
+        this.controlPhase = 'done'; this.state = 'closed'; this.normalClosing = true
+        this.sendText({ type: this.mode === 'provision' ? 'provisioned' : 'claimed', characterId: this.characterId! })
+        closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
+        this.mud?.end()
+        return
+      }
       if (this.mode === 'provision' && this.controlPhase === 'provision-reserve' && event.type === 'RESERVE') {
         this.controlPhase = this.config.mudOnboardingEvidenceEnabled ? 'provision-evidence' : 'provision-saved'
         this.pauseInput(); const legacyName = Buffer.from(event.nameHex, 'hex').toString('utf8')
@@ -880,17 +895,7 @@ class OnboardingSession {
         // COMMIT control has been accepted by the C socket write path.
         await this.writeControl('MUD1O COMMIT\n')
         if (this.closed) return
-        const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: result.characterId, mode: this.mode! })
-        if (this.closed) return
-        if (activated.characterId !== result.characterId) throw new OnboardingProtocolError()
-        // Provisioning owns only the one-shot C wizard transaction. The
-        // refreshed browser roster must re-enter through /ws, where the
-        // normal owner-active lease creates the normal MUD1 admission ticket.
-        this.controlPhase = 'done'; this.state = 'closed'
-        this.sendText({ type: 'provisioned', characterId: event.characterId })
-        closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
-        this.normalClosing = true
-        this.mud?.end()
+        await this.startActivation(result.characterId)
         return
       }
       if (this.mode === 'provision' && this.controlPhase === 'provision-evidence' && event.type === 'EVIDENCE') {
@@ -942,18 +947,7 @@ class OnboardingSession {
         if (result.characterId !== challenge.characterId) throw new OnboardingProtocolError()
         await this.writeControl(`MUD1O CLAIMED|${result.characterId}\n`)
         if (this.closed) return
-        const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: result.characterId, mode: this.mode! })
-        if (this.closed) return
-        if (activated.characterId !== result.characterId) throw new OnboardingProtocolError()
-        // end() can synchronously emit C error/end. Mark the one-shot
-        // onboarding connection terminal before invoking it so those events
-        // cannot turn a completed claim into a failed session.
-        this.controlPhase = 'done'
-        this.state = 'closed'
-        this.normalClosing = true
-        this.sendText({ type: 'claimed', characterId: result.characterId })
-        closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
-        this.mud?.end()
+        await this.startActivation(result.characterId)
         return
       }
       if (this.config.mudOnboardingEvidenceEnabled && event.type === 'VERIFIED') throw new OnboardingProtocolError()
@@ -997,17 +991,17 @@ class OnboardingSession {
       mode, worldId: 'muhan', evidence: event.evidence
     })
     if (this.closed) return
-    const activated = await this.authorizer.activateHandoff({
-      actorUserId: trusted.actorUserId, correlationId: trusted.correlationId, characterId: trusted.characterId, mode
-    })
-    if (this.closed) return
-    if (activated.characterId !== trusted.characterId) throw new OnboardingProtocolError()
-    this.controlPhase = 'done'
-    this.state = 'closed'
-    this.normalClosing = true
-    this.sendText({ type: browserCompletion, characterId: trusted.characterId })
-    closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
-    this.mud?.end()
+    await this.startActivation(trusted.characterId)
+  }
+  private async startActivation(characterId: string): Promise<void> {
+    const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId, mode: this.mode! })
+    if (this.closed || activated.characterId !== characterId) throw new OnboardingProtocolError()
+    const commandId = this.randomUuid()
+    if (!isStrictLowerUuid(commandId)) throw new OnboardingProtocolError()
+    this.activationCommandId = commandId
+    this.characterId = characterId
+    this.controlPhase = 'activation'
+    await this.writeControl(`MUD1O ACTIVATED|${commandId}\n`)
   }
   private writeControl(line: string): Promise<void> {
     if (!this.mud || this.mud.destroyed) {

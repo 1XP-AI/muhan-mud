@@ -37,6 +37,9 @@ class HeldCommitMudSocket extends EventEmitter {
     } else if (text === 'm\n') {
       callback?.()
       queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O SAVED|${character}|${'f'.repeat(64)}|player-v1\n`)))
+    } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(text)) {
+      callback?.()
+      queueMicrotask(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
     } else if (text === 'MUD1O COMMIT\n') {
       this.commitCallback = callback
     } else callback?.()
@@ -89,6 +92,8 @@ class HeldEvidenceCompletionMudSocket extends EventEmitter {
       this.stage = 3; callback?.(); queueMicrotask(() => this.emit('data', Buffer.from('비밀번호? ')))
     } else if (this.mode === 'claim' && this.stage === 3 && text === 'old-secret\n') {
       this.stage = 4; callback?.(); queueMicrotask(() => this.emit('data', formatOnboardingEvidenceControl(this.completionEvidence)))
+    } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(text)) {
+      callback?.(); queueMicrotask(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
     } else if (this.stage === 4 && text === (this.mode === 'provision' ? 'MUD1O COMMIT\n' : `MUD1O CLAIMED|${character}\n`)) {
       this.completionCallback = callback
     } else callback?.()
@@ -147,6 +152,7 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
     this.active = true
     return { characterId: character }
   }
+  async bindSnapshotCommand(): Promise<void> { this.trace?.push('bind') }
   async beginSession(request: BeginCharacterSessionRequest): Promise<AuthorizedCharacter> {
     this.beginSessionCalls += 1
     if (!this.active) throw new Error('handoff is still pending')
@@ -316,7 +322,7 @@ for (const scenario of [
 
     mud.releaseCompletion()
     await closed
-    assert.deepEqual(trace, ['evidence', 'activate'])
+    assert.deepEqual(trace, ['evidence', 'activate', 'bind'])
     assert.deepEqual(authorizer.calls, [...scenario.before, 'activate'])
     assert.deepEqual(finalizer.calls, [{
       actorUserId: actor, correlationId: correlation, characterId: character, mode: scenario.mode,
@@ -355,7 +361,7 @@ for (const scenario of [
     mud.releaseCompletion()
     await closed
     assert.deepEqual(authorizer.calls, scenario.expectedCalls)
-    assert.deepEqual(trace, scenario.finalizerFails ? ['evidence'] : ['evidence', 'activate'])
+    assert.deepEqual(trace, scenario.finalizerFails ? ['evidence'] : scenario.activationFails ? ['evidence', 'activate'] : ['evidence', 'activate', 'bind'])
     assert.equal(hasText(received, `{"type":"provisioned","characterId":"${character}"}`), false)
   })
 }
