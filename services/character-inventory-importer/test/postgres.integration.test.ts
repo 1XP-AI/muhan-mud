@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { expectedShard, importRecords, type InventoryRecord } from '../src/inventory.js'
+import { createBatchIdentity } from '../src/batch-identity.js'
+import { BatchImportError, expectedShard, importBatch, importRecords, type InventoryRecord } from '../src/inventory.js'
 import { PostgresImportStore } from '../src/postgres-store.js'
 import { scanMudHome } from '../src/scanner.js'
 
@@ -74,6 +75,8 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   t.after(async () => {
     // This predicate can only match this run's unique world id; cleanup is
     // narrowly scoped and never targets an existing world.
+    await pool.query('delete from private.game_imported_unclaimed_batch_watermarks where world_id = $1', [world])
+    await pool.query('delete from private.game_imported_unclaimed_batches where world_id = $1', [world])
     await pool.query('delete from public.game_characters where world_id = $1', [world])
     await Promise.all([importer.close(), concurrentLeft.close(), concurrentRight.close(), pool.end(), rm(root, { recursive: true, force: true })])
   })
@@ -135,4 +138,40 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   assert.equal(left.inserted + right.inserted, 1)
   assert.equal(left.idempotent + right.idempotent, 1)
   assert.equal(await countWorld(pool, world), 4)
+
+  const ledgerIdentity = createBatchIdentity({
+    worldId: world,
+    sourceManifestId: 'integration-manifest-0',
+    sourceSha256: digest('integration-source-0'),
+    sourceByteSize: 20,
+    parserVersion: '1.2.3',
+    abi: 1,
+    startMarker: 'range-start-0',
+    endMarker: 'range-end-0',
+  })
+  const ledgerRecords = [record('LedgerOne'), record('LedgerTwo')]
+  const batchApplied = await importBatch(importer, ledgerRecords, { identity: ledgerIdentity, streamId: 'main', sequence: 0, apply: true })
+  assert.equal(batchApplied.inserted, 2)
+  assert.equal(await countWorld(pool, world), 6)
+  const batchRetry = await importBatch(importer, ledgerRecords, { identity: ledgerIdentity, streamId: 'main', sequence: 0, apply: true })
+  assert.equal(batchRetry.ledger, 'idempotent')
+  assert.equal(await countWorld(pool, world), 6)
+  await assert.rejects(
+    () => importBatch(importer, [record('LedgerThree')], {
+      identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
+      streamId: 'main', sequence: 0, apply: true,
+    }),
+    (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_identity_conflict',
+  )
+  await assert.rejects(
+    () => importBatch(importer, [record('LedgerThree')], {
+      identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-2', sourceSha256: digest('integration-source-2'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-2', endMarker: 'range-end-2' }),
+      streamId: 'main', sequence: 2, apply: true,
+    }),
+    (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_out_of_order',
+  )
+  const watermark = await pool.query<{ watermark_sequence: string, committed_batch_sequence: string }>(
+    'select watermark_sequence::text, committed_batch_sequence::text from private.game_imported_unclaimed_batch_watermarks where world_id = $1 and stream_id = $2', [world, 'main'],
+  )
+  assert.deepEqual(watermark.rows[0], { watermark_sequence: '0', committed_batch_sequence: '0' })
 })

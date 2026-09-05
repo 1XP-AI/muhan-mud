@@ -65,7 +65,7 @@ function hasExactKeys(value: Record<string, unknown>): boolean {
     )
 }
 
-function canonicalIdentifier(value: unknown): value is string {
+export function isCanonicalBatchIdentifier(value: unknown): value is string {
   return typeof value === 'string' && CANONICAL_IDENTIFIER_RE.test(value)
 }
 
@@ -104,14 +104,14 @@ function canonicalSerialization(input: BatchIdentityInput): string {
 export function createBatchIdentity(value: unknown): BatchIdentity {
   const input = object(value)
   if (!input || !hasExactKeys(input)
-    || !canonicalIdentifier(input.worldId)
-    || !canonicalIdentifier(input.sourceManifestId)
+    || !isCanonicalBatchIdentifier(input.worldId)
+    || !isCanonicalBatchIdentifier(input.sourceManifestId)
     || typeof input.sourceSha256 !== 'string' || !SHA256_RE.test(input.sourceSha256)
     || !safeNonNegativeInteger(input.sourceByteSize)
     || !canonicalParserVersion(input.parserVersion)
     || !positiveSafeInteger(input.abi)
-    || !canonicalIdentifier(input.startMarker)
-    || !canonicalIdentifier(input.endMarker)
+    || !isCanonicalBatchIdentifier(input.startMarker)
+    || !isCanonicalBatchIdentifier(input.endMarker)
     || input.startMarker === input.endMarker) return invalid()
 
   const canonicalInput: BatchIdentityInput = {

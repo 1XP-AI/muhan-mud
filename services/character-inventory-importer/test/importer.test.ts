@@ -55,7 +55,10 @@ function existing(name: string, hash = digest(`bytes:${name}`), overrides: Parti
 }
 
 class MemoryStore implements ImportStore {
-  readonly rows = new Map<string, ExistingCharacter>()
+  rows = new Map<string, ExistingCharacter>()
+  private batches = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
+  private batchIdentities = new Map<string, { stableKey: string, sequence: number, recordCount: number }>()
+  private watermarks = new Map<string, number>()
   inserts = 0
   private tail = Promise.resolve()
 
@@ -66,16 +69,39 @@ class MemoryStore implements ImportStore {
     this.tail = new Promise<void>((resolve) => { release = resolve })
     await previous
     try {
-      return await work({
+      const rows = new Map(this.rows)
+      const batches = new Map(this.batches)
+      const batchIdentities = new Map(this.batchIdentities)
+      const watermarks = new Map(this.watermarks)
+      let inserts = 0
+      const result = await work({
         lockIdentity: async () => undefined,
-        findCharacter: async (world, name) => this.rows.get(`${world}|${name}`),
+        findCharacter: async (world, name) => rows.get(`${world}|${name}`),
         insertImportedUnclaimed: async ({ worldId, record }) => {
           const key = `${worldId}|${record.canonicalNameKey}`
-          if (this.rows.has(key)) throw new Error('duplicate insert')
-          this.inserts++
-          this.rows.set(key, existing(record.name, record.sha256))
+          if (rows.has(key)) throw new Error('duplicate insert')
+          inserts++
+          rows.set(key, existing(record.name, record.sha256))
         },
+        lockBatchStream: async () => undefined,
+        findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
+        findBatchByIdentity: async (world, stream, stableKey) => batchIdentities.get(`${world}|${stream}|${stableKey}`),
+        createBatch: async ({ identity, streamId, sequence, recordCount }) => {
+          const batch = { stableKey: identity.stableKey, sequence, recordCount }
+          batches.set(`${identity.worldId}|${streamId}|${sequence}`, batch)
+          batchIdentities.set(`${identity.worldId}|${streamId}|${identity.stableKey}`, batch)
+        },
+        readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
+        advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence) },
       })
+      // Commit state only when callback did not throw, matching the production
+      // serializable transaction boundary.
+      this.rows = rows
+      this.batches = batches
+      this.batchIdentities = batchIdentities
+      this.watermarks = watermarks
+      this.inserts += inserts
+      return result
     } finally {
       release?.()
     }
@@ -221,6 +247,19 @@ test('CLI permits exactly one metadata source and keeps apply opt-in', () => {
   for (const invalid of [[], ['--inventory', '/a', '--mud-home', '/b'], ['--mud-home'], ['--unknown']]) {
     assert.throws(() => parseArgs(invalid))
   }
+})
+
+test('CLI batch mode requires an explicit bounded identity file, stream, and safe sequence', () => {
+  assert.deepEqual(parseArgs(['--inventory', '/secure/inventory.jsonl', '--batch-identity', '/secure/identity.json', '--batch-stream', 'main', '--batch-sequence', '0', '--apply']), {
+    input: { kind: 'inventory', path: '/secure/inventory.jsonl' }, worldId: 'muhan', apply: true,
+    batch: { identityPath: '/secure/identity.json', streamId: 'main', sequence: 0 },
+  })
+  for (const invalid of [
+    ['--inventory', '/a', '--batch-identity', '/identity.json'],
+    ['--inventory', '/a', '--batch-stream', 'main', '--batch-sequence', '0'],
+    ['--inventory', '/a', '--batch-identity', '/identity.json', '--batch-stream', 'main', '--batch-sequence', '01'],
+    ['--inventory', '/a', '--batch-identity', '/identity.json', '--batch-stream', 'main', '--batch-sequence', '0', '--world-id', 'other'],
+  ]) assert.throws(() => parseArgs(invalid))
 })
 
 test('JSONL metadata input rejects non-UTF-8 bytes instead of synthesizing names', async (t) => {

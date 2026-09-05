@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { createBatchIdentity, isCanonicalBatchIdentifier, type BatchIdentity } from './batch-identity.js'
 
 export const SHA256_RE = /^[0-9a-f]{64}$/
 const SHA1_SHARD_RE = /^[0-9a-f]{2}$/
@@ -43,6 +44,12 @@ export interface ImportTransaction {
   lockIdentity(worldId: string, legacyNameKey: string): Promise<void>
   findCharacter(worldId: string, legacyNameKey: string): Promise<ExistingCharacter | undefined>
   insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<void>
+  lockBatchStream(worldId: string, streamId: string): Promise<void>
+  findBatchBySequence(worldId: string, streamId: string, sequence: number): Promise<LedgerBatch | undefined>
+  findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined>
+  createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void>
+  readWatermark(worldId: string, streamId: string): Promise<number | undefined>
+  advanceWatermark(worldId: string, streamId: string, sequence: number): Promise<void>
 }
 
 export interface ImportStore {
@@ -61,6 +68,35 @@ export interface ImportSummary {
   quarantined: Record<QuarantineReason, number>
 }
 
+/** Immutable, committed ledger evidence returned by the transactional store. */
+export interface LedgerBatch {
+  stableKey: string
+  sequence: number
+  recordCount: number
+}
+
+export interface BatchImportOptions {
+  /** Must be constructed with createBatchIdentity; arbitrary source paths are never identity. */
+  identity: BatchIdentity
+  streamId: string
+  sequence: number
+  apply: boolean
+}
+
+export interface BatchImportSummary extends ImportSummary {
+  streamId: string
+  sequence: number
+  ledger: 'dry_run' | 'committed' | 'idempotent'
+}
+
+/** Deliberately non-specific errors: rejected identity/sequence values are not logged. */
+export class BatchImportError extends Error {
+  constructor(readonly code: 'batch_sequence_identity_conflict' | 'batch_identity_sequence_conflict' | 'batch_sequence_out_of_order') {
+    super('invalid batch import')
+    this.name = 'BatchImportError'
+  }
+}
+
 const initialSummary = (): ImportSummary => ({
   wouldInsert: 0,
   inserted: 0,
@@ -74,6 +110,26 @@ const initialSummary = (): ImportSummary => ({
     identity_conflict: 0,
   },
 })
+
+function validateBatchOptions(options: BatchImportOptions): BatchImportOptions {
+  // Reconstruct from the public fields instead of trusting a caller-provided
+  // stableKey. The CLI supplies this value directly from createBatchIdentity.
+  const identity = createBatchIdentity({
+    worldId: options.identity.worldId,
+    sourceManifestId: options.identity.sourceManifestId,
+    sourceSha256: options.identity.sourceSha256,
+    sourceByteSize: options.identity.sourceByteSize,
+    parserVersion: options.identity.parserVersion,
+    abi: options.identity.abi,
+    startMarker: options.identity.startMarker,
+    endMarker: options.identity.endMarker,
+  })
+  if (!isCanonicalBatchIdentifier(options.streamId)
+    || !Number.isSafeInteger(options.sequence) || options.sequence < 0) {
+    throw new Error('invalid import configuration')
+  }
+  return { ...options, identity }
+}
 
 /** Match the C lowercize(name, 1) behavior used by the database constraints. */
 export function canonicalNameKey(name: string): string {
@@ -168,8 +224,9 @@ function sameImportedIdentity(record: InventoryRecord, existing: ExistingCharact
 }
 
 /**
- * Import only independently verified metadata. Every candidate is locked and
- * inspected before insertion; this routine never updates or deletes a row.
+ * Legacy non-ledger import: it has no batch evidence or watermark behavior.
+ * Every candidate is locked and inspected before insertion; this routine
+ * never updates or deletes a row.
  */
 export async function importRecords(store: ImportStore, records: readonly InventoryRecord[], options: ImportOptions, initialRejected = 0): Promise<ImportSummary> {
   if (!validateWorldId(options.worldId)) throw new Error('invalid import configuration')
@@ -237,6 +294,80 @@ export async function importRecords(store: ImportStore, records: readonly Invent
     summary.quarantined[reason] += committed.quarantined[reason]
   }
   return summary
+}
+
+function admissionSummary(records: readonly InventoryRecord[], initialRejected: number): { summary: ImportSummary, ordered: InventoryRecord[] } {
+  const summary = initialSummary()
+  summary.quarantined.invalid_metadata = initialRejected
+  const candidates: InventoryRecord[] = []
+  for (const record of records) {
+    if (!validRecord(record)) summary.quarantined.invalid_metadata++
+    else candidates.push(record)
+  }
+  const duplicateKeys = new Set<string>()
+  const seenKeys = new Set<string>()
+  for (const candidate of candidates) {
+    if (seenKeys.has(candidate.canonicalNameKey)) duplicateKeys.add(candidate.canonicalNameKey)
+    seenKeys.add(candidate.canonicalNameKey)
+  }
+  for (const record of candidates) if (duplicateKeys.has(record.canonicalNameKey)) summary.quarantined.duplicate_input_identity++
+  return {
+    summary,
+    ordered: [...candidates].sort((left, right) => left.canonicalNameKey < right.canonicalNameKey ? -1 : left.canonicalNameKey > right.canonicalNameKey ? 1 : 0),
+  }
+}
+
+async function inspectRecords(transaction: ImportTransaction, records: readonly InventoryRecord[], worldId: string): Promise<{ summary: ImportSummary, absent: InventoryRecord[] }> {
+  const summary = initialSummary()
+  for (const record of records) await transaction.lockIdentity(worldId, record.canonicalNameKey)
+  const absent: InventoryRecord[] = []
+  for (const record of records) {
+    const existing = await transaction.findCharacter(worldId, record.canonicalNameKey)
+    if (!existing) absent.push(record)
+    else {
+      const reason = sameImportedIdentity(record, existing)
+      if (reason) summary.quarantined[reason]++
+      else summary.idempotent++
+    }
+  }
+  return { summary, absent }
+}
+
+/**
+ * Ledger-backed import. Batch identity, all character inserts, and the
+ * per-world/stream contiguous watermark advance share one serializable
+ * transaction. Unlike importRecords, this is an auditable ledger mode.
+ */
+export async function importBatch(store: ImportStore, records: readonly InventoryRecord[], options: BatchImportOptions, initialRejected = 0): Promise<BatchImportSummary> {
+  const validated = validateBatchOptions(options)
+  const admitted = admissionSummary(records, initialRejected)
+  const base = (): BatchImportSummary => ({ ...initialSummary(), streamId: validated.streamId, sequence: validated.sequence, ledger: 'dry_run' })
+  if (admitted.summary.quarantined.invalid_metadata > 0 || admitted.summary.quarantined.duplicate_input_identity > 0) {
+    return { ...base(), ...admitted.summary }
+  }
+  return store.transaction(async (transaction) => {
+    await transaction.lockBatchStream(validated.identity.worldId, validated.streamId)
+    const atSequence = await transaction.findBatchBySequence(validated.identity.worldId, validated.streamId, validated.sequence)
+    if (atSequence) {
+      if (atSequence.stableKey !== validated.identity.stableKey) throw new BatchImportError('batch_sequence_identity_conflict')
+      return { ...base(), idempotent: atSequence.recordCount, ledger: 'idempotent' }
+    }
+    if (await transaction.findBatchByIdentity(validated.identity.worldId, validated.streamId, validated.identity.stableKey)) {
+      throw new BatchImportError('batch_identity_sequence_conflict')
+    }
+    const watermark = await transaction.readWatermark(validated.identity.worldId, validated.streamId)
+    const expected = watermark === undefined ? 0 : watermark + 1
+    if (validated.sequence !== expected) throw new BatchImportError('batch_sequence_out_of_order')
+
+    const inspected = await inspectRecords(transaction, admitted.ordered, validated.identity.worldId)
+    if (Object.values(inspected.summary.quarantined).some((count) => count > 0)) return { ...base(), ...inspected.summary }
+    if (!validated.apply) return { ...base(), ...inspected.summary, wouldInsert: inspected.absent.length }
+
+    await transaction.createBatch({ identity: validated.identity, streamId: validated.streamId, sequence: validated.sequence, recordCount: admitted.ordered.length })
+    for (const record of inspected.absent) await transaction.insertImportedUnclaimed({ worldId: validated.identity.worldId, record })
+    await transaction.advanceWatermark(validated.identity.worldId, validated.streamId, validated.sequence)
+    return { ...base(), ...inspected.summary, inserted: inspected.absent.length, ledger: 'committed' }
+  })
 }
 
 /** Preserve the reviewed JSONL operator mode while applying the shared record contract. */

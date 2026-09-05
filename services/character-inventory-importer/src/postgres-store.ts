@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
-import type { ExistingCharacter, ImportStore, ImportTransaction, InventoryRecord } from './inventory.js'
+import type { BatchIdentity } from './batch-identity.js'
+import type { ExistingCharacter, ImportStore, ImportTransaction, InventoryRecord, LedgerBatch } from './inventory.js'
 
 interface QueryResult<Row> { rows: Row[] }
 interface PgClient { query<Row = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<QueryResult<Row>>, release(): void }
@@ -15,6 +16,14 @@ interface CharacterRow {
   owner_user_id: string | null
   storage_format: number
 }
+
+interface BatchRow {
+  identity_key: string
+  batch_sequence: string
+  record_count: string
+}
+
+interface WatermarkRow { watermark_sequence: string }
 
 const require = createRequire(import.meta.url)
 
@@ -133,5 +142,82 @@ class PostgresImportTransaction implements ImportTransaction {
       ) values ($1, $2, $3, $4, 'imported_unclaimed', 1, $5, null)`,
       [input.worldId, record.name, record.canonicalNameKey, record.expectedShard, record.sha256],
     )
+  }
+
+  async lockBatchStream(worldId: string, streamId: string): Promise<void> {
+    // This serializes creation and progression of one durable stream. The
+    // character locks remain separate so independent streams do not share a
+    // broad world-level mutex.
+    await this.client.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [JSON.stringify(['imported-unclaimed-batch', worldId, streamId])])
+  }
+
+  async findBatchBySequence(worldId: string, streamId: string, sequence: number): Promise<LedgerBatch | undefined> {
+    const result = await this.client.query<BatchRow>(
+      `select identity_key, batch_sequence::text, record_count::text
+         from private.game_imported_unclaimed_batches
+        where world_id = $1 and stream_id = $2 and batch_sequence = $3`,
+      [worldId, streamId, sequence],
+    )
+    return this.batch(result.rows[0])
+  }
+
+  async findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined> {
+    const result = await this.client.query<BatchRow>(
+      `select identity_key, batch_sequence::text, record_count::text
+         from private.game_imported_unclaimed_batches
+        where world_id = $1 and stream_id = $2 and identity_key = $3`,
+      [worldId, streamId, stableKey],
+    )
+    return this.batch(result.rows[0])
+  }
+
+  async createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void> {
+    const { identity } = input
+    await this.client.query(
+      `insert into private.game_imported_unclaimed_batches (
+        world_id, stream_id, batch_sequence, identity_key, source_manifest_id,
+        source_sha256, source_byte_size, parser_version, abi, start_marker,
+        end_marker, record_count
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [identity.worldId, input.streamId, input.sequence, identity.stableKey,
+        identity.sourceManifestId, identity.sourceSha256, identity.sourceByteSize,
+        identity.parserVersion, identity.abi, identity.startMarker, identity.endMarker,
+        input.recordCount],
+    )
+  }
+
+  async readWatermark(worldId: string, streamId: string): Promise<number | undefined> {
+    const result = await this.client.query<WatermarkRow>(
+      `select watermark_sequence::text from private.game_imported_unclaimed_batch_watermarks
+        where world_id = $1 and stream_id = $2`,
+      [worldId, streamId],
+    )
+    const row = result.rows[0]
+    return row === undefined ? undefined : Number(row.watermark_sequence)
+  }
+
+  async advanceWatermark(worldId: string, streamId: string, sequence: number): Promise<void> {
+    await this.client.query(
+      `insert into private.game_imported_unclaimed_batch_watermarks (
+        world_id, stream_id, watermark_sequence, committed_batch_sequence
+      ) values ($1, $2, $3, $3)
+      on conflict (world_id, stream_id) do update
+        set watermark_sequence = excluded.watermark_sequence,
+            committed_batch_sequence = excluded.committed_batch_sequence,
+            observed_at = clock_timestamp()`,
+      [worldId, streamId, sequence],
+    )
+  }
+
+  private batch(row: BatchRow | undefined): LedgerBatch | undefined {
+    if (!row) return undefined
+    // Rows can only be inserted through the validated store API, but decoding
+    // through the shared constructor makes corrupt/manual rows fail closed.
+    const sequence = Number(row.batch_sequence)
+    const recordCount = Number(row.record_count)
+    if (!Number.isSafeInteger(sequence) || sequence < 0 || !Number.isSafeInteger(recordCount) || recordCount < 0) {
+      throw new Error('invalid batch ledger state')
+    }
+    return { stableKey: row.identity_key, sequence, recordCount }
   }
 }

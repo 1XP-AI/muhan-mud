@@ -1,10 +1,12 @@
--- 2026-09-28: durable, private identity boundary for read-only imports of
--- imported-unclaimed characters.  No importer/store entrypoint is exposed in
--- this migration; a later transaction owns insertion and watermark advances.
+-- 2026-09-28: immutable importer ledger evidence. The TypeScript importer
+-- owns batch, character, and per-world/stream watermark writes in one
+-- serializable transaction.
 
 create table if not exists private.game_imported_unclaimed_batches (
   world_id text not null,
-  batch_id uuid not null,
+  stream_id text not null,
+  batch_sequence bigint not null,
+  identity_key text not null,
   source_manifest_id text not null,
   source_sha256 text not null,
   source_byte_size bigint not null,
@@ -12,17 +14,17 @@ create table if not exists private.game_imported_unclaimed_batches (
   abi bigint not null,
   start_marker text not null,
   end_marker text not null,
-  batch_sequence bigint not null,
+  record_count bigint not null,
   recorded_at timestamptz not null default clock_timestamp(),
-  primary key (world_id, batch_id),
-  -- This is the full BatchIdentityInput tuple in its canonical field order.
-  -- batch_id and batch_sequence are audit references, never retry identity.
-  constraint game_imported_unclaimed_batches_durable_identity_key
-    unique (world_id, source_manifest_id, source_sha256, source_byte_size,
-      parser_version, abi, start_marker, end_marker),
+  primary key (world_id, stream_id, batch_sequence),
+  constraint game_imported_unclaimed_batches_stream_identity_key
+    unique (world_id, stream_id, identity_key),
   constraint game_imported_unclaimed_batches_world_bounded
     check (char_length(world_id) between 1 and 256
       and world_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
+  constraint game_imported_unclaimed_batches_stream_bounded
+    check (char_length(stream_id) between 1 and 256
+      and stream_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
   constraint game_imported_unclaimed_batches_source_manifest_id_canonical
     check (char_length(source_manifest_id) between 1 and 256
       and source_manifest_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
@@ -43,22 +45,25 @@ create table if not exists private.game_imported_unclaimed_batches (
   constraint game_imported_unclaimed_batches_range_nonempty
     check (start_marker <> end_marker),
   constraint game_imported_unclaimed_batches_sequence_nonnegative
-    check (batch_sequence >= 0)
+    check (batch_sequence between 0 and 9007199254740991),
+  constraint game_imported_unclaimed_batches_record_count_safe
+    check (record_count between 0 and 9007199254740991)
 );
 
 create table if not exists private.game_imported_unclaimed_batch_watermarks (
-  world_id text primary key,
-  watermark_sequence bigint not null default 0,
-  committed_batch_id uuid not null,
+  world_id text not null,
+  stream_id text not null,
+  watermark_sequence bigint not null,
+  committed_batch_sequence bigint not null,
   observed_at timestamptz not null default clock_timestamp(),
-  constraint game_imported_unclaimed_batch_watermarks_world_bounded
-    check (char_length(world_id) between 1 and 256
-      and world_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
+  primary key (world_id, stream_id),
   constraint game_imported_unclaimed_batch_watermarks_sequence_nonnegative
-    check (watermark_sequence >= 0),
+    check (watermark_sequence between 0 and 9007199254740991),
+  constraint game_imported_unclaimed_batch_watermarks_committed_sequence_matches
+    check (committed_batch_sequence = watermark_sequence),
   constraint game_imported_unclaimed_batch_watermarks_committed_batch_fkey
-    foreign key (world_id, committed_batch_id)
-    references private.game_imported_unclaimed_batches(world_id, batch_id)
+    foreign key (world_id, stream_id, committed_batch_sequence)
+    references private.game_imported_unclaimed_batches(world_id, stream_id, batch_sequence)
     on delete restrict
 );
 
@@ -69,8 +74,6 @@ revoke all on table private.game_imported_unclaimed_batches,
   private.game_imported_unclaimed_batch_watermarks
   from public, anon, authenticated, service_role;
 
--- Imported batch rows are immutable evidence.  The future importer first
--- resolves this exact identity, then either accepts the retry or inserts it.
 create or replace function private.reject_game_imported_unclaimed_batch_mutation()
 returns trigger
 language plpgsql
@@ -88,27 +91,23 @@ create trigger game_imported_unclaimed_batches_immutable
 before update or delete on private.game_imported_unclaimed_batches
 for each row execute function private.reject_game_imported_unclaimed_batch_mutation();
 
--- Equal assignments make an exact transaction retry harmless; a lower value
--- is rejected so no later importer path can move a world's watermark back.
--- The watermark must also name the immutable batch that committed that exact
--- sequence, making its operational state independently auditable.
+-- Exact retry is a read-only store decision. Strictly increasing writes here
+-- ensure an equal sequence can never retarget a durable watermark.
 create or replace function private.enforce_game_imported_unclaimed_batch_watermark_monotone()
 returns trigger
 language plpgsql
-set search_path = pg_catalog
+set search_path = pg_catalog, private
 as $$
-declare
-  v_batch_sequence bigint;
 begin
   if TG_OP = 'UPDATE'
-     and (new.world_id <> old.world_id or new.watermark_sequence < old.watermark_sequence) then
+     and (new.world_id <> old.world_id
+       or new.stream_id <> old.stream_id
+       or new.watermark_sequence <= old.watermark_sequence
+       or new.committed_batch_sequence <> new.watermark_sequence) then
     raise exception using errcode = 'P0001',
-      message = 'imported-unclaimed batch watermark must be monotone';
+      message = 'imported-unclaimed batch watermark must strictly advance';
   end if;
-  select batch_sequence into v_batch_sequence
-    from private.game_imported_unclaimed_batches
-   where world_id = new.world_id and batch_id = new.committed_batch_id;
-  if v_batch_sequence is null or v_batch_sequence <> new.watermark_sequence then
+  if new.committed_batch_sequence <> new.watermark_sequence then
     raise exception using errcode = 'P0001',
       message = 'imported-unclaimed batch watermark must name its committed batch';
   end if;
