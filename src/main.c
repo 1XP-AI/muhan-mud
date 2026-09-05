@@ -127,7 +127,9 @@ char	*argv[];
 		exit(78);
 	}
 	if(m3_native.shadow_active)
-		onboarding_activation_gate_bind_owner(&m3_native.process_owner);
+		onboarding_activation_gate_bind_owner(&m3_native.process_owner,
+			character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+				&m3_native));
 #endif
 
 #ifdef AUTOSHUTDOWN

@@ -40,6 +40,51 @@ static int oasrh_owner_ready(
 }
 
 onboarding_activation_save_runtime_helper_result
+onboarding_activation_save_runtime_helper_attempt_bridge(owner, bridge,
+    legacy_name, player)
+character_save_journal_v2_process_owner *owner;
+onboarding_activation_save_bridge *bridge;
+char *legacy_name;
+struct creature *player;
+{
+    character_save_journal_v2_player_store *store;
+    onboarding_activation_save_bridge_result finished;
+
+    if(!owner || !bridge) return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_INVALID;
+    if(!oasrh_owner_ready(owner) || !bridge->active || !legacy_name || !player ||
+       !oasrh_equal(bridge->selected.canonical_name, legacy_name,
+                    PLAYER_NAME_MAX_BYTES) ||
+       !oasrh_equal(bridge->selected.canonical_name, player->name,
+                    PLAYER_NAME_MAX_BYTES))
+        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
+
+    store = &owner->player_store;
+    if(character_save_journal_v2_player_store_set_candidate_resolver(
+       store, onboarding_activation_save_bridge_resolve, bridge)) {
+        (void)onboarding_activation_save_bridge_finish(bridge,
+            &store->last_report);
+        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
+    }
+    (void)character_save_journal_v2_player_store_save(store, legacy_name, player);
+    /* save is synchronous and always returns its store to IDLE; use the public
+     * setter rather than leaving a bridge pointer in the caller-owned store. */
+    if(character_save_journal_v2_player_store_set_candidate_resolver(store, 0, 0)) {
+        (void)onboarding_activation_save_bridge_finish(bridge,
+            &store->last_report);
+        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
+    }
+    finished = onboarding_activation_save_bridge_finish(bridge,
+        &store->last_report);
+    if(finished == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED)
+        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED;
+    if(finished == ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED &&
+       store->last_report.reached >=
+       CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED)
+        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED;
+    return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
+}
+
+onboarding_activation_save_runtime_helper_result
 onboarding_activation_save_runtime_helper_attempt(owner, capability, command_id,
     actor_user_id, correlation_id, character_id, mode, canonical_name,
     legacy_name, player)
@@ -54,43 +99,14 @@ const char *canonical_name;
 char *legacy_name;
 struct creature *player;
 {
-    character_save_journal_v2_player_store *store;
     onboarding_activation_save_bridge bridge;
-    onboarding_activation_save_bridge_result finished;
 
     if(!owner || !capability) return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_INVALID;
-    if(!oasrh_owner_ready(owner) || !legacy_name || !player ||
-       !oasrh_equal(canonical_name, legacy_name, PLAYER_NAME_MAX_BYTES) ||
-       !oasrh_equal(canonical_name, player->name, PLAYER_NAME_MAX_BYTES))
-        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
-    memset(&bridge, 0, sizeof(bridge));
-    if(onboarding_activation_save_bridge_begin(&bridge, capability, command_id,
-       actor_user_id, correlation_id, character_id, mode, canonical_name) !=
+    memset(&bridge,0,sizeof(bridge));
+    if(onboarding_activation_save_bridge_begin(&bridge,capability,command_id,
+       actor_user_id,correlation_id,character_id,mode,canonical_name) !=
        ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY)
         return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
-
-    store = &owner->player_store;
-    if(character_save_journal_v2_player_store_set_candidate_resolver(
-       store, onboarding_activation_save_bridge_resolve, &bridge)) {
-        (void)onboarding_activation_save_bridge_finish(&bridge,
-            &store->last_report);
-        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
-    }
-    (void)character_save_journal_v2_player_store_save(store, legacy_name, player);
-    /* save is synchronous and always returns its store to IDLE; use the public
-     * setter rather than leaving a bridge pointer in the caller-owned store. */
-    if(character_save_journal_v2_player_store_set_candidate_resolver(store, 0, 0)) {
-        (void)onboarding_activation_save_bridge_finish(&bridge,
-            &store->last_report);
-        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
-    }
-    finished = onboarding_activation_save_bridge_finish(&bridge,
-        &store->last_report);
-    if(finished == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED)
-        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED;
-    if(finished == ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED &&
-       store->last_report.reached >=
-       CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED)
-        return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED;
-    return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
+    return onboarding_activation_save_runtime_helper_attempt_bridge(owner,&bridge,
+        legacy_name,player);
 }

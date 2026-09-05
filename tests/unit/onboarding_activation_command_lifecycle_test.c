@@ -113,31 +113,42 @@ const char *command_id;
 }
 
 #ifdef USE_M3_RUNTIME
-onboarding_activation_save_runtime_helper_result
-onboarding_activation_save_runtime_helper_attempt(owner, capability, command_id,
-    actor, correlation, character, mode, canonical_name, legacy_name, player)
+onboarding_activation_reservation_owner_result
+onboarding_activation_reservation_owner_attempt(owner, directory_fd, expected,
+    capability, canonical_name, bridge_out)
 character_save_journal_v2_process_owner *owner;
+int directory_fd;
+const onboarding_activation_binding *expected;
 onboarding_activation_save_capability *capability;
-const char *command_id;
-const char *actor;
-const char *correlation;
-const char *character;
-onboarding_activation_binding_mode mode;
 const char *canonical_name;
+onboarding_activation_save_bridge *bridge_out;
+{
+    if(!active_fixture || !owner || directory_fd != 7 || !expected ||
+       !capability || !canonical_name || !bridge_out || !expected_command ||
+       strcmp(expected->command_id, expected_command))
+        return ONBOARDING_ACTIVATION_RESERVATION_OWNER_ADAPTER_FAILED;
+    bridge_out->active=1;
+    bridge_out->capability=capability;
+    return ONBOARDING_ACTIVATION_RESERVATION_OWNER_READY;
+}
+
+onboarding_activation_save_runtime_helper_result
+onboarding_activation_save_runtime_helper_attempt_bridge(owner, bridge,
+    legacy_name, player)
+character_save_journal_v2_process_owner *owner;
+onboarding_activation_save_bridge *bridge;
 char *legacy_name;
 struct creature *player;
 {
-    (void)owner; (void)actor; (void)correlation; (void)character;
-    (void)mode; (void)canonical_name; (void)legacy_name; (void)player;
-    if(!active_fixture || !capability || !expected_command ||
-       strcmp(command_id, expected_command))
+    (void)owner; (void)legacy_name; (void)player;
+    if(!active_fixture || !bridge || !bridge->active || !expected_command)
         return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
     active_fixture->save_count++;
     if(save_outcome == FAKE_SAVE_PREPARED)
         return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED;
     if(save_outcome == FAKE_SAVE_REJECTED)
         return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
-    onboarding_activation_save_capability_clear(capability);
+    onboarding_activation_save_capability_clear(bridge->capability);
     return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED;
 }
 #endif
@@ -198,7 +209,7 @@ static int test_runtime_mode(onboarding_activation_binding_mode mode)
         setenv("MUD_M3_PLAYER_SNAPSHOT_V1", "handoff", 1) == 0,
         "runtime activation fixture must enable its explicit feature flags");
     memset(&owner, 0, sizeof(owner));
-    onboarding_activation_gate_bind_owner(&owner);
+    onboarding_activation_gate_bind_owner(&owner,7);
 
     setup(&test, mode);
     save_outcome=FAKE_SAVE_PUBLISHED;

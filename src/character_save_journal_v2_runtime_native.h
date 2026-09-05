@@ -28,6 +28,9 @@ typedef struct character_save_journal_v2_runtime_native {
     character_player_snapshot_v1_capture snapshot_capture;
     character_player_snapshot_v1_handoff snapshot_handoff;
     int snapshot_handoff_enabled;
+    /* Native runtime owns this one private descriptor.  The activation gate
+     * only borrows it while dispatching an explicit capability. */
+    int activation_reservation_directory_fd;
     int shadow_active;
     /* The MUD host owns these injected seams and invokes the bounded drain
      * only from its serialized idle-turn boundary. */
@@ -56,6 +59,11 @@ void character_save_journal_v2_runtime_native_init(
 character_save_journal_v2_process_owner_snapshot_tick_result
 character_save_journal_v2_runtime_native_snapshot_tick(
     character_save_journal_v2_runtime_native *native, unsigned int limit);
+
+/* Returns the native caller-owned reservation directory only for a live,
+ * explicitly enabled shadow runtime; it never duplicates or transfers it. */
+int character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+    const character_save_journal_v2_runtime_native *native);
 
 /* The caller supplies clock/log seams so cadence and diagnostics remain
  * deterministic in tests.  A configured idle tick consumes one token at most

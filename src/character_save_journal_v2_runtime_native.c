@@ -11,6 +11,10 @@
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
 #include <stdlib.h>
 #include <limits.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define RUNTIME_NATIVE_SERIALIZER_BUFFER_CAPACITY (8UL * 1024UL * 1024UL)
 #define RUNTIME_NATIVE_SERIALIZER_MAX_DEPTH 64UL
@@ -19,6 +23,18 @@
 #define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE "handoff"
 #define RUNTIME_NATIVE_SNAPSHOT_IDLE_CADENCE_SECONDS 1L
 #define RUNTIME_NATIVE_SNAPSHOT_IDLE_FAILURE_LOG_SECONDS 60L
+#define RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY \
+    "onboarding-activation-reservations"
+
+#ifndef O_DIRECTORY
+#define O_DIRECTORY 0
+#endif
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
 
 /* The process-wide PlayerStore can have only one native shadow owner.  Keep
  * the lifecycle sentinel outside caller storage so first-time init may still
@@ -80,6 +96,33 @@ static int runtime_native_file_load(void *opaque, char *name,
     return player_store_default_load(name,player);
 }
 
+/* This is the native caller that owns the directory FD.  The generic owner,
+ * adapter, bridge, and command layer receive only a borrowed descriptor. */
+static int runtime_native_activation_reservation_directory_open(
+    character_save_journal_v2_runtime_native *native)
+{
+    struct stat status;
+    int root, directory;
+
+    if(!native || !native->muhan_home[0]) return -1;
+    root=-1; directory=-1;
+    root=open(native->muhan_home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(root<0) goto failed;
+    if(mkdirat(root,RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY,0700) &&
+       errno!=EEXIST) goto failed;
+    directory=openat(root,RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY,
+        O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0 || fstat(directory,&status) || !S_ISDIR(status.st_mode) ||
+       status.st_uid!=geteuid() || (status.st_mode&0777)!=0700) goto failed;
+    close(root);
+    native->activation_reservation_directory_fd=directory;
+    return 0;
+failed:
+    if(directory>=0) close(directory);
+    if(root>=0) close(root);
+    return -1;
+}
+
 /* This owns exactly the resources constructed by runtime_native_shadow_start.
  * process_owner intentionally borrows the transport and buffer, therefore its
  * reset/close must precede transport close and buffer wiping. */
@@ -90,6 +133,10 @@ static void runtime_native_shadow_shutdown(void *opaque)
 
     if(!native) return;
     (void)character_save_journal_v2_process_owner_shutdown(&native->process_owner);
+    if(native->activation_reservation_directory_fd>=0) {
+        close(native->activation_reservation_directory_fd);
+        native->activation_reservation_directory_fd=-1;
+    }
     character_save_journal_v2_rpc_transport_close(&native->transport_native.transport);
     if(native->serializer_buffer) {
         runtime_native_wipe(native->serializer_buffer,
@@ -168,6 +215,7 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     if(character_save_journal_v2_process_owner_start(&native->process_owner)!=
        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) goto failed;
     native->shadow_active=1;
+    (void)runtime_native_activation_reservation_directory_open(native);
     return 0;
 
 failed:
@@ -188,6 +236,13 @@ character_save_journal_v2_runtime_native_snapshot_tick(
         return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
     return character_save_journal_v2_process_owner_snapshot_tick(
         &native->process_owner,limit);
+}
+
+int character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+    const character_save_journal_v2_runtime_native *native)
+{
+    if(!native || !native->shadow_active) return -1;
+    return native->activation_reservation_directory_fd;
 }
 
 void character_save_journal_v2_runtime_native_snapshot_idle_configure(
@@ -331,6 +386,7 @@ void character_save_journal_v2_runtime_native_init(
     native->dependencies.file_operations=0;
     native->dependencies.file_opaque=0;
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
+    native->activation_reservation_directory_fd=-1;
     character_save_journal_v2_rpc_transport_native_init(&native->transport_native);
     native->dependencies.shadow_operations=&runtime_native_shadow_operations;
     native->dependencies.shadow_opaque=native;

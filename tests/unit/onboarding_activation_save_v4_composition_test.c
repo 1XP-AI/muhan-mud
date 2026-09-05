@@ -98,6 +98,30 @@ static void register_fixture(fixture *test)
     if(fixture_count < 2) fixtures[fixture_count++] = test;
 }
 
+/* The real reservation owner is covered separately.  This V4 composition
+ * fixture supplies its already-authorized bridge so the gate remains the
+ * sole path from the explicit capability into PlayerStore dispatch. */
+onboarding_activation_reservation_owner_result
+onboarding_activation_reservation_owner_attempt(owner, directory_fd, expected,
+    capability, canonical_name, bridge_out)
+character_save_journal_v2_process_owner *owner;
+int directory_fd;
+const onboarding_activation_binding *expected;
+onboarding_activation_save_capability *capability;
+const char *canonical_name;
+onboarding_activation_save_bridge *bridge_out;
+{
+    if(!owner || directory_fd != 7 || !expected || !capability ||
+       !canonical_name || !bridge_out)
+        return ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT;
+    return onboarding_activation_save_bridge_begin(bridge_out, capability,
+        expected->command_id, expected->actor_user_id,
+        expected->correlation_id, expected->character_id, expected->mode,
+        canonical_name) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY ?
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_READY:
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_BRIDGE_REJECTED;
+}
+
 static void setup(fixture *test, const char *actor, const char *correlation,
                   const char *character, const char *command, const char *name,
                   const char *world, const char *instance, unsigned long long epoch)
@@ -122,7 +146,7 @@ static void setup(fixture *test, const char *actor, const char *correlation,
         0, 0, 0, 0, 0, 0);
 	/* The production host binds its active native owner once; rebinding here
 	 * makes each deterministic fixture the sole active owner. */
-    onboarding_activation_gate_bind_owner(&test->owner);
+    onboarding_activation_gate_bind_owner(&test->owner,7);
     register_fixture(test);
 }
 
@@ -644,11 +668,11 @@ static int test_independent_fixtures_do_not_cross_contaminate(void)
     alpha.outcome = FAKE_PUBLISHED;
     beta.outcome = FAKE_PUBLISHED;
     failed += expect(arm(&alpha) && arm(&beta) &&
-        (onboarding_activation_gate_bind_owner(&alpha.owner), 1) &&
+        (onboarding_activation_gate_bind_owner(&alpha.owner,7), 1) &&
         attempt(&alpha, alpha.command, alpha.actor, alpha.correlation,
         alpha.character, alpha.name) ==
         ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
-        (onboarding_activation_gate_bind_owner(&beta.owner), 1) && attempt(&beta,
+        (onboarding_activation_gate_bind_owner(&beta.owner,7), 1) && attempt(&beta,
         beta.command, beta.actor, beta.correlation, beta.character, beta.name) ==
         ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED && alpha.candidate_exact && beta.candidate_exact &&
         alpha.v4_calls == 1 && beta.v4_calls == 1 && alpha.route_calls == 1 &&

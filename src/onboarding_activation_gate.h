@@ -4,6 +4,7 @@
 /* Host-owned, one-owner dispatcher for the explicit M3 activation save.  It
  * owns neither transport nor writer resources; main binds the already-live
  * native process owner and command1 supplies descriptor-local state. */
+#include "onboarding_activation_reservation_owner.h"
 #include "onboarding_activation_save_runtime_helper.h"
 
 typedef enum onboarding_activation_gate_result {
@@ -14,7 +15,8 @@ typedef enum onboarding_activation_gate_result {
 } onboarding_activation_gate_result;
 
 void onboarding_activation_gate_bind_owner(
-    character_save_journal_v2_process_owner *owner);
+    character_save_journal_v2_process_owner *owner,
+    int reservation_directory_fd);
 void onboarding_activation_gate_unbind_owner(
     character_save_journal_v2_process_owner *owner);
 

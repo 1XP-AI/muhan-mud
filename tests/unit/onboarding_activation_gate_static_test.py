@@ -7,6 +7,8 @@ root = Path(__file__).resolve().parents[2]
 command = (root / "src" / "command1.c").read_text(encoding="utf-8")
 io = (root / "src" / "io.c").read_text(encoding="utf-8")
 gate = (root / "src" / "onboarding_activation_gate.c").read_text(encoding="utf-8")
+native = (root / "src" / "character_save_journal_v2_runtime_native.c").read_text(encoding="utf-8")
+makefile = (root / "src" / "Makefile").read_text(encoding="utf-8")
 
 def require(value: bool, message: str) -> None:
     if not value:
@@ -81,7 +83,31 @@ require("libpq" not in command and "PQconnect" not in command and
         "command1 must not own native or libpq resources")
 require("character_save_journal_v2_player_store_set_candidate_resolver" not in command,
         "ordinary command handling must not install the V4 resolver")
-require("onboarding_activation_save_runtime_helper_attempt" in gate and
-        "activation_gate_owner" in gate,
-        "gate must dispatch only through the active process owner")
+require("onboarding_activation_reservation_owner_attempt(" in gate and
+        "onboarding_activation_save_runtime_helper_attempt_bridge(" in gate and
+        gate.index("onboarding_activation_reservation_owner_attempt(") <
+        gate.index("onboarding_activation_save_runtime_helper_attempt_bridge("),
+        "an armed activation must reserve through the owner before bridge dispatch")
+require("if(!capability->armed) return ONBOARDING_ACTIVATION_GATE_BYPASS;" in gate and
+        gate.index("if(!capability->armed)") <
+        gate.index("onboarding_activation_reservation_owner_attempt("),
+        "the feature-off gate must bypass before reservation or bridge wiring")
+require("activation_gate_reservation_directory_fd" in gate and
+        "activation_gate_reservation_directory_fd<0" in gate,
+        "the gate must reject armed activation without a caller-owned descriptor")
+require("onboarding_snapshot_command_consumer" not in command and
+        "onboarding_activation_reservation_owner" not in command,
+        "ordinary command, web, login, and name flows must not own reservation wiring")
+require("runtime_native_activation_reservation_directory_open" in native and
+        "native->activation_reservation_directory_fd=directory;" in native and
+        "close(native->activation_reservation_directory_fd);" in native,
+        "the explicit native runtime must retain and release its own descriptor")
+m3_gate_objects = "OBJECTS += onboarding_snapshot_command_consumer.o onboarding_activation_reservation_adapter.o"
+require(m3_gate_objects in makefile and
+        makefile.index(m3_gate_objects) > makefile.index("ifeq ($(USE_M3_RUNTIME),1)"),
+        "reservation wiring must link only from the explicit M3 runtime graph")
+default_objects = makefile[makefile.index("OBJECTS ="):makefile.index("M3_RUNTIME_OBJECTS =")]
+require("onboarding_snapshot_command_consumer.o" not in default_objects and
+        "onboarding_activation_reservation_owner.o" not in default_objects,
+        "the default build must not link reservation or owner runtime wiring")
 print("onboarding_activation_gate_static_test: ok")

@@ -80,7 +80,9 @@ ifneq ($(shell uname -s),Linux)
 $(error USE_M3_RUNTIME=1 requires Linux deadline and UUID native adapters)
 endif
 OBJECTS += $(M3_RUNTIME_OBJECTS)
-OBJECTS += onboarding_activation_save_bridge.o onboarding_activation_save_runtime_helper.o onboarding_activation_gate.o
+OBJECTS += onboarding_snapshot_command_consumer.o onboarding_activation_reservation_adapter.o \
+	onboarding_activation_reservation_owner.o onboarding_activation_save_bridge.o \
+	onboarding_activation_save_runtime_helper.o onboarding_activation_gate.o
 endif
 
 $(OUTFILE): $(OBJECTS)
@@ -150,6 +152,7 @@ unit-test:
 	$(MAKE) character-save-journal-v2-process-owner-test
 	$(MAKE) onboarding-activation-reservation-adapter-test
 	$(MAKE) onboarding-activation-reservation-owner-test
+	$(MAKE) onboarding-activation-owner-runtime-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) m3-feature-off-legacy-authority-test
 	$(MAKE) m3-runtime-idle-hook-static-test
@@ -269,6 +272,11 @@ onboarding-activation-save-runtime-helper-sanitizer-test:
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c onboarding_activation_gate.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_gate_static_test.py
+
+onboarding-activation-owner-runtime-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_owner_runtime_test.c onboarding_activation_gate.c -o /tmp/muhan-unit/onboarding_activation_owner_runtime_test
+	/tmp/muhan-unit/onboarding_activation_owner_runtime_test
 
 onboarding-activation-command-lifecycle-test:
 	mkdir -p /tmp/muhan-unit

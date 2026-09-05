@@ -33,4 +33,12 @@ onboarding_activation_save_runtime_helper_attempt(
     onboarding_activation_binding_mode mode, const char *canonical_name,
     char *legacy_name, struct creature *player);
 
+/* Dispatches a bridge already installed by the explicit reservation owner.
+ * The bridge remains caller-owned and is cleared through its normal finish. */
+onboarding_activation_save_runtime_helper_result
+onboarding_activation_save_runtime_helper_attempt_bridge(
+    character_save_journal_v2_process_owner *owner,
+    onboarding_activation_save_bridge *bridge, char *legacy_name,
+    struct creature *player);
+
 #endif
