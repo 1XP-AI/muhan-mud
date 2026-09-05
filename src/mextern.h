@@ -145,6 +145,9 @@ extern void	sock_init(), sock_loop(), accept_connect(), output_buf(),
 extern void	login(), create_ply(), command(), parse(), trusted_admission_login(),
 		onboarding_admission_login(), onboarding_provision(), onboarding_claim(),
 		onboarding_fail();
+#ifdef USE_M3_RUNTIME
+extern void onboarding_activation_gate_idle_retry();
+#endif
 extern int	onboarding_control_during_wizard();
 extern int	process_cmd();
 extern int    checkdouble();

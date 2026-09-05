@@ -1,5 +1,5 @@
 /* Explicit activation capability -> bridge -> PlayerStore V4 composition. */
-#include "onboarding_activation_save_runtime_helper.h"
+#include "onboarding_activation_gate.h"
 #include "mstruct.h"
 
 #include <stdio.h>
@@ -120,6 +120,9 @@ static void setup(fixture *test, const char *actor, const char *correlation,
     character_save_journal_v2_player_store_init(&test->store, &test->writer_context,
         &test->live_ops, test->buffer, sizeof(test->buffer), &test->limits,
         0, 0, 0, 0, 0, 0);
+	/* The production host binds its active native owner once; rebinding here
+	 * makes each deterministic fixture the sole active owner. */
+    onboarding_activation_gate_bind_owner(&test->owner);
     register_fixture(test);
 }
 
@@ -139,10 +142,14 @@ static onboarding_activation_save_runtime_helper_result attempt_mode(fixture *te
     const char *character, onboarding_activation_binding_mode mode,
     const char *name)
 {
-    return onboarding_activation_save_runtime_helper_attempt(&test->owner,
+    onboarding_activation_gate_result result=onboarding_activation_gate_attempt(
         &test->capability, command, actor, correlation, character,
-        mode, name, test->name,
-        &test->player);
+        mode, name, test->name, &test->player);
+    return result==ONBOARDING_ACTIVATION_GATE_CONSUMED ?
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED :
+        result==ONBOARDING_ACTIVATION_GATE_RETAINED ?
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED :
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
 }
 
 static onboarding_activation_save_runtime_helper_result attempt(fixture *test,
@@ -159,6 +166,13 @@ static int arm(fixture *test)
         test->actor, test->correlation, test->character,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test->command, test->name) ==
         ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
+}
+
+static int arm_mode(fixture *test, onboarding_activation_binding_mode mode)
+{
+    return onboarding_activation_save_capability_capture(&test->capability,
+        test->actor, test->correlation, test->character, mode, test->command,
+        test->name) == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
 }
 
 character_save_journal_v2_writer_context_status
@@ -412,6 +426,56 @@ static int test_prepared_retains_same_command_retry(void)
     return failed;
 }
 
+static int test_claim_published_once(void)
+{
+    fixture test;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    test.outcome = FAKE_PUBLISHED;
+    failed += expect(arm_mode(&test, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM) &&
+        attempt_mode(&test, test.command, test.actor, test.correlation,
+        test.character, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
+        !test.capability.armed && test.v4_calls == 1 && !test.v3_calls &&
+        !test.store.resolve_candidate,
+        "claim uses the same explicit V4 gate and consumes only on PUBLISHED");
+    return failed;
+}
+
+static int test_claim_prepared_retains_until_idle_retry(void)
+{
+    fixture test;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    test.outcome = FAKE_PREPARED;
+    failed += expect(arm_mode(&test, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM) &&
+        attempt_mode(&test, test.command, test.actor, test.correlation,
+        test.character, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED && test.capability.armed &&
+        !test.publish_calls && !test.store.resolve_candidate,
+        "claim PREPARED retains its exact capability without completing or leaking resolver state");
+    test.outcome = FAKE_PUBLISHED;
+    failed += expect(attempt_mode(&test, test.command, test.actor,
+        test.correlation, test.character, ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM,
+        test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
+        !test.capability.armed && test.v4_calls == 2 && test.publish_calls == 1 &&
+        !test.store.resolve_candidate,
+        "claim retry publishes before its caller may send ACTIVE or disconnect");
+    return failed;
+}
+
 static int test_wrong_tuple_fails_closed(void)
 {
     fixture test;
@@ -470,6 +534,7 @@ static int test_exact_identity_feature_and_empty_capability_rejections(void)
 {
     fixture test;
     onboarding_activation_save_capability empty;
+    onboarding_activation_save_capability disabled;
     int failed = 0;
 
     fixture_count = 0;
@@ -505,6 +570,17 @@ static int test_exact_identity_feature_and_empty_capability_rejections(void)
         test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
         test.capability.armed && !test.v4_calls && !test.store.resolve_candidate,
         "feature-off rejects without installing a resolver or consuming capability");
+	memset(&disabled, 0, sizeof(disabled));
+    failed += expect(onboarding_activation_save_capability_capture(&disabled,
+        test.actor, test.correlation, test.character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test.command, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED && !disabled.armed &&
+        onboarding_activation_gate_attempt(&disabled, test.command, test.actor,
+        test.correlation, test.character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test.name, test.name,
+        &test.player) == ONBOARDING_ACTIVATION_GATE_BYPASS &&
+        !test.store.resolve_candidate,
+        "feature-off capture bypasses the native gate without changing legacy save ownership");
     setenv("MUD_M3_MODE", "shadow", 1);
     return failed;
 }
@@ -528,9 +604,12 @@ static int test_independent_fixtures_do_not_cross_contaminate(void)
     initialize_store_callbacks(&beta);
     alpha.outcome = FAKE_PUBLISHED;
     beta.outcome = FAKE_PUBLISHED;
-    failed += expect(arm(&alpha) && arm(&beta) && attempt(&alpha, alpha.command,
-        alpha.actor, alpha.correlation, alpha.character, alpha.name) ==
-        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED && attempt(&beta,
+    failed += expect(arm(&alpha) && arm(&beta) &&
+        (onboarding_activation_gate_bind_owner(&alpha.owner), 1) &&
+        attempt(&alpha, alpha.command, alpha.actor, alpha.correlation,
+        alpha.character, alpha.name) ==
+        ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED &&
+        (onboarding_activation_gate_bind_owner(&beta.owner), 1) && attempt(&beta,
         beta.command, beta.actor, beta.correlation, beta.character, beta.name) ==
         ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED && alpha.candidate_exact && beta.candidate_exact &&
         alpha.v4_calls == 1 && beta.v4_calls == 1 && alpha.route_calls == 1 &&
@@ -546,7 +625,8 @@ int main(void)
     setenv("MUD_M3_MODE", "shadow", 1);
     setenv("MUD_M3_PLAYER_SNAPSHOT_V1", "handoff", 1);
     failed = test_exact_tuple_and_published_once() |
-        test_prepared_retains_same_command_retry() |
+        test_prepared_retains_same_command_retry() | test_claim_published_once() |
+        test_claim_prepared_retains_until_idle_retry() |
         test_wrong_tuple_fails_closed() | test_v3_fallback_untouched() |
         test_exact_identity_feature_and_empty_capability_rejections() |
         test_independent_fixtures_do_not_cross_contaminate();

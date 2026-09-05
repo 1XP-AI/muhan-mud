@@ -80,6 +80,7 @@ ifneq ($(shell uname -s),Linux)
 $(error USE_M3_RUNTIME=1 requires Linux deadline and UUID native adapters)
 endif
 OBJECTS += $(M3_RUNTIME_OBJECTS)
+OBJECTS += onboarding_activation_save_bridge.o onboarding_activation_save_runtime_helper.o onboarding_activation_gate.o
 endif
 
 $(OUTFILE): $(OBJECTS)
@@ -257,13 +258,15 @@ onboarding-activation-save-bridge-sanitizer-test:
 # this focused on one active owner/store dispatch, not production wiring.
 onboarding-activation-save-runtime-helper-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_test
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c onboarding_activation_gate.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_test
 	/tmp/muhan-unit/onboarding_activation_save_runtime_helper_test
+	python3 ../tests/unit/onboarding_activation_gate_static_test.py
 
 onboarding-activation-save-runtime-helper-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_runtime_helper.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c onboarding_activation_gate.c -o /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
+	python3 ../tests/unit/onboarding_activation_gate_static_test.py
 
 # Focused production-V4 composition with local journal fixtures and fake
 # lower-level route/serializer/receipt callbacks only; no live service linkage.

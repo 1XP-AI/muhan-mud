@@ -90,6 +90,10 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		onboarding_mode;
 	char		onboarding_state;
 	char		onboarding_world_staged;
+	/* An armed capability is retained only while the host retries a durable
+	 * PREPARED activation save.  No client input advances this state. */
+	char		onboarding_activation_pending;
+	char		onboarding_activation_command_id[37];
 	/* A non-serialized, one-shot handoff proof captured only after an accepted
 	 * ACTIVATED.  It belongs to this descriptor and disappears on disconnect. */
 	onboarding_activation_save_capability onboarding_activation_save;

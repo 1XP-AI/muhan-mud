@@ -17,6 +17,9 @@
 #include "onboarding_admission.h"
 #include "onboarding_activation_binding.h"
 #include "onboarding_activation_save_capability.h"
+#ifdef USE_M3_RUNTIME
+#include "onboarding_activation_gate.h"
+#endif
 #include "onboarding_evidence_control.h"
 #include "onboarding_evidence_emission.h"
 #include "onboarding_receipt.h"
@@ -258,7 +261,93 @@ int fd;
 	       sizeof(Ply[fd].extr->onboarding_character_id));
 	Ply[fd].extr->onboarding_mode = 0;
 	Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_NEW;
+	Ply[fd].extr->onboarding_activation_pending = 0;
+	memset(Ply[fd].extr->onboarding_activation_command_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_activation_command_id));
 }
+
+#ifdef USE_M3_RUNTIME
+static void onboarding_activation_wait(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{ (void)fd; (void)param; (void)str; }
+
+static int onboarding_activation_complete(fd)
+int fd;
+{
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply) return -1;
+	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION) {
+		Ply[fd].ply->fd = fd;
+		if(activate_staged_ply(Ply[fd].ply) < 0 || onboarding_send_active(fd,
+			Ply[fd].extr->onboarding_activation_command_id) != 0) {
+			onboarding_fail(fd); return -1;
+		}
+		Ply[fd].extr->onboarding_world_staged = 0;
+		onboarding_finish_activation(fd);
+		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
+		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
+		Ply[fd].io->fn = command; Ply[fd].io->fnparam = 1;
+		return 0;
+	}
+	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {
+		if(onboarding_send_active(fd,
+			Ply[fd].extr->onboarding_activation_command_id) != 0) {
+			onboarding_fail(fd); return -1;
+		}
+		onboarding_finish_activation(fd); disconnect(fd); return 0;
+	}
+	return -1;
+}
+
+/* 0 completes, 1 retains PREPARED for host retry, -1 is terminal. */
+static int onboarding_activation_gate_advance(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_activation_binding_mode mode;
+	onboarding_activation_gate_result result;
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply || !command_id) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	result = onboarding_activation_gate_attempt(
+		&Ply[fd].extr->onboarding_activation_save, command_id,
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, Ply[fd].ply->name,
+		Ply[fd].ply->name, Ply[fd].ply);
+	if(result == ONBOARDING_ACTIVATION_GATE_BYPASS ||
+	   result == ONBOARDING_ACTIVATION_GATE_CONSUMED) {
+		strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+		return onboarding_activation_complete(fd);
+	}
+	if(result != ONBOARDING_ACTIVATION_GATE_RETAINED) return -1;
+	strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+	Ply[fd].extr->onboarding_activation_pending = 1;
+	Ply[fd].io->fn = onboarding_activation_wait; Ply[fd].io->fnparam = 0;
+	return 1;
+}
+
+/* Called only from the post-update serialized host idle boundary. */
+void onboarding_activation_gate_idle_retry()
+{
+	int fd, result;
+	for(fd = 0; fd < PMAX; fd++) {
+		if(!Ply[fd].extr || !Ply[fd].extr->onboarding_activation_pending)
+			continue;
+		if(!Ply[fd].io || !Ply[fd].ply ||
+		   !Ply[fd].extr->onboarding_activation_command_id[0]) {
+			onboarding_fail(fd); continue;
+		}
+		result = onboarding_activation_gate_advance(fd,
+			Ply[fd].extr->onboarding_activation_command_id);
+		if(result < 0) onboarding_fail(fd);
+	}
+}
+#endif
 
 /* The EVIDENCE lane carries the separately canonical metadata envelope, not a
  * legacy onboarding_control.  It advances only after inspection, tuple match,
@@ -318,6 +407,9 @@ unsigned char *str;
 
 	if(!onboarding_fd_active(fd) || !onboarding_session_is_protocol_line(str) ||
 	   !Ply[fd].io) return 0;
+	/* A retained M3 activation has no client-driven transition.  Drop every
+	 * line without failing or clearing its exact descriptor capability. */
+	if(Ply[fd].extr->onboarding_activation_pending) return 1;
 	if((Ply[fd].io->fn == onboarding_provision &&
 	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 4 ||
 	     Ply[fd].io->fnparam == 5)) ||
@@ -779,6 +871,11 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
+#ifdef USE_M3_RUNTIME
+		if(onboarding_activation_gate_advance(fd, control.command_id) < 0)
+			onboarding_fail(fd);
+		return;
+#else
 		Ply[fd].ply->fd = fd;
 		if(activate_staged_ply(Ply[fd].ply) < 0 ||
 		   onboarding_send_active(fd, control.command_id) != 0) {
@@ -790,6 +887,7 @@ unsigned char *str;
 		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
 		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
 		RETURN(fd, command, 1);
+#endif
 	default:
 		onboarding_fail(fd);
 		return;
@@ -945,9 +1043,15 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
+#ifdef USE_M3_RUNTIME
+		if(onboarding_activation_gate_advance(fd, control.command_id) < 0)
+			onboarding_fail(fd);
+		return;
+#else
 		onboarding_finish_activation(fd);
 		disconnect(fd);
 		return;
+#endif
 	default:
 		onboarding_fail(fd);
 		return;

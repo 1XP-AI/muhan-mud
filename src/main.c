@@ -14,6 +14,7 @@
 #ifdef USE_M3_RUNTIME
 #include "character_save_journal_v2_runtime.h"
 #include "character_save_journal_v2_runtime_native.h"
+#include "onboarding_activation_gate.h"
 
 /* Static storage and exactly one atexit registration keep the opt-in shadow
  * owner alive for every save, then make all normal exits follow its one
@@ -47,6 +48,7 @@ static void m3_runtime_snapshot_idle_hook(void)
 static void m3_runtime_shutdown_at_exit(void)
 {
 	m3_runtime_remove_idle_hook();
+	onboarding_activation_gate_unbind_owner(&m3_native.process_owner);
 	character_save_journal_v2_runtime_shutdown(&m3_runtime);
 }
 #endif
@@ -124,6 +126,8 @@ char	*argv[];
 		fprintf(stderr,"M3 runtime startup failed\n");
 		exit(78);
 	}
+	if(m3_native.shadow_active)
+		onboarding_activation_gate_bind_owner(&m3_native.process_owner);
 #endif
 
 #ifdef AUTOSHUTDOWN

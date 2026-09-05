@@ -433,6 +433,7 @@ void sock_loop()
 		/* Never cross a requested shutdown boundary; the next loop turn owns
 		 * graceful persistence before another socket poll. */
 		m3_runtime_run_idle_hook();
+		onboarding_activation_gate_idle_retry();
 #endif
 	}
 }
