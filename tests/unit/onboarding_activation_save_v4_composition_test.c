@@ -283,6 +283,21 @@ static int delegated_load(void *opaque, char *name, creature **player)
     return PLAYER_STORE_NOT_FOUND;
 }
 
+static int stale_candidate_resolver(void *opaque,
+    const character_save_journal_v2_writer_tuple *writer,
+    const character_save_journal_v2_bound_route_v3 *route,
+    const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length,
+    character_save_journal_v2_protocol_candidate_v4 *candidate)
+{
+    (void)opaque;
+    (void)writer;
+    (void)route;
+    (void)canonical_legacy_name;
+    (void)canonical_legacy_name_length;
+    (void)candidate;
+    return 0;
+}
+
 character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save_held_v3(
     const character_save_journal_v2_writer_context *writer,
@@ -585,6 +600,30 @@ static int test_exact_identity_feature_and_empty_capability_rejections(void)
     return failed;
 }
 
+static int test_stale_resolver_rejects_without_dispatch(void)
+{
+    fixture test;
+    int failed = 0;
+
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    failed += expect(arm(&test) &&
+        !character_save_journal_v2_player_store_set_candidate_resolver(
+            &test.store, stale_candidate_resolver, &test) &&
+        attempt(&test, test.command, test.actor, test.correlation,
+        test.character, test.name) == ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED &&
+        test.capability.armed && test.store.resolve_candidate == stale_candidate_resolver &&
+        test.store.resolve_candidate_opaque == &test && !test.v3_calls && !test.v4_calls &&
+        !test.validate_calls && !test.renew_calls && !test.bootstrap_calls,
+        "a stale resolver rejects before PlayerStore save dispatch and retains capability");
+    return failed;
+}
+
 static int test_independent_fixtures_do_not_cross_contaminate(void)
 {
     fixture alpha, beta;
@@ -629,6 +668,7 @@ int main(void)
         test_claim_prepared_retains_until_idle_retry() |
         test_wrong_tuple_fails_closed() | test_v3_fallback_untouched() |
         test_exact_identity_feature_and_empty_capability_rejections() |
+        test_stale_resolver_rejects_without_dispatch() |
         test_independent_fixtures_do_not_cross_contaminate();
     unsetenv("MUD_M3_MODE");
     unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
