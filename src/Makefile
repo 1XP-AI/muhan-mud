@@ -152,6 +152,7 @@ unit-test:
 	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) m3-wake-v1-test
 	$(MAKE) m3-wake-supervisor-test
+	$(MAKE) m3-wake-transport-test
 	$(MAKE) character-save-journal-v2-protocol-test
 	$(MAKE) character-save-journal-v2-crash-test
 	$(MAKE) character-snapshot-shadow-outbox-test
@@ -567,6 +568,26 @@ m3-wake-supervisor-sanitizer-test: m3-wake-supervisor-static-default-link-test
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_wake_supervisor_test.c m3_wake_supervisor.c m3_wake_v1.c -o /tmp/muhan-unit/m3_wake_supervisor_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_wake_supervisor_sanitizer_test
+
+# This bounded local queue is contract-only: no descriptor, process, socket,
+# database, or default runtime linkage is introduced.
+m3-wake-transport-default-link-inputs:
+	@printf '%s\n' 'OBJECTS=$(OBJECTS)' 'LIBS=$(LIBS)' 'EXTRA_LIBS=$(EXTRA_LIBS)' 'M3_RUNTIME_LIBS=$(M3_RUNTIME_LIBS)' 'M3_RUNTIME_OBJECTS=$(M3_RUNTIME_OBJECTS)'
+
+m3-wake-transport-static-default-link-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c m3_wake_transport.c -o /tmp/muhan-unit/m3_wake_transport_prod.o
+	python3 ../tests/unit/m3_wake_transport_default_link_test.py --object /tmp/muhan-unit/m3_wake_transport_prod.o --makefile Makefile --source m3_wake_transport.c --header m3_wake_transport.h
+
+m3-wake-transport-test: m3-wake-transport-static-default-link-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/m3_wake_transport_test.c m3_wake_transport.c m3_wake_v1.c -o /tmp/muhan-unit/m3_wake_transport_test
+	/tmp/muhan-unit/m3_wake_transport_test
+
+m3-wake-transport-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_wake_transport_test.c m3_wake_transport.c m3_wake_v1.c -o /tmp/muhan-unit/m3_wake_transport_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_wake_transport_sanitizer_test
 
 p1f-runtime-idle-test:
 	mkdir -p /tmp/muhan-unit
