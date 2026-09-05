@@ -253,11 +253,24 @@ onboarding-activation-save-bridge-sanitizer-test:
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_bridge_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_save_bridge_static_test.py
 
-# Test-only V4 composition: fake weak protocol hooks keep this outside live linkage.
+# PlayerStore dispatch seam: fake weak protocol hooks deliberately keep this
+# focused on dispatch and are not evidence that production V4 ran.
+onboarding-activation-save-v4-player-store-dispatch-seam-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_v4_player_store_dispatch_seam_test
+	/tmp/muhan-unit/onboarding_activation_save_v4_player_store_dispatch_seam_test
+
+# Focused production-V4 composition with local journal fixtures and fake
+# lower-level route/serializer/receipt callbacks only; no live service linkage.
 onboarding-activation-save-v4-composition-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_v4_composition_test
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. ../tests/unit/onboarding_activation_save_v4_protocol_composition_test.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/onboarding_activation_save_v4_composition_test
 	/tmp/muhan-unit/onboarding_activation_save_v4_composition_test
+
+onboarding-activation-save-v4-composition-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_v4_protocol_composition_test.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/onboarding_activation_save_v4_composition_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_v4_composition_sanitizer_test
 
 # Local-only command reservation seam.  This deliberately stays out of both
 # OBJECTS and M3_RUNTIME_OBJECTS until a separate runtime wiring slice exists.
