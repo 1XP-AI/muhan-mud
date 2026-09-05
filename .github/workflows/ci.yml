@@ -154,14 +154,8 @@ jobs:
           PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 \
             bash supabase/tests/player_snapshot_v1_artifact_pg17_integration.sh
 
-      - name: Run PlayerSnapshotV1 replay-reader PostgreSQL 17 contract
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 \
-            bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
-
+      # The replay-reader gate executes the explicit comparator from dist,
+      # before the later filesystem relay E2E consumes the same compiled relay.
       - name: Setup Node for M4 relay contracts
         uses: actions/setup-node@v4
         with:
@@ -176,6 +170,14 @@ jobs:
           npm test
           npm run typecheck
           npm run build
+
+      - name: Run PlayerSnapshotV1 replay-reader PostgreSQL 17 contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
 
       - name: Run PlayerSnapshotV1 Linux filesystem relay PostgreSQL 17 E2E
         if: runner.os == 'Linux'
