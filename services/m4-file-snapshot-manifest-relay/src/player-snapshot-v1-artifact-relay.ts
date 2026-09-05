@@ -142,7 +142,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   for (const sideEffect of [fulfillmentStoreOrProjection, projectionStoreOrFulfillment]) {
     if (!sideEffect) continue
     if ('fulfillGameCharacterOnboardingSnapshotEligibility' in sideEffect) fulfillmentStore = sideEffect
-    else if ('recordPlayerSnapshotV1LevelProjection' in sideEffect) projectionStore = sideEffect
+    if ('recordPlayerSnapshotV1LevelProjection' in sideEffect) projectionStore = sideEffect
   }
   if (fulfillmentStore) withFulfillmentCounters(result)
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>

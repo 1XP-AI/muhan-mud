@@ -37,6 +37,13 @@ already-parsed CDTO payload to that binary; `replayObserved` and
 changes database recording or legacy M4 headers. A missing runner, an invalid
 path, execution failure, or invalid report is counted as `replayDisabled`.
 
+Onboarding-eligibility fulfillment is a separate, default-OFF authority step.
+Only `M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED=true` supplies that
+side effect after the immutable artifact has recorded or exactly retried; an
+absent, false, or other value never invokes the fulfillment database function.
+The relay never deletes or acknowledges C-side artifact, receipt, or source
+evidence, including when fulfillment is retryable.
+
 ## Replay shadow-journal differential
 
 The separate replay differential command reads only journal JSON metadata and

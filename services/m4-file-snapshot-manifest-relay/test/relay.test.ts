@@ -11,6 +11,7 @@ import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../s
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
+import { main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
 import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
@@ -228,6 +229,42 @@ test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy 
   assert.deepEqual(manifest, originalManifest)
   assert.deepEqual(legacyEvidence, originalLegacyEvidence)
   assert.throws(() => parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, Buffer.from('bad'), parseManifest(manifest)))
+})
+
+test('artifact and receipt tuple mismatches fail closed before every database side effect and preserve source evidence', async () => {
+  const receipt = body(first)
+  const artifact = playerSnapshotV1Artifact(playerSnapshotV1(), { request_sha256: 'c'.repeat(64) })
+  const sourceEvidence = {
+    artifact: Buffer.from(artifact), receipt: Buffer.from(receipt), source: Buffer.from('native-source-evidence'),
+  }
+  const originalEvidence = {
+    artifact: Buffer.from(sourceEvidence.artifact), receipt: Buffer.from(sourceEvidence.receipt), source: Buffer.from(sourceEvidence.source),
+  }
+  const calls: string[] = []
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return 'RECORDED' },
+  }
+  const fulfillment: PlayerSnapshotV1ArtifactFulfillmentStore = {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => { calls.push('fulfillment'); return 'FULFILLED' },
+  }
+  const projection: PlayerSnapshotV1LevelProjectionStore = {
+    recordPlayerSnapshotV1LevelProjection: async () => { calls.push('projection'); return 'RECORDED' },
+  }
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{
+      name: `${first}.player-snapshot-v1`, bytes: sourceEvidence.artifact, receiptManifestBytes: sourceEvidence.receipt,
+    }],
+  }
+
+  const result = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, undefined, fulfillment, projection)
+  assert.equal(result.visited, 1)
+  assert.equal(result.valid, 0)
+  assert.equal(result.invalid, 1)
+  assert.equal(result.delivered, 0)
+  assert.equal(result.fulfillmentDelivered, 0)
+  assert.equal(result.projectionDelivered, 0)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(sourceEvidence, originalEvidence)
 })
 
 test('records PlayerSnapshotV1 level projections only after settled artifact evidence, including exact retries', async () => {
@@ -645,6 +682,88 @@ test('repeat artifact delivery remains idempotent while retrying fulfillment fai
   assert.equal(secondResult.exactRetry, 1)
   assert.equal(secondResult.fulfillmentAlreadyFulfilled, 1)
   assert.deepEqual(artifact, originalArtifact)
+})
+
+test('artifact CLI keeps onboarding fulfillment absent until its explicit feature flag is enabled', async () => {
+  const calls: unknown[][] = []
+  const writes: string[] = []
+  let created = 0
+  let closed = 0
+  const store: PlayerSnapshotV1ArtifactStore & PlayerSnapshotV1ArtifactFulfillmentStore = {
+    recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => 'FULFILLED',
+    close: async () => { closed++ },
+  }
+  const dependencies = {
+    createStore: () => { created++; return store },
+    relay: async (...args: Parameters<typeof relayPlayerSnapshotV1ArtifactsOnce>) => {
+      calls.push(args)
+      return {
+        visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+        replayObserved: 0, replayDisabled: 0,
+        projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0,
+        projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
+      }
+    },
+    replayObserverFromEnvironment: () => ({ observe: async () => 'disabled' as const }),
+    writeStdout: (value: string) => { writes.push(value) },
+  }
+  const environment = {
+    M4_FILE_SNAPSHOT_OUTBOX_DIR: '/immutable/outbox',
+    DATABASE_URL: 'postgresql://mud_writer_login@localhost/postgres',
+  }
+
+  assert.equal(await artifactRelayMain(environment, ['--once'], dependencies), 0)
+  assert.equal(created, 1)
+  assert.equal(closed, 1)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.[4], undefined)
+  assert.equal(writes.length, 1)
+
+  assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'false' }, ['--once'], dependencies), 0)
+  assert.equal(created, 2)
+  assert.equal(closed, 2)
+  assert.equal(calls[1]?.[4], undefined)
+  assert.equal(writes.length, 2)
+
+  assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true' }, ['--once'], dependencies), 0)
+  assert.equal(created, 3)
+  assert.equal(closed, 3)
+  assert.equal(calls[2]?.[4], store)
+  assert.equal(writes.length, 3)
+})
+
+test('a dual-interface side-effect store preserves projection retry after fulfillment', async () => {
+  const receipt = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: receipt }],
+  }
+  const calls: string[] = []
+  let attempts = 0
+  const dualStore: PlayerSnapshotV1ArtifactStore & PlayerSnapshotV1ArtifactFulfillmentStore & PlayerSnapshotV1LevelProjectionStore = {
+    recordPlayerSnapshotV1Artifact: async () => {
+      attempts++
+      calls.push(`artifact:${attempts}`)
+      return attempts === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => {
+      calls.push(`fulfillment:${attempts}`)
+      return attempts === 1 ? 'FULFILLED' : 'EXACT_RETRY'
+    },
+    recordPlayerSnapshotV1LevelProjection: async () => {
+      calls.push(`projection:${attempts}`)
+      return attempts === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+  }
+
+  const firstResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', dualStore, filesystem, undefined, dualStore)
+  const retryResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', dualStore, filesystem, undefined, dualStore)
+  assert.deepEqual(calls, ['artifact:1', 'fulfillment:1', 'projection:1', 'artifact:2', 'fulfillment:2', 'projection:2'])
+  assert.equal(firstResult.fulfillmentFulfilled, 1)
+  assert.equal(firstResult.projectionRecorded, 1)
+  assert.equal(retryResult.fulfillmentExactRetry, 1)
+  assert.equal(retryResult.projectionExactRetry, 1)
 })
 
 test('PlayerSnapshotV1 raw-U8 level projection adapter uses SET ROLE and one parameterized migration-190 call', async () => {
