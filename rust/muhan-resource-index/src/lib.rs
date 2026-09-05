@@ -166,6 +166,38 @@ impl LegacyPlayerShadowIdentityV1 {
     }
 }
 
+/// Closed, fixture-ABI-only player locator derived from an audited projection.
+///
+/// This value contains only the fixture-canonicalized name, its already-derived
+/// SHA-1 digest, and the digest-derived shard. It is neither a save decoder nor
+/// a representation of player state, source paths, credentials, or runtime data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyPlayerShadowLocatorV1 {
+    canonical_name: String,
+    name_sha1: String,
+    shard: String,
+}
+
+impl LegacyPlayerShadowLocatorV1 {
+    /// The fixture-canonicalized player name.
+    #[must_use]
+    pub fn canonical_name(&self) -> &str {
+        &self.canonical_name
+    }
+
+    /// The SHA-1 digest already derived from the canonical name by the fixture projection.
+    #[must_use]
+    pub fn name_sha1(&self) -> &str {
+        &self.name_sha1
+    }
+
+    /// The two-hex-character shard already derived from the name digest.
+    #[must_use]
+    pub fn shard(&self) -> &str {
+        &self.shard
+    }
+}
+
 impl PlayerShadow {
     /// Derives closed fixture-ABI-only metadata evidence from this pure projection.
     ///
@@ -178,6 +210,19 @@ impl PlayerShadow {
             name_sha1: self.name_sha1.clone(),
             shard: self.shard.clone(),
             level: self.level,
+        }
+    }
+
+    /// Derives a closed fixture-ABI-only locator from this pure projection.
+    ///
+    /// This intentionally copies no level, source path, raw bytes, inventory,
+    /// credential, database, runtime, writer, or deployment data.
+    #[must_use]
+    pub fn legacy_player_shadow_locator_v1(&self) -> LegacyPlayerShadowLocatorV1 {
+        LegacyPlayerShadowLocatorV1 {
+            canonical_name: self.canonical_name.clone(),
+            name_sha1: self.name_sha1.clone(),
+            shard: self.shard.clone(),
         }
     }
 
@@ -751,6 +796,14 @@ mod tests {
             .to_owned()
     }
 
+    fn c_locator_line(oracle: &Path, path: &Path) -> String {
+        c_identity_line(oracle, path)
+            .split_once("|level=")
+            .expect("C identity oracle must include level evidence")
+            .0
+            .to_owned()
+    }
+
     fn identity_line(identity: &LegacyPlayerShadowIdentityV1) -> String {
         format!(
             "OK|name={}|sha1={}|shard={}|level={}",
@@ -758,6 +811,15 @@ mod tests {
             identity.name_sha1(),
             identity.shard(),
             identity.level(),
+        )
+    }
+
+    fn locator_line(locator: &LegacyPlayerShadowLocatorV1) -> String {
+        format!(
+            "OK|name={}|sha1={}|shard={}",
+            locator.canonical_name(),
+            locator.name_sha1(),
+            locator.shard(),
         )
     }
 
@@ -807,6 +869,85 @@ mod tests {
                 "level={level}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_player_shadow_locator_v1_is_deterministic_fixture_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (bytes, _) = fixture(&oracle, temp.path(), "mixed-case");
+        let player =
+            project_legacy_player_shadow(&bytes, &fixture_abi(), LegacyProjectionLimits::default())
+                .unwrap();
+
+        let first = player.legacy_player_shadow_locator_v1();
+        let second = player.legacy_player_shadow_locator_v1();
+
+        assert_eq!(first, second);
+        assert_eq!(first.canonical_name(), "Alice");
+        assert_eq!(
+            first.name_sha1(),
+            "35318264c9a98faf79965c270ac80c5606774df1"
+        );
+        assert_eq!(first.shard(), "35");
+    }
+
+    #[test]
+    fn legacy_player_shadow_locator_v1_matches_the_three_c_backed_fields_exactly() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+
+        for fixture_name in ["empty", "mixed-case", "high-level", "nested"] {
+            let (bytes, _) = fixture(&oracle, temp.path(), fixture_name);
+            let path = temp.path().join(format!("{fixture_name}.bin"));
+            let player = project_legacy_player_shadow(
+                &bytes,
+                &fixture_abi(),
+                LegacyProjectionLimits::default(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                locator_line(&player.legacy_player_shadow_locator_v1()),
+                c_locator_line(&oracle, &path),
+                "fixture={fixture_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn changing_level_changes_identity_evidence_but_not_locator_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (mut bytes, _) = fixture(&oracle, temp.path(), "high-level");
+        let abi = fixture_abi();
+        let path = temp.path().join("locator-level.bin");
+
+        bytes[abi.player_level.offset] = 17;
+        std::fs::write(&path, &bytes).unwrap();
+        let low_level =
+            project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default()).unwrap();
+        let low_identity = low_level.legacy_player_shadow_identity_v1();
+        let low_locator = low_level.legacy_player_shadow_locator_v1();
+        assert_eq!(
+            identity_line(&low_identity),
+            c_identity_line(&oracle, &path)
+        );
+
+        bytes[abi.player_level.offset] = u8::MAX;
+        std::fs::write(&path, &bytes).unwrap();
+        let high_level =
+            project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default()).unwrap();
+        let high_identity = high_level.legacy_player_shadow_identity_v1();
+        let high_locator = high_level.legacy_player_shadow_locator_v1();
+
+        assert_ne!(low_identity, high_identity);
+        assert_eq!(
+            identity_line(&high_identity),
+            c_identity_line(&oracle, &path)
+        );
+        assert_eq!(low_locator, high_locator);
+        assert_eq!(locator_line(&high_locator), c_locator_line(&oracle, &path));
     }
 
     #[test]
