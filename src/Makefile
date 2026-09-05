@@ -227,6 +227,18 @@ onboarding-activation-binding-sanitizer-test:
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_binding_test.c onboarding_activation_binding.c resource_path.c -o /tmp/muhan-unit/onboarding_activation_binding_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_binding_sanitizer_test
 
+# Local-only command reservation seam.  This deliberately stays out of both
+# OBJECTS and M3_RUNTIME_OBJECTS until a separate runtime wiring slice exists.
+onboarding-snapshot-command-consumer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_snapshot_command_consumer_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c resource_path.c -o /tmp/muhan-unit/onboarding_snapshot_command_consumer_test
+	/tmp/muhan-unit/onboarding_snapshot_command_consumer_test
+
+onboarding-snapshot-command-consumer-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_snapshot_command_consumer_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c resource_path.c -o /tmp/muhan-unit/onboarding_snapshot_command_consumer_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_snapshot_command_consumer_sanitizer_test
+
 onboarding-admission-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_admission_test.c onboarding_admission.c onboarding_session.c onboarding_receipt.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/onboarding_admission_test
