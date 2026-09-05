@@ -1,11 +1,22 @@
 import { createHmac, randomBytes as nodeRandomBytes } from 'node:crypto'
 import { isStrictLowerUuid } from './character-authorizer.js'
+import {
+  LEGACY_IDENTITY_EVIDENCE_V1_MAX_WIRE_LENGTH,
+  bytesToLowerHex,
+  decodeLegacyIdentityEvidenceV1,
+  encodeLegacyIdentityEvidenceV1,
+  lowerHexToBytes,
+  type LegacyIdentityEvidenceV1,
+} from './evidence-codec/legacy-identity-evidence-v1.js'
 
 const MAX_AUTH_FRAME_BYTES = 16 * 1024
 const MAX_ACCESS_TOKEN_BYTES = 8 * 1024
 const MAX_TICKET_TTL_MS = 15_000
 const MAX_TICKET_LINE_BYTES = 256
 const MAX_CONTROL_LINE_BYTES = 256
+const EVIDENCE_CONTROL_PREFIX = 'MUD1O EVIDENCE|1|'
+const MAX_EVIDENCE_CONTROL_LINE_BYTES = 240
+const MIN_EVIDENCE_V1_WIRE_LENGTH = 30
 const MAX_STORAGE_FORMAT_BYTES = 32
 const UUID_KEYS = ['type', 'accessToken', 'mode', 'correlationId'] as const
 
@@ -128,20 +139,58 @@ type HexNameControl =
   | { type: 'VERIFIED'; nameHex: string; fileSha256: string }
 type CharacterControl = { type: 'RESERVED' | 'CLAIMED'; characterId: string }
 type SavedControl = { type: 'SAVED'; characterId: string; fileSha256: string; storageFormat: string }
+export type OnboardingEvidenceControl = { type: 'EVIDENCE'; version: 1; evidence: LegacyIdentityEvidenceV1 }
 export type OnboardingControl =
   | { type: 'OK' | 'ALLOW' | 'ERR' | 'COMMIT' | 'ABORT' }
   | HexNameControl
   | CharacterControl
   | SavedControl
+  | OnboardingEvidenceControl
+
+export interface OnboardingControlParserOptions {
+  /** Disabled until the caller explicitly opts into the evidence control lane. */
+  evidenceEnabled?: boolean
+}
 
 function isLowerHex(value: string, min: number, max: number): boolean {
   return value.length >= min && value.length <= max && value.length % 2 === 0 && /^[0-9a-f]+$/.test(value)
 }
 
-function parseControlLine(line: Buffer): OnboardingControl {
+function parseEvidenceControlLine(line: Buffer): OnboardingEvidenceControl {
+  if (line.length + 1 > MAX_EVIDENCE_CONTROL_LINE_BYTES) fail()
+  const text = line.toString('ascii')
+  if (!text.startsWith(EVIDENCE_CONTROL_PREFIX)) fail()
+  const hex = text.slice(EVIDENCE_CONTROL_PREFIX.length)
+  if (hex.length < MIN_EVIDENCE_V1_WIRE_LENGTH * 2 || hex.length > LEGACY_IDENTITY_EVIDENCE_V1_MAX_WIRE_LENGTH * 2 ||
+      hex.length % 2 !== 0 || !/^[0-9a-f]+$/.test(hex)) fail()
+  let evidence: LegacyIdentityEvidenceV1
+  try {
+    evidence = decodeLegacyIdentityEvidenceV1(lowerHexToBytes(hex))
+  } catch {
+    fail()
+  }
+  return { type: 'EVIDENCE', version: 1, evidence }
+}
+
+/** Format the exact ASCII V1 record. It intentionally does not invoke an RPC or finalizer. */
+export function formatOnboardingEvidenceControl(evidence: LegacyIdentityEvidenceV1): Buffer {
+  let wire: Uint8Array
+  try {
+    wire = encodeLegacyIdentityEvidenceV1(evidence)
+  } catch {
+    fail()
+  }
+  if (wire.length < MIN_EVIDENCE_V1_WIRE_LENGTH || wire.length > LEGACY_IDENTITY_EVIDENCE_V1_MAX_WIRE_LENGTH) fail()
+  const line = Buffer.from(`${EVIDENCE_CONTROL_PREFIX}${bytesToLowerHex(wire)}\n`, 'ascii')
+  if (line.length > MAX_EVIDENCE_CONTROL_LINE_BYTES) fail()
+  return line
+}
+
+function parseControlLine(line: Buffer, evidenceEnabled: boolean): OnboardingControl {
   if (line.length < 1 || line.length > MAX_CONTROL_LINE_BYTES || line.some((byte) => byte < 0x20 || byte > 0x7e)) fail()
   const text = line.toString('ascii')
   if (!text.startsWith('MUD1O ')) fail()
+  if (evidenceEnabled && text.startsWith(EVIDENCE_CONTROL_PREFIX)) return parseEvidenceControlLine(line)
   const body = text.slice(6)
   if (body === 'OK') return { type: 'OK' }
   if (body === 'ALLOW') return { type: 'ALLOW' }
@@ -176,6 +225,11 @@ function parseControlLine(line: Buffer): OnboardingControl {
 /** Incremental parser for private C control lines; it supports coalesced output. */
 export class OnboardingControlLineParser {
   private pending = Buffer.alloc(0)
+  private readonly evidenceEnabled: boolean
+
+  constructor(options: OnboardingControlParserOptions = {}) {
+    this.evidenceEnabled = options.evidenceEnabled === true
+  }
 
   push(chunk: string | Uint8Array): OnboardingControl[] {
     const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk)
@@ -189,7 +243,7 @@ export class OnboardingControlLineParser {
         break
       }
       if (newline > MAX_CONTROL_LINE_BYTES || (newline > 0 && this.pending[newline - 1] === 0x0d)) fail()
-      output.push(parseControlLine(this.pending.subarray(0, newline)))
+      output.push(parseControlLine(this.pending.subarray(0, newline), this.evidenceEnabled))
       this.pending = this.pending.subarray(newline + 1)
     }
     return output
@@ -281,5 +335,6 @@ export const onboardingProtocolLimits = {
   maxTicketTtlMs: MAX_TICKET_TTL_MS,
   maxTicketLineBytes: MAX_TICKET_LINE_BYTES,
   maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+  maxEvidenceControlLineBytes: MAX_EVIDENCE_CONTROL_LINE_BYTES,
   maxStorageFormatBytes: MAX_STORAGE_FORMAT_BYTES,
 } as const

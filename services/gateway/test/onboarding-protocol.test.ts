@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import fixture from '../../../tests/fixtures/onboarding_protocol_v1.json' with { type: 'json' }
 import {
@@ -8,14 +11,23 @@ import {
   assertLegalOnboardingTransition,
   canTransitionOnboardingState,
   createOnboardingTicket,
+  formatOnboardingEvidenceControl,
   onboardingProtocolLimits,
   parseOnboardingAuthFrame,
   sanitizeOnboardingLogMetadata,
 } from '../src/onboarding-protocol.js'
+import { decodeLegacyIdentityEvidenceV1, lowerHexToBytes } from '../src/evidence-codec/legacy-identity-evidence-v1.js'
 
 const actor = '11111111-1111-4111-8111-111111111111'
 const correlation = '22222222-2222-4222-8222-222222222222'
 const token = 'jwt-token-that-must-never-appear-in-an-error'
+const testDirectory = fileURLToPath(new URL('.', import.meta.url))
+const evidenceFixturePath = resolve(testDirectory, '../../../tests/fixtures/legacy_identity_evidence_wire_v1_ok.hex')
+
+const evidence = {
+  outcome: 'ok', canonicalization: 'normalized', canonicalName: 'Alice', legacyShard: '35',
+  playerFileSha256: '18f8d2eb4a387bbc1e37ec099a7326805739bc9c99ecf0f14b808a5bcb65bf49', storageFormat: 'player-v1'
+} as const
 
 test('parses the strict first onboarding auth frame', () => {
   assert.deepEqual(parseOnboardingAuthFrame(JSON.stringify({
@@ -82,6 +94,57 @@ test('parses claim challenge controls and keeps ALLOW private to the C lane', ()
   assert.deepEqual(result.game, [])
 })
 
+test('formats and parses the exact feature-gated V1 evidence fixture', async () => {
+  const wireHex = (await readFile(evidenceFixturePath, 'utf8')).trim()
+  const decoded = decodeLegacyIdentityEvidenceV1(lowerHexToBytes(wireHex))
+  const record = Buffer.from(`MUD1O EVIDENCE|1|${wireHex}\n`, 'ascii')
+  assert.deepEqual(formatOnboardingEvidenceControl(decoded), record)
+  const parser = new OnboardingControlLineParser({ evidenceEnabled: true })
+  assert.deepEqual(parser.push(record), [{ type: 'EVIDENCE', version: 1, evidence: decoded }])
+})
+
+test('accepts a fragmented maximum-sized evidence record and a coalesced ordinary control', () => {
+  const maximum = { ...evidence, canonicalName: 'FourteenByteID' }
+  const record = formatOnboardingEvidenceControl(maximum)
+  assert.equal(record.length, 240)
+  const parser = new OnboardingControlLineParser({ evidenceEnabled: true })
+  assert.deepEqual(parser.push(record.subarray(0, 19)), [])
+  assert.deepEqual(parser.push(Buffer.concat([record.subarray(19), Buffer.from('MUD1O COMMIT\n', 'ascii')])), [
+    { type: 'EVIDENCE', version: 1, evidence: maximum }, { type: 'COMMIT' },
+  ])
+})
+
+test('keeps evidence disabled by default and rejects noncanonical evidence record variants', () => {
+  const record = formatOnboardingEvidenceControl(evidence)
+  const disabled = new OnboardingControlLineParser()
+  assert.throws(() => disabled.push(record), OnboardingProtocolError)
+
+  const text = record.toString('ascii')
+  const hexStart = 'MUD1O EVIDENCE|1|'.length
+  const replaceFirstHex = (value: string): string => `${text.slice(0, hexStart)}${value}${text.slice(hexStart + 1)}`
+  const invalid = [
+    text.replace('|1|', '|2|'),
+    replaceFirstHex('A'),
+    replaceFirstHex('g'),
+    `${text.slice(0, -2)}\n`,
+    text.replace('|1|', '|1| '),
+    `${text.slice(0, -1)}00\n`,
+    `${text.slice(0, -1)}\r\n`,
+    `${text.slice(0, -1)}\t\n`,
+    replaceFirstHex('0'),
+  ]
+  // The final case crosses the dedicated 240-byte line boundary using a canonical max record.
+  invalid.push(`${formatOnboardingEvidenceControl({ ...evidence, canonicalName: 'FourteenByteID' }).toString('ascii').slice(0, -1)}00\n`)
+  for (const value of invalid) {
+    const parser = new OnboardingControlLineParser({ evidenceEnabled: true })
+    assert.throws(() => parser.push(value), OnboardingProtocolError)
+  }
+  for (const value of [Buffer.from('MUD1O EVIDENCE|1|00\0\n', 'binary'), Buffer.from('MUD1O EVIDENCE|1|00\x01\n', 'binary')]) {
+    const parser = new OnboardingControlLineParser({ evidenceEnabled: true })
+    assert.throws(() => parser.push(value), OnboardingProtocolError)
+  }
+})
+
 test('demultiplexes fragmented private controls without leaking them into game bytes', () => {
   const parser = new OnboardingControlDemultiplexer()
   assert.deepEqual(parser.push(Buffer.from('prompt MUD1')).game.map(String), ['prompt '])
@@ -108,6 +171,7 @@ test('enforces explicit onboarding state transitions', () => {
 test('shares the C ticket and control bounds', () => {
   assert.equal(onboardingProtocolLimits.maxTicketLineBytes, 256)
   assert.equal(onboardingProtocolLimits.maxControlLineBytes, 256)
+  assert.equal(onboardingProtocolLimits.maxEvidenceControlLineBytes, 240)
   assert.equal(onboardingProtocolLimits.maxStorageFormatBytes, 32)
 })
 
