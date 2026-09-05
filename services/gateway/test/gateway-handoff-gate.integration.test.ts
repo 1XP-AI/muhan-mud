@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { EventEmitter, once } from 'node:events'
 import test from 'node:test'
 import WebSocket, { type RawData } from 'ws'
 import type { AuthorizedCharacter, BeginCharacterSessionRequest, CharacterAuthorizer, RenewCharacterSessionRequest, RenewedCharacterSession } from '../src/character-authorizer.js'
 import { loadConfig } from '../src/config.js'
-import { createGateway } from '../src/gateway.js'
+import { createGateway, type EvidenceFinalizer } from '../src/gateway.js'
 import type { ChallengeOnboardingRequest, ChallengeOnboardingResult, ClaimOnboardingRequest, FinalizeOnboardingRequest, OnboardingAuthorizer, ReserveOnboardingRequest } from '../src/onboarding-authorizer.js'
+import { formatOnboardingEvidenceControl } from '../src/onboarding-protocol.js'
+import type { FinalizeLegacyIdentityEvidenceRequest } from '../src/evidence-finalizer.js'
+import type { LegacyIdentityEvidenceV1 } from '../src/evidence-codec/legacy-identity-evidence-v1.js'
 
 const actor = '123e4567-e89b-12d3-a456-426614174000'
 const correlation = '123e4567-e89b-12d3-a456-426614174001'
@@ -58,6 +62,53 @@ class AdmissionMudSocket extends EventEmitter {
   destroy(): this { this.destroyed = true; return this }
 }
 
+class HeldEvidenceCompletionMudSocket extends EventEmitter {
+  destroyed = false
+  readonly writes: Buffer[] = []
+  private stage = 0
+  private completionCallback?: (error?: Error | null) => void
+
+  constructor(private readonly mode: 'provision' | 'claim', private readonly completionEvidence: LegacyIdentityEvidenceV1) { super() }
+  connect(): void { queueMicrotask(() => this.emit('connect')) }
+  write(data: Uint8Array | string, callback?: (error?: Error | null) => void): boolean {
+    const frame = Buffer.from(data)
+    const text = frame.toString()
+    this.writes.push(frame)
+    if (text.startsWith(this.mode === 'provision' ? 'MUD1O|P|' : 'MUD1O|C|')) {
+      this.stage = 1; callback?.()
+      queueMicrotask(() => this.emit('data', Buffer.from(this.mode === 'provision' ? 'MUD1O OK\n이름? ' : 'MUD1O OK\n기존 이름? ')))
+    } else if (this.mode === 'provision' && this.stage === 1 && text === 'Hero\n') {
+      this.stage = 2; callback?.(); queueMicrotask(() => this.emit('data', Buffer.from('MUD1O RESERVE|4865726f\n')))
+    } else if (this.mode === 'provision' && this.stage === 2 && text === `MUD1O RESERVED|${character}\n`) {
+      this.stage = 3; callback?.(); queueMicrotask(() => this.emit('data', Buffer.from('성별? ')))
+    } else if (this.mode === 'provision' && this.stage === 3 && text === 'm\n') {
+      this.stage = 4; callback?.(); queueMicrotask(() => this.emit('data', formatOnboardingEvidenceControl(this.completionEvidence)))
+    } else if (this.mode === 'claim' && this.stage === 1 && text === 'Alice\n') {
+      this.stage = 2; callback?.(); queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O CHALLENGE|416c696365|${'b'.repeat(64)}\n`)))
+    } else if (this.mode === 'claim' && this.stage === 2 && text === 'MUD1O ALLOW\n') {
+      this.stage = 3; callback?.(); queueMicrotask(() => this.emit('data', Buffer.from('비밀번호? ')))
+    } else if (this.mode === 'claim' && this.stage === 3 && text === 'old-secret\n') {
+      this.stage = 4; callback?.(); queueMicrotask(() => this.emit('data', formatOnboardingEvidenceControl(this.completionEvidence)))
+    } else if (this.stage === 4 && text === (this.mode === 'provision' ? 'MUD1O COMMIT\n' : `MUD1O CLAIMED|${character}\n`)) {
+      this.completionCallback = callback
+    } else callback?.()
+    return true
+  }
+  releaseCompletion(): void { this.completionCallback?.(); this.completionCallback = undefined }
+  end(): this { return this }
+  destroy(): this { this.destroyed = true; return this }
+}
+
+class RecordingEvidenceFinalizer implements EvidenceFinalizer {
+  readonly calls: FinalizeLegacyIdentityEvidenceRequest[] = []
+  constructor(private readonly trace: string[], private readonly fails = false) {}
+  async finalize(request: FinalizeLegacyIdentityEvidenceRequest): Promise<void> {
+    this.calls.push(request)
+    this.trace.push('evidence')
+    if (this.fails) throw new Error('evidence receipt refused')
+  }
+}
+
 class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthorizer {
   readonly calls: string[] = []
   readonly admissionTickets: Buffer[] = []
@@ -66,7 +117,11 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
   leaseReleases = 0
   private active = false
   private leaseSessionId?: string
-  constructor(private readonly activationFails = false) {}
+  constructor(
+    private readonly activationFails = false,
+    private readonly mode: 'provision' | 'claim' = 'provision',
+    private readonly trace?: string[],
+  ) {}
 
   async begin(): Promise<void> { this.calls.push('begin') }
   async cancelUnreserved(): Promise<void> { this.calls.push('cancel') }
@@ -79,11 +134,15 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
     return { characterId: character }
   }
   async reconcile(_request: FinalizeOnboardingRequest): Promise<{ characterId: string }> { throw new Error('reconcile should not run') }
-  async challenge(_request: ChallengeOnboardingRequest): Promise<ChallengeOnboardingResult> { throw new Error('claim is outside this fixture') }
+  async challenge(request: ChallengeOnboardingRequest): Promise<ChallengeOnboardingResult> {
+    this.calls.push('challenge')
+    return { characterId: character, legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + 60_000 }
+  }
   async claim(_request: ClaimOnboardingRequest): Promise<{ characterId: string }> { throw new Error('claim is outside this fixture') }
   async activateHandoff(request: { actorUserId: string, correlationId: string, characterId: string, mode: 'provision' | 'claim' }): Promise<{ characterId: string }> {
     this.calls.push('activate')
-    assert.deepEqual(request, { actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' })
+    this.trace?.push('activate')
+    assert.deepEqual(request, { actorUserId: actor, correlationId: correlation, characterId: character, mode: this.mode })
     if (this.activationFails) throw new Error('activation refused')
     this.active = true
     return { characterId: character }
@@ -103,10 +162,11 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
   }
 }
 
-function config() {
+function config(evidenceEnabled = false) {
   return loadConfig({
     NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0',
     ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500',
+    ...(evidenceEnabled ? { MUD_ENABLE_ONBOARDING_EVIDENCE: '1' } : {}),
   })
 }
 
@@ -125,6 +185,14 @@ async function eventually(check: () => void, timeoutMs = 1_000): Promise<void> {
       if (Date.now() >= deadline) throw error
       await new Promise((resolve) => setTimeout(resolve, 5))
     }
+  }
+}
+
+function cEvidence(canonicalName: string, playerFileSha256: string): LegacyIdentityEvidenceV1 {
+  return {
+    outcome: 'ok', canonicalization: 'canonical', canonicalName,
+    legacyShard: createHash('sha1').update(canonicalName, 'utf8').digest('hex').slice(0, 2),
+    playerFileSha256, storageFormat: 'player-v1',
   }
 }
 
@@ -215,3 +283,79 @@ test('activation failure after COMMIT never emits browser completion', async (t)
   assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
   assert.equal(received.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"provisioned"')), false)
 })
+
+for (const scenario of [
+  { mode: 'provision' as const, legacyName: 'Hero', sha256: 'a'.repeat(64), input: 'm\n', completion: 'MUD1O COMMIT\n', browser: 'provisioned', before: ['begin', 'reserve'] },
+  { mode: 'claim' as const, legacyName: 'Alice', sha256: 'b'.repeat(64), input: 'old-secret\n', completion: `MUD1O CLAIMED|${character}\n`, browser: 'claimed', before: ['begin', 'challenge'] },
+]) {
+  test(`evidence ${scenario.mode} finalizes only after the held C completion callback, then activates handoff`, async (t) => {
+    const trace: string[] = []
+    const mud = new HeldEvidenceCompletionMudSocket(scenario.mode, cEvidence(scenario.legacyName, scenario.sha256))
+    const authorizer = new PendingHandoffAuthorizer(false, scenario.mode, trace)
+    const finalizer = new RecordingEvidenceFinalizer(trace)
+    const gateway = createGateway(config(true), {
+      onboardingAuthorizer: authorizer, characterAuthorizer: authorizer, evidenceFinalizer: finalizer,
+      authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+      connectTcp: () => { mud.connect(); return mud as unknown as import('node:net').Socket },
+    })
+    gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+    t.after(async () => { await gateway.close() })
+    const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+    await once(ws, 'open')
+    const closed = once(ws, 'close')
+    const received = messages(ws)
+    ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: scenario.mode, correlationId: correlation }))
+    await eventually(() => assert.ok(hasText(received, `{"type":"onboarding-ready","mode":"${scenario.mode}"}`)))
+    ws.send(Buffer.from(scenario.mode === 'provision' ? 'Hero\n' : 'Alice\n'))
+    await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === (scenario.mode === 'provision' ? `MUD1O RESERVED|${character}\n` : 'MUD1O ALLOW\n'))))
+    ws.send(Buffer.from(scenario.input))
+    await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === scenario.completion)))
+    assert.deepEqual(authorizer.calls, scenario.before)
+    assert.deepEqual(finalizer.calls, [], 'the C completion callback is the evidence finalization boundary')
+    assert.deepEqual(trace, [])
+
+    mud.releaseCompletion()
+    await closed
+    assert.deepEqual(trace, ['evidence', 'activate'])
+    assert.deepEqual(authorizer.calls, [...scenario.before, 'activate'])
+    assert.deepEqual(finalizer.calls, [{
+      actorUserId: actor, correlationId: correlation, characterId: character, mode: scenario.mode,
+      worldId: 'muhan', evidence: cEvidence(scenario.legacyName, scenario.sha256),
+    }])
+    assert.ok(hasText(received, `{"type":"${scenario.browser}","characterId":"${character}"}`))
+  })
+}
+
+for (const scenario of [
+  { label: 'evidence finalization', finalizerFails: true, activationFails: false, expectedCalls: ['begin', 'reserve'] },
+  { label: 'handoff activation', finalizerFails: false, activationFails: true, expectedCalls: ['begin', 'reserve', 'activate'] },
+]) {
+  test(`${scenario.label} failure after the C callback never emits evidence provision completion`, async (t) => {
+    const trace: string[] = []
+    const mud = new HeldEvidenceCompletionMudSocket('provision', cEvidence('Hero', 'c'.repeat(64)))
+    const authorizer = new PendingHandoffAuthorizer(scenario.activationFails, 'provision', trace)
+    const finalizer = new RecordingEvidenceFinalizer(trace, scenario.finalizerFails)
+    const gateway = createGateway(config(true), {
+      onboardingAuthorizer: authorizer, characterAuthorizer: authorizer, evidenceFinalizer: finalizer,
+      authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+      connectTcp: () => { mud.connect(); return mud as unknown as import('node:net').Socket },
+    })
+    gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+    t.after(async () => { await gateway.close() })
+    const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+    await once(ws, 'open')
+    const closed = once(ws, 'close')
+    const received = messages(ws)
+    ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'provision', correlationId: correlation }))
+    await eventually(() => assert.ok(hasText(received, '{"type":"onboarding-ready","mode":"provision"}')))
+    ws.send(Buffer.from('Hero\n'))
+    await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === `MUD1O RESERVED|${character}\n`)))
+    ws.send(Buffer.from('m\n'))
+    await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === 'MUD1O COMMIT\n')))
+    mud.releaseCompletion()
+    await closed
+    assert.deepEqual(authorizer.calls, scenario.expectedCalls)
+    assert.deepEqual(trace, scenario.finalizerFails ? ['evidence'] : ['evidence', 'activate'])
+    assert.equal(hasText(received, `{"type":"provisioned","characterId":"${character}"}`), false)
+  })
+}

@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Socket, createConnection } from 'node:net'
 import { URL } from 'node:url'
 import { WebSocketServer, WebSocket, type RawData } from 'ws'
@@ -16,6 +16,7 @@ import {
 import { TelnetParser } from './telnet.js'
 import { createOnboardingTicket, OnboardingControlDemultiplexer, OnboardingProtocolError, parseOnboardingAuthFrame, type OnboardingControl } from './onboarding-protocol.js'
 import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
+import { GatewayEvidenceFinalizer, SupabaseEvidenceFinalizerTransport, type FinalizeLegacyIdentityEvidenceRequest } from './evidence-finalizer.js'
 
 const PROTOCOL = 'muhan.v1'
 const ONBOARDING_PROTOCOL = 'muhan.onboarding.v1'
@@ -36,10 +37,15 @@ interface Authenticator {
   verify(accessToken: string): Promise<AuthenticatedIdentity>
 }
 
+export interface EvidenceFinalizer {
+  finalize(request: FinalizeLegacyIdentityEvidenceRequest): Promise<void>
+}
+
 export interface GatewayDependencies {
   authenticator?: Authenticator
   characterAuthorizer?: CharacterAuthorizer
   onboardingAuthorizer?: OnboardingAuthorizer
+  evidenceFinalizer?: EvidenceFinalizer
   connectTcp?: (host: string, port: number) => Socket
   logger?: Pick<Console, 'info' | 'warn' | 'error'>
   now?: () => number
@@ -157,6 +163,16 @@ function isPingMessage(data: Buffer): boolean {
   }
 }
 
+function isFinalizableEvidence(event: Extract<OnboardingControl, { type: 'EVIDENCE' }>, trusted: TrustedOnboardingCompletion, expectedSha256?: string): boolean {
+  const evidence = event.evidence
+  return event.version === 1 && evidence.outcome === 'ok' &&
+    (evidence.canonicalization === 'canonical' || evidence.canonicalization === 'normalized') &&
+    evidence.storageFormat === 'player-v1' && evidence.canonicalName === trusted.legacyNameKey &&
+    /^[0-9a-f]{64}$/.test(evidence.playerFileSha256) &&
+    (expectedSha256 === undefined || evidence.playerFileSha256 === expectedSha256) &&
+    evidence.legacyShard === createHash('sha1').update(evidence.canonicalName, 'utf8').digest('hex').slice(0, 2)
+}
+
 export function createGateway(config: GatewayConfig, dependencies: GatewayDependencies = {}): RunningGateway {
   const logger = dependencies.logger ?? console
   const now = dependencies.now ?? Date.now
@@ -169,6 +185,11 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
   const onboardingAuthorizer = dependencies.onboardingAuthorizer ?? (config.authDisabled
     ? new TestOnlyOnboardingAuthorizer()
     : new SupabaseOnboardingAuthorizer(config))
+  // Do not construct a service transport while the feature is off. Enabled
+  // production uses the narrow RPC-only transport; isolated tests inject it.
+  const evidenceFinalizer = dependencies.evidenceFinalizer ?? (config.mudOnboardingEvidenceEnabled
+    ? new GatewayEvidenceFinalizer(new SupabaseEvidenceFinalizerTransport(config))
+    : undefined)
   const connectTcp = dependencies.connectTcp ?? ((host, port) => createConnection({ host, port }))
   let accepting = true
   let activeConnections = 0
@@ -248,7 +269,7 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
   })
   onboardingWebSocketServer.on('connection', (ws, request) => {
     activeConnections += 1
-    const session = new OnboardingSession(ws, request, config, authenticator, onboardingAuthorizer, connectTcp, logger,
+    const session = new OnboardingSession(ws, request, config, authenticator, onboardingAuthorizer, evidenceFinalizer, connectTcp, logger,
       now, dependencies.randomBytes, dependencies.timers ?? systemTimers, () => { sessions.delete(session); activeConnections -= 1 })
     sessions.add(session)
     allSessions.add(session)
@@ -642,12 +663,18 @@ class GatewaySession {
 }
 
 type OnboardingSessionState = 'awaiting-auth' | 'connecting' | 'awaiting-admission' | 'awaiting-control' | 'ready' | 'closed'
+type TrustedOnboardingCompletion = {
+  actorUserId: string
+  correlationId: string
+  characterId: string
+  legacyNameKey: string
+}
 
 /** Isolated MUD1O state machine; it never shares the MUD1 session path. */
 class OnboardingSession {
   private state: OnboardingSessionState = 'awaiting-auth'
   private mud?: Socket
-  private readonly controls = new OnboardingControlDemultiplexer()
+  private readonly controls: OnboardingControlDemultiplexer
   private readonly telnet = new TelnetParser()
   private readonly inputLimiter: ByteRateLimiter
   private readonly pendingMessages: Array<{ data: Buffer, binary: boolean }> = []
@@ -661,9 +688,12 @@ class OnboardingSession {
   private correlationId?: string
   private mode?: 'provision' | 'claim'
   private characterId?: string
+  // Written only after the authorizer accepts RESERVE. The C EVIDENCE record
+  // has no actor/correlation/character fields, so it can never supply these.
+  private provisionReservation?: TrustedOnboardingCompletion
   private unreservedIntentMayExist = false
   private unreservedCancellationStarted = false
-  private controlPhase: 'admission' | 'provision-reserve' | 'provision-saved' | 'claim-challenge' | 'claim-allow' | 'done' = 'admission'
+  private controlPhase: 'admission' | 'provision-reserve' | 'provision-saved' | 'provision-evidence' | 'claim-challenge' | 'claim-allow' | 'completing' | 'done' = 'admission'
   private claimChallenge?: { characterId: string; legacyNameKey: string; fileSha256: string; allowExpiresAtMs: number }
   private controlQueue: Promise<void> = Promise.resolve()
   private paused = false
@@ -679,12 +709,14 @@ class OnboardingSession {
   constructor(
     private readonly ws: WebSocket, private readonly request: IncomingMessage, private readonly config: GatewayConfig,
     private readonly authenticator: Authenticator, private readonly authorizer: OnboardingAuthorizer,
+    private readonly evidenceFinalizer: EvidenceFinalizer | undefined,
     private readonly connectTcp: (host: string, port: number) => Socket,
     private readonly logger: Pick<Console, 'info' | 'warn' | 'error'>, private readonly now: () => number,
     private readonly randomBytes: ((size: number) => Buffer) | undefined,
     private readonly timers: GatewayTimers,
     private readonly onClosed: () => void,
   ) {
+    this.controls = new OnboardingControlDemultiplexer({ evidenceEnabled: config.mudOnboardingEvidenceEnabled })
     this.inputLimiter = new ByteRateLimiter(config.inputBytesPerSecond, now)
     this.authTimer = timers.setTimeout(() => this.fail(CLOSE_POLICY, 'authentication timed out'), config.authTimeoutMs); unrefTimer(this.authTimer)
     ws.on('message', (data, binary) => this.enqueueMessage(rawToBuffer(data), binary))
@@ -814,16 +846,22 @@ class OnboardingSession {
     if (this.state !== 'awaiting-control') return this.fail(CLOSE_INTERNAL, 'invalid MUD onboarding control')
     try {
       if (this.mode === 'provision' && this.controlPhase === 'provision-reserve' && event.type === 'RESERVE') {
-        this.controlPhase = 'provision-saved'
+        this.controlPhase = this.config.mudOnboardingEvidenceEnabled ? 'provision-evidence' : 'provision-saved'
         this.pauseInput(); const legacyName = Buffer.from(event.nameHex, 'hex').toString('utf8')
         if (Buffer.from(legacyName, 'utf8').toString('hex') !== event.nameHex) throw new OnboardingProtocolError()
         // A reserve RPC may commit even if its transport response is lost. From
         // this point on, only provisioning reconciliation may change DB state.
         this.unreservedIntentMayExist = false
         const result = await this.authorizer.reserve({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, worldId: 'muhan', legacyName })
+        if (!isStrictLowerUuid(result.characterId) || result.legacyNameKey !== legacyName) throw new OnboardingProtocolError()
         this.characterId = result.characterId
+        this.provisionReservation = {
+          actorUserId: this.actorUserId!, correlationId: this.correlationId!,
+          characterId: result.characterId, legacyNameKey: result.legacyNameKey
+        }
         await this.writeControl(`MUD1O RESERVED|${result.characterId}\n`); this.resumeInput(); return
       }
+      if (this.config.mudOnboardingEvidenceEnabled && event.type === 'SAVED') throw new OnboardingProtocolError()
       if (this.mode === 'provision' && this.controlPhase === 'provision-saved' && event.type === 'SAVED') {
         if (event.characterId !== this.characterId) throw new OnboardingProtocolError()
         this.completionControlOnly = true
@@ -855,6 +893,12 @@ class OnboardingSession {
         this.mud?.end()
         return
       }
+      if (this.mode === 'provision' && this.controlPhase === 'provision-evidence' && event.type === 'EVIDENCE') {
+        const reservation = this.provisionReservation
+        if (!reservation || reservation.characterId !== this.characterId) throw new OnboardingProtocolError()
+        await this.completeFromEvidence(event, 'provision', reservation, 'MUD1O COMMIT\n', 'provisioned')
+        return
+      }
       if (this.mode === 'claim' && this.controlPhase === 'claim-challenge' && event.type === 'CHALLENGE') {
         this.pauseInput()
         const legacyNameKey = Buffer.from(event.nameHex, 'hex').toString('utf8')
@@ -873,7 +917,7 @@ class OnboardingSession {
         this.resumeInput()
         return
       }
-      if (this.mode === 'claim' && this.controlPhase === 'claim-allow' && event.type === 'VERIFIED') {
+      if (!this.config.mudOnboardingEvidenceEnabled && this.mode === 'claim' && this.controlPhase === 'claim-allow' && event.type === 'VERIFIED') {
         const challenge = this.claimChallenge
         if (!challenge || challenge.allowExpiresAtMs <= this.now()) throw new OnboardingProtocolError()
         const legacyNameKey = Buffer.from(event.nameHex, 'hex').toString('utf8')
@@ -912,9 +956,58 @@ class OnboardingSession {
         this.mud?.end()
         return
       }
+      if (this.config.mudOnboardingEvidenceEnabled && event.type === 'VERIFIED') throw new OnboardingProtocolError()
+      if (this.mode === 'claim' && this.controlPhase === 'claim-allow' && event.type === 'EVIDENCE') {
+        const challenge = this.claimChallenge
+        if (!challenge || challenge.allowExpiresAtMs <= this.now()) throw new OnboardingProtocolError()
+        await this.completeFromEvidence(event, 'claim', {
+          actorUserId: this.actorUserId!, correlationId: this.correlationId!,
+          characterId: challenge.characterId, legacyNameKey: challenge.legacyNameKey
+        }, `MUD1O CLAIMED|${challenge.characterId}\n`, 'claimed', challenge.fileSha256)
+        return
+      }
       if (event.type === 'ERR') return this.fail(CLOSE_POLICY, 'onboarding failed')
       throw new OnboardingProtocolError()
     } catch { this.fail(CLOSE_POLICY, 'onboarding failed') }
+  }
+  private async completeFromEvidence(
+    event: Extract<OnboardingControl, { type: 'EVIDENCE' }>,
+    mode: 'provision' | 'claim',
+    trusted: TrustedOnboardingCompletion,
+    completionControl: string,
+    browserCompletion: 'provisioned' | 'claimed',
+    expectedSha256?: string,
+  ): Promise<void> {
+    // A coalesced/later C game event cannot escape while completing the
+    // one-shot handoff. The only evidence sent to the RPC is decoded metadata.
+    this.completionControlOnly = true
+    this.controlPhase = 'completing'
+    this.pauseInput()
+    if (!this.evidenceFinalizer || !isStrictLowerUuid(trusted.actorUserId) || !isStrictLowerUuid(trusted.correlationId) ||
+        !isStrictLowerUuid(trusted.characterId) || trusted.actorUserId !== this.actorUserId ||
+        trusted.correlationId !== this.correlationId || !isFinalizableEvidence(event, trusted, expectedSha256)) {
+      throw new OnboardingProtocolError()
+    }
+    // C must first accept the exact completion control. Its write callback is
+    // the durable C-side boundary before the DB may bind the evidence receipt.
+    await this.writeControl(completionControl)
+    if (this.closed) return
+    await this.evidenceFinalizer.finalize({
+      actorUserId: trusted.actorUserId, correlationId: trusted.correlationId, characterId: trusted.characterId,
+      mode, worldId: 'muhan', evidence: event.evidence
+    })
+    if (this.closed) return
+    const activated = await this.authorizer.activateHandoff({
+      actorUserId: trusted.actorUserId, correlationId: trusted.correlationId, characterId: trusted.characterId, mode
+    })
+    if (this.closed) return
+    if (activated.characterId !== trusted.characterId) throw new OnboardingProtocolError()
+    this.controlPhase = 'done'
+    this.state = 'closed'
+    this.normalClosing = true
+    this.sendText({ type: browserCompletion, characterId: trusted.characterId })
+    closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
+    this.mud?.end()
   }
   private writeControl(line: string): Promise<void> {
     if (!this.mud || this.mud.destroyed) {

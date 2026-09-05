@@ -253,7 +253,11 @@ export class OnboardingControlLineParser {
 /** Splits only reserved MUD1O lines from arbitrary Telnet/game bytes, including fragmented prefixes. */
 export class OnboardingControlDemultiplexer {
   private pending = Buffer.alloc(0)
-  private readonly controls = new OnboardingControlLineParser()
+  private readonly controls: OnboardingControlLineParser
+
+  constructor(options: OnboardingControlParserOptions = {}) {
+    this.controls = new OnboardingControlLineParser(options)
+  }
 
   push(chunk: Uint8Array): { controls: OnboardingControl[], game: Buffer[], ordered: Array<{ type: 'control', control: OnboardingControl } | { type: 'game', data: Buffer }> } {
     this.pending = Buffer.concat([this.pending, Buffer.from(chunk)])

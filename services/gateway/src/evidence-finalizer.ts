@@ -3,11 +3,14 @@ import {
   LEGACY_IDENTITY_EVIDENCE_V1_VERSION,
   type LegacyIdentityEvidenceV1
 } from './evidence-codec/legacy-identity-evidence-v1.js'
+import type { GatewayConfig } from './config.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 const SHARD_RE = /^[0-9a-f]{2}$/
 const FINALIZER_RPC = 'finalize_game_character_legacy_identity_evidence' as const
+const MAX_RPC_JSON_BYTES = 64 * 1024
+const MAX_RPC_TIMEOUT_MS = 5_000
 const FINALIZER_ROW_KEYS = [
   'character_id', 'actor_user_id', 'mode', 'lifecycle', 'world_id',
   'canonical_legacy_name', 'legacy_shard', 'player_file_sha256',
@@ -38,6 +41,72 @@ export class EvidenceFinalizationError extends Error {
   constructor() {
     super('legacy identity evidence finalization was refused')
     this.name = 'EvidenceFinalizationError'
+  }
+}
+
+/**
+ * Production-only narrow transport for the evidence finalizer. It exposes one
+ * service-role RPC and deliberately has no table or generic RPC surface.
+ */
+export class SupabaseEvidenceFinalizerTransport implements EvidenceFinalizerRpcTransport {
+  private readonly url: string
+  private readonly serviceRoleKey: string
+  private readonly timeoutMs: number
+
+  constructor(config: GatewayConfig, private readonly fetchImpl: typeof fetch = fetch) {
+    if (!config.supabaseInternalRestUrl || !config.supabaseServiceRoleKey) throw new EvidenceFinalizationError()
+    this.url = config.supabaseInternalRestUrl
+    this.serviceRoleKey = config.supabaseServiceRoleKey
+    this.timeoutMs = Math.min(config.authTimeoutMs, MAX_RPC_TIMEOUT_MS)
+  }
+
+  async call(name: typeof FINALIZER_RPC, parameters: Readonly<Record<string, unknown>>): Promise<unknown> {
+    if (name !== FINALIZER_RPC) throw new EvidenceFinalizationError()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    try {
+      let response: Response
+      try {
+        response = await this.fetchImpl(new URL(`/rpc/${name}`, this.url), {
+          method: 'POST', redirect: 'error', signal: controller.signal,
+          headers: {
+            authorization: `Bearer ${this.serviceRoleKey}`,
+            apikey: this.serviceRoleKey,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify(parameters)
+        })
+      } catch {
+        throw new EvidenceFinalizationError()
+      }
+      if (!response.ok) throw new EvidenceFinalizationError()
+      const contentType = response.headers.get('content-type')
+      const contentLength = response.headers.get('content-length')
+      if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType) ||
+          (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_RPC_JSON_BYTES))) {
+        throw new EvidenceFinalizationError()
+      }
+      const reader = response.body?.getReader()
+      if (!reader) throw new EvidenceFinalizationError()
+      const decoder = new TextDecoder()
+      let text = ''
+      let total = 0
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        total += next.value.byteLength
+        if (total > MAX_RPC_JSON_BYTES) throw new EvidenceFinalizationError()
+        text += decoder.decode(next.value, { stream: true })
+      }
+      text += decoder.decode()
+      try {
+        return JSON.parse(text)
+      } catch {
+        throw new EvidenceFinalizationError()
+      }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 }
 
@@ -109,9 +178,8 @@ function validRecordedAt(value: unknown): boolean {
 }
 
 /**
- * Pure, currently unused finalizer for a decoded metadata-only V1 report.
- * Its sole call target is the new shard-aware overload from the evidence
- * binding migration; callers must integrate it explicitly in a later slice.
+ * Finalizes a decoded metadata-only V1 report through only the shard-aware
+ * overload from the evidence binding migration.
  */
 export class GatewayEvidenceFinalizer {
   constructor(private readonly transport: EvidenceFinalizerRpcTransport) {}
@@ -144,7 +212,7 @@ export class GatewayEvidenceFinalizer {
     try {
       row = oneExactRow(response)
       if (row.character_id !== request.characterId || row.actor_user_id !== request.actorUserId ||
-        row.mode !== request.mode || row.lifecycle !== 'active' || row.world_id !== request.worldId ||
+        row.mode !== request.mode || (row.lifecycle !== 'handoff_pending' && row.lifecycle !== 'active') || row.world_id !== request.worldId ||
         row.canonical_legacy_name !== request.evidence.canonicalName || row.legacy_shard !== request.evidence.legacyShard ||
         row.player_file_sha256 !== request.evidence.playerFileSha256 || row.evidence_version !== LEGACY_IDENTITY_EVIDENCE_V1_VERSION ||
         row.storage_format !== LEGACY_IDENTITY_EVIDENCE_V1_STORAGE_FORMAT || !validRecordedAt(row.recorded_at)) {

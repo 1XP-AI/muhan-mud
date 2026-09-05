@@ -182,13 +182,27 @@ join lateral public.begin_game_character_provisioning(
   intent.actor_user_id, intent.correlation_id, 'handoff-world', 'evidencegate'
 ) as provision on true;
 select pg_temp.assert_true(
-  (select lifecycle = 'handoff_pending' and mode = 'provision'
+  (select (select count(*) from jsonb_object_keys(to_jsonb(evidence))) = 11
+          and to_jsonb(evidence) ?& array[
+            'character_id', 'actor_user_id', 'mode', 'lifecycle', 'world_id',
+            'canonical_legacy_name', 'legacy_shard', 'player_file_sha256',
+            'evidence_version', 'storage_format', 'recorded_at'
+          ]
+          and character_id = (select character_id from pg_temp.fixture where kind = 'evidence')
+          and actor_user_id = '83000000-0000-0000-0000-000000000002'::uuid
+          and mode = 'provision' and lifecycle = 'handoff_pending'
+          and world_id = 'handoff-world' and canonical_legacy_name = 'Evidencegate'
+          and legacy_shard = substr(
+            encode(public.digest(convert_to('Evidencegate', 'UTF8'), 'sha1'), 'hex'), 1, 2
+          )
+          and player_file_sha256 = repeat('c', 64) and evidence_version = 1
+          and storage_format = 'player-v1' and recorded_at is not null
    from public.finalize_game_character_legacy_identity_evidence(
      '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
      (select character_id from pg_temp.fixture where kind = 'evidence'), 'ok', 'Evidencegate', repeat('c', 64),
      1::smallint, 'player-v1', substr(encode(public.digest(convert_to('Evidencegate', 'UTF8'), 'sha1'), 'hex'), 1, 2)
-   )),
-  'evidence finalization records a pending, non-admissible handoff'
+   ) as evidence),
+  'first evidence receipt returns the exact eleven-field pending handoff row'
 );
 select pg_temp.assert_true(
   (select count(*) = 1 from public.finalize_game_character_legacy_identity_evidence(
@@ -204,5 +218,146 @@ select pg_temp.expect_rejection(format(
   (select character_id::text from pg_temp.fixture where kind = 'evidence'),
   '85000000-0000-0000-0000-000000000003', 'evidence-before-callback'
 ));
+-- Each identity dimension fails closed.  The exact receipt remains readable
+-- afterward, proving a rejected callback cannot advance the pending handoff.
+select pg_temp.expect_rejection(format(
+  'select * from public.activate_game_character_onboarding_handoff(%L::uuid, %L::uuid, %L::uuid, %L)',
+  '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000003',
+  (select character_id::text from pg_temp.fixture where kind = 'evidence'), 'provision'
+));
+select pg_temp.expect_rejection(format(
+  'select * from public.activate_game_character_onboarding_handoff(%L::uuid, %L::uuid, %L::uuid, %L)',
+  '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000099',
+  (select character_id::text from pg_temp.fixture where kind = 'evidence'), 'provision'
+));
+select pg_temp.expect_rejection(format(
+  'select * from public.activate_game_character_onboarding_handoff(%L::uuid, %L::uuid, %L::uuid, %L)',
+  '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+  (select character_id::text from pg_temp.fixture where kind = 'provision'), 'provision'
+));
+select pg_temp.expect_rejection(format(
+  'select * from public.activate_game_character_onboarding_handoff(%L::uuid, %L::uuid, %L::uuid, %L)',
+  '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+  (select character_id::text from pg_temp.fixture where kind = 'evidence'), 'claim'
+));
+reset role;
+select pg_temp.assert_true(
+  (select handoff.actor_user_id = '83000000-0000-0000-0000-000000000002'::uuid
+          and handoff.character_id = (select character_id from pg_temp.fixture where kind = 'evidence')
+          and handoff.mode = 'provision' and handoff.status = 'pending'
+          and handoff.activated_at is null
+   from private.game_character_onboarding_handoffs handoff
+   where handoff.correlation_id = '84000000-0000-0000-0000-000000000003'::uuid),
+  'every rejected provision activation tuple leaves the private handoff pending and unactivated'
+);
+set local role service_role;
+select pg_temp.assert_true(
+  (select lifecycle = 'handoff_pending' and mode = 'provision'
+   from public.finalize_game_character_legacy_identity_evidence(
+     '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+     (select character_id from pg_temp.fixture where kind = 'evidence'), 'ok', 'Evidencegate', repeat('c', 64),
+     1::smallint, 'player-v1', substr(encode(public.digest(convert_to('Evidencegate', 'UTF8'), 'sha1'), 'hex'), 1, 2)
+   )),
+  'identity-mismatched activation leaves the evidence handoff pending'
+);
+select pg_temp.assert_true(
+  (select to_jsonb(activation) = jsonb_build_object(
+    'character_id', (select character_id from pg_temp.fixture where kind = 'evidence'),
+    'actor_user_id', '83000000-0000-0000-0000-000000000002'::uuid,
+    'correlation_id', '84000000-0000-0000-0000-000000000003'::uuid,
+    'lifecycle', 'active', 'onboarding_status', 'finalized'
+  ) from public.activate_game_character_onboarding_handoff(
+    '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+    (select character_id from pg_temp.fixture where kind = 'evidence'), 'provision'
+  ) as activation),
+  'exact evidence handoff activation returns the exact five-field active row'
+);
+select pg_temp.assert_true(
+  (select count(*) = 1 from public.begin_game_character_session(
+    '83000000-0000-0000-0000-000000000002',
+    (select character_id from pg_temp.fixture where kind = 'evidence'),
+    '85000000-0000-0000-0000-000000000004', 'evidence-after-callback', clock_timestamp() + interval '1 minute'
+  )),
+  'exact evidence activation admits a normal session'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+     (select character_id from pg_temp.fixture where kind = 'evidence'), 'provision'
+   )),
+  'exact activated evidence handoff retry is idempotent'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and mode = 'provision'
+   from public.finalize_game_character_legacy_identity_evidence(
+     '83000000-0000-0000-0000-000000000002', '84000000-0000-0000-0000-000000000003',
+     (select character_id from pg_temp.fixture where kind = 'evidence'), 'ok', 'Evidencegate', repeat('c', 64),
+     1::smallint, 'player-v1', substr(encode(public.digest(convert_to('Evidencegate', 'UTF8'), 'sha1'), 'hex'), 1, 2)
+   )),
+  'activated-state exact evidence receipt retry is idempotent'
+);
+
+-- Claim-mode evidence follows the same receipt -> callback -> admission path.
+reset role;
+insert into public.game_characters(world_id, legacy_name, legacy_name_key, legacy_shard, lifecycle, imported_file_sha256)
+values ('handoff-world', 'Receiptclaim', 'Receiptclaim',
+  substr(encode(public.digest(convert_to('Receiptclaim', 'UTF8'), 'sha1'), 'hex'), 1, 2),
+  'imported_unclaimed', repeat('d', 64));
+insert into pg_temp.fixture(kind, character_id)
+select 'claim_evidence', id
+from public.game_characters
+where world_id = 'handoff-world' and legacy_name_key = 'Receiptclaim';
+
+set local role service_role;
+select pg_temp.assert_true(
+  (select status = 'started' from public.begin_game_character_onboarding(
+    '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000004',
+    'claim', clock_timestamp() + interval '10 minutes'
+  )),
+  'claim evidence fixture starts an onboarding intent'
+);
+select pg_temp.assert_true(
+  (select character_id = (select character_id from pg_temp.fixture where kind = 'claim_evidence')
+   from public.challenge_legacy_game_character_onboarding(
+     'handoff-world', 'Receiptclaim', repeat('d', 64),
+     '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000004'
+   )),
+  'claim evidence fixture receives the exact fingerprint challenge'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'handoff_pending' and mode = 'claim'
+   from public.finalize_game_character_legacy_identity_evidence(
+     '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000004',
+     (select character_id from pg_temp.fixture where kind = 'claim_evidence'), 'ok', 'Receiptclaim', repeat('d', 64),
+     1::smallint, 'player-v1', substr(encode(public.digest(convert_to('Receiptclaim', 'UTF8'), 'sha1'), 'hex'), 1, 2)
+   )),
+  'claim-mode evidence receipt remains handoff_pending'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000004',
+     (select character_id from pg_temp.fixture where kind = 'claim_evidence'), 'claim'
+   )),
+  'exact claim-mode evidence activation returns active'
+);
+select pg_temp.assert_true(
+  (select count(*) = 1 from public.begin_game_character_session(
+    '83000000-0000-0000-0000-000000000001',
+    (select character_id from pg_temp.fixture where kind = 'claim_evidence'),
+    '85000000-0000-0000-0000-000000000005', 'claim-evidence-after-callback', clock_timestamp() + interval '1 minute'
+  )),
+  'claim-mode evidence activation admits a normal session'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and mode = 'claim'
+   from public.finalize_game_character_legacy_identity_evidence(
+     '83000000-0000-0000-0000-000000000001', '84000000-0000-0000-0000-000000000004',
+     (select character_id from pg_temp.fixture where kind = 'claim_evidence'), 'ok', 'Receiptclaim', repeat('d', 64),
+     1::smallint, 'player-v1', substr(encode(public.digest(convert_to('Receiptclaim', 'UTF8'), 'sha1'), 'hex'), 1, 2)
+   )),
+  'activated claim-mode evidence receipt retry is idempotent'
+);
 
 rollback;

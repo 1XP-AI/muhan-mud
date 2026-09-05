@@ -33,6 +33,11 @@ test('onboarding is an opt-in strict true or false flag', () => {
   assert.throws(() => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: '1' }), /MUD_ONBOARDING_ENABLED must be true or false/)
 })
 
+test('evidence onboarding mirrors C: only exact 1 enables the control lane', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ENABLE_ONBOARDING_EVIDENCE: '1' }).mudOnboardingEvidenceEnabled, true)
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ENABLE_ONBOARDING_EVIDENCE: 'true' }).mudOnboardingEvidenceEnabled, false)
+})
+
 test('origins cannot contain paths or wildcard-like values', () => {
   assert.throws(
     () => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', ALLOWED_ORIGINS: 'https://mud.example.com/ws' }),

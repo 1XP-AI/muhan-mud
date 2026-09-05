@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { GatewayEvidenceFinalizer, EvidenceFinalizationError, type EvidenceFinalizerRpcTransport } from '../src/evidence-finalizer.js'
+import { GatewayEvidenceFinalizer, EvidenceFinalizationError, SupabaseEvidenceFinalizerTransport, type EvidenceFinalizerRpcTransport } from '../src/evidence-finalizer.js'
+import { loadConfig } from '../src/config.js'
 import { decodeLegacyIdentityEvidenceV1, encodeLegacyIdentityEvidenceV1, type LegacyIdentityEvidenceV1 } from '../src/evidence-codec/legacy-identity-evidence-v1.js'
 
 const actor = '123e4567-e89b-12d3-a456-426614174000'
@@ -14,10 +15,36 @@ const evidence = (): LegacyIdentityEvidenceV1 => decodeLegacyIdentityEvidenceV1(
 }))
 const request = () => ({ actorUserId: actor, correlationId: correlation, characterId: character, mode: 'claim' as const, worldId: 'muhan', evidence: evidence() })
 const row = (extra: Record<string, unknown> = {}) => [{
-  character_id: character, actor_user_id: actor, mode: 'claim', lifecycle: 'active', world_id: 'muhan',
+  character_id: character, actor_user_id: actor, mode: 'claim', lifecycle: 'handoff_pending', world_id: 'muhan',
   canonical_legacy_name: 'Legacyhero', legacy_shard: '35', player_file_sha256: 'f'.repeat(64),
   evidence_version: 1, storage_format: 'player-v1', recorded_at: '2026-09-21T00:00:00.000Z', ...extra
 }]
+
+test('production transport exposes only the exact service-role finalizer RPC', async () => {
+  const fetchCalls: Array<{ input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1] }> = []
+  const fetchImpl: typeof fetch = async (input, init) => {
+    fetchCalls.push({ input, init })
+    return Response.json(row())
+  }
+  const config = loadConfig({
+    NODE_ENV: 'production', SUPABASE_URL: 'https://mud.example.com',
+    SUPABASE_INTERNAL_REST_URL: 'http://muhan-postgrest:3000', SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-fixture',
+    MUD_ADMISSION_SECRET: '0123456789abcdef0123456789abcdef', GATEWAY_INSTANCE_ID: 'gateway-contract',
+    ALLOWED_ORIGINS: 'https://mud.example.com',
+  })
+
+  const result = await new SupabaseEvidenceFinalizerTransport(config, fetchImpl).call(
+    'finalize_game_character_legacy_identity_evidence', { p_character_id: character },
+  )
+
+  assert.deepEqual(result, row())
+  assert.equal(String(fetchCalls[0]?.input), 'http://muhan-postgrest:3000/rpc/finalize_game_character_legacy_identity_evidence')
+  assert.equal(fetchCalls[0]?.init?.method, 'POST')
+  const headers = new Headers(fetchCalls[0]?.init?.headers)
+  assert.equal(headers.get('authorization'), 'Bearer service-role-key-fixture')
+  assert.equal(headers.get('apikey'), 'service-role-key-fixture')
+  assert.equal(headers.get('content-type'), 'application/json')
+})
 
 test('uses only the full shard-aware RPC with the exact decoded V1 metadata tuple', async () => {
   const calls: Array<{ name: string, parameters: Readonly<Record<string, unknown>> }> = []
@@ -41,6 +68,11 @@ test('uses only the full shard-aware RPC with the exact decoded V1 metadata tupl
       p_legacy_shard: '35'
     }
   }])
+})
+
+test('accepts the exact active row returned by an idempotent retry after handoff activation', async () => {
+  const transport: EvidenceFinalizerRpcTransport = { async call() { return row({ lifecycle: 'active' }) } }
+  await new GatewayEvidenceFinalizer(transport).finalize(request())
 })
 
 test('rejects invalid actor, correlation, or character UUIDs before calling transport', async () => {

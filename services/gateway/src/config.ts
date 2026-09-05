@@ -9,6 +9,8 @@ export interface GatewayConfig {
   allowedOrigins: ReadonlySet<string>
   requireSecureTransport: boolean
   mudOnboardingEnabled: boolean
+  /** Mirrors the C adapter: only the exact environment value "1" opts in. */
+  mudOnboardingEvidenceEnabled: boolean
   authDisabled: boolean
   supabaseUrl?: string
   supabaseAuthUrl?: string
@@ -60,6 +62,11 @@ function parseBoolean(value: string | undefined, name: string): boolean {
   if (value === 'true') return true
   if (value === 'false') return false
   throw new ConfigError(`${name} must be true or false`)
+}
+
+/** Keep the Gateway rollout gate byte-for-byte compatible with the C adapter. */
+function parseEvidenceOptIn(value: string | undefined): boolean {
+  return value === '1'
 }
 
 function parseOrigins(value: string | undefined, environment: Environment): ReadonlySet<string> {
@@ -154,6 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
 
   const authDisabled = parseBoolean(env.AUTH_DISABLED, 'AUTH_DISABLED')
   const mudOnboardingEnabled = parseBoolean(env.MUD_ONBOARDING_ENABLED, 'MUD_ONBOARDING_ENABLED')
+  const mudOnboardingEvidenceEnabled = parseEvidenceOptIn(env.MUD_ENABLE_ONBOARDING_EVIDENCE)
   if (authDisabled && environment !== 'test') {
     throw new ConfigError('AUTH_DISABLED is permitted only when NODE_ENV=test')
   }
@@ -190,6 +198,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     allowedOrigins: parseOrigins(env.ALLOWED_ORIGINS, environment),
     requireSecureTransport: environment === 'production',
     mudOnboardingEnabled,
+    mudOnboardingEvidenceEnabled,
     authDisabled,
     supabaseUrl,
     supabaseAuthUrl,

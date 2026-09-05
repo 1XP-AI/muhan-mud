@@ -101,6 +101,8 @@ test('formats and parses the exact feature-gated V1 evidence fixture', async () 
   assert.deepEqual(formatOnboardingEvidenceControl(decoded), record)
   const parser = new OnboardingControlLineParser({ evidenceEnabled: true })
   assert.deepEqual(parser.push(record), [{ type: 'EVIDENCE', version: 1, evidence: decoded }])
+  const demultiplexer = new OnboardingControlDemultiplexer({ evidenceEnabled: true })
+  assert.deepEqual(demultiplexer.push(record).controls, [{ type: 'EVIDENCE', version: 1, evidence: decoded }])
 })
 
 test('accepts a fragmented maximum-sized evidence record and a coalesced ordinary control', () => {
