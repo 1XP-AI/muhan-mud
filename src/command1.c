@@ -266,12 +266,13 @@ int fd;
 	       sizeof(Ply[fd].extr->onboarding_activation_command_id));
 }
 
-#ifdef USE_M3_RUNTIME
-static void onboarding_activation_wait(fd, param, str)
+#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
+static void onboarding_activation_command_test_return(fd, param, str)
 int fd;
 int param;
 unsigned char *str;
 { (void)fd; (void)param; (void)str; }
+#endif
 
 static int onboarding_activation_complete(fd)
 int fd;
@@ -281,24 +282,36 @@ int fd;
 		Ply[fd].ply->fd = fd;
 		if(activate_staged_ply(Ply[fd].ply) < 0 || onboarding_send_active(fd,
 			Ply[fd].extr->onboarding_activation_command_id) != 0) {
-			onboarding_fail(fd); return -1;
+			return -1;
 		}
 		Ply[fd].extr->onboarding_world_staged = 0;
 		onboarding_finish_activation(fd);
 		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
 		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
-		Ply[fd].io->fn = command; Ply[fd].io->fnparam = 1;
+#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
+		Ply[fd].io->fn = onboarding_activation_command_test_return;
+#else
+		Ply[fd].io->fn = command;
+#endif
+		Ply[fd].io->fnparam = 1;
 		return 0;
 	}
 	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {
 		if(onboarding_send_active(fd,
 			Ply[fd].extr->onboarding_activation_command_id) != 0) {
-			onboarding_fail(fd); return -1;
+			return -1;
 		}
 		onboarding_finish_activation(fd); disconnect(fd); return 0;
 	}
 	return -1;
 }
+
+#ifdef USE_M3_RUNTIME
+static void onboarding_activation_wait(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{ (void)fd; (void)param; (void)str; }
 
 /* 0 completes, 1 retains PREPARED for host retry, -1 is terminal. */
 static int onboarding_activation_gate_advance(fd, command_id)
@@ -321,16 +334,37 @@ const char *command_id;
 		Ply[fd].ply->name, Ply[fd].ply);
 	if(result == ONBOARDING_ACTIVATION_GATE_BYPASS ||
 	   result == ONBOARDING_ACTIVATION_GATE_CONSUMED) {
-		strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+		memmove(Ply[fd].extr->onboarding_activation_command_id, command_id,
+			strlen(command_id) + 1);
 		return onboarding_activation_complete(fd);
 	}
 	if(result != ONBOARDING_ACTIVATION_GATE_RETAINED) return -1;
-	strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+	memmove(Ply[fd].extr->onboarding_activation_command_id, command_id,
+		strlen(command_id) + 1);
 	Ply[fd].extr->onboarding_activation_pending = 1;
 	Ply[fd].io->fn = onboarding_activation_wait; Ply[fd].io->fnparam = 0;
 	return 1;
 }
+#endif
 
+/* This is the single command lifecycle boundary: command handlers use it
+ * after an accepted ACTIVATED, and the M3 idle boundary uses the same entry
+ * to consume a retained PREPARED command.  The legacy build deliberately
+ * bypasses the dormant M3 gate but retains its previous completion effects. */
+static int onboarding_activation_lifecycle_advance(fd, command_id)
+int fd;
+const char *command_id;
+{
+#ifdef USE_M3_RUNTIME
+	return onboarding_activation_gate_advance(fd, command_id);
+#else
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply || !command_id) return -1;
+	strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+	return onboarding_activation_complete(fd);
+#endif
+}
+
+#ifdef USE_M3_RUNTIME
 /* Called only from the post-update serialized host idle boundary. */
 void onboarding_activation_gate_idle_retry()
 {
@@ -342,11 +376,26 @@ void onboarding_activation_gate_idle_retry()
 		   !Ply[fd].extr->onboarding_activation_command_id[0]) {
 			onboarding_fail(fd); continue;
 		}
-		result = onboarding_activation_gate_advance(fd,
+		result = onboarding_activation_lifecycle_advance(fd,
 			Ply[fd].extr->onboarding_activation_command_id);
 		if(result < 0) onboarding_fail(fd);
 	}
 }
+#endif
+
+#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
+int onboarding_activation_command_test_advance(fd, command_id)
+int fd;
+const char *command_id;
+{
+	return onboarding_activation_lifecycle_advance(fd, command_id);
+}
+#ifdef USE_M3_RUNTIME
+void onboarding_activation_command_test_idle_retry()
+{
+	onboarding_activation_gate_idle_retry();
+}
+#endif
 #endif
 
 /* The EVIDENCE lane carries the separately canonical metadata envelope, not a
@@ -871,23 +920,9 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
-#ifdef USE_M3_RUNTIME
-		if(onboarding_activation_gate_advance(fd, control.command_id) < 0)
+		if(onboarding_activation_lifecycle_advance(fd, control.command_id) < 0)
 			onboarding_fail(fd);
 		return;
-#else
-		Ply[fd].ply->fd = fd;
-		if(activate_staged_ply(Ply[fd].ply) < 0 ||
-		   onboarding_send_active(fd, control.command_id) != 0) {
-			onboarding_fail(fd);
-			return;
-		}
-		Ply[fd].extr->onboarding_world_staged = 0;
-		onboarding_finish_activation(fd);
-		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
-		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
-		RETURN(fd, command, 1);
-#endif
 	default:
 		onboarding_fail(fd);
 		return;
@@ -1042,19 +1077,9 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
-#ifdef USE_M3_RUNTIME
-		if(onboarding_activation_gate_advance(fd, control.command_id) < 0)
+		if(onboarding_activation_lifecycle_advance(fd, control.command_id) < 0)
 			onboarding_fail(fd);
 		return;
-#else
-		if(onboarding_send_active(fd, control.command_id) != 0) {
-			onboarding_fail(fd);
-			return;
-		}
-		onboarding_finish_activation(fd);
-		disconnect(fd);
-		return;
-#endif
 	default:
 		onboarding_fail(fd);
 		return;

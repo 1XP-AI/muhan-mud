@@ -268,6 +268,24 @@ onboarding-activation-save-runtime-helper-sanitizer-test:
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_runtime_helper_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_gate_static_test.py
 
+onboarding-activation-command-lifecycle-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(CFLAGS) -DUSE_M3_RUNTIME -DONBOARDING_ACTIVATION_COMMAND_TESTING -I. -ffunction-sections -fdata-sections -c command1.c -o /tmp/muhan-unit/command1_activation_runtime.o
+	$(CC) $(V2_TEST_CFLAGS) -DUSE_M3_RUNTIME -I. -ffunction-sections -fdata-sections ../tests/unit/onboarding_activation_command_lifecycle_test.c global.c onboarding_activation_save_capability.c onboarding_activation_gate.c /tmp/muhan-unit/command1_activation_runtime.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_activation_command_runtime_test
+	/tmp/muhan-unit/onboarding_activation_command_runtime_test
+	$(CC) $(CFLAGS) -DONBOARDING_ACTIVATION_COMMAND_TESTING -I. -ffunction-sections -fdata-sections -c command1.c -o /tmp/muhan-unit/command1_activation_legacy.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -ffunction-sections -fdata-sections ../tests/unit/onboarding_activation_command_lifecycle_test.c global.c onboarding_activation_save_capability.c /tmp/muhan-unit/command1_activation_legacy.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_activation_command_legacy_test
+	/tmp/muhan-unit/onboarding_activation_command_legacy_test
+
+onboarding-activation-command-lifecycle-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(CFLAGS) -DUSE_M3_RUNTIME -DONBOARDING_ACTIVATION_COMMAND_TESTING -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -c command1.c -o /tmp/muhan-unit/command1_activation_runtime_sanitizer.o
+	$(CC) $(V2_TEST_CFLAGS) -DUSE_M3_RUNTIME -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_command_lifecycle_test.c global.c onboarding_activation_save_capability.c onboarding_activation_gate.c /tmp/muhan-unit/command1_activation_runtime_sanitizer.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_activation_command_runtime_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_command_runtime_sanitizer_test
+	$(CC) $(CFLAGS) -DONBOARDING_ACTIVATION_COMMAND_TESTING -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -c command1.c -o /tmp/muhan-unit/command1_activation_legacy_sanitizer.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_command_lifecycle_test.c global.c onboarding_activation_save_capability.c /tmp/muhan-unit/command1_activation_legacy_sanitizer.o $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_activation_command_legacy_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_command_legacy_sanitizer_test
+
 # Focused production-V4 composition with local journal fixtures and fake
 # lower-level route/serializer/receipt callbacks only; no live service linkage.
 onboarding-activation-save-v4-composition-test:

@@ -41,23 +41,20 @@ for label, activated in (("provision", provision_activated),
                          ("claim", claim_activated)):
     require("ONBOARDING_CONTROL_ACTIVATED" in activated,
             f"{label} must validate its ACTIVATED case")
-    require(activated.count("onboarding_activation_gate_advance(fd, control.command_id)") == 1,
-            f"{label} must enter the gate exactly once")
-    gate_call = activated.index(
-        "onboarding_activation_gate_advance(fd, control.command_id)")
-    require("onboarding_send_active(fd," not in activated[:gate_call],
-            f"{label} must not emit ACTIVE before the runtime gate")
-    runtime_branch = activated[activated.index("#ifdef USE_M3_RUNTIME"):
-                               activated.index("#else")]
-    require("onboarding_send_active(fd," not in runtime_branch,
-            f"{label} runtime ACTIVATED case must leave ACTIVE to completion")
+    require(activated.count("onboarding_activation_lifecycle_advance(fd, control.command_id)") == 1,
+            f"{label} must enter the shared lifecycle exactly once")
+    lifecycle_call = activated.index(
+        "onboarding_activation_lifecycle_advance(fd, control.command_id)")
+    require("onboarding_send_active(fd," not in activated[:lifecycle_call],
+            f"{label} must not emit ACTIVE before the lifecycle boundary")
 
-require("onboarding_activation_gate_advance(fd, control.command_id)" in command,
-        "both accepted ACTIVATED call sites must enter the gate")
-require(command.count("onboarding_activation_gate_advance(fd, control.command_id)") == 2,
-        "provision and claim must be the only direct ACTIVATED gate callers")
+require(command.count("onboarding_activation_lifecycle_advance(fd, control.command_id)") == 2,
+        "provision and claim must be the only direct ACTIVATED lifecycle callers")
 require("onboarding_activation_gate_idle_retry();" in io,
         "retained activation must retry at the serialized host idle boundary")
+require("onboarding_activation_lifecycle_advance(fd," in command and
+        "onboarding_activation_gate_idle_retry" in command,
+        "the idle retry must use the same lifecycle boundary as commands")
 require("onboarding_activation_pending) return 1;" in command,
         "retained activation must not accept socket input")
 require("ONBOARDING_ACTIVATION_GATE_RETAINED" in command and
@@ -65,7 +62,7 @@ require("ONBOARDING_ACTIVATION_GATE_RETAINED" in command and
         "PREPARED must retain its descriptor state")
 require("onboarding_send_active(fd," in command and
         command.index("onboarding_activation_complete") < command.index(
-            "onboarding_activation_gate_advance(fd, control.command_id)"),
+            "onboarding_activation_gate_advance(fd, command_id)"),
         "ACTIVE must be emitted only by post-consumption completion")
 require("libpq" not in command and "PQconnect" not in command and
         "runtime_native" not in command,
