@@ -284,7 +284,7 @@ for (const completedFlow of [
     character: {
       id: "33333333-3333-4333-8333-333333333333",
       world_id: "muhan-01",
-      legacy_name: "ProvisionHero",
+      legacy_name: "Provisioner",
       lifecycle: "active" as const,
     },
   },
@@ -294,7 +294,7 @@ for (const completedFlow of [
     character: {
       id: "44444444-4444-4444-8444-444444444444",
       world_id: "muhan-01",
-      legacy_name: "ClaimHero",
+      legacy_name: "Claimhero",
       lifecycle: "active" as const,
     },
   },
