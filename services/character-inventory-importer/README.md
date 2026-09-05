@@ -79,4 +79,10 @@ On success it returns only the closed candidate metadata and the SHA-256 of the
 exact raw manifest bytes; every failure exposes only the generic
 `invalid_imported_unclaimed_manifest` error code.
 
+`src/imported-unclaimed-checkpoint.ts` is a separate pure, non-authoritative
+resume boundary: it orders the parsed candidates by canonical identity and
+binds a local cursor to that exact manifest SHA-256. It performs no database or
+file writes; a changed manifest, an unknown cursor, or ambiguous identity is
+rejected before any caller can resume.
+
 Run `npm test`, `npm run typecheck`, and `npm run build` before an operator run.
