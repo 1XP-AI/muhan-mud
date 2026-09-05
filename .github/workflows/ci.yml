@@ -138,6 +138,50 @@ jobs:
           bash supabase/tests/m3_live_save_route_pg17_integration.sh
           bash supabase/tests/m3_provisioning_head_baseline_pg17_integration.sh
 
+      - name: Run isolated legacy identity evidence binding PostgreSQL contract
+        shell: bash
+        env:
+          PGPASSWORD: contract-only-password
+        run: |
+          set -euo pipefail
+          evidence_database=legacy_identity_evidence_contract
+          evidence_database_url="postgresql://postgres:contract-only-password@127.0.0.1:5432/${evidence_database}"
+          createdb --host=127.0.0.1 --username=postgres "${evidence_database}"
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
+          # Start at the identity schema: the earlier lobby-presence migration
+          # depends on Realtime, which this minimal disposable bootstrap omits.
+          migrations=(
+            supabase/migrations/20260902000000_game_identity.sql
+            supabase/migrations/20260903000000_character_onboarding.sql
+            supabase/migrations/20260904000000_onboarding_intent_safety.sql
+            supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+            supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+            supabase/migrations/20260907000000_claim_challenge_safety.sql
+            supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+            supabase/migrations/20260909000000_m3_shadow_receipts.sql
+            supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql
+            supabase/migrations/20260911000000_m3_writer_session.sql
+            supabase/migrations/20260912000000_m3_live_save_route.sql
+            supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
+            supabase/migrations/20260914000000_m4_file_snapshot_manifest.sql
+            supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
+            supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
+            supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
+            supabase/migrations/20260918000000_m3_absent_head_seed.sql
+            supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+            supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
+            supabase/migrations/20260921000000_legacy_identity_evidence_binding.sql
+          )
+          # The first pass proves the upgrade path; the second proves every
+          # additive migration remains safe under CI/job replay.
+          for pass in 1 2; do
+            for migration in "${migrations[@]}"; do
+              psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 --file="${migration}"
+            done
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/legacy_identity_evidence_binding_contract.sql
+
       - name: Run M4 file snapshot manifest PostgreSQL 17 contract
         if: runner.os == 'Linux'
         shell: bash
