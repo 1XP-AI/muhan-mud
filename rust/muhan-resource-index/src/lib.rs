@@ -797,10 +797,15 @@ mod tests {
     }
 
     fn c_locator_line(oracle: &Path, path: &Path) -> String {
-        c_identity_line(oracle, path)
-            .split_once("|level=")
-            .expect("C identity oracle must include level evidence")
-            .0
+        let expected = Command::new(oracle)
+            .arg("locator")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        String::from_utf8(expected.stdout)
+            .unwrap()
+            .trim_end()
             .to_owned()
     }
 
@@ -916,38 +921,45 @@ mod tests {
     }
 
     #[test]
-    fn changing_level_changes_identity_evidence_but_not_locator_values() {
+    fn locator_ignores_level_boundaries_while_identity_retains_level_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let oracle = compiled_oracle(&temp);
         let (mut bytes, _) = fixture(&oracle, temp.path(), "high-level");
         let abi = fixture_abi();
         let path = temp.path().join("locator-level.bin");
+        let mut first_locator = None;
+        let mut previous_identity = None;
 
-        bytes[abi.player_level.offset] = 17;
-        std::fs::write(&path, &bytes).unwrap();
-        let low_level =
-            project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default()).unwrap();
-        let low_identity = low_level.legacy_player_shadow_identity_v1();
-        let low_locator = low_level.legacy_player_shadow_locator_v1();
-        assert_eq!(
-            identity_line(&low_identity),
-            c_identity_line(&oracle, &path)
-        );
+        for level in [0, 1, 127, 128, 255] {
+            bytes[abi.player_level.offset] = level;
+            std::fs::write(&path, &bytes).unwrap();
+            let player =
+                project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default())
+                    .unwrap();
+            let identity = player.legacy_player_shadow_identity_v1();
+            let locator = player.legacy_player_shadow_locator_v1();
 
-        bytes[abi.player_level.offset] = u8::MAX;
-        std::fs::write(&path, &bytes).unwrap();
-        let high_level =
-            project_legacy_player_shadow(&bytes, &abi, LegacyProjectionLimits::default()).unwrap();
-        let high_identity = high_level.legacy_player_shadow_identity_v1();
-        let high_locator = high_level.legacy_player_shadow_locator_v1();
-
-        assert_ne!(low_identity, high_identity);
-        assert_eq!(
-            identity_line(&high_identity),
-            c_identity_line(&oracle, &path)
-        );
-        assert_eq!(low_locator, high_locator);
-        assert_eq!(locator_line(&high_locator), c_locator_line(&oracle, &path));
+            assert_eq!(identity.level(), level, "level={level}");
+            assert_eq!(
+                identity_line(&identity),
+                c_identity_line(&oracle, &path),
+                "level={level}"
+            );
+            assert_eq!(
+                locator_line(&locator),
+                c_locator_line(&oracle, &path),
+                "level={level}"
+            );
+            if let Some(previous_identity) = &previous_identity {
+                assert_ne!(previous_identity, &identity, "level={level}");
+            }
+            if let Some(first_locator) = &first_locator {
+                assert_eq!(first_locator, &locator, "level={level}");
+            } else {
+                first_locator = Some(locator.clone());
+            }
+            previous_identity = Some(identity);
+        }
     }
 
     #[test]

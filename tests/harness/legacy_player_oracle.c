@@ -316,7 +316,13 @@ static void print_items(const item_node *const *items, int count)
     }
 }
 
-static int project_fixture(const char *path, int identity_only)
+enum projection_mode {
+    PROJECTION_MODE_FULL,
+    PROJECTION_MODE_IDENTITY,
+    PROJECTION_MODE_LOCATOR
+};
+
+static int project_fixture(const char *path, enum projection_mode mode)
 {
     FILE *file;
     creature player;
@@ -377,7 +383,13 @@ static int project_fixture(const char *path, int identity_only)
     sha1_digest((const unsigned char *)player_name, (unsigned long)strlen(player_name), digest);
     printf("OK|name=%s|sha1=", player_name);
     for (index = 0; index < 20; index++) printf("%02x", digest[index]);
-    if (identity_only) {
+    if (mode == PROJECTION_MODE_LOCATOR) {
+        printf("|shard=%02x\n", digest[0]);
+        for (index = 0; index < count; index++) free_item(items[index]);
+        free(items);
+        return 0;
+    }
+    if (mode == PROJECTION_MODE_IDENTITY) {
         printf("|shard=%02x|level=%d", digest[0], (int)player.level);
         putchar('\n');
         for (index = 0; index < count; index++) free_item(items[index]);
@@ -404,9 +416,11 @@ int main(int argc, char **argv)
     if (argc == 4 && strcmp(argv[1], "emit") == 0)
         return emit_fixture(argv[2], argv[3]) == 0 ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "project") == 0)
-        return project_fixture(argv[2], 0);
+        return project_fixture(argv[2], PROJECTION_MODE_FULL);
     if (argc == 3 && strcmp(argv[1], "identity") == 0)
-        return project_fixture(argv[2], 1);
-    fprintf(stderr, "usage: %s emit <empty|mixed-case|high-level|nested|truncated|invalid-count> <path> | project <path> | identity <path>\n", argv[0]);
+        return project_fixture(argv[2], PROJECTION_MODE_IDENTITY);
+    if (argc == 3 && strcmp(argv[1], "locator") == 0)
+        return project_fixture(argv[2], PROJECTION_MODE_LOCATOR);
+    fprintf(stderr, "usage: %s emit <empty|mixed-case|high-level|nested|truncated|invalid-count> <path> | project <path> | identity <path> | locator <path>\n", argv[0]);
     return 2;
 }
