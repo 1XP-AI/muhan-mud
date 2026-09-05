@@ -6,6 +6,7 @@ import {
   createImportedUnclaimedCheckpointPlan,
   resumeImportedUnclaimedCandidates,
 } from '../src/imported-unclaimed-checkpoint.js'
+import type { ImportedUnclaimedCheckpointPlan } from '../src/imported-unclaimed-checkpoint.js'
 import type { ParsedImportedUnclaimedManifest } from '../src/imported-unclaimed-manifest.js'
 import { expectedShard } from '../src/inventory.js'
 
@@ -21,6 +22,10 @@ function validCandidate(legacyNameKey: string, sourceSha256: string, sourceSize:
 
 function manifest(candidates: ParsedImportedUnclaimedManifest['candidates']): ParsedImportedUnclaimedManifest {
   return { sourceManifestSha256: digest('f'), candidates }
+}
+
+function forgedPlan(candidates: readonly unknown[], extra: Record<string, unknown> = {}): ImportedUnclaimedCheckpointPlan {
+  return { sourceManifestSha256: digest('f'), candidates, ...extra } as unknown as ImportedUnclaimedCheckpointPlan
 }
 
 function assertRejected(action: () => unknown): void {
@@ -90,4 +95,27 @@ test('rejects duplicate canonical identities and malformed noncanonical candidat
   assertRejected(() => createImportedUnclaimedCheckpointPlan(manifest([
     validCandidate('alice', digest('a'), 1),
   ])))
+})
+
+test('checkpoint and resume reject forged plan-shaped candidates before using any cursor or candidate', () => {
+  const sourcePathCandidate = {
+    ...validCandidate('Alice', digest('a'), 1),
+    sourcePath: 'player/unsafe/Alice',
+  }
+  const cases = [
+    forgedPlan([validCandidate('Alice', digest('a'), -1)]),
+    forgedPlan([validCandidate('Alice', digest('a'), 1), validCandidate('Alice', digest('b'), 2)]),
+    forgedPlan([validCandidate('alice', digest('a'), 1)]),
+    forgedPlan([validCandidate('../Alice', digest('a'), 1)]),
+    forgedPlan([validCandidate('Bob', digest('b'), 2), validCandidate('Alice', digest('a'), 1)]),
+    forgedPlan([validCandidate('Alice', digest('a'), 1)], { sourcePath: 'manifest/unsafe.json' }),
+    forgedPlan([sourcePathCandidate]),
+    // Validation must include candidates after the target identity as well.
+    forgedPlan([validCandidate('Alice', digest('a'), 1), validCandidate('Bob', digest('b'), -1)]),
+  ]
+
+  for (const plan of cases) {
+    assertRejected(() => checkpointImportedUnclaimedCandidate(plan, 'Alice'))
+    assertRejected(() => resumeImportedUnclaimedCandidates(plan))
+  }
 })
