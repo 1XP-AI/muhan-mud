@@ -65,4 +65,18 @@ DATABASE_URL='postgresql://inventory_admin:...@db.internal:5432/postgres' \
 - The JSONL mode similarly accepts only a regular, no-follow input file no
   larger than 64 MiB and no more than 100,000 nonblank records.
 
+## Review-manifest validation
+
+`src/imported-unclaimed-manifest.ts` is a pure, DB-free boundary for the
+committed `muhan.imported_unclaimed_manifest` v1 output from
+`scripts/build-imported-unclaimed-manifest.py`. It admits only a dry-run
+manifest with an empty `rejections` list, exact closed top-level/candidate
+fields with no duplicate decoded JSON member names, canonical sorted
+identities, and re-derived shard/digest/size values.
+It rejects raw manifests over 64 MiB before copying, UTF-8 decoding, or JSON
+parsing, matching the importer's existing bounded-input policy.
+On success it returns only the closed candidate metadata and the SHA-256 of the
+exact raw manifest bytes; every failure exposes only the generic
+`invalid_imported_unclaimed_manifest` error code.
+
 Run `npm test`, `npm run typecheck`, and `npm run build` before an operator run.
