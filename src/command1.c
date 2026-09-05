@@ -15,6 +15,8 @@
 #include "player_recovery.h"
 #include "trusted_admission.h"
 #include "onboarding_admission.h"
+#include "onboarding_evidence_control.h"
+#include "onboarding_evidence_emission.h"
 #include "onboarding_receipt.h"
 #include "onboarding_session.h"
 #include "resource_path.h"
@@ -174,6 +176,38 @@ onboarding_control *control;
 	   onboarding_format_c_control(line, sizeof(line), control) != 0) return -1;
 	if(scwrite(fd, line, (unsigned int)strlen(line)) < 0) return -1;
 	return 0;
+}
+
+/* The EVIDENCE lane carries the separately canonical metadata envelope, not a
+ * legacy onboarding_control.  It advances only after inspection, tuple match,
+ * and formatting have all succeeded; all failures leave no SAVED/VERIFIED
+ * fallback and are handled by the existing generic onboarding abort path. */
+static int onboarding_send_evidence(fd, canonical_name, known_file_sha256)
+int fd;
+const char *canonical_name;
+const char *known_file_sha256;
+{
+	char line[ONBOARDING_EVIDENCE_CONTROL_MAX_RECORD_LENGTH + 1];
+	onboarding_state state;
+	int result;
+
+	memset(line, 0, sizeof(line));
+	result = -1;
+	if(!onboarding_fd_active(fd) ||
+	   onboarding_evidence_emission_prepare(canonical_name, known_file_sha256,
+					      line, sizeof(line)) !=
+	       ONBOARDING_EVIDENCE_EMISSION_OK)
+		goto out;
+	state = (onboarding_state)Ply[fd].extr->onboarding_state;
+	if(onboarding_state_apply_evidence(&state) != 0)
+		goto out;
+	if(scwrite(fd, line, (unsigned int)strlen(line)) < 0)
+		goto out;
+	Ply[fd].extr->onboarding_state = (char)state;
+	result = 0;
+out:
+	memset(line, 0, sizeof(line));
+	return result;
 }
 
 static int onboarding_parse_gateway_line(str, control)
@@ -770,20 +804,31 @@ unsigned char *str;
 			return;
 		}
 		memset(&control, 0, sizeof(control));
-		control.kind = ONBOARDING_CONTROL_VERIFIED;
-		if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
-			       sizeof(control.name_hex)) != 0) {
-			memset(verified_digest, 0, sizeof(verified_digest));
-			memset(&control, 0, sizeof(control));
-			onboarding_fail(fd);
-			return;
+		if(onboarding_evidence_control_enabled()) {
+			if(onboarding_send_evidence(fd, Ply[fd].extr->tempstr[0],
+						   verified_digest) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
 		}
-		strcpy(control.file_sha256, verified_digest);
-		if(onboarding_send_control(fd, &control) != 0) {
-			memset(verified_digest, 0, sizeof(verified_digest));
-			memset(&control, 0, sizeof(control));
-			onboarding_fail(fd);
-			return;
+		else {
+			control.kind = ONBOARDING_CONTROL_VERIFIED;
+			if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
+				       sizeof(control.name_hex)) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
+			strcpy(control.file_sha256, verified_digest);
+			if(onboarding_send_control(fd, &control) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
 		}
 		memset(verified_digest, 0, sizeof(verified_digest));
 		memset(&control, 0, sizeof(control));
@@ -1066,10 +1111,20 @@ char    *str;
 						onboarding_fail(fd);
 						return;
 					}
-					strcpy(onboarding_control_value.file_sha256, onboarding_digest);
-					if(onboarding_send_control(fd, &onboarding_control_value) != 0) {
-						onboarding_fail(fd);
-						return;
+					if(onboarding_evidence_control_enabled()) {
+						if(onboarding_send_evidence(fd,
+								Ply[fd].extr->tempstr[0],
+								onboarding_digest) != 0) {
+							onboarding_fail(fd);
+							return;
+						}
+					}
+					else {
+						strcpy(onboarding_control_value.file_sha256, onboarding_digest);
+						if(onboarding_send_control(fd, &onboarding_control_value) != 0) {
+							onboarding_fail(fd);
+							return;
+						}
 					}
 					/* Before COMMIT this remains a saved file, not a live gameplay
 					 * owner.  disconnect() therefore frees it without a second save. */

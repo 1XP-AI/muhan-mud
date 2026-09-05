@@ -97,4 +97,9 @@ int onboarding_state_apply_c_control(onboarding_state *state,
 int onboarding_state_apply_gateway_control(onboarding_state *state,
                                            const onboarding_control *control);
 
+/* EVIDENCE is a feature-gated envelope, intentionally outside the legacy
+ * SAVED/VERIFIED parser.  It has exactly the same wait-for-COMMIT/CLAIMED
+ * transitions after its payload has been prepared and checked locally. */
+int onboarding_state_apply_evidence(onboarding_state *state);
+
 #endif

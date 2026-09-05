@@ -55,7 +55,8 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o command
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
-	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_recovery.o
+	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_recovery.o \
+	  legacy_identity_evidence.o legacy_identity_evidence_wire.o onboarding_evidence_control.o onboarding_evidence_emission.o
 
 M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o \
 	character_save_journal_v2_process_owner.o character_save_journal_v2_player_store.o \
@@ -123,6 +124,7 @@ unit-test:
 	/tmp/muhan-unit/onboarding_receipt_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_recovery_test.c onboarding_recovery.c resource_path.c utf8_text.c -o /tmp/muhan-unit/onboarding_recovery_test
 	/tmp/muhan-unit/onboarding_recovery_test
+	$(MAKE) onboarding-evidence-emission-test
 	$(MAKE) cdto-v1-test
 	$(MAKE) object-v1-test
 	$(MAKE) object-graph-v1-test
@@ -203,6 +205,16 @@ onboarding-evidence-control-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_evidence_control_test.c onboarding_evidence_control.c legacy_identity_evidence_wire.c onboarding_admission.c player_path.c utf8_text.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_evidence_control_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_evidence_control_sanitizer_test
 	python3 ../tests/unit/onboarding_evidence_control_no_live_link_test.py
+
+onboarding-evidence-emission-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DFILE_PLAYER_STORE_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/onboarding_evidence_emission_test.c onboarding_evidence_emission.c onboarding_evidence_control.c legacy_identity_evidence.c legacy_identity_evidence_wire.c file_player_store.c player_path.c resource_path.c onboarding_admission.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_evidence_emission_test
+	/tmp/muhan-unit/onboarding_evidence_emission_test
+
+onboarding-evidence-emission-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DFILE_PLAYER_STORE_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_evidence_emission_test.c onboarding_evidence_emission.c onboarding_evidence_control.c legacy_identity_evidence.c legacy_identity_evidence_wire.c file_player_store.c player_path.c resource_path.c onboarding_admission.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/onboarding_evidence_emission_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_evidence_emission_sanitizer_test
 
 m3-feature-off-legacy-authority-test:
 	mkdir -p /tmp/muhan-unit

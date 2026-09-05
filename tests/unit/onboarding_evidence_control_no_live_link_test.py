@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The evidence envelope must remain a parser/formatter-only seam."""
+"""The envelope remains metadata-only when linked to feature-gated C onboarding."""
 
 from pathlib import Path
 import re
@@ -8,6 +8,7 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "onboarding_evidence_control.c"
 HEADER = ROOT / "src" / "onboarding_evidence_control.h"
+EMISSION = ROOT / "src" / "onboarding_evidence_emission.c"
 MAKEFILE = ROOT / "src" / "Makefile"
 FORBIDDEN = ("save_ply", "load_ply", "write_crt", "player_store_", "file_player_store_",
              "player_path_", "onboarding_state", "onboarding_session", "gateway", "socket",
@@ -28,8 +29,15 @@ def main() -> None:
     blocked = [token for token in FORBIDDEN if token in text]
     if blocked:
         raise SystemExit("evidence boundary names game integration: " + ", ".join(blocked))
-    if "onboarding_evidence_control.o" in objects(MAKEFILE.read_text(encoding="utf-8")):
-        raise SystemExit("evidence boundary is linked into live OBJECTS")
+    linked = objects(MAKEFILE.read_text(encoding="utf-8"))
+    if not {"onboarding_evidence_control.o", "onboarding_evidence_emission.o"} <= linked:
+        raise SystemExit("feature-gated evidence composition is absent from live OBJECTS")
+    emission = re.sub(r"/\*.*?\*/", "", EMISSION.read_text(encoding="utf-8"),
+                      flags=re.DOTALL).lower()
+    blocked = [token for token in ("onboarding_state", "socket", "relay", "ply[",
+                                    "onboarding_receipt") if token in emission]
+    if blocked:
+        raise SystemExit("evidence preparation owns session/game state: " + ", ".join(blocked))
     print("onboarding_evidence_control_no_live_link_test: ok")
 
 

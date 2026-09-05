@@ -532,6 +532,21 @@ const onboarding_admission_ticket *ticket;
     return -1;
 }
 
+int onboarding_state_apply_evidence(state)
+onboarding_state *state;
+{
+    if(!state) return -1;
+    if(*state == ONBOARDING_STATE_PROVISION_RESERVED) {
+        *state = ONBOARDING_STATE_PROVISION_AWAIT_COMMIT;
+        return 0;
+    }
+    if(*state == ONBOARDING_STATE_CLAIM_PASSWORD_READY) {
+        *state = ONBOARDING_STATE_CLAIM_AWAIT_CLAIMED;
+        return 0;
+    }
+    return -1;
+}
+
 int onboarding_state_apply_c_control(state, control)
 onboarding_state *state;
 const onboarding_control *control;
