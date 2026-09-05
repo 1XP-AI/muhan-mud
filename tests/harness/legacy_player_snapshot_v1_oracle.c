@@ -20,6 +20,12 @@ extern int read_crt_player(int fd, creature *player);
 
 #define FIXTURE_CAPACITY 16384UL
 
+typedef enum fixture_profile {
+    FIXTURE_PROFILE_RICH,
+    FIXTURE_PROFILE_MINIMAL,
+    FIXTURE_PROFILE_PERSISTED_GRAPH
+} fixture_profile;
+
 /* Link-only hooks for dead legacy sections retained in files1.c. */
 void merror(char *message, char kind)
 { (void)message; (void)kind; }
@@ -83,16 +89,16 @@ creature *value;
     free(value);
 }
 
-static void make_source(player, objects, tags)
+static void make_rich_source(player, objects, tags)
 creature *player;
-object objects[2];
-otag tags[2];
+object objects[4];
+otag tags[4];
 {
     size_t i;
 
     memset(player, 0, sizeof(*player));
-    memset(objects, 0, 2U * sizeof(*objects));
-    memset(tags, 0, 2U * sizeof(*tags));
+    memset(objects, 0, 4U * sizeof(*objects));
+    memset(tags, 0, 4U * sizeof(*tags));
     set_text(player->name, sizeof(player->name), "s1-fixture");
     set_text(player->description, sizeof(player->description), "S1 legacy decoder fixture.");
     set_text(player->talk, sizeof(player->talk), "fixture talk");
@@ -174,13 +180,144 @@ otag tags[2];
     objects[1].parent_obj = &objects[0];
 }
 
-static int legacy_fixture(bytes, length)
+/* A legal player record with no persisted inventory.  Only type, bounded
+ * scalar state, and a name distinguish this from a zero-filled native image. */
+static void make_minimal_source(player, objects, tags)
+creature *player;
+object objects[4];
+otag tags[4];
+{
+    memset(player, 0, sizeof(*player));
+    memset(objects, 0, 4U * sizeof(*objects));
+    memset(tags, 0, 4U * sizeof(*tags));
+    set_text(player->name, sizeof(player->name), "s1-minimal");
+    player->type = PLAYER;
+    player->hpmax = 1;
+    player->hpcur = 1;
+    player->mpmax = 1;
+    player->mpcur = 1;
+    player->fd = 51;                    /* must not enter the CDTO fixture */
+    player->following = (creature *)1;  /* must be detached by the decoder */
+    player->ready[0] = (object *)1;
+}
+
+/* This profile represents persisted scalar state plus a multi-root object
+ * forest.  The non-zero bytes after the first NUL are legal legacy payload,
+ * but ObjectGraphV1 must erase them before publishing the portable fixture. */
+static void make_persisted_graph_source(player, objects, tags)
+creature *player;
+object objects[4];
+otag tags[4];
+{
+    memset(player, 0, sizeof(*player));
+    memset(objects, 0, 4U * sizeof(*objects));
+    memset(tags, 0, 4U * sizeof(*tags));
+    set_text(player->name, sizeof(player->name), "s1-persisted");
+    set_text(player->description, sizeof(player->description),
+        "persisted graph fixture");
+    set_text(player->talk, sizeof(player->talk), "portable graph");
+    set_text(player->key[0], sizeof(player->key[0]), "persisted");
+    set_text(player->key[1], sizeof(player->key[1]), "normalization");
+    player->level = 17;
+    player->type = PLAYER;
+    player->class = 2;
+    player->race = -2;
+    player->alignment = 321;
+    player->strength = 13;
+    player->dexterity = 12;
+    player->constitution = 11;
+    player->intelligence = 10;
+    player->piety = 9;
+    player->hpmax = 50;
+    player->hpcur = 88;                 /* decoder clamps this to hpmax */
+    player->mpmax = 21;
+    player->mpcur = 34;                 /* decoder clamps this to mpmax */
+    player->experience = 987654321L;
+    player->gold = 7654321L;
+    player->fd = 73;                    /* runtime-only, must be detached */
+    player->following = (creature *)1;
+    player->ready[3] = (object *)1;
+
+    set_text(objects[0].name, sizeof(objects[0].name), "s1-satchel");
+    objects[0].name[11] = (char)0xa5;   /* tail canonicalized by ObjectGraphV1 */
+    set_text(objects[0].description, sizeof(objects[0].description), "root bag");
+    objects[0].description[9] = (char)0x5a;
+    set_text(objects[0].key[0], sizeof(objects[0].key[0]), "bag");
+    objects[0].key[0][4] = (char)0x3c;
+    set_text(objects[0].use_output, sizeof(objects[0].use_output), "open bag");
+    objects[0].use_output[9] = (char)0x7e;
+    objects[0].value = 501;
+    objects[0].weight = 7;
+    objects[0].type = 3;
+    objects[0].shotsmax = 2;
+    objects[0].shotscur = 9;            /* decoder clamps this to shotsmax */
+    objects[0].flags[0] = 0x31;
+
+    set_text(objects[1].name, sizeof(objects[1].name), "s1-lantern");
+    set_text(objects[1].description, sizeof(objects[1].description), "nested lamp");
+    set_text(objects[1].key[0], sizeof(objects[1].key[0]), "lamp");
+    set_text(objects[1].use_output, sizeof(objects[1].use_output), "light");
+    objects[1].value = 502;
+    objects[1].shotsmax = 1;
+    objects[1].shotscur = 1;
+
+    set_text(objects[2].name, sizeof(objects[2].name), "s1-map");
+    set_text(objects[2].description, sizeof(objects[2].description), "nested map");
+    set_text(objects[2].key[0], sizeof(objects[2].key[0]), "map");
+    set_text(objects[2].use_output, sizeof(objects[2].use_output), "read map");
+    objects[2].value = 503;
+    objects[2].shotsmax = 3;
+    objects[2].shotscur = 7;            /* decoder clamps this to shotsmax */
+
+    set_text(objects[3].name, sizeof(objects[3].name), "s1-token");
+    set_text(objects[3].description, sizeof(objects[3].description), "second root");
+    set_text(objects[3].key[0], sizeof(objects[3].key[0]), "token");
+    set_text(objects[3].use_output, sizeof(objects[3].use_output), "spend");
+    objects[3].value = 504;
+    objects[3].shotsmax = 4;
+    objects[3].shotscur = 4;
+
+    tags[0].obj = &objects[0];
+    tags[0].next_tag = &tags[3];
+    tags[1].obj = &objects[1];
+    tags[1].next_tag = &tags[2];
+    tags[2].obj = &objects[2];
+    tags[2].next_tag = 0;
+    tags[3].obj = &objects[3];
+    tags[3].next_tag = 0;
+    player->first_obj = &tags[0];
+    objects[0].first_obj = &tags[1];
+    objects[0].parent_crt = player;
+    objects[1].parent_obj = &objects[0];
+    objects[2].parent_obj = &objects[0];
+    objects[3].parent_crt = player;
+}
+
+static int make_source(profile, player, objects, tags)
+fixture_profile profile;
+creature *player;
+object objects[4];
+otag tags[4];
+{
+    if (profile == FIXTURE_PROFILE_RICH)
+        make_rich_source(player, objects, tags);
+    else if (profile == FIXTURE_PROFILE_MINIMAL)
+        make_minimal_source(player, objects, tags);
+    else if (profile == FIXTURE_PROFILE_PERSISTED_GRAPH)
+        make_persisted_graph_source(player, objects, tags);
+    else
+        return -1;
+    return 0;
+}
+
+static int legacy_fixture(profile, bytes, length)
+fixture_profile profile;
 unsigned char **bytes;
 unsigned long *length;
 {
     creature player;
-    object objects[2];
-    otag tags[2];
+    object objects[4];
+    otag tags[4];
     player_record_serializer_limits limits;
     unsigned char *buffer;
 
@@ -189,7 +326,10 @@ unsigned long *length;
     buffer = (unsigned char *)malloc(FIXTURE_CAPACITY);
     if (!buffer)
         return -1;
-    make_source(&player, objects, tags);
+    if (make_source(profile, &player, objects, tags)) {
+        free(buffer);
+        return -1;
+    }
     limits.max_depth = 64UL;
     limits.max_objects = 8192UL;
     if (player_record_serialize_bounded(&player, 0, (char *)buffer,
@@ -249,7 +389,57 @@ size_t length;
     putchar('\n');
 }
 
-static int snapshot_fixture(wire, wire_length)
+static int decoded_profile_valid(profile, decoded)
+fixture_profile profile;
+const creature *decoded;
+{
+    const object *root;
+
+    if (!decoded || decoded->fd != -1 || decoded->hpcur != decoded->hpmax ||
+        decoded->mpcur != decoded->mpmax)
+        return 0;
+    if (profile == FIXTURE_PROFILE_RICH)
+        return decoded->first_obj && decoded->first_obj->obj->shotscur ==
+            decoded->first_obj->obj->shotsmax;
+    if (profile == FIXTURE_PROFILE_MINIMAL)
+        return decoded->first_obj == 0 && !strcmp(decoded->name, "s1-minimal");
+    if (profile != FIXTURE_PROFILE_PERSISTED_GRAPH || !decoded->first_obj ||
+        !decoded->first_obj->next_tag)
+        return 0;
+    root = decoded->first_obj->obj;
+    return root && root->shotscur == root->shotsmax && root->name[11] == (char)0xa5 &&
+        root->first_obj && root->first_obj->next_tag &&
+        root->first_obj->obj->parent_obj == root &&
+        root->first_obj->next_tag->obj->shotscur == 3 &&
+        decoded->first_obj->next_tag->obj->parent_crt == decoded;
+}
+
+static int clone_profile_valid(profile, clone)
+fixture_profile profile;
+const creature *clone;
+{
+    const object *root;
+
+    if (!clone || clone->fd != -1)
+        return 0;
+    if (profile == FIXTURE_PROFILE_RICH)
+        return clone->first_obj && clone->first_obj->obj->shotscur == 2;
+    if (profile == FIXTURE_PROFILE_MINIMAL)
+        return clone->first_obj == 0 && !strcmp(clone->name, "s1-minimal");
+    if (profile != FIXTURE_PROFILE_PERSISTED_GRAPH || !clone->first_obj ||
+        !clone->first_obj->next_tag)
+        return 0;
+    root = clone->first_obj->obj;
+    return root && root->name[11] == 0 && root->description[9] == 0 &&
+        root->key[0][4] == 0 && root->use_output[9] == 0 &&
+        root->shotscur == 2 && root->first_obj && root->first_obj->next_tag &&
+        root->first_obj->obj->parent_obj == root &&
+        root->first_obj->next_tag->obj->shotscur == 3 &&
+        clone->first_obj->next_tag->obj->parent_crt == clone;
+}
+
+static int snapshot_fixture(profile, wire, wire_length)
+fixture_profile profile;
 unsigned char **wire;
 size_t *wire_length;
 {
@@ -260,16 +450,14 @@ size_t *wire_length;
 
     *wire = 0;
     *wire_length = 0U;
-    if (legacy_fixture(&legacy, &legacy_length)) {
+    if (legacy_fixture(profile, &legacy, &legacy_length)) {
         return -1;
     }
     result = decode_legacy(legacy, legacy_length, &decoded);
     free(legacy);
     if (result)
         return -1;
-    if (decoded->fd != -1 || decoded->hpcur != decoded->hpmax ||
-        decoded->mpcur != decoded->mpmax || !decoded->first_obj ||
-        decoded->first_obj->obj->shotscur != decoded->first_obj->obj->shotsmax) {
+    if (!decoded_profile_valid(profile, decoded)) {
         free_decoded_player(decoded);
         return -1;
     }
@@ -361,7 +549,8 @@ unsigned long legacy_length;
     return result == 0 ? -1 : 0;
 }
 
-static int verify(path)
+static int verify(profile, path)
+fixture_profile profile;
 const char *path;
 {
     unsigned char *wire;
@@ -373,7 +562,7 @@ const char *path;
     size_t expected_length;
     int result;
 
-    if (snapshot_fixture(&wire, &wire_length) || parse_hex_file(path, &expected,
+    if (snapshot_fixture(profile, &wire, &wire_length) || parse_hex_file(path, &expected,
         &expected_length))
         return -1;
     result = wire_length == expected_length && !memcmp(wire, expected, wire_length);
@@ -384,17 +573,16 @@ const char *path;
     }
     clone = 0;
     if (player_snapshot_v1_decode_clone(wire, wire_length, &clone) != CDTO_V1_OK ||
-        !clone || clone->fd != -1 || !clone->first_obj ||
-        clone->first_obj->obj->shotscur != 2) {
+        !clone_profile_valid(profile, clone)) {
         player_snapshot_v1_free_clone(clone);
         cdto_v1_free_wire(wire);
         return -1;
     }
     player_snapshot_v1_free_clone(clone);
     cdto_v1_free_wire(wire);
-    if (legacy_fixture(&legacy, &legacy_length))
+    if (legacy_fixture(profile, &legacy, &legacy_length))
         return -1;
-    result = reject_cases(legacy, legacy_length);
+    result = profile == FIXTURE_PROFILE_RICH ? reject_cases(legacy, legacy_length) : 0;
     free(legacy);
     return result;
 }
@@ -406,21 +594,46 @@ char **argv;
     unsigned char *wire;
     size_t wire_length;
 
+    fixture_profile profile;
+
     if (argc == 2 && !strcmp(argv[1], "fixture")) {
-        if (snapshot_fixture(&wire, &wire_length))
+        if (snapshot_fixture(FIXTURE_PROFILE_RICH, &wire, &wire_length))
+            return 2;
+        print_hex(wire, wire_length);
+        cdto_v1_free_wire(wire);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "fixture")) {
+        if (!strcmp(argv[2], "rich")) profile = FIXTURE_PROFILE_RICH;
+        else if (!strcmp(argv[2], "minimal")) profile = FIXTURE_PROFILE_MINIMAL;
+        else if (!strcmp(argv[2], "persisted-graph")) profile = FIXTURE_PROFILE_PERSISTED_GRAPH;
+        else return 2;
+        if (snapshot_fixture(profile, &wire, &wire_length))
             return 2;
         print_hex(wire, wire_length);
         cdto_v1_free_wire(wire);
         return 0;
     }
     if (argc == 3 && !strcmp(argv[1], "verify")) {
-        if (verify(argv[2])) {
+        if (verify(FIXTURE_PROFILE_RICH, argv[2])) {
             fprintf(stderr, "legacy_player_snapshot_v1_oracle: verification failed\n");
             return 1;
         }
         puts("legacy_player_snapshot_v1_oracle: ok");
         return 0;
     }
-    fprintf(stderr, "usage: %s fixture | verify FIXTURE.hex\n", argv[0]);
+    if (argc == 4 && !strcmp(argv[1], "verify")) {
+        if (!strcmp(argv[2], "rich")) profile = FIXTURE_PROFILE_RICH;
+        else if (!strcmp(argv[2], "minimal")) profile = FIXTURE_PROFILE_MINIMAL;
+        else if (!strcmp(argv[2], "persisted-graph")) profile = FIXTURE_PROFILE_PERSISTED_GRAPH;
+        else return 2;
+        if (verify(profile, argv[3])) {
+            fprintf(stderr, "legacy_player_snapshot_v1_oracle: verification failed\n");
+            return 1;
+        }
+        puts("legacy_player_snapshot_v1_oracle: ok");
+        return 0;
+    }
+    fprintf(stderr, "usage: %s fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex\n", argv[0]);
     return 2;
 }
