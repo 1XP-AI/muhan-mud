@@ -430,39 +430,6 @@ done:
     return result;
 }
 
-typedef struct protocol_v4_bound_route {
-    character_save_journal_v2_bound_route_v3 route;
-} protocol_v4_bound_route;
-
-static character_save_journal_v2_route_lookup_result
-protocol_v4_bound_route_lookup(opaque, world, name, length, reply)
-void *opaque;
-const char *world;
-const unsigned char *name;
-size_t length;
-character_save_journal_v2_route_reply_v3 *reply;
-{
-    protocol_v4_bound_route *bound = opaque;
-    if(!bound || !world || !name || !reply || strcmp(world, bound->route.world_id) ||
-       length != bound->route.legacy_name_length ||
-       memcmp(name, bound->route.legacy_name, length))
-        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
-    memset(reply, 0, sizeof(*reply));
-    reply->status = CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
-    reply->row_count = 1;
-    snprintf(reply->world_id, sizeof(reply->world_id), "%s", bound->route.world_id);
-    snprintf(reply->character_id, sizeof(reply->character_id), "%s", bound->route.character_id);
-    memcpy(reply->legacy_name, bound->route.legacy_name, bound->route.legacy_name_length);
-    reply->legacy_name_length = bound->route.legacy_name_length;
-    snprintf(reply->legacy_shard, sizeof(reply->legacy_shard), "%s", bound->route.legacy_shard);
-    reply->storage_format = bound->route.storage_format;
-    reply->lifecycle = bound->route.lifecycle;
-    reply->head_state = bound->route.head_state;
-    reply->head_revision = bound->route.head_revision;
-    snprintf(reply->head_sha256, sizeof(reply->head_sha256), "%s", bound->route.head_sha256);
-    return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
-}
-
 character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save_held_v4(writer, request, operations, report_out)
 const character_save_journal_v2_writer_context *writer;
@@ -475,7 +442,6 @@ character_save_journal_v2_protocol_report *report_out;
     character_save_journal_v2_protocol_candidate_v4 candidate;
     character_save_journal_v2_protocol_held_request_v3 selected_request;
     character_save_journal_v2_protocol_operations_v3 selected_operations;
-    protocol_v4_bound_route bound;
     char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
     int candidate_result;
 
@@ -524,18 +490,16 @@ character_save_journal_v2_protocol_report *report_out;
         snprintf(command_uuid, sizeof(command_uuid), "%s", candidate.command_uuid);
     }
 
-    /* Reuse the battle-tested v3 staging engine while freezing the exact
-     * route selected above.  No second external route lookup can substitute a
-     * different character between resolution and PREPARED. */
-    memset(&bound, 0, sizeof(bound));
-    bound.route = route;
+    /* The initial binding authenticates the resolver's input only.  v3 must
+     * retain its own live lookup before serialization and, critically, after
+     * PREPARED before publish; a cached reply would defeat that final gate. */
     memset(&selected_request, 0, sizeof(selected_request));
     selected_request.canonical_legacy_name = request->canonical_legacy_name;
     selected_request.canonical_legacy_name_length = request->canonical_legacy_name_length;
     selected_request.command_uuid = command_uuid;
     memset(&selected_operations, 0, sizeof(selected_operations));
-    selected_operations.route_lookup = protocol_v4_bound_route_lookup;
-    selected_operations.route_opaque = &bound;
+    selected_operations.route_lookup = operations->route_lookup;
+    selected_operations.route_opaque = operations->route_opaque;
     selected_operations.serialize = operations->serialize;
     selected_operations.serialize_opaque = operations->serialize_opaque;
     selected_operations.receipt = operations->receipt;

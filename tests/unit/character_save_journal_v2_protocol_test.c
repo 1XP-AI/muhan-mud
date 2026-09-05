@@ -58,7 +58,10 @@ typedef struct mock {
     character_save_journal_v2_route_head_state v3_head_state;
     uint64_t        v3_head_revision;
     char            v3_head_sha256[65];
-    int             v3_change_on_second;
+    int             v3_change_on_second, v3_change_route_after_prepared,
+                    v3_change_identity_after_prepared, v3_identity_changed;
+    int             v4_resolver_result, v4_generate_result, v4_resolver_calls,
+                    v4_generate_calls, v4_reject_candidate;
 }               mock;
 
 typedef struct lifecycle {
@@ -323,7 +326,7 @@ character_save_journal_v2_route_reply_v3 *reply;
     reply->status=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
     reply->row_count=1;
     strcpy(reply->world_id,WORLD);
-    strcpy(reply->character_id,CHARACTER);
+    strcpy(reply->character_id,state->v3_identity_changed ? INSTANCE_B : CHARACTER);
     memcpy(reply->legacy_name,NAME,sizeof(NAME)-1);
     reply->legacy_name_length=sizeof(NAME)-1;
     strcpy(reply->legacy_shard,"66");
@@ -379,6 +382,44 @@ size_t *length_out;
         return -1;
     *bytes_out=state->payload;
     *length_out=state->payload_length;
+    return 0;
+}
+
+static int resolve_candidate_v4(opaque, writer, route, canonical_legacy_name,
+                                canonical_legacy_name_length, candidate_out)
+void *opaque;
+const character_save_journal_v2_writer_tuple *writer;
+const character_save_journal_v2_bound_route_v3 *route;
+const unsigned char *canonical_legacy_name;
+size_t canonical_legacy_name_length;
+character_save_journal_v2_protocol_candidate_v4 *candidate_out;
+{
+    mock *state=opaque;
+    state->v4_resolver_calls++;
+    if(state->v4_resolver_result!=1)
+        return state->v4_resolver_result;
+    if(!writer||!route||!canonical_legacy_name||!candidate_out)
+        return -1;
+    memset(candidate_out,0,sizeof(*candidate_out));
+    strcpy(candidate_out->command_uuid,COMMAND_A);
+    candidate_out->writer=*writer;
+    strcpy(candidate_out->character_id,state->v4_reject_candidate ? INSTANCE_B :
+           route->character_id);
+    memcpy(candidate_out->canonical_legacy_name,canonical_legacy_name,
+           canonical_legacy_name_length);
+    candidate_out->canonical_legacy_name_length=canonical_legacy_name_length;
+    return 1;
+}
+
+static int generate_uuid_v4(opaque, output)
+void *opaque;
+char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
+{
+    mock *state=opaque;
+    state->v4_generate_calls++;
+    if(state->v4_generate_result)
+        return state->v4_generate_result;
+    strcpy(output,COMMAND_B);
     return 0;
 }
 
@@ -529,6 +570,17 @@ const char *command_uuid;
         !exists(state->receipt_prepared_root, "player/66/M3alpha");
     memset(&tuple, 0, sizeof(tuple));
     if(!durable) return -99;
+    if(state->v3_change_route_after_prepared) {
+        state->v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING;
+        state->v3_head_revision++;
+        memset(state->v3_head_sha256,'a',64);
+        state->v3_head_sha256[64]=0;
+        state->v3_change_route_after_prepared=0;
+    }
+    if(state->v3_change_identity_after_prepared) {
+        state->v3_identity_changed=1;
+        state->v3_change_identity_after_prepared=0;
+    }
     return state->observer_result;
 }
 
@@ -645,6 +697,23 @@ mock *state;
     operations->serialize_opaque=state;
     operations->receipt=receipt;
     operations->receipt_opaque=state;
+}
+
+static void operations_v4_init(operations, state)
+character_save_journal_v2_protocol_operations_v4 *operations;
+mock *state;
+{
+    memset(operations,0,sizeof(*operations));
+    operations->route_lookup=route_v3;
+    operations->route_opaque=state;
+    operations->serialize=serialize_v3;
+    operations->serialize_opaque=state;
+    operations->receipt=receipt;
+    operations->receipt_opaque=state;
+    operations->resolve_candidate=resolve_candidate_v4;
+    operations->resolve_candidate_opaque=state;
+    operations->generate_uuid=generate_uuid_v4;
+    operations->generate_uuid_opaque=state;
 }
 
 /*
@@ -1536,6 +1605,134 @@ static int test_held_v3_rejects_and_preserves_evidence(void)
     return failed;
 }
 
+static int test_held_v4_resolver_and_live_revalidation(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_protocol_held_request_v3 request;
+    character_save_journal_v2_protocol_operations_v4 operations;
+    character_save_journal_v2_protocol_report report;
+    mock state;
+    int failed=0;
+
+    if(setup(root,"held-v4-found")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return 1;
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-found";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.v4_resolver_result=1;
+    operations_v4_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_A)) return 1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK&&
+        state.v4_resolver_calls==1&&!state.v4_generate_calls&&
+        state.route_calls==3&&state.serialize_calls==1&&state.receipt_exact&&
+        command_exists(root,COMMAND_A,"prepared")&&
+        command_exists(root,COMMAND_A,"published")&&
+        command_exists(root,COMMAND_A,"acked"),
+        "v4 FOUND must select its candidate before v3 staging and live publish revalidation");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-none")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-none";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    operations_v4_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_B)) return failed+1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK&&
+        state.v4_resolver_calls==1&&state.v4_generate_calls==1&&
+        state.route_calls==3&&state.serialize_calls==1&&state.receipt_exact&&
+        command_exists(root,COMMAND_B,"acked"),
+        "v4 NO_CANDIDATE must generate the native UUID while retaining v3 route gates");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-error")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-error";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.v4_resolver_result=-7;
+    operations_v4_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE&&
+        state.v4_resolver_calls==1&&!state.v4_generate_calls&&state.route_calls==1&&
+        !state.serialize_calls&&!command_exists(root,COMMAND_A,"prepared")&&
+        !command_exists(root,COMMAND_B,"prepared"),
+        "v4 resolver ERROR must prohibit serialization and all journal mutation");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-reject")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-reject";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.v4_resolver_result=1;
+    state.v4_reject_candidate=1;
+    operations_v4_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE&&
+        state.v4_resolver_calls==1&&!state.v4_generate_calls&&state.route_calls==1&&
+        !state.serialize_calls&&!command_exists(root,COMMAND_A,"prepared"),
+        "v4 must reject a candidate whose identity does not echo the bound route");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-head-change")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-head-change";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.v4_resolver_result=1;
+    state.v3_change_route_after_prepared=1;
+    operations_v4_init(&operations,&state);
+    operations.observe_prepared_stage=observe_prepared_stage;
+    operations.observe_prepared_stage_opaque=&state;
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_A)) return failed+1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH&&
+        state.route_calls==3&&command_exists(root,COMMAND_A,"prepared")&&
+        !command_exists(root,COMMAND_A,"published")&&
+        !exists(root,"player/66/M3alpha")&&!state.receipt_calls,
+        "a live head change after PREPARED must prohibit v4 publish and mutation");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-identity-change")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-identity-change";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.v3_change_identity_after_prepared=1;
+    operations_v4_init(&operations,&state);
+    operations.observe_prepared_stage=observe_prepared_stage;
+    operations.observe_prepared_stage_opaque=&state;
+    held_request_v3_init(&request,COMMAND_A);
+    if(mock_receipt_expect(&state,root,COMMAND_B)) return failed+1;
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH&&
+        state.route_calls==3&&command_exists(root,COMMAND_B,"prepared")&&
+        !command_exists(root,COMMAND_B,"published")&&
+        !exists(root,"player/66/M3alpha")&&!state.receipt_calls,
+        "a live identity change after PREPARED must prohibit v4 publish and mutation");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)) return failed+1;
+    return failed;
+}
+
 int main(void)
 {
     int             failed;
@@ -1557,6 +1754,7 @@ int main(void)
     failed += test_held_v3_head_authority();
     failed += test_held_v3_stage_observer_is_non_authoritative();
     failed += test_held_v3_rejects_and_preserves_evidence();
+    failed += test_held_v4_resolver_and_live_revalidation();
     if (failed)
         fprintf(stderr, "protocol failures: %d\n", failed);
     return failed ? 1 : 0;
