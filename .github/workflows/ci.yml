@@ -196,6 +196,41 @@ jobs:
             --file=supabase/tests/onboarding_handoff_gate_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/onboarding_snapshot_eligibility_outbox_contract.sql
+          pva_fixture_hex="$(tr -d '\r\n' < tests/fixtures/player_snapshot_v1_canonical.hex)"
+          pva_payload="decode('${pva_fixture_hex}', 'hex')"
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260924000000_onboarding_snapshot_fulfillment.sql
+          done
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment corrective migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260925000000_onboarding_snapshot_fulfillment_corrective.sql
+          done
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment terminal-semantics migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260926000000_onboarding_snapshot_fulfillment_terminal_semantics.sql
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
 
       - name: Run M4 file snapshot manifest PostgreSQL 17 contract
         if: runner.os == 'Linux'
