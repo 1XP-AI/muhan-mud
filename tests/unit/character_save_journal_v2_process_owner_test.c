@@ -37,6 +37,9 @@ typedef struct fixture {
     int handoff_observer_calls, reset_calls, close_calls, global_store_installed;
     int handoff_drain_calls, handoff_drain_result;
     int reservation_consumer_calls;
+    int reservation_directory_close_fail;
+    int reservation_directory_close_calls;
+    int reservation_directory_last_closed_fd;
     onboarding_snapshot_command_consumer_result reservation_consumer_result;
     int bound_previous_store, binding_current;
     char trace[32];
@@ -87,6 +90,16 @@ static void mark(char event)
         current->trace[current->trace_length++] = event;
         current->trace[current->trace_length] = 0;
     }
+}
+
+/* The close seam models the POSIX outcome that matters to ownership: close
+ * may report failure after the kernel has released the descriptor. */
+int character_save_journal_v2_process_owner_test_close(int directory_fd)
+{
+    current->reservation_directory_close_calls++;
+    current->reservation_directory_last_closed_fd=directory_fd;
+    if(close(directory_fd)) return -1;
+    return current->reservation_directory_close_fail ? -1:0;
 }
 
 static int fake_deadline(void *opaque, char output[64])
@@ -816,6 +829,97 @@ static int test_reservation_directory_failed_start_releases_duplicate(void)
     return failed;
 }
 
+static int test_reservation_directory_close_failure_lifecycle(void)
+{
+    fixture test;
+    char root[]="/tmp/muhan-owner-reservation-close.XXXXXX", directory[256];
+    int caller_fd, bad_fd, owned_fd, failed=0;
+
+    caller_fd=-1; bad_fd=-1;
+    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/private",root) >=
+       (int)sizeof(directory) || mkdir(directory,0700) ||
+       (caller_fd=open(directory,O_RDONLY|O_DIRECTORY))<0) return 1;
+
+    setup(&test);
+    test.configuration.snapshot_reservation_enabled=1;
+    test.configuration.snapshot_reservation_directory_fd=caller_fd;
+    test.reservation_directory_close_fail=1;
+    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
+    if(character_save_journal_v2_process_owner_start(&test.owner)) failed++;
+    owned_fd=test.owner.snapshot_reservation_directory_fd;
+    failed+=expect(character_save_journal_v2_process_owner_shutdown(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
+        test.reservation_directory_close_calls==1 &&
+        test.reservation_directory_last_closed_fd==owned_fd && owned_fd>=0 &&
+        fcntl(owned_fd,F_GETFD)<0 && errno==EBADF && fcntl(caller_fd,F_GETFD)>=0 &&
+        test.owner.snapshot_reservation_directory_fd<0,
+        "an ambiguous directory close failure must be diagnostic, discard only the owner duplicate, and preserve caller ownership");
+    failed+=expect(character_save_journal_v2_process_owner_shutdown(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
+        test.reservation_directory_close_calls==1,
+        "idempotent shutdown must not retry an ambiguous directory close");
+
+    setup(&test);
+    test.configuration.snapshot_reservation_enabled=1;
+    test.configuration.snapshot_reservation_directory_fd=caller_fd;
+    test.deadline_fail=1;
+    test.reservation_directory_close_fail=1;
+    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
+    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_DEADLINE &&
+        test.owner.shutdown_result==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
+        test.reservation_directory_close_calls==1 &&
+        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
+        fcntl(caller_fd,F_GETFD)>=0 &&
+        test.owner.snapshot_reservation_directory_fd<0,
+        "a failed start must retain its legacy startup cause while exposing one ambiguous duplicate-close failure");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+    failed+=expect(test.reservation_directory_close_calls==1,
+        "failed-start cleanup must not be repeated by a later shutdown");
+
+    setup(&test);
+    test.configuration.snapshot_reservation_enabled=1;
+    test.configuration.snapshot_reservation_directory_fd=caller_fd;
+    test.shutdown_during_deadline=1;
+    test.reservation_directory_close_fail=1;
+    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
+    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED &&
+        test.owner.shutdown_result==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
+        test.reservation_directory_close_calls==1 &&
+        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
+        fcntl(caller_fd,F_GETFD)>=0 &&
+        test.owner.snapshot_reservation_directory_fd<0,
+        "deferred cancellation must release the duplicate once, surface ambiguity, and preserve caller ownership");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+    failed+=expect(test.reservation_directory_close_calls==1,
+        "cancelled-start cleanup must remain idempotent after an ambiguous close");
+
+    if((bad_fd=open("/dev/null",O_RDONLY))<0) failed++;
+    setup(&test);
+    test.configuration.snapshot_reservation_enabled=1;
+    test.configuration.snapshot_reservation_directory_fd=bad_fd;
+    test.reservation_directory_close_fail=1;
+    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
+    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY &&
+        test.owner.shutdown_result==
+        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
+        test.reservation_directory_close_calls==1 &&
+        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
+        fcntl(bad_fd,F_GETFD)>=0 &&
+        test.owner.snapshot_reservation_directory_fd<0,
+        "failed reservation validation must surface one ambiguous duplicate-close failure without claiming caller ownership");
+    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
+    failed+=expect(test.reservation_directory_close_calls==1,
+        "validation cleanup must not retry an ambiguous directory close");
+
+    close(bad_fd); close(caller_fd); rmdir(directory); rmdir(root);
+    return failed;
+}
+
 int main(void)
 {
     return test_validate_and_early_cutpoints() |
@@ -828,5 +932,6 @@ int main(void)
         test_handoff_replaces_generic_observer_and_ticks_only_explicitly() |
         test_explicit_reservation_directory_owner_boundary() |
         test_reservation_directory_feature_off_and_unsafe_failure() |
-        test_reservation_directory_failed_start_releases_duplicate();
+        test_reservation_directory_failed_start_releases_duplicate() |
+        test_reservation_directory_close_failure_lifecycle();
 }

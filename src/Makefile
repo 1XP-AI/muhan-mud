@@ -544,12 +544,12 @@ character-save-journal-v2-process-owner-static-test:
 
 character-save-journal-v2-process-owner-test: character-save-journal-v2-process-owner-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_test
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE=character_save_journal_v2_process_owner_test_close -I. ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_test
 	/tmp/muhan-unit/character_save_journal_v2_process_owner_test
 
 character-save-journal-v2-process-owner-sanitizer-test: character-save-journal-v2-process-owner-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_sanitizer_test
+	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE=character_save_journal_v2_process_owner_test_close -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_process_owner_test.c character_save_journal_v2_process_owner.c -o /tmp/muhan-unit/character_save_journal_v2_process_owner_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/character_save_journal_v2_process_owner_sanitizer_test
 
 character-save-journal-v2-rpc-transport-native-compile: character-save-journal-v2-rpc-transport-static-test

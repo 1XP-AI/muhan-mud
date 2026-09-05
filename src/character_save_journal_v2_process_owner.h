@@ -128,7 +128,10 @@ character_save_journal_v2_process_owner_start(
 /* Restores the prior global PlayerStore before closing the held writer.  A
  * call re-entered during startup requests deferred cancellation; it never
  * tears resources out from under the active startup frame.  Shutdown is
- * idempotent and never closes or otherwise mutates transport. */
+ * idempotent and never closes or otherwise mutates transport.  A private
+ * reservation-directory close error reports SHUTDOWN_CLOSE_FAILED and
+ * terminalizes that duplicate: it is never retried because POSIX close may
+ * already have released the descriptor. */
 character_save_journal_v2_process_owner_shutdown_result
 character_save_journal_v2_process_owner_shutdown(
     character_save_journal_v2_process_owner *owner);

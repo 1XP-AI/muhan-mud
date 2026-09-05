@@ -5,6 +5,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE
+extern int CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE(int directory);
+#endif
+
 static int process_owner_text(const char *text, unsigned long capacity)
 {
     return text && capacity && memchr(text, 0, capacity) != 0 && text[0];
@@ -77,16 +81,45 @@ static void process_owner_clear_held(character_save_journal_v2_process_owner *ow
     memset(&owner->live_ops, 0, sizeof(owner->live_ops));
 }
 
-static int process_owner_reservation_directory_release(
+typedef enum process_owner_reservation_directory_release_result {
+    PROCESS_OWNER_RESERVATION_DIRECTORY_NOT_HELD = 0,
+    PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSED = 1,
+    PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED = 2
+} process_owner_reservation_directory_release_result;
+
+static int process_owner_reservation_directory_close(int directory)
+{
+#ifdef CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE
+    return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE(directory);
+#else
+    return close(directory);
+#endif
+}
+
+static process_owner_reservation_directory_release_result
+process_owner_reservation_directory_release(
     character_save_journal_v2_process_owner *owner)
 {
     int directory;
-    if(!owner || owner->snapshot_reservation_directory_fd < 0) return 0;
+    if(!owner || owner->snapshot_reservation_directory_fd < 0)
+        return PROCESS_OWNER_RESERVATION_DIRECTORY_NOT_HELD;
     directory=owner->snapshot_reservation_directory_fd;
-    /* Clear before close so every failure and repeated shutdown owns at most
-     * one close attempt, while never touching the caller's original fd. */
+    /* POSIX close failure can still mean the kernel released directory.  Give
+     * up this private descriptor before invoking close so re-entry and later
+     * shutdown cannot retry an ambiguous close against a reused fd number. */
     owner->snapshot_reservation_directory_fd=-1;
-    return close(directory) ? -1:0;
+    return process_owner_reservation_directory_close(directory) ?
+        PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED :
+        PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSED;
+}
+
+static void process_owner_reservation_directory_discard(
+    character_save_journal_v2_process_owner *owner)
+{
+    if(process_owner_reservation_directory_release(owner) ==
+       PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED)
+        owner->shutdown_result =
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
 }
 
 static int process_owner_reservation_directory_prepare(
@@ -99,12 +132,12 @@ static int process_owner_reservation_directory_prepare(
     directory=fcntl(owner->configuration.snapshot_reservation_directory_fd,
         F_DUPFD_CLOEXEC,3);
     if(directory < 0) return -1;
+    owner->snapshot_reservation_directory_fd=directory;
     if(fstat(directory,&status) || !S_ISDIR(status.st_mode) ||
        status.st_uid != geteuid() || (status.st_mode&0777) != 0700) {
-        close(directory);
+        process_owner_reservation_directory_discard(owner);
         return -1;
     }
-    owner->snapshot_reservation_directory_fd=directory;
     return 0;
 }
 
@@ -115,9 +148,7 @@ static void process_owner_unwind(character_save_journal_v2_process_owner *owner)
         owner->shutdown_result =
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
     process_owner_clear_held(owner);
-    if(process_owner_reservation_directory_release(owner))
-        owner->shutdown_result =
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
+    process_owner_reservation_directory_discard(owner);
     owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
 }
 
@@ -138,9 +169,7 @@ process_owner_stop_start(character_save_journal_v2_process_owner *owner,
     if(unwind)
         process_owner_unwind(owner);
     else {
-        if(process_owner_reservation_directory_release(owner))
-            owner->shutdown_result =
-                CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
+        process_owner_reservation_directory_discard(owner);
         owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
     }
     owner->operation_active = 0;
@@ -211,6 +240,7 @@ character_save_journal_v2_process_owner_start(
         return owner->startup_result;
     }
 
+    owner->shutdown_result = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK;
     if(process_owner_reservation_directory_prepare(owner)) {
         owner->startup_result =
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY;
@@ -331,9 +361,7 @@ character_save_journal_v2_process_owner_shutdown(
         owner->shutdown_result =
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
     if(owner->writer_held) process_owner_clear_held(owner);
-    if(process_owner_reservation_directory_release(owner))
-        owner->shutdown_result =
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
+    process_owner_reservation_directory_discard(owner);
     if(owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_NEW)
         owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
     owner->operation_active = 0;
