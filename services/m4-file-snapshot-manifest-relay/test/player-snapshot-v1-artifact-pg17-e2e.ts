@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NodePlayerSnapshotV1ArtifactFilesystem, relayPlayerSnapshotV1ArtifactsOnce } from '../src/player-snapshot-v1-artifact-relay.js'
-import { PostgresPlayerSnapshotV1ArtifactStore } from '../src/store.js'
+import { PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, type PlayerSnapshotV1LevelProjectionStore } from '../src/store.js'
 
 const require = createRequire(import.meta.url)
 
@@ -47,7 +47,7 @@ function payload(): Buffer {
   const graphBody = Buffer.concat([u16(1), Buffer.from([3]), u32(4), u32(0)])
   const graph = seal(graphBody, 6)
   const fields = lengths.map((length, index) => Buffer.concat([
-    u16(index + 1), Buffer.from([types[index]!]), u32(length), Buffer.alloc(length),
+    u16(index + 1), Buffer.from([types[index]!]), u32(length), index === 6 ? Buffer.from([42]) : Buffer.alloc(length),
   ]))
   fields.push(Buffer.concat([u16(40), Buffer.from([9]), u32(graph.length), graph]))
   return seal(Buffer.concat(fields), 7)
@@ -115,6 +115,7 @@ interface CreateOutboxOptions {
 interface OwnedTestResources {
   outboxPath?: string
   store?: Pick<PostgresPlayerSnapshotV1ArtifactStore, 'close'>
+  projectionStore?: Pick<PostgresPlayerSnapshotV1LevelProjectionStore, 'close'>
   superClient?: Pick<SqlClient, 'end'>
 }
 
@@ -174,6 +175,7 @@ async function assertCreateOutboxFailureRemovesPartialDirectory(): Promise<void>
 async function closeOwnedTestResources(resources: OwnedTestResources): Promise<void> {
   const results = await Promise.allSettled([
     resources.store?.close(),
+    resources.projectionStore?.close(),
     resources.superClient?.end(),
     resources.outboxPath ? rm(resources.outboxPath, { recursive: true, force: true }) : undefined,
   ])
@@ -201,6 +203,7 @@ async function withOwnedTestResources<T>(setup: (resources: OwnedTestResources) 
 async function assertSetupFailureCleansOwnedResources(): Promise<void> {
   let outboxPath: string | undefined
   let storeClosed = false
+  let projectionStoreClosed = false
   let superClientEnded = false
   await assert.rejects(
     withOwnedTestResources(async (resources) => {
@@ -208,12 +211,14 @@ async function assertSetupFailureCleansOwnedResources(): Promise<void> {
       resources.outboxPath = createdOutboxPath
       outboxPath = createdOutboxPath
       resources.store = { close: async () => { storeClosed = true } }
+      resources.projectionStore = { close: async () => { projectionStoreClosed = true } }
       resources.superClient = { end: async () => { superClientEnded = true } }
       throw new Error('simulate resource setup failure')
     }),
     /simulate resource setup failure/,
   )
   assert.equal(storeClosed, true, 'a setup failure must close an initialized store')
+  assert.equal(projectionStoreClosed, true, 'a setup failure must close an initialized projection store')
   assert.equal(superClientEnded, true, 'a setup failure must end an initialized PostgreSQL client')
   assert.ok(outboxPath, 'the setup failure must own an outbox before failing')
   await assert.rejects(stat(outboxPath), { code: 'ENOENT' }, 'a setup failure must remove its owned outbox')
@@ -247,6 +252,29 @@ async function legacyAuthorityState(client: SqlClient): Promise<string> {
   return result.rows[0]!.state
 }
 
+interface ProjectionRow {
+  character_id: string
+  command_id: string
+  receipt_request_sha256: string
+  source_post_sha256: string
+  source_octets: string
+  snapshot_sha256: string
+  snapshot_octets: string
+  raw_level_u8: string
+}
+
+async function projectionRow(client: SqlClient): Promise<ProjectionRow> {
+  const result = await client.query<ProjectionRow>(`
+    select character_id::text, command_id::text, receipt_request_sha256,
+      source_post_sha256, source_octets::text, snapshot_sha256,
+      snapshot_octets::text, raw_level_u8::text
+    from private.game_character_player_snapshot_v1_level_projections
+    where character_id = $1::uuid and command_id = $2::uuid
+  `, [characterId, commandId])
+  assert.equal(result.rows.length, 1, 'the relay must persist one receipt-bound level projection')
+  return result.rows[0]!
+}
+
 async function main(): Promise<void> {
   assert.equal(process.platform, 'linux', 'the descriptor-rooted filesystem E2E must run in Linux')
   await assertCreateOutboxFailureRemovesPartialDirectory()
@@ -261,27 +289,72 @@ async function main(): Promise<void> {
     const filesystem = new NodePlayerSnapshotV1ArtifactFilesystem()
     const store = new PostgresPlayerSnapshotV1ArtifactStore(databaseUrl)
     resources.store = store
+    const projectionStore = new PostgresPlayerSnapshotV1LevelProjectionStore(databaseUrl)
+    resources.projectionStore = projectionStore
     const superClient = new (require('pg') as PgModule).Client({ connectionString: superDatabaseUrl })
     resources.superClient = superClient
     await superClient.connect()
     const initialFiles = await evidenceState(outboxPath)
     const legacyBefore = await legacyAuthorityState(superClient)
-    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
+    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem, undefined, projectionStore), {
       visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 1, projectionRecorded: 1, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
     })
     assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'the first relay must not alter test-owned receipt or artifact files')
     assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'the first relay must not alter legacy authority')
-    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
+    const expectedProjection: ProjectionRow = {
+      character_id: characterId,
+      command_id: commandId,
+      receipt_request_sha256: requestSha256,
+      source_post_sha256: sourcePostSha256,
+      source_octets: '9',
+      snapshot_sha256: createHash('sha256').update(validPayload).digest('hex'),
+      snapshot_octets: String(validPayload.length),
+      raw_level_u8: '42',
+    }
+    const persistedProjection = await projectionRow(superClient)
+    assert.deepEqual(persistedProjection, expectedProjection, 'the projection must preserve the field-7 raw U8 and receipt/source/snapshot bindings')
+    await assert.rejects(
+      superClient.query(
+        'update private.game_character_player_snapshot_v1_level_projections set raw_level_u8 = 1 where character_id = $1::uuid and command_id = $2::uuid',
+        [characterId, commandId],
+      ),
+      (error: { code?: unknown }) => error.code === 'P0001',
+      'a persisted projection must reject UPDATE with P0001',
+    )
+    assert.deepEqual(await projectionRow(superClient), persistedProjection, 'a rejected projection UPDATE must leave the row unchanged')
+    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem, undefined, projectionStore), {
       visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 1, projectionRecorded: 0, projectionExactRetry: 1, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
     })
     assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'the exact retry must not alter test-owned receipt or artifact files')
     assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'the exact retry must not alter legacy authority')
+    const throwingProjectionStore: PlayerSnapshotV1LevelProjectionStore = {
+      async recordPlayerSnapshotV1LevelProjection(): Promise<'RECORDED'> {
+        throw Object.assign(new Error('simulate projection failure after immutable artifact evidence'), { code: 'P0001' })
+      },
+    }
+    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem, undefined, throwingProjectionStore), {
+      visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 1, projectionRetryable: 0, projectionUnknown: 0,
+    })
+    assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'a projection failure must not alter test-owned receipt or artifact files')
+    assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'a projection failure must not alter legacy authority')
+    assert.deepEqual(await projectionRow(superClient), persistedProjection, 'a projection failure must not alter immutable projection evidence')
+    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem, undefined, projectionStore), {
+      visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 1, projectionRecorded: 0, projectionExactRetry: 1, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
+    })
+    assert.deepEqual(await evidenceState(outboxPath), initialFiles, 'the post-failure exact retry must not alter test-owned receipt or artifact files')
+    assert.equal(await legacyAuthorityState(superClient), legacyBefore, 'the post-failure exact retry must not alter legacy authority')
+    assert.deepEqual(await projectionRow(superClient), persistedProjection, 'the post-failure real projection retry must remain exact')
     const before = await authorityState(superClient)
     await writeFile(artifactPath, artifact(malformedPayload))
     await chmod(artifactPath, 0o600)
     const malformedFiles = await evidenceState(outboxPath)
-    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem), {
+    assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce(outboxPath, store, filesystem, undefined, projectionStore), {
       visited: 1, valid: 1, delivered: 0, recorded: 0, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
     })
     assert.deepEqual(await evidenceState(outboxPath), malformedFiles, 'the rejected relay must not alter test-owned receipt or artifact files')
     assert.equal(await authorityState(superClient), before, 'malformed CDTO must not change artifact, receipt, head, or legacy snapshot bytes')
@@ -293,7 +366,7 @@ async function main(): Promise<void> {
       'select count(*)::text as count from private.game_character_player_snapshot_v1_artifacts where character_id = $1::uuid', [characterId],
     )
     assert.equal(count.rows[0]!.count, '1')
-    console.log('GREEN PostgreSQL 17 Linux: descriptor-rooted PlayerSnapshotV1 relay recorded, exactly retried, and preserved files plus legacy authority')
+    console.log('GREEN PostgreSQL 17 Linux: descriptor-rooted PlayerSnapshotV1 relay recorded immutable level-42 projection, exactly retried artifact/projection, and preserved files plus legacy authority')
   })
 }
 

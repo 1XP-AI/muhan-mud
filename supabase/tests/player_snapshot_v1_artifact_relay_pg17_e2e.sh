@@ -47,6 +47,14 @@ fi
 echo "RED PostgreSQL 17: PlayerSnapshotV1 artifact relay RPC is absent through migration 140"
 run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
 run_super --file=/workspace/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
+# Forward dependencies are replayed deliberately: the disposable E2E depends
+# on their idempotent role/RPC setup before it reaches migration 190.
+run_super --file=/workspace/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
+run_super --file=/workspace/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
+run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
+run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
+run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
 
 run_super <<'SQL'
 alter role mud_writer_login password 'contract-only-writer-password';

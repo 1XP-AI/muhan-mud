@@ -2,7 +2,7 @@ import { parseManifest, type Manifest } from './manifest.js'
 import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX, commandFromPlayerSnapshotV1Filename, parsePlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import { MAX_MANIFEST_BYTES, isManifestFilename } from './manifest.js'
 import { scanImmutableOutboxFiles } from './relay.js'
-import { classifyDatabaseError, type PlayerSnapshotV1ArtifactStore } from './store.js'
+import { classifyDatabaseError, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore } from './store.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver as PlayerSnapshotV1ReplayObserverContract } from './player-snapshot-v1-replay-observer.js'
 
 export interface PlayerSnapshotV1ArtifactRelaySummary {
@@ -18,6 +18,13 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   ioError: number
   replayObserved: number
   replayDisabled: number
+  projectionDelivered: number
+  projectionRecorded: number
+  projectionExactRetry: number
+  projectionInvalid: number
+  projectionConflict: number
+  projectionRetryable: number
+  projectionUnknown: number
 }
 
 export interface PlayerSnapshotV1ArtifactFilesystem {
@@ -66,6 +73,8 @@ function summary(): PlayerSnapshotV1ArtifactRelaySummary {
   return {
     visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
     replayObserved: 0, replayDisabled: 0,
+    projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0,
+    projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
   }
 }
 
@@ -79,6 +88,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   store: PlayerSnapshotV1ArtifactStore,
   filesystem: PlayerSnapshotV1ArtifactFilesystem = new NodePlayerSnapshotV1ArtifactFilesystem(),
   replayObserver: PlayerSnapshotV1ReplayObserverContract = new PlayerSnapshotV1ReplayObserver(undefined),
+  projectionStore?: PlayerSnapshotV1LevelProjectionStore,
 ): Promise<PlayerSnapshotV1ArtifactRelaySummary> {
   const result = summary()
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>
@@ -105,12 +115,34 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
       }) === 'observed') result.replayObserved++
       else result.replayDisabled++
     } catch { result.replayDisabled++ }
+    let artifactSettled = false
     try {
       const outcome = await store.recordPlayerSnapshotV1Artifact(artifact)
-      if (outcome === 'RECORDED') { result.recorded++; result.delivered++ }
-      else if (outcome === 'EXACT_RETRY') { result.exactRetry++; result.delivered++ }
+      if (outcome === 'RECORDED') { result.recorded++; result.delivered++; artifactSettled = true }
+      else if (outcome === 'EXACT_RETRY') { result.exactRetry++; result.delivered++; artifactSettled = true }
       else result.unknown++
     } catch (error) { result[classifyDatabaseError(error)]++ }
+    // Immutable artifact evidence is authoritative; this projection is only a
+    // best-effort migration-190 side effect after that evidence has settled.
+    if (!artifactSettled || !projectionStore) continue
+    try {
+      const outcome = await projectionStore.recordPlayerSnapshotV1LevelProjection({
+        characterId: artifact.characterId,
+        commandId: artifact.commandId,
+        receiptRequestSha256: artifact.receiptRequestSha256,
+        sourcePostSha256: artifact.sourcePostSha256,
+        sourceOctets: artifact.sourceOctets,
+      })
+      if (outcome === 'RECORDED') { result.projectionRecorded++; result.projectionDelivered++ }
+      else if (outcome === 'EXACT_RETRY') { result.projectionExactRetry++; result.projectionDelivered++ }
+      else result.projectionUnknown++
+    } catch (error) {
+      const category = classifyDatabaseError(error)
+      if (category === 'invalid') result.projectionInvalid++
+      else if (category === 'conflict') result.projectionConflict++
+      else if (category === 'retryable') result.projectionRetryable++
+      else result.projectionUnknown++
+    }
   }
   return result
 }

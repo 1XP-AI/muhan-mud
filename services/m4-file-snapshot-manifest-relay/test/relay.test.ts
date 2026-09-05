@@ -11,7 +11,7 @@ import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../s
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
-import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PgClient, type PgPool } from '../src/store.js'
+import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
 const second = '22222222-2222-4222-8222-222222222222'
@@ -215,9 +215,11 @@ test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy 
   } }
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
     visited: 2, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+    projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
   })
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, fs), {
     visited: 2, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 1, conflict: 0, retryable: 0, unknown: 0, ioError: 0, replayObserved: 0, replayDisabled: 1,
+    projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
   })
   assert.deepEqual(calls, [first, first])
   assert.equal(rows.size, 1)
@@ -226,6 +228,106 @@ test('relays one canonical PlayerSnapshotV1 artifact separately from the legacy 
   assert.deepEqual(manifest, originalManifest)
   assert.deepEqual(legacyEvidence, originalLegacyEvidence)
   assert.throws(() => parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, Buffer.from('bad'), parseManifest(manifest)))
+})
+
+test('records PlayerSnapshotV1 level projections only after settled artifact evidence, including exact retries', async () => {
+  const manifests = new Map([[first, body(first)], [second, body(second)]])
+  const artifacts = new Map([
+    [first, playerSnapshotV1Artifact(playerSnapshotV1(), { command_id: first })],
+    [second, playerSnapshotV1Artifact(playerSnapshotV1(), { command_id: second })],
+  ])
+  const calls: string[] = []
+  const artifactAttempts = new Map<string, number>()
+  const projectionAttempts = new Map<string, number>()
+  const projectionInputs: unknown[] = []
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async (artifact) => {
+      calls.push(`artifact:${artifact.commandId}`)
+      const attempts = (artifactAttempts.get(artifact.commandId) ?? 0) + 1
+      artifactAttempts.set(artifact.commandId, attempts)
+      return attempts === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+  }
+  const projection: PlayerSnapshotV1LevelProjectionStore = {
+    recordPlayerSnapshotV1LevelProjection: async (input) => {
+      calls.push(`projection:${input.commandId}`)
+      projectionInputs.push(input)
+      const attempts = (projectionAttempts.get(input.commandId) ?? 0) + 1
+      projectionAttempts.set(input.commandId, attempts)
+      return attempts === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+  }
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [first, second].map((commandId) => ({
+      name: `${commandId}.player-snapshot-v1`, bytes: artifacts.get(commandId), receiptManifestBytes: manifests.get(commandId),
+    })),
+  }
+
+  assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, undefined, projection), {
+    visited: 2, valid: 2, delivered: 2, recorded: 2, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    replayObserved: 0, replayDisabled: 2,
+    projectionDelivered: 2, projectionRecorded: 2, projectionExactRetry: 0,
+    projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
+  })
+  assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, undefined, projection), {
+    visited: 2, valid: 2, delivered: 2, recorded: 0, exactRetry: 2, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+    replayObserved: 0, replayDisabled: 2,
+    projectionDelivered: 2, projectionRecorded: 0, projectionExactRetry: 2,
+    projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
+  })
+  assert.deepEqual(calls, [
+    `artifact:${first}`, `projection:${first}`, `artifact:${second}`, `projection:${second}`,
+    `artifact:${first}`, `projection:${first}`, `artifact:${second}`, `projection:${second}`,
+  ])
+  assert.deepEqual(projectionInputs, [first, second, first, second].map((commandId) => ({
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
+  })))
+})
+
+test('suppresses projections for unsettled artifact recording and continues after projection database failures', async () => {
+  const commands = [
+    first, second, '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444',
+    '55555555-5555-4555-8555-555555555555', '66666666-6666-4666-8666-666666666666',
+    '77777777-7777-4777-8777-777777777777', '88888888-8888-4888-8888-888888888888',
+  ]
+  const evidence = commands.map((commandId) => playerSnapshotV1Artifact(playerSnapshotV1(), { command_id: commandId }))
+  const originalEvidence = evidence.map((artifact) => Buffer.from(artifact))
+  const artifactCalls: string[] = []
+  const projectionCalls: string[] = []
+  const projectionErrors = ['22023', 'P0001', '08P01', 'ECONNRESET', undefined]
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async (artifact) => {
+      artifactCalls.push(artifact.commandId)
+      if (artifact.commandId === first) throw Object.assign(new Error('artifact conflict'), { code: 'P0001' })
+      if (artifact.commandId === second) return 'UNEXPECTED' as never
+      return 'RECORDED'
+    },
+  }
+  const projection: PlayerSnapshotV1LevelProjectionStore = {
+    recordPlayerSnapshotV1LevelProjection: async (input) => {
+      projectionCalls.push(input.commandId)
+      const code = projectionErrors[projectionCalls.length - 1]
+      if (projectionCalls.length <= projectionErrors.length) throw Object.assign(new Error('projection failed'), code ? { code } : {})
+      return 'RECORDED'
+    },
+  }
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => commands.map((commandId, index) => ({
+      name: `${commandId}.player-snapshot-v1`, bytes: evidence[index], receiptManifestBytes: body(commandId),
+    })),
+  }
+
+  const result = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, undefined, projection)
+  assert.deepEqual(artifactCalls, commands)
+  assert.deepEqual(projectionCalls, commands.slice(2))
+  assert.deepEqual(result, {
+    visited: 8, valid: 8, delivered: 6, recorded: 6, exactRetry: 0, invalid: 0, conflict: 1, retryable: 0, unknown: 1, ioError: 0,
+    replayObserved: 0, replayDisabled: 8,
+    projectionDelivered: 1, projectionRecorded: 1, projectionExactRetry: 0,
+    projectionInvalid: 1, projectionConflict: 1, projectionRetryable: 2, projectionUnknown: 1,
+  })
+  assert.deepEqual(evidence, originalEvidence)
 })
 
 test('replay observation is payload-only and never changes PlayerSnapshotV1 recording', async () => {
@@ -248,6 +350,7 @@ test('replay observation is payload-only and never changes PlayerSnapshotV1 reco
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, observer), {
     visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
     replayObserved: 0, replayDisabled: 1,
+    projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
   })
   assert.equal(records, 1)
   assert.deepEqual(observed, [payload])
@@ -303,6 +406,7 @@ test('every replay journal filesystem failure exposes its temporary and publish 
     assert.deepEqual(result, {
       visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
       replayObserved: 0, replayDisabled: 1,
+      projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
     })
   }
 })
@@ -435,5 +539,30 @@ test('PlayerSnapshotV1 postgres adapter parameterizes the immutable artifact rec
   assert.deepEqual(queries[1]?.values, [
     parsed.characterId, parsed.commandId, parsed.receiptRequestSha256, parsed.sourcePostSha256,
     parsed.sourceOctets, parsed.snapshotFormat, parsed.snapshotSha256, parsed.snapshotOctets, parsed.payload,
+  ])
+})
+
+test('PlayerSnapshotV1 raw-U8 level projection adapter uses SET ROLE and one parameterized migration-190 call', async () => {
+  const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+  const client: PgClient = {
+    query: async <Row>(sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values })
+      return { rows: sql.startsWith('select outcome') ? [{ outcome: 'RECORDED' } as Row] : [] }
+    },
+    release: () => undefined,
+  }
+  const pool: PgPool = { connect: async () => client, end: async () => undefined }
+  const store = new PostgresPlayerSnapshotV1LevelProjectionStore('postgresql://mud_writer_login@localhost/postgres', pool)
+  const input = {
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId: first,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
+  }
+  assert.equal(await store.recordPlayerSnapshotV1LevelProjection(input), 'RECORDED')
+  assert.deepEqual(queries.map((query) => query.sql), [
+    'set role mud_writer',
+    'select outcome from private.record_player_snapshot_v1_level_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
+  ])
+  assert.deepEqual(queries[1]?.values, [
+    input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets,
   ])
 })

@@ -15,6 +15,23 @@ export interface PlayerSnapshotV1ArtifactStore {
   close?(): Promise<void>
 }
 
+/**
+ * Raw-U8 source metadata already validated by the PlayerSnapshotV1 artifact
+ * parser. This is a best-effort, non-authoritative projection input only.
+ */
+export interface PlayerSnapshotV1LevelProjectionInput {
+  characterId: string
+  commandId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  sourceOctets: string
+}
+
+export interface PlayerSnapshotV1LevelProjectionStore {
+  recordPlayerSnapshotV1LevelProjection(input: PlayerSnapshotV1LevelProjectionInput): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
 export type DatabaseErrorCategory = 'invalid' | 'conflict' | 'retryable' | 'unknown'
 
 function errorCode(error: unknown): string | undefined {
@@ -88,6 +105,36 @@ export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1Ar
         'select outcome from private.record_player_snapshot_v1_artifact_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::text, $7::text, $8::bigint, $9::bytea)',
         [artifact.characterId, artifact.commandId, artifact.receiptRequestSha256, artifact.sourcePostSha256,
           artifact.sourceOctets, artifact.snapshotFormat, artifact.snapshotSha256, artifact.snapshotOctets, artifact.payload],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+/**
+ * Direct PostgreSQL adapter for the migration-190 raw-U8 level projection.
+ * It is deliberately separate from immutable artifact authority and performs
+ * no policy decision beyond recording the database function's outcome.
+ */
+export class PostgresPlayerSnapshotV1LevelProjectionStore implements PlayerSnapshotV1LevelProjectionStore {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async recordPlayerSnapshotV1LevelProjection(input: PlayerSnapshotV1LevelProjectionInput): Promise<StoreOutcome> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_player_snapshot_v1_level_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
+        [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets],
       )
       const outcome = result.rows[0]?.outcome
       if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
