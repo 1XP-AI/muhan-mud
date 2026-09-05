@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import {
   PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES,
   comparePlayerSnapshotV1ReplayShadowJournal,
+  readPlayerSnapshotV1ReplayLevelDifferentialInputs,
   type PlayerSnapshotV1ReplayArtifactDifferentialReader,
   type PlayerSnapshotV1ReplayArtifactEvidence,
   type PlayerSnapshotV1ReplayDifferentialJournalFileReader,
@@ -26,6 +27,18 @@ function journal(value: Record<string, unknown> = {}): string {
     receiptRequestSha256: request, sourcePostSha256: source,
     verification: {
       format: 'player-snapshot-v1-replay-verification', version: '1', algorithm: 'sha-256',
+      inputDigest: digest, canonicalDigest: digest, canonicalOctets: 42, inventoryNodeCount: 0,
+    },
+    ...value,
+  })
+}
+
+function levelJournal(rawLevelU8: number, value: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    format: 'player-snapshot-v1-replay-shadow-journal', version: '2', commandId, characterId,
+    receiptRequestSha256: request, sourcePostSha256: source, rawLevelU8,
+    verification: {
+      format: 'player-snapshot-v1-replay-verification', version: '2', algorithm: 'sha-256',
       inputDigest: digest, canonicalDigest: digest, canonicalOctets: 42, inventoryNodeCount: 0,
     },
     ...value,
@@ -95,6 +108,74 @@ test('differential default filesystem reader returns EXACT for one valid journal
     assert.equal(metadataReads, 1)
     assert.equal(await readFile(entryPath, 'utf8'), before)
     assert.deepEqual(await readdir(path, { encoding: 'buffer' }), namesBefore)
+  })
+})
+
+test('level differential input reader emits only closed v2 metadata for raw U8 boundary values', async () => {
+  await withJournal({
+    'z.json': levelJournal(255),
+    'a.json': levelJournal(0),
+    'm.json': levelJournal(42),
+  }, async (path) => {
+    const result = await readPlayerSnapshotV1ReplayLevelDifferentialInputs(path)
+    assert.deepEqual(result, {
+      format: 'player-snapshot-v1-replay-level-differential-input', version: '1', classification: 'READY',
+      records: [
+        { index: 0, classification: 'INPUT', input: { commandId, characterId, receiptRequestSha256: request, sourcePostSha256: source, snapshotSha256: digest, snapshotOctets: 42, rawLevelU8: 0 } },
+        { index: 1, classification: 'INPUT', input: { commandId, characterId, receiptRequestSha256: request, sourcePostSha256: source, snapshotSha256: digest, snapshotOctets: 42, rawLevelU8: 42 } },
+        { index: 2, classification: 'INPUT', input: { commandId, characterId, receiptRequestSha256: request, sourcePostSha256: source, snapshotSha256: digest, snapshotOctets: 42, rawLevelU8: 255 } },
+      ],
+    })
+    assert.equal(JSON.stringify(result).includes('payload'), false)
+  })
+})
+
+test('level differential input reader does not treat v1 journals as a source of level metadata', async () => {
+  await withJournal({ 'legacy.json': journal() }, async (path) => {
+    const result = await readPlayerSnapshotV1ReplayLevelDifferentialInputs(path)
+    assert.deepEqual(result, {
+      format: 'player-snapshot-v1-replay-level-differential-input', version: '1', classification: 'INCONSISTENT',
+      records: [{ index: 0, classification: 'JOURNAL_INVALID' }],
+    })
+  })
+})
+
+test('existing artifact differential continues to compare closed v2 journal identity and digest metadata', async () => {
+  await withJournal({ 'v2.json': levelJournal(42) }, async (path) => {
+    const result = await comparePlayerSnapshotV1ReplayShadowJournal(path, reader([artifact()]))
+    assert.equal(result.classification, 'EXACT')
+    assert.deepEqual(result.records[0], {
+      index: 0,
+      classification: 'MATCH',
+      evidence: {
+        journal: {
+          commandId, characterId, receiptRequestSha256: request, sourcePostSha256: source,
+          verificationFormat: 'player-snapshot-v1-replay-verification', verificationVersion: '2', verificationAlgorithm: 'sha-256',
+          snapshotSha256: digest, snapshotOctets: 42,
+        },
+        artifact: artifact(),
+      },
+    })
+  })
+})
+
+test('level differential input reader rejects non-closed v2 level records without exposing their extras', async () => {
+  await withJournal({
+    'a.json': levelJournal(256),
+    'b.json': levelJournal(42, { payload: 'forbidden' }),
+    'c.json': levelJournal(42, { verification: {
+      format: 'player-snapshot-v1-replay-verification', version: '2', algorithm: 'sha-256',
+      inputDigest: digest, canonicalDigest: digest, canonicalOctets: 42, inventoryNodeCount: 0, rawLevelU8: 42,
+    } }),
+  }, async (path) => {
+    const result = await readPlayerSnapshotV1ReplayLevelDifferentialInputs(path)
+    assert.equal(result.classification, 'INCONSISTENT')
+    assert.deepEqual(result.records, [
+      { index: 0, classification: 'JOURNAL_INVALID' },
+      { index: 1, classification: 'JOURNAL_INVALID' },
+      { index: 2, classification: 'JOURNAL_INVALID' },
+    ])
+    assert.equal(JSON.stringify(result).includes('forbidden'), false)
   })
 })
 

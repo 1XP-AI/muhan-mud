@@ -1,6 +1,7 @@
 use muhan_core_dto::player_snapshot_v1::{
-    verify_player_snapshot_replay_v1, MAX_LIST_ITEMS, REPLAY_VERIFICATION_V1_ALGORITHM,
-    REPLAY_VERIFICATION_V1_VERSION,
+    verify_player_snapshot_replay_v1, verify_player_snapshot_replay_v2, MAX_LIST_ITEMS,
+    REPLAY_VERIFICATION_V1_ALGORITHM, REPLAY_VERIFICATION_V1_VERSION,
+    REPLAY_VERIFICATION_V2_ALGORITHM, REPLAY_VERIFICATION_V2_VERSION,
 };
 use muhan_core_dto::{
     encode, Error, Field, Kind, Record, MAX_ENVELOPE_SIZE, OBJECT_GRAPH_V1_MAX_DEPTH,
@@ -65,6 +66,22 @@ fn run_replay_runner(wire: &[u8]) -> Output {
         .write_all(wire)
         .expect("runner accepts fixture input");
     child.wait_with_output().expect("runner exits")
+}
+
+fn run_replay_v2_runner(wire: &[u8]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_player_snapshot_v2_replay_verify"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("v2 replay verifier runner launches");
+    child
+        .stdin
+        .take()
+        .expect("v2 runner stdin is piped")
+        .write_all(wire)
+        .expect("v2 runner accepts fixture input");
+    child.wait_with_output().expect("v2 runner exits")
 }
 
 fn player_snapshot_fields(inventory: Vec<u8>) -> Vec<Field> {
@@ -173,6 +190,48 @@ fn verification_is_deterministic_for_the_same_input() {
 }
 
 #[test]
+fn replay_verification_v2_preserves_raw_u8_level_without_a_second_source_read() {
+    for level in [0, 42, 255] {
+        let mut snapshot =
+            muhan_core_dto::player_snapshot_v1::decode_player_snapshot_v1(&fixtures()[0].0)
+                .expect("fixture decodes");
+        snapshot.level = level;
+        let wire = muhan_core_dto::player_snapshot_v1::encode_player_snapshot_v1(&snapshot)
+            .expect("raw U8 level fixture encodes");
+
+        let report = verify_player_snapshot_replay_v2(&wire).expect("fixture verifies");
+        assert_eq!(report.algorithm, REPLAY_VERIFICATION_V2_ALGORITHM);
+        assert_eq!(report.version, REPLAY_VERIFICATION_V2_VERSION);
+        assert_eq!(report.raw_level_u8, level);
+        assert_eq!(report.input_digest, report.canonical_digest);
+        assert_eq!(report.canonical_octets, wire.len());
+    }
+}
+
+#[test]
+fn explicit_v2_runner_reports_raw_u8_without_changing_the_v1_runner_contract() {
+    for level in [0, 42, 255] {
+        let mut snapshot =
+            muhan_core_dto::player_snapshot_v1::decode_player_snapshot_v1(&fixtures()[0].0)
+                .expect("fixture decodes");
+        snapshot.level = level;
+        let wire = muhan_core_dto::player_snapshot_v1::encode_player_snapshot_v1(&snapshot)
+            .expect("raw U8 level fixture encodes");
+        let output = run_replay_v2_runner(&wire);
+        assert!(output.status.success(), "v2 runner accepts raw U8 {level}");
+        let text = String::from_utf8(output.stdout).expect("v2 report is UTF-8");
+        assert!(text.starts_with("format=player-snapshot-v1-replay-verification\nversion=2\n"));
+        assert!(text.ends_with(&format!("raw_level_u8={level}\n")));
+        assert_eq!(
+            text.lines().count(),
+            8,
+            "v2 report has the closed v2 fields"
+        );
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
 fn replay_runner_is_version_pinned_deterministic_and_metadata_only() {
     let (wire, expected_nodes) = &fixtures()[1];
     let library_report = verify_player_snapshot_replay_v1(wire).expect("fixture verifies");
@@ -189,6 +248,10 @@ fn replay_runner_is_version_pinned_deterministic_and_metadata_only() {
     assert!(first.status.success(), "runner accepts canonical fixture");
     assert!(second.status.success(), "runner accepts canonical fixture");
     assert_eq!(first.stdout, expected.as_bytes());
+    assert_eq!(
+        first.stdout.iter().filter(|&&byte| byte == b'\n').count(),
+        7
+    );
     assert_eq!(second.stdout, first.stdout, "repeated input is byte-stable");
     assert!(first.stderr.is_empty(), "successful run has no diagnostics");
 }

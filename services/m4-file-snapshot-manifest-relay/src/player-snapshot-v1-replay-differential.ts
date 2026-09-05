@@ -1,10 +1,11 @@
 import { lstat, readdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
-import type { PlayerSnapshotV1ReplayJournalEntry } from './player-snapshot-v1-replay-shadow-journal.js'
+import type { PlayerSnapshotV1ReplayJournalEntry, PlayerSnapshotV1ReplayJournalV2Entry } from './player-snapshot-v1-replay-shadow-journal.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const HASH_RE = /^[0-9a-f]{64}$/
 const JOURNAL_FIELDS = ['characterId', 'commandId', 'format', 'receiptRequestSha256', 'sourcePostSha256', 'verification', 'version']
+const LEVEL_JOURNAL_V2_FIELDS = ['characterId', 'commandId', 'format', 'rawLevelU8', 'receiptRequestSha256', 'sourcePostSha256', 'verification', 'version']
 const VERIFICATION_FIELDS = ['algorithm', 'canonicalDigest', 'canonicalOctets', 'format', 'inputDigest', 'inventoryNodeCount', 'version']
 
 /** Maximum immutable journal entries examined by one explicit reconciliation invocation. */
@@ -75,12 +76,36 @@ export interface PlayerSnapshotV1ReplayDifferentialResult {
   records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]
 }
 
+/** A future projection reader may compare this fixed metadata without payload access. */
+export interface PlayerSnapshotV1ReplayLevelDifferentialInput {
+  commandId: string
+  characterId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  snapshotSha256: string
+  snapshotOctets: number
+  rawLevelU8: number
+}
+
+export interface PlayerSnapshotV1ReplayLevelDifferentialInputRecord {
+  index: number
+  classification: 'INPUT' | 'JOURNAL_INVALID' | 'JOURNAL_BOUND_EXCEEDED'
+  input?: PlayerSnapshotV1ReplayLevelDifferentialInput
+}
+
+export interface PlayerSnapshotV1ReplayLevelDifferentialInputResult {
+  format: 'player-snapshot-v1-replay-level-differential-input'
+  version: '1'
+  classification: 'READY' | 'INCONSISTENT'
+  records: readonly PlayerSnapshotV1ReplayLevelDifferentialInputRecord[]
+}
+
 function hasExactlyKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort()
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
 }
 
-function isJournalEntry(value: unknown): value is PlayerSnapshotV1ReplayJournalEntry {
+function isJournalV1Entry(value: unknown): value is PlayerSnapshotV1ReplayJournalEntry {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const entry = value as Record<string, unknown>
   if (!hasExactlyKeys(entry, JOURNAL_FIELDS) || typeof entry.verification !== 'object' || entry.verification === null || Array.isArray(entry.verification)) return false
@@ -99,7 +124,33 @@ function isJournalEntry(value: unknown): value is PlayerSnapshotV1ReplayJournalE
     && typeof verification.inventoryNodeCount === 'number' && Number.isSafeInteger(verification.inventoryNodeCount) && verification.inventoryNodeCount >= 0
 }
 
-function journalEvidence(entry: PlayerSnapshotV1ReplayJournalEntry): PlayerSnapshotV1ReplayDifferentialJournalEvidence {
+/** V2 is intentionally separate: a v1 record never becomes a level source. */
+function isLevelJournalV2Entry(value: unknown): value is PlayerSnapshotV1ReplayJournalV2Entry {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  if (!hasExactlyKeys(entry, LEVEL_JOURNAL_V2_FIELDS) || typeof entry.verification !== 'object' || entry.verification === null || Array.isArray(entry.verification)) return false
+  const verification = entry.verification as Record<string, unknown>
+  return hasExactlyKeys(verification, VERIFICATION_FIELDS)
+    && entry.format === 'player-snapshot-v1-replay-shadow-journal' && entry.version === '2'
+    && typeof entry.commandId === 'string' && UUID_RE.test(entry.commandId)
+    && typeof entry.characterId === 'string' && UUID_RE.test(entry.characterId)
+    && typeof entry.receiptRequestSha256 === 'string' && HASH_RE.test(entry.receiptRequestSha256)
+    && typeof entry.sourcePostSha256 === 'string' && HASH_RE.test(entry.sourcePostSha256)
+    && typeof entry.rawLevelU8 === 'number' && Number.isSafeInteger(entry.rawLevelU8)
+    && entry.rawLevelU8 >= 0 && entry.rawLevelU8 <= 255
+    && verification.format === 'player-snapshot-v1-replay-verification' && verification.version === '2' && verification.algorithm === 'sha-256'
+    && typeof verification.inputDigest === 'string' && HASH_RE.test(verification.inputDigest)
+    && typeof verification.canonicalDigest === 'string' && HASH_RE.test(verification.canonicalDigest)
+    && verification.inputDigest === verification.canonicalDigest
+    && typeof verification.canonicalOctets === 'number' && Number.isSafeInteger(verification.canonicalOctets) && verification.canonicalOctets >= 0
+    && typeof verification.inventoryNodeCount === 'number' && Number.isSafeInteger(verification.inventoryNodeCount) && verification.inventoryNodeCount >= 0
+}
+
+function isJournalEntry(value: unknown): value is PlayerSnapshotV1ReplayJournalEntry | PlayerSnapshotV1ReplayJournalV2Entry {
+  return isJournalV1Entry(value) || isLevelJournalV2Entry(value)
+}
+
+function journalEvidence(entry: PlayerSnapshotV1ReplayJournalEntry | PlayerSnapshotV1ReplayJournalV2Entry): PlayerSnapshotV1ReplayDifferentialJournalEvidence {
   return {
     commandId: entry.commandId, characterId: entry.characterId,
     receiptRequestSha256: entry.receiptRequestSha256, sourcePostSha256: entry.sourcePostSha256,
@@ -109,7 +160,7 @@ function journalEvidence(entry: PlayerSnapshotV1ReplayJournalEntry): PlayerSnaps
   }
 }
 
-function classify(entry: PlayerSnapshotV1ReplayJournalEntry, artifact: PlayerSnapshotV1ReplayArtifactEvidence): PlayerSnapshotV1ReplayDifferentialClassification {
+function classify(entry: PlayerSnapshotV1ReplayJournalEntry | PlayerSnapshotV1ReplayJournalV2Entry, artifact: PlayerSnapshotV1ReplayArtifactEvidence): PlayerSnapshotV1ReplayDifferentialClassification {
   if (artifact.commandId !== entry.commandId || artifact.characterId !== entry.characterId
     || artifact.receiptRequestSha256 !== entry.receiptRequestSha256 || artifact.sourcePostSha256 !== entry.sourcePostSha256
     || artifact.snapshotFormat !== 'player-snapshot-v1') return 'IDENTITY_MISMATCH'
@@ -130,6 +181,59 @@ function primaryClassification(records: readonly PlayerSnapshotV1ReplayDifferent
 
 function resultFor(records: readonly PlayerSnapshotV1ReplayDifferentialRecord[]): PlayerSnapshotV1ReplayDifferentialResult {
   return { format: 'player-snapshot-v1-replay-differential', version: '1', classification: primaryClassification(records), records }
+}
+
+function levelInputResult(records: readonly PlayerSnapshotV1ReplayLevelDifferentialInputRecord[]): PlayerSnapshotV1ReplayLevelDifferentialInputResult {
+  return {
+    format: 'player-snapshot-v1-replay-level-differential-input', version: '1',
+    classification: records.some((record) => record.classification !== 'INPUT') ? 'INCONSISTENT' : 'READY',
+    records,
+  }
+}
+
+function levelInput(entry: PlayerSnapshotV1ReplayJournalV2Entry): PlayerSnapshotV1ReplayLevelDifferentialInput {
+  return {
+    commandId: entry.commandId, characterId: entry.characterId,
+    receiptRequestSha256: entry.receiptRequestSha256, sourcePostSha256: entry.sourcePostSha256,
+    snapshotSha256: entry.verification.canonicalDigest, snapshotOctets: entry.verification.canonicalOctets,
+    rawLevelU8: entry.rawLevelU8,
+  }
+}
+
+/**
+ * Reads only immutable v2 journal metadata for a future level projection
+ * comparison. It never opens an artifact payload, a legacy player file, or a
+ * database connection; v1 entries fail closed because they contain no level.
+ */
+export async function readPlayerSnapshotV1ReplayLevelDifferentialInputs(
+  directory: string,
+  journalFiles: PlayerSnapshotV1ReplayDifferentialJournalFileReader = defaultJournalFileReader,
+): Promise<PlayerSnapshotV1ReplayLevelDifferentialInputResult> {
+  const configured = configuredAbsoluteDirectory(directory)
+  if (!configured) throw new Error('invalid replay differential configuration')
+  let names: Buffer[]
+  try {
+    names = (await journalFiles.readDirectory(configured))
+      .filter((name) => name.subarray(-5).equals(Buffer.from('.json')))
+      .sort(Buffer.compare)
+  } catch {
+    return levelInputResult([{ index: 0, classification: 'JOURNAL_INVALID' }])
+  }
+  if (names.length > PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES) {
+    return levelInputResult([{
+      index: PLAYER_SNAPSHOT_V1_REPLAY_DIFFERENTIAL_MAX_JOURNAL_ENTRIES,
+      classification: 'JOURNAL_BOUND_EXCEEDED',
+    }])
+  }
+  const records: PlayerSnapshotV1ReplayLevelDifferentialInputRecord[] = []
+  for (const [index, name] of names.entries()) {
+    let parsed: unknown
+    try { parsed = JSON.parse(await journalFiles.readEntry(join(configured, name.toString('utf8')))) }
+    catch { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
+    if (!isLevelJournalV2Entry(parsed)) { records.push({ index, classification: 'JOURNAL_INVALID' }); continue }
+    records.push({ index, classification: 'INPUT', input: levelInput(parsed) })
+  }
+  return levelInputResult(records)
 }
 
 /**

@@ -14,6 +14,10 @@ pub const REPLAY_VERIFICATION_V1_FORMAT: &str = "player-snapshot-v1-replay-verif
 pub const REPLAY_VERIFICATION_V1_ALGORITHM: &str = "sha-256";
 /// Pinned report schema version for replay verification.
 pub const REPLAY_VERIFICATION_V1_VERSION: u16 = 1;
+/// Pinned report schema version that additionally carries field 7 raw U8.
+pub const REPLAY_VERIFICATION_V2_VERSION: u16 = 2;
+/// Pinned digest algorithm for the v2 replay verification report.
+pub const REPLAY_VERIFICATION_V2_ALGORITHM: &str = "sha-256";
 
 /// Metadata-only result of validating one canonical player snapshot envelope.
 ///
@@ -27,6 +31,19 @@ pub struct ReplayVerificationV1 {
     pub canonical_digest: [u8; super::DIGEST_LENGTH],
     pub canonical_octets: usize,
     pub inventory_node_count: usize,
+}
+
+/// Metadata-only v2 replay report. `raw_level_u8` is field 7 as decoded from
+/// the same canonical CDTO pass; it is not a gameplay interpretation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayVerificationV2 {
+    pub algorithm: &'static str,
+    pub version: u16,
+    pub input_digest: [u8; super::DIGEST_LENGTH],
+    pub canonical_digest: [u8; super::DIGEST_LENGTH],
+    pub canonical_octets: usize,
+    pub inventory_node_count: usize,
+    pub raw_level_u8: u8,
 }
 
 /// Renders a replay verification result as a stable, metadata-only text report.
@@ -52,6 +69,31 @@ pub fn format_replay_verification_v1_report(report: &ReplayVerificationV1) -> St
         hex(&report.canonical_digest),
         report.canonical_octets,
         report.inventory_node_count,
+    )
+}
+
+/// Renders the closed v2 metadata report. The raw level remains a decimal U8
+/// and the report still excludes all source payload bytes.
+pub fn format_replay_verification_v2_report(report: &ReplayVerificationV2) -> String {
+    fn hex(digest: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut output = String::with_capacity(digest.len() * 2);
+        for &byte in digest {
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        output
+    }
+
+    format!(
+        "format={REPLAY_VERIFICATION_V1_FORMAT}\nversion={}\nalgorithm={}\ninput_digest={}\ncanonical_digest={}\ncanonical_octets={}\ninventory_node_count={}\nraw_level_u8={}\n",
+        report.version,
+        report.algorithm,
+        hex(&report.input_digest),
+        hex(&report.canonical_digest),
+        report.canonical_octets,
+        report.inventory_node_count,
+        report.raw_level_u8,
     )
 }
 
@@ -337,19 +379,44 @@ fn reject_noncanonical_encoding(canonical: &[u8], wire: &[u8]) -> Result<(), Err
 ///
 /// Any decoder, digest, or bound failure is returned unchanged. A byte sequence
 /// that decodes but does not re-encode identically is rejected as non-canonical.
-pub fn verify_player_snapshot_replay_v1(wire: &[u8]) -> Result<ReplayVerificationV1, Error> {
+fn verify_player_snapshot_replay(
+    wire: &[u8],
+) -> Result<(PlayerSnapshotV1, ReplayVerificationV1), Error> {
     let input_digest = super::sha256(wire);
     let snapshot = decode_player_snapshot_v1(wire)?;
     let canonical = encode_player_snapshot_v1(&snapshot)?;
+    let inventory_node_count = snapshot.inventory.nodes.len();
     reject_noncanonical_encoding(&canonical, wire)?;
 
-    Ok(ReplayVerificationV1 {
-        algorithm: REPLAY_VERIFICATION_V1_ALGORITHM,
-        version: REPLAY_VERIFICATION_V1_VERSION,
-        input_digest,
-        canonical_digest: super::sha256(&canonical),
-        canonical_octets: canonical.len(),
-        inventory_node_count: snapshot.inventory.nodes.len(),
+    Ok((
+        snapshot,
+        ReplayVerificationV1 {
+            algorithm: REPLAY_VERIFICATION_V1_ALGORITHM,
+            version: REPLAY_VERIFICATION_V1_VERSION,
+            input_digest,
+            canonical_digest: super::sha256(&canonical),
+            canonical_octets: canonical.len(),
+            inventory_node_count,
+        },
+    ))
+}
+
+pub fn verify_player_snapshot_replay_v1(wire: &[u8]) -> Result<ReplayVerificationV1, Error> {
+    verify_player_snapshot_replay(wire).map(|(_, report)| report)
+}
+
+/// Verifies once and preserves field 7 as its exact serialized raw U8 for a
+/// closed metadata consumer. No legacy file or second payload read is involved.
+pub fn verify_player_snapshot_replay_v2(wire: &[u8]) -> Result<ReplayVerificationV2, Error> {
+    let (snapshot, report) = verify_player_snapshot_replay(wire)?;
+    Ok(ReplayVerificationV2 {
+        algorithm: REPLAY_VERIFICATION_V2_ALGORITHM,
+        version: REPLAY_VERIFICATION_V2_VERSION,
+        input_digest: report.input_digest,
+        canonical_digest: report.canonical_digest,
+        canonical_octets: report.canonical_octets,
+        inventory_node_count: report.inventory_node_count,
+        raw_level_u8: snapshot.level,
     })
 }
 
