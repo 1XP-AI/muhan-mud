@@ -59,6 +59,7 @@ typedef struct mock {
     uint64_t        v3_head_revision;
     char            v3_head_sha256[65];
     int             v3_change_on_second, v3_change_route_after_prepared,
+                    v3_change_identity_on_second,
                     v3_change_identity_after_prepared, v3_identity_changed;
     int             v4_resolver_result, v4_generate_result, v4_resolver_calls,
                     v4_generate_calls, v4_reject_candidate;
@@ -321,6 +322,10 @@ character_save_journal_v2_route_reply_v3 *reply;
     if(state->v3_change_on_second&&state->route_calls==2) {
         state->v3_head_revision++;
         state->v3_change_on_second=0;
+    }
+    if(state->v3_change_identity_on_second&&state->route_calls==2) {
+        state->v3_identity_changed=1;
+        state->v3_change_identity_on_second=0;
     }
     memset(reply,0,sizeof(*reply));
     reply->status=CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
@@ -1633,7 +1638,30 @@ static int test_held_v4_resolver_and_live_revalidation(void)
         command_exists(root,COMMAND_A,"prepared")&&
         command_exists(root,COMMAND_A,"published")&&
         command_exists(root,COMMAND_A,"acked"),
-        "v4 FOUND must select its candidate before v3 staging and live publish revalidation");
+        "v4 FOUND must retain its candidate through a same-character stage bind and live publish revalidation");
+    if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
+       setup(root,"held-v4-inter-bind-identity-change")||
+       character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;
+
+    memset(&state,0,sizeof(state));
+    state.payload=(const unsigned char *)"v4-inter-bind-identity-change";
+    state.payload_length=strlen((const char *)state.payload);
+    state.v3_head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_ABSENT;
+    state.receipt_result=CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED;
+    state.v4_resolver_result=1;
+    state.v3_change_identity_on_second=1;
+    operations_v4_init(&operations,&state);
+    held_request_v3_init(&request,COMMAND_A);
+    failed+=expect(character_save_journal_v2_protocol_save_held_v4(&writer,
+        &request,&operations,&report)==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE&&
+        state.v4_resolver_calls==1&&!state.v4_generate_calls&&state.route_calls==2&&
+        !state.serialize_calls&&
+        !exists(root,"character-save-stage/10000000-0000-0000-0000-000000000001.stage")&&
+        !command_exists(root,COMMAND_A,"prepared")&&
+        !command_exists(root,COMMAND_A,"published")&&
+        !command_exists(root,COMMAND_A,"acked")&&
+        !exists(root,"player/66/M3alpha")&&!state.receipt_calls,
+        "v4 FOUND must reject a character change between candidate and stage binds without mutation");
     if(character_save_journal_v2_writer_close(&writer)||remove_tree(root)||
        setup(root,"held-v4-none")||
        character_save_journal_v2_writer_open(root,WORLD,&writer)) return failed+1;

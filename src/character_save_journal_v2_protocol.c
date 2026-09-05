@@ -29,6 +29,16 @@ typedef struct protocol_receipt_guard {
     character_save_journal_v2_protocol_report *report;
 } protocol_receipt_guard;
 
+/* v4 must reject a FOUND candidate if v3's distinct stage binding resolves
+ * the same legacy name to another character.  This guard forwards that live
+ * callback exactly once; publish retains its separate uncached revalidation. */
+typedef struct protocol_v4_stage_route_guard {
+    character_save_journal_v2_route_lookup_v3 lookup;
+    void *lookup_opaque;
+    char candidate_character_id[CHARACTER_SAVE_JOURNAL_V2_WRITER_UUID_LEN + 1];
+    int check_next_route;
+} protocol_v4_stage_route_guard;
+
 static uint32_t protocol_rotr(value, shift)
 uint32_t value;
 unsigned int shift;
@@ -271,6 +281,29 @@ const character_save_journal_v2_receipt *receipt;
     return guard->receipt(guard->receipt_opaque, receipt);
 }
 
+static character_save_journal_v2_route_lookup_result
+protocol_v4_stage_route_lookup(opaque, world, name, name_length, reply)
+void *opaque;
+const char *world;
+const unsigned char *name;
+size_t name_length;
+character_save_journal_v2_route_reply_v3 *reply;
+{
+    protocol_v4_stage_route_guard *guard=opaque;
+    character_save_journal_v2_route_lookup_result result;
+    if(!guard||!guard->lookup)
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    result=guard->lookup(guard->lookup_opaque,world,name,name_length,reply);
+    if(guard->check_next_route) {
+        guard->check_next_route=0;
+        if(result!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK||!reply||
+           memcmp(reply->character_id,guard->candidate_character_id,
+                  sizeof(reply->character_id)))
+            return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    }
+    return result;
+}
+
 character_save_journal_v2_protocol_result
 character_save_journal_v2_protocol_save_held_v3(writer, request, operations,
                                                  report_out)
@@ -442,6 +475,7 @@ character_save_journal_v2_protocol_report *report_out;
     character_save_journal_v2_protocol_candidate_v4 candidate;
     character_save_journal_v2_protocol_held_request_v3 selected_request;
     character_save_journal_v2_protocol_operations_v3 selected_operations;
+    protocol_v4_stage_route_guard stage_route_guard;
     char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
     int candidate_result;
 
@@ -454,6 +488,7 @@ character_save_journal_v2_protocol_report *report_out;
     memset(&tuple, 0, sizeof(tuple));
     memset(&route, 0, sizeof(route));
     memset(&candidate, 0, sizeof(candidate));
+    memset(&stage_route_guard,0,sizeof(stage_route_guard));
     if(character_save_journal_v2_writer_validate_held(writer, &tuple) !=
        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
         return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_WRITER;
@@ -488,6 +523,12 @@ character_save_journal_v2_protocol_report *report_out;
                   request->canonical_legacy_name_length))
             return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;
         snprintf(command_uuid, sizeof(command_uuid), "%s", candidate.command_uuid);
+        stage_route_guard.lookup=operations->route_lookup;
+        stage_route_guard.lookup_opaque=operations->route_opaque;
+        snprintf(stage_route_guard.candidate_character_id,
+                 sizeof(stage_route_guard.candidate_character_id),"%s",
+                 candidate.character_id);
+        stage_route_guard.check_next_route=1;
     }
 
     /* The initial binding authenticates the resolver's input only.  v3 must
@@ -498,8 +539,10 @@ character_save_journal_v2_protocol_report *report_out;
     selected_request.canonical_legacy_name_length = request->canonical_legacy_name_length;
     selected_request.command_uuid = command_uuid;
     memset(&selected_operations, 0, sizeof(selected_operations));
-    selected_operations.route_lookup = operations->route_lookup;
-    selected_operations.route_opaque = operations->route_opaque;
+    selected_operations.route_lookup = candidate_result == 1 ?
+        protocol_v4_stage_route_lookup : operations->route_lookup;
+    selected_operations.route_opaque = candidate_result == 1 ?
+        &stage_route_guard : operations->route_opaque;
     selected_operations.serialize = operations->serialize;
     selected_operations.serialize_opaque = operations->serialize_opaque;
     selected_operations.receipt = operations->receipt;

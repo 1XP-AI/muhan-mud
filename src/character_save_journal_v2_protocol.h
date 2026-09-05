@@ -105,8 +105,9 @@ typedef struct character_save_journal_v2_protocol_held_request_v3 {
 
 /* v4 is an opt-in resolver seam.  The resolver receives the initially bound
  * route and held writer and may return a candidate; the echoed fields make
- * the candidate self-authenticating at this boundary.  That initial binding
- * never replaces v3's live route revalidation before publish. */
+ * the candidate self-authenticating at this boundary.  A FOUND candidate is
+ * also matched to v3's separate live stage binding; neither lookup replaces
+ * v3's uncached live route revalidation before publish. */
 typedef struct character_save_journal_v2_protocol_candidate_v4 {
     char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1];
     character_save_journal_v2_writer_tuple writer;
