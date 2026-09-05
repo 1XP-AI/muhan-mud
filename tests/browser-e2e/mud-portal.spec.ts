@@ -12,6 +12,20 @@ type FakeSocketHandle = {
   url: string;
 };
 
+type MockRosterCharacter = {
+  id: string;
+  world_id: string;
+  legacy_name: string;
+  lifecycle: "active";
+};
+
+type BrowserBoundaryState = {
+  roster: MockRosterCharacter[];
+  rosterRequests: number;
+};
+
+const browserBoundaryStates = new WeakMap<Page, BrowserBoundaryState>();
+
 declare global {
   interface Window {
     __muhanFakeSockets?: FakeSocketHandle[];
@@ -19,6 +33,9 @@ declare global {
 }
 
 async function installBoundaries(page: Page): Promise<void> {
+  const state: BrowserBoundaryState = { roster: [], rosterRequests: 0 };
+  browserBoundaryStates.set(page, state);
+
   await page.route("**/auth/v1/token**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -57,10 +74,11 @@ async function installBoundaries(page: Page): Promise<void> {
   });
 
   await page.route("**/rest/v1/game_characters**", async (route) => {
+    state.rosterRequests += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: "[]",
+      body: JSON.stringify(state.roster),
     });
   });
 
@@ -129,6 +147,9 @@ async function installBoundaries(page: Page): Promise<void> {
           const control = frame as { type?: string; mode?: string };
           if (control.type === "onboarding-auth") {
             queueMicrotask(() => this.emitMessage(JSON.stringify({ type: "onboarding-ready" })));
+          }
+          if (control.type === "auth") {
+            queueMicrotask(() => this.emitMessage(JSON.stringify({ type: "ready" })));
           }
           return;
         }
@@ -204,6 +225,50 @@ async function emitOnboardingControl(
   }, control);
 }
 
+function setMockActiveRoster(page: Page, character: MockRosterCharacter): void {
+  const state = browserBoundaryStates.get(page);
+  if (!state) throw new Error("mocked browser boundaries were not installed");
+  state.roster = [character];
+}
+
+async function completeOnboardingToActiveRoster(
+  page: Page,
+  completion: "provisioned" | "claimed",
+  character: MockRosterCharacter,
+): Promise<void> {
+  const state = browserBoundaryStates.get(page);
+  if (!state) throw new Error("mocked browser boundaries were not installed");
+
+  const requestsBeforeCompletion = state.rosterRequests;
+  setMockActiveRoster(page, character);
+  await emitOnboardingControl(page, { type: completion, characterId: character.id });
+
+  await expect.poll(() => state.rosterRequests).toBeGreaterThan(requestsBeforeCompletion);
+  await expect(page.getByRole("heading", { name: "입장할 캐릭터를 고르세요" })).toBeVisible();
+  await expect(page.getByText(character.legacy_name, { exact: true })).toBeVisible();
+}
+
+async function enterActiveCharacterAndAssertGatewayAdmission(
+  page: Page,
+  character: MockRosterCharacter,
+): Promise<void> {
+  await page.locator('input[name="mud-character"]').check();
+  await page.getByRole("button", { name: "게임 입장" }).click();
+  await expect(page.locator(".selected-character-bar strong")).toHaveText(character.legacy_name);
+  await expect(page.getByText("무한대전 세계와 연결됐습니다.")).toBeVisible();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const sockets = window.__muhanFakeSockets?.filter(
+      (entry) => entry.url.includes("gateway.local") && !entry.url.includes("/onboarding"),
+    ) ?? [];
+    return sockets[sockets.length - 1]?.messages.map((message) => JSON.parse(message)) ?? [];
+  })).toContainEqual({
+    type: "auth",
+    accessToken: ACCESS_TOKEN,
+    characterId: character.id,
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await installBoundaries(page);
 });
@@ -215,6 +280,44 @@ test("signed-in empty roster shows provision and claim actions", async ({ page }
   await expect(page.getByRole("button", { name: "기존 캐릭터 연결" })).toBeVisible();
   await expect(page.getByText("게임 비밀번호는 웹 계정 비밀번호와 다른 값을 사용하세요.")).toBeVisible();
 });
+
+for (const completedFlow of [
+  {
+    mode: "provision" as const,
+    completion: "provisioned" as const,
+    character: {
+      id: "33333333-3333-4333-8333-333333333333",
+      world_id: "muhan-01",
+      legacy_name: "ProvisionHero",
+      lifecycle: "active" as const,
+    },
+  },
+  {
+    mode: "claim" as const,
+    completion: "claimed" as const,
+    character: {
+      id: "44444444-4444-4444-8444-444444444444",
+      world_id: "muhan-01",
+      legacy_name: "ClaimHero",
+      lifecycle: "active" as const,
+    },
+  },
+]) {
+  test(`completed ${completedFlow.mode} refreshes to an active roster and permits normal game admission`, async ({ page }) => {
+    await signInToEmptyRoster(page);
+    await page.getByRole("button", {
+      name: completedFlow.mode === "provision" ? "새 캐릭터 만들기" : "기존 캐릭터 연결",
+    }).click();
+    await waitForOnboardingSocket(page, completedFlow.mode);
+
+    await completeOnboardingToActiveRoster(
+      page,
+      completedFlow.completion,
+      completedFlow.character,
+    );
+    await enterActiveCharacterAndAssertGatewayAdmission(page, completedFlow.character);
+  });
+}
 
 test("provision mounts real xterm and sends typed and pasted input as exact onboarding bytes", async ({ page }) => {
   await signInToEmptyRoster(page);
