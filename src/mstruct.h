@@ -8,6 +8,7 @@
  */
 
 #include "mtype.h"
+#include "onboarding_activation_save_capability.h"
 
 typedef struct obj_tag {		/* Object list tags */
 	struct obj_tag 	*next_tag;
@@ -89,6 +90,9 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		onboarding_mode;
 	char		onboarding_state;
 	char		onboarding_world_staged;
+	/* A non-serialized, one-shot handoff proof captured only after an accepted
+	 * ACTIVATED.  It belongs to this descriptor and disappears on disconnect. */
+	onboarding_activation_save_capability onboarding_activation_save;
 	/* Claim-only, in-memory evidence. It is never serialized and is cleared
 	 * immediately after VERIFIED or any fail-closed exit. */
 	char		onboarding_claim_sha256[65];

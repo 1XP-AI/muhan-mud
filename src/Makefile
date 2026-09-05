@@ -55,7 +55,7 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o command
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
 	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
-	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_activation_binding.o onboarding_recovery.o \
+	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_activation_binding.o onboarding_activation_save_capability.o onboarding_recovery.o \
 	  legacy_identity_evidence.o legacy_identity_evidence_wire.o onboarding_evidence_control.o onboarding_evidence_emission.o
 
 M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_v2_runtime_native.o \
@@ -226,6 +226,18 @@ onboarding-activation-binding-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_binding_test.c onboarding_activation_binding.c resource_path.c -o /tmp/muhan-unit/onboarding_activation_binding_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_binding_sanitizer_test
+
+onboarding-activation-save-capability-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_capability_test.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_capability_test
+	/tmp/muhan-unit/onboarding_activation_save_capability_test
+	python3 ../tests/unit/onboarding_activation_save_capability_static_test.py
+
+onboarding-activation-save-capability-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_save_capability_test.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_capability_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_capability_sanitizer_test
+	python3 ../tests/unit/onboarding_activation_save_capability_static_test.py
 
 # Local-only command reservation seam.  This deliberately stays out of both
 # OBJECTS and M3_RUNTIME_OBJECTS until a separate runtime wiring slice exists.

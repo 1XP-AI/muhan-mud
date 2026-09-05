@@ -16,6 +16,7 @@
 #include "trusted_admission.h"
 #include "onboarding_admission.h"
 #include "onboarding_activation_binding.h"
+#include "onboarding_activation_save_capability.h"
 #include "onboarding_evidence_control.h"
 #include "onboarding_evidence_emission.h"
 #include "onboarding_receipt.h"
@@ -99,6 +100,9 @@ int fd;
 		Ply[fd].ply->fd = -1;
 	if(fd >= 0 && fd < PMAX && Ply[fd].extr)
 		Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_FAILED;
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr)
+		onboarding_activation_save_capability_clear(
+			&Ply[fd].extr->onboarding_activation_save);
 	if(fd >= 0 && fd < PMAX && Ply[fd].extr &&
 	   Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM)
 	{
@@ -201,6 +205,31 @@ const char *command_id;
 		Ply[fd].extr->onboarding_actor_id,
 		Ply[fd].extr->onboarding_correlation_id,
 		Ply[fd].extr->onboarding_character_id, mode, command_id);
+}
+
+/* The later save integration must consume this descriptor-owned object by the
+ * same command UUID; this call neither selects a saver nor invokes one. */
+static int onboarding_capture_activation_save_capability(fd, command_id,
+							 canonical_name)
+int fd;
+const char *command_id;
+const char *canonical_name;
+{
+	onboarding_activation_binding_mode mode;
+	onboarding_activation_save_capability_status result;
+	if(!onboarding_fd_active(fd) || !command_id || !canonical_name) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	result = onboarding_activation_save_capability_capture(
+		&Ply[fd].extr->onboarding_activation_save,
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, command_id, canonical_name);
+	return result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK ||
+		result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED ? 0:-1;
 }
 
 static int onboarding_send_active(fd, command_id)
@@ -744,7 +773,9 @@ unsigned char *str;
 		   onboarding_apply_control(fd, &control, 1) != 0 ||
 		   !Ply[fd].ply || !Ply[fd].extr->onboarding_world_staged ||
 		   Ply[fd].ply->parent_rom ||
-		   onboarding_write_activation_binding(fd, control.command_id) != 0) {
+		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
+		   onboarding_capture_activation_save_capability(fd, control.command_id,
+			   Ply[fd].ply->name) != 0) {
 			onboarding_fail(fd);
 			return;
 		}
@@ -907,6 +938,9 @@ unsigned char *str;
 		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
 		   onboarding_apply_control(fd, &control, 1) != 0 ||
 		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
+		   !Ply[fd].ply ||
+		   onboarding_capture_activation_save_capability(fd, control.command_id,
+			   Ply[fd].ply->name) != 0 ||
 		   onboarding_send_active(fd, control.command_id) != 0) {
 			onboarding_fail(fd);
 			return;
