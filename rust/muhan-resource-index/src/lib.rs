@@ -184,10 +184,11 @@ pub fn project_legacy_player_shadow(
     }
     let mut cursor = Cursor::new(input);
     let player = cursor.take(abi.creature_bytes)?;
-    let canonical_name = read_text(player, abi.player_name_offset, abi.player_name_bytes)?;
-    if canonical_name.is_empty() || canonical_name.contains('/') || canonical_name.contains('\\') {
+    let raw_name = read_text(player, abi.player_name_offset, abi.player_name_bytes)?;
+    if raw_name.is_empty() || raw_name.contains('/') || raw_name.contains('\\') {
         return Err(error(LegacyProjectionErrorKind::InvalidText));
     }
+    let canonical_name = canonical_legacy_name(raw_name);
     let root_count = cursor.read_count(limits.max_root_items, abi.byte_order)?;
     let mut total_items = 0usize;
     let mut inventory = Vec::with_capacity(root_count);
@@ -213,6 +214,24 @@ pub fn project_legacy_player_shadow(
         mp_current: read_scalar(player, abi.player_mp_current, abi.byte_order)?,
         inventory,
     })
+}
+
+/// Match `scripts/export-player-inventory.py:canonical_name_key`: fold ASCII
+/// upper-case bytes, then capitalize the first byte only when it is ASCII.
+fn canonical_legacy_name(raw_name: String) -> String {
+    let mut bytes = raw_name.into_bytes();
+    for byte in &mut bytes {
+        if byte.is_ascii_uppercase() {
+            *byte = byte.to_ascii_lowercase();
+        }
+    }
+    if let Some(first) = bytes.first_mut() {
+        if first.is_ascii_lowercase() {
+            *first = first.to_ascii_uppercase();
+        }
+    }
+    // ASCII-only changes preserve valid UTF-8.
+    String::from_utf8(bytes).expect("ASCII case folding preserves UTF-8")
 }
 
 fn read_item(
@@ -659,6 +678,23 @@ mod tests {
         assert_eq!(first.shard, "35");
         assert_eq!(first.relative_source_path, "player/35/Alice");
         assert!(first.inventory.is_empty());
+    }
+
+    #[test]
+    fn legacy_player_mixed_case_fixture_canonicalizes_before_dto_path_and_shard() {
+        let temp = tempfile::tempdir().unwrap();
+        let oracle = compiled_oracle(&temp);
+        let (bytes, c_line) = fixture(&oracle, temp.path(), "mixed-case");
+
+        let player =
+            project_legacy_player_shadow(&bytes, &fixture_abi(), LegacyProjectionLimits::default())
+                .unwrap();
+
+        assert_eq!(player.oracle_line(), c_line);
+        assert_eq!(player.canonical_name, "Alice");
+        assert_eq!(player.name_sha1, "35318264c9a98faf79965c270ac80c5606774df1");
+        assert_eq!(player.shard, "35");
+        assert_eq!(player.relative_source_path, "player/35/Alice");
     }
 
     #[test]

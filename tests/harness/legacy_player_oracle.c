@@ -4,6 +4,7 @@
  * child_count records.  This does not decode arbitrary production saves.
  */
 #include <stddef.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +17,15 @@
 #define MAX_DEPTH 64
 
 #define STATIC_ASSERT(name, condition) typedef char static_assert_##name[(condition) ? 1 : -1]
+STATIC_ASSERT(byte_is_eight_bits, CHAR_BIT == 8);
+STATIC_ASSERT(char_is_one_byte, sizeof(char) == 1);
+STATIC_ASSERT(char_is_signed, CHAR_MIN < 0);
+STATIC_ASSERT(short_is_two_bytes, sizeof(short) == 2);
+STATIC_ASSERT(short_is_signed, SHRT_MIN < 0);
 STATIC_ASSERT(int_is_four_bytes, sizeof(int) == 4);
+STATIC_ASSERT(int_is_signed, INT_MIN < 0);
+STATIC_ASSERT(long_is_eight_bytes, sizeof(long) == 8);
+STATIC_ASSERT(long_is_signed, LONG_MIN < 0);
 STATIC_ASSERT(creature_size, sizeof(creature) == 1952);
 STATIC_ASSERT(object_size, sizeof(object) == 376);
 STATIC_ASSERT(creature_name, offsetof(creature, name) == 0);
@@ -26,6 +35,12 @@ STATIC_ASSERT(creature_hpmax, offsetof(creature, hpmax) == 332);
 STATIC_ASSERT(creature_hpcur, offsetof(creature, hpcur) == 334);
 STATIC_ASSERT(creature_mpmax, offsetof(creature, mpmax) == 336);
 STATIC_ASSERT(creature_mpcur, offsetof(creature, mpcur) == 338);
+STATIC_ASSERT(creature_level_width, sizeof(((creature *)0)->level) == 1);
+STATIC_ASSERT(creature_gold_width, sizeof(((creature *)0)->gold) == 8);
+STATIC_ASSERT(creature_hpmax_width, sizeof(((creature *)0)->hpmax) == 2);
+STATIC_ASSERT(creature_hpcur_width, sizeof(((creature *)0)->hpcur) == 2);
+STATIC_ASSERT(creature_mpmax_width, sizeof(((creature *)0)->mpmax) == 2);
+STATIC_ASSERT(creature_mpcur_width, sizeof(((creature *)0)->mpcur) == 2);
 STATIC_ASSERT(object_name, offsetof(object, name) == 0);
 STATIC_ASSERT(object_description, offsetof(object, description) == 80);
 STATIC_ASSERT(object_value, offsetof(object, value) == 304);
@@ -33,6 +48,11 @@ STATIC_ASSERT(object_weight, offsetof(object, weight) == 312);
 STATIC_ASSERT(object_type, offsetof(object, type) == 314);
 STATIC_ASSERT(object_shotsmax, offsetof(object, shotsmax) == 316);
 STATIC_ASSERT(object_shotscur, offsetof(object, shotscur) == 318);
+STATIC_ASSERT(object_value_width, sizeof(((object *)0)->value) == 8);
+STATIC_ASSERT(object_weight_width, sizeof(((object *)0)->weight) == 2);
+STATIC_ASSERT(object_type_width, sizeof(((object *)0)->type) == 1);
+STATIC_ASSERT(object_shotsmax_width, sizeof(((object *)0)->shotsmax) == 2);
+STATIC_ASSERT(object_shotscur_width, sizeof(((object *)0)->shotscur) == 2);
 
 typedef struct item_node {
     object value;
@@ -76,6 +96,22 @@ static void set_item(object *item, const char *name, const char *description,
     item->shotscur = shotscur;
 }
 
+/* Match scripts/export-player-inventory.py:canonical_name_key exactly. */
+static void canonical_name(const char *raw, char output[sizeof(((creature *)0)->name)])
+{
+    size_t index;
+
+    for (index = 0; raw[index] != '\0' && index + 1 < sizeof(((creature *)0)->name); index++) {
+        unsigned char byte = (unsigned char)raw[index];
+        if (byte >= 'A' && byte <= 'Z')
+            byte = (unsigned char)(byte + ('a' - 'A'));
+        output[index] = (char)byte;
+    }
+    output[index] = '\0';
+    if (output[0] >= 'a' && output[0] <= 'z')
+        output[0] = (char)(output[0] - ('a' - 'A'));
+}
+
 static int emit_fixture(const char *fixture, const char *path)
 {
     FILE *file;
@@ -83,11 +119,14 @@ static int emit_fixture(const char *fixture, const char *path)
     object outer;
     object inner;
     int count;
+    const char *name;
 
     file = fopen(path, "wb");
     if (!file)
         return -1;
-    set_player(&player, strcmp(fixture, "nested") == 0 ? "Beatrice" : "Alice");
+    name = strcmp(fixture, "nested") == 0 ? "Beatrice" :
+           strcmp(fixture, "mixed-case") == 0 ? "aLiCe" : "Alice";
+    set_player(&player, name);
 
     if (strcmp(fixture, "truncated") == 0) {
         if (write_exact(file, &player, 64) < 0) {
@@ -101,7 +140,7 @@ static int emit_fixture(const char *fixture, const char *path)
             fclose(file);
             return -1;
         }
-    } else if (strcmp(fixture, "empty") == 0) {
+    } else if (strcmp(fixture, "empty") == 0 || strcmp(fixture, "mixed-case") == 0) {
         count = 0;
         if (write_exact(file, &player, sizeof(player)) < 0 ||
             write_exact(file, &count, sizeof(count)) < 0) {
@@ -280,6 +319,7 @@ static int project_fixture(const char *path)
     item_node **items = 0;
     const char *failure = 0;
     unsigned char digest[20];
+    char player_name[sizeof(player.name)];
 
     file = fopen(path, "rb");
     if (!file || read_exact(file, &player, sizeof(player)) < 0) {
@@ -292,6 +332,7 @@ static int project_fixture(const char *path)
         puts("ERR|invalid-text");
         return 0;
     }
+    canonical_name(player.name, player_name);
     if (read_exact(file, &count, sizeof(count)) < 0) {
         fclose(file);
         puts("ERR|truncated");
@@ -328,11 +369,11 @@ static int project_fixture(const char *path)
         return 0;
     }
     fclose(file);
-    sha1_digest((const unsigned char *)player.name, (unsigned long)strlen(player.name), digest);
-    printf("OK|name=%s|sha1=", player.name);
+    sha1_digest((const unsigned char *)player_name, (unsigned long)strlen(player_name), digest);
+    printf("OK|name=%s|sha1=", player_name);
     for (index = 0; index < 20; index++) printf("%02x", digest[index]);
     printf("|shard=%02x|source=player/%02x/%s|level=%d|gold=%ld|hp=%d/%d|mp=%d/%d|items=",
-           digest[0], digest[0], player.name, (int)player.level, player.gold,
+           digest[0], digest[0], player_name, (int)player.level, player.gold,
            (int)player.hpcur, (int)player.hpmax, (int)player.mpcur, (int)player.mpmax);
     print_items((const item_node *const *)items, count);
     putchar('\n');
@@ -352,6 +393,6 @@ int main(int argc, char **argv)
         return emit_fixture(argv[2], argv[3]) == 0 ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "project") == 0)
         return project_fixture(argv[2]);
-    fprintf(stderr, "usage: %s emit <empty|nested|truncated|invalid-count> <path> | project <path>\n", argv[0]);
+    fprintf(stderr, "usage: %s emit <empty|mixed-case|nested|truncated|invalid-count> <path> | project <path>\n", argv[0]);
     return 2;
 }
