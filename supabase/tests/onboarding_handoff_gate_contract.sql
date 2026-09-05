@@ -1,11 +1,13 @@
 \set ON_ERROR_STOP on
 
--- Run after migrations through 20260922100000 against a disposable Supabase
+-- Run after migrations through 20260923000000 against a disposable Supabase
 -- database.  Fixtures roll back; this is also a replay-safe catalog contract.
 
--- The migration pair must be safe when a CI/job replay reaches this contract.
+-- The handoff and eligibility migrations must be safe when a CI/job replay
+-- reaches this contract.
 \ir ../migrations/20260922000000_onboarding_handoff_lifecycle.sql
 \ir ../migrations/20260922100000_onboarding_handoff_gate.sql
+\ir ../migrations/20260923000000_onboarding_snapshot_eligibility_outbox.sql
 
 begin;
 

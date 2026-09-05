@@ -8,6 +8,8 @@ const RECEIPT_MAX_BYTES = 640
 const PLAYER_FILE_MAX_BYTES = 64 * 1024 * 1024
 const RPC_RESPONSE_MAX_BYTES = 16 * 1024
 const RPC_PATH = '/rpc/reconcile_game_character_provisioning'
+const EVIDENCE_FINALIZER_RPC_PATH = '/rpc/finalize_game_character_legacy_identity_evidence'
+const HANDOFF_ACTIVATION_RPC_PATH = '/rpc/activate_game_character_onboarding_handoff'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 const HEX_RE = /^[0-9a-f]+$/
@@ -64,6 +66,8 @@ export interface ReconcilerOptions {
   rpcRequestTimeoutMs?: number
   maxReceiptBytes?: number
   maxPlayerFileBytes?: number
+  /** Disabled by default: a saved receipt otherwise keeps reconcile-only behavior. */
+  recoverSavedReceiptHandoffs?: boolean
 }
 
 export type ObservationOutcome = 'pending' | 'reconciled' | 'committed' | 'rejected' | 'retry_exhausted'
@@ -107,6 +111,13 @@ interface Receipt {
 interface EntryResult {
   observation: Observation
   successfulFingerprint?: string
+}
+
+type HandoffMode = 'provision' | 'claim'
+
+interface EvidenceFinalizerResult {
+  mode: HandoffMode
+  lifecycle: 'handoff_pending' | 'active'
 }
 
 class UnsafeFilesystemError extends Error {}
@@ -397,17 +408,46 @@ function isTransientStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
 }
 
-function matchesRpcResponse(value: unknown, receipt: Receipt): boolean {
-  if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== 'object' || Array.isArray(value[0])) return false
+function oneExactObject(value: unknown, keys: readonly string[]): Record<string, unknown> | undefined {
+  if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== 'object' || Array.isArray(value[0]) || Object.getPrototypeOf(value[0]) !== Object.prototype) return undefined
   const row = value[0] as Record<string, unknown>
+  const actualKeys = Reflect.ownKeys(row)
+  if (actualKeys.length !== keys.length || actualKeys.some((key) => typeof key !== 'string' || !keys.includes(key)) ||
+      Object.values(Object.getOwnPropertyDescriptors(row)).some((descriptor) => !('value' in descriptor))) return undefined
+  return row
+}
+
+function matchesRpcResponse(value: unknown, receipt: Receipt): boolean {
   const requiredColumns = ['actor_user_id', 'character_id', 'lifecycle', 'saved_file_sha256', 'status', 'storage_format']
-  if (Object.keys(row).length !== requiredColumns.length || requiredColumns.some((column) => !Object.hasOwn(row, column))) return false
+  const row = oneExactObject(value, requiredColumns)
+  if (!row) return false
   return row.character_id === receipt.characterUuid
     && row.actor_user_id === receipt.actorUuid
-    && row.lifecycle === 'active'
+    && row.lifecycle === 'handoff_pending'
     && row.status === 'finalized'
     && row.saved_file_sha256 === receipt.savedFileSha256
     && row.storage_format === 1
+}
+
+function matchesEvidenceFinalizerResponse(value: unknown, receipt: Receipt, name: string, shard: string): EvidenceFinalizerResult | undefined {
+  const requiredColumns = [
+    'character_id', 'actor_user_id', 'mode', 'lifecycle', 'world_id', 'canonical_legacy_name', 'legacy_shard',
+    'player_file_sha256', 'evidence_version', 'storage_format', 'recorded_at',
+  ]
+  const row = oneExactObject(value, requiredColumns)
+  if (!row || row.character_id !== receipt.characterUuid || row.actor_user_id !== receipt.actorUuid ||
+      (row.mode !== 'provision' && row.mode !== 'claim') || (row.lifecycle !== 'handoff_pending' && row.lifecycle !== 'active') ||
+      typeof row.world_id !== 'string' || row.world_id.length < 1 || row.world_id.length > 64 || /[\x00-\x1f\x7f]/.test(row.world_id) ||
+      row.canonical_legacy_name !== name || row.legacy_shard !== shard || row.player_file_sha256 !== receipt.savedFileSha256 ||
+      row.evidence_version !== 1 || row.storage_format !== 'player-v1' || typeof row.recorded_at !== 'string' || !Number.isFinite(Date.parse(row.recorded_at))) return undefined
+  return { mode: row.mode, lifecycle: row.lifecycle }
+}
+
+function matchesHandoffActivationResponse(value: unknown, receipt: Receipt): boolean {
+  const requiredColumns = ['character_id', 'actor_user_id', 'correlation_id', 'lifecycle', 'onboarding_status']
+  const row = oneExactObject(value, requiredColumns)
+  return !!row && row.character_id === receipt.characterUuid && row.actor_user_id === receipt.actorUuid &&
+    row.correlation_id === receipt.correlationUuid && row.lifecycle === 'active' && row.onboarding_status === 'finalized'
 }
 
 async function parseRpcResponse(response: Response): Promise<unknown> {
@@ -449,6 +489,7 @@ export class OnboardingReconciler {
   private readonly rpcRequestTimeoutMs: number
   private readonly maxReceiptBytes: number
   private readonly maxPlayerFileBytes: number
+  private readonly recoverSavedReceiptHandoffs: boolean
   // Kept only for the receipt files observed in the immediately preceding
   // successful scan. It suppresses duplicate idempotent RPCs, never validation.
   private successfulSavedReceipts = new Map<string, string>()
@@ -466,6 +507,8 @@ export class OnboardingReconciler {
     this.rpcRequestTimeoutMs = requireBoundedInteger(options.rpcRequestTimeoutMs, 10_000, 1, 60_000)
     this.maxReceiptBytes = requireBoundedInteger(options.maxReceiptBytes, RECEIPT_MAX_BYTES, 1, RECEIPT_MAX_BYTES)
     this.maxPlayerFileBytes = requireBoundedInteger(options.maxPlayerFileBytes, PLAYER_FILE_MAX_BYTES, 1, PLAYER_FILE_MAX_BYTES)
+    if (options.recoverSavedReceiptHandoffs !== undefined && typeof options.recoverSavedReceiptHandoffs !== 'boolean') throw new Error('reconciler configuration rejected')
+    this.recoverSavedReceiptHandoffs = options.recoverSavedReceiptHandoffs ?? false
   }
 
   async runOnce(): Promise<RunSummary> {
@@ -508,11 +551,12 @@ export class OnboardingReconciler {
     if (receipt.storageFormat !== 'player-v1') return { observation: { outcome: 'rejected', reason: 'unsupported_storage_format' } }
 
     let name: string
+    let shard: string
     let playerPath: string
     try {
       const decoded = decodeCanonicalName(receipt.canonicalNameHex)
       name = decoded.name
-      const shard = createHash('sha1').update(decoded.bytes).digest('hex').slice(0, 2)
+      shard = createHash('sha1').update(decoded.bytes).digest('hex').slice(0, 2)
       const playerRoot = childPath(this.home, 'player')
       const shardDirectory = childPath(playerRoot, shard)
       await this.fs.assertSafeDirectory(playerRoot)
@@ -539,7 +583,9 @@ export class OnboardingReconciler {
       playerFile.device, playerFile.inode, playerFile.byteLength, playerFile.modifiedAtMs, playerFile.changedAtMs, playerFile.sha256,
     ].join(':')
     if (cachedFingerprint === fingerprint) return { observation: { outcome: 'reconciled' }, successfulFingerprint: fingerprint }
-    const observation = await this.reconcileRpc(receipt)
+    const observation = this.recoverSavedReceiptHandoffs
+      ? await this.recoverSavedReceiptHandoffRpc(receipt, name, shard)
+      : await this.reconcileRpc(receipt)
     return observation.outcome === 'reconciled'
       ? { observation, successfulFingerprint: fingerprint }
       : { observation }
@@ -595,6 +641,80 @@ export class OnboardingReconciler {
       }
     }
     return { outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: this.rpcAttempts }
+  }
+
+  /**
+   * Opt-in recovery mirrors the post-save gateway boundary exactly: evidence
+   * finalization is one atomic DB transition, followed only by the activation
+   * tuple whose mode was returned by that finalizer. A retry repeats the
+   * complete ordered pair, never a legacy reconcile RPC and never a guessed mode.
+   */
+  private async recoverSavedReceiptHandoffRpc(receipt: Receipt, name: string, shard: string): Promise<Observation> {
+    const evidenceRequest = {
+      p_actor_user_id: receipt.actorUuid,
+      p_correlation_id: receipt.correlationUuid,
+      p_character_id: receipt.characterUuid,
+      p_outcome: 'ok',
+      p_canonical_legacy_name: name,
+      p_player_file_sha256: receipt.savedFileSha256,
+      p_evidence_version: 1,
+      p_storage_format: 'player-v1',
+      p_legacy_shard: shard,
+    }
+    for (let attempt = 1; attempt <= this.rpcAttempts; attempt++) {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), this.rpcRequestTimeoutMs)
+      try {
+        const evidenceResponse = await this.fetchImpl(new URL(EVIDENCE_FINALIZER_RPC_PATH, this.postgrestUrl), {
+          method: 'POST', headers: this.rpcHeaders(), body: JSON.stringify(evidenceRequest), redirect: 'error', signal: controller.signal,
+        })
+        if (!evidenceResponse.ok) {
+          if (isTransientStatus(evidenceResponse.status)) {
+            if (attempt < this.rpcAttempts) { await this.clock.sleep(this.retryDelayMs); continue }
+            return { outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: attempt }
+          }
+          return { outcome: 'rejected', reason: 'rpc_failure', attempts: attempt }
+        }
+        const finalized = matchesEvidenceFinalizerResponse(await parseRpcResponse(evidenceResponse), receipt, name, shard)
+        if (!finalized) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
+
+        const activationResponse = await this.fetchImpl(new URL(HANDOFF_ACTIVATION_RPC_PATH, this.postgrestUrl), {
+          method: 'POST', headers: this.rpcHeaders(),
+          body: JSON.stringify({
+            p_actor_user_id: receipt.actorUuid,
+            p_correlation_id: receipt.correlationUuid,
+            p_character_id: receipt.characterUuid,
+            p_mode: finalized.mode,
+          }),
+          redirect: 'error', signal: controller.signal,
+        })
+        if (!activationResponse.ok) {
+          if (isTransientStatus(activationResponse.status)) {
+            if (attempt < this.rpcAttempts) { await this.clock.sleep(this.retryDelayMs); continue }
+            return { outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: attempt }
+          }
+          return { outcome: 'rejected', reason: 'rpc_failure', attempts: attempt }
+        }
+        if (!matchesHandoffActivationResponse(await parseRpcResponse(activationResponse), receipt)) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
+        return { outcome: 'reconciled', attempts: attempt }
+      } catch (error) {
+        if (error instanceof InvalidRpcResponseError) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
+        if (attempt < this.rpcAttempts) { await this.clock.sleep(this.retryDelayMs); continue }
+        return { outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: attempt }
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+    return { outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: this.rpcAttempts }
+  }
+
+  private rpcHeaders(): Record<string, string> {
+    return {
+      authorization: `Bearer ${this.serviceRoleKey}`,
+      apikey: this.serviceRoleKey,
+      accept: 'application/json',
+      'content-type': 'application/json',
+    }
   }
 }
 

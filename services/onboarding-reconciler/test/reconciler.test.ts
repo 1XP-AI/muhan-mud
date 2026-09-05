@@ -39,10 +39,38 @@ function rpcResponse(overrides: Record<string, unknown> = {}): Response {
   return Response.json([{
     character_id: character,
     actor_user_id: actor,
-    lifecycle: 'active',
+    lifecycle: 'handoff_pending',
     status: 'finalized',
     saved_file_sha256: fileHash,
     storage_format: 1,
+    ...overrides,
+  }])
+}
+
+function evidenceFinalizerResponse(mode: 'provision' | 'claim', lifecycle: 'handoff_pending' | 'active', overrides: Record<string, unknown> = {}): Response {
+  return Response.json([{
+    character_id: character,
+    actor_user_id: actor,
+    mode,
+    lifecycle,
+    world_id: 'muhan',
+    canonical_legacy_name: 'Alice',
+    legacy_shard: createHash('sha1').update('Alice').digest('hex').slice(0, 2),
+    player_file_sha256: fileHash,
+    evidence_version: 1,
+    storage_format: 'player-v1',
+    recorded_at: '2026-09-05T00:00:00.000Z',
+    ...overrides,
+  }])
+}
+
+function activationResponse(overrides: Record<string, unknown> = {}): Response {
+  return Response.json([{
+    character_id: character,
+    actor_user_id: actor,
+    correlation_id: correlation,
+    lifecycle: 'active',
+    onboarding_status: 'finalized',
     ...overrides,
   }])
 }
@@ -140,6 +168,122 @@ test('saved reconciliation calls the exact service RPC once per exact receipt/pl
   })
   assert.equal(calls[0]?.url.pathname, '/rpc/reconcile_game_character_provisioning')
   assert.equal((calls[0]?.init?.headers as Record<string, string>).authorization, 'Bearer test-service-key')
+})
+
+test('opt-in saved-receipt recovery finalizes evidence before activation and forwards the returned mode across handoff retry states', async (t) => {
+  for (const mode of ['provision', 'claim'] as const) {
+    const data = await fixture()
+    t.after(data.cleanup)
+    const calls: Array<{ path: string, body: Record<string, unknown> }> = []
+    let finalizerAttempt = 0
+    let activationAttempt = 0
+    const result = await reconciler(data.home, async (url, init) => {
+      const path = new URL(url).pathname
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      calls.push({ path, body })
+      assert.notEqual(path, '/rpc/reconcile_game_character_provisioning', 'feature-on recovery must not reconcile before evidence')
+      if (path === '/rpc/finalize_game_character_legacy_identity_evidence') {
+        finalizerAttempt++
+        assert.deepEqual(body, {
+          p_actor_user_id: actor,
+          p_correlation_id: correlation,
+          p_character_id: character,
+          p_outcome: 'ok',
+          p_canonical_legacy_name: 'Alice',
+          p_player_file_sha256: fileHash,
+          p_evidence_version: 1,
+          p_storage_format: 'player-v1',
+          p_legacy_shard: createHash('sha1').update('Alice').digest('hex').slice(0, 2),
+        })
+        return evidenceFinalizerResponse(mode, finalizerAttempt === 1 ? 'handoff_pending' : 'active')
+      }
+      if (path === '/rpc/activate_game_character_onboarding_handoff') {
+        activationAttempt++
+        assert.deepEqual(body, {
+          p_actor_user_id: actor,
+          p_correlation_id: correlation,
+          p_character_id: character,
+          p_mode: mode,
+        })
+        // Simulate an ambiguous first activation attempt: a complete retry
+        // must preserve the same tuple and re-enter through evidence first.
+        return activationAttempt === 1 ? new Response('', { status: 503 }) : activationResponse()
+      }
+      throw new Error(`unexpected RPC ${path}`)
+    }, { recoverSavedReceiptHandoffs: true }).runOnce()
+    assert.deepEqual(statuses(result), ['reconciled'])
+    assert.equal(finalizerAttempt, 2)
+    assert.equal(activationAttempt, 2)
+    assert.deepEqual(calls.map(({ path }) => path), [
+      '/rpc/finalize_game_character_legacy_identity_evidence',
+      '/rpc/activate_game_character_onboarding_handoff',
+      '/rpc/finalize_game_character_legacy_identity_evidence',
+      '/rpc/activate_game_character_onboarding_handoff',
+    ])
+  }
+})
+
+test('opt-in recovery fails closed on evidence or activation binding mismatches, while committed and feature-off receipts do not use the handoff path', async (t) => {
+  const mismatch = await fixture()
+  t.after(mismatch.cleanup)
+  let activationCalls = 0
+  const mismatched = await reconciler(mismatch.home, async (url) => {
+    const path = new URL(url).pathname
+    if (path === '/rpc/finalize_game_character_legacy_identity_evidence') return evidenceFinalizerResponse('claim', 'handoff_pending', { actor_user_id: '123e4567-e89b-12d3-a456-426614174099' })
+    if (path === '/rpc/activate_game_character_onboarding_handoff') activationCalls++
+    throw new Error('unexpected RPC after mismatch')
+  }, { recoverSavedReceiptHandoffs: true }).runOnce()
+  assert.deepEqual(mismatched.observations, [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }])
+  assert.equal(activationCalls, 0)
+
+  const activationMismatch = await fixture()
+  t.after(activationMismatch.cleanup)
+  const activationMismatched = await reconciler(activationMismatch.home, async (url) => {
+    const path = new URL(url).pathname
+    if (path === '/rpc/finalize_game_character_legacy_identity_evidence') return evidenceFinalizerResponse('provision', 'handoff_pending')
+    if (path === '/rpc/activate_game_character_onboarding_handoff') return activationResponse({ correlation_id: '123e4567-e89b-12d3-a456-426614174099' })
+    throw new Error(`unexpected RPC ${path}`)
+  }, { recoverSavedReceiptHandoffs: true }).runOnce()
+  assert.deepEqual(activationMismatched.observations, [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }])
+
+  const committed = await fixture(receipt('committed'))
+  t.after(committed.cleanup)
+  let committedCalls = 0
+  assert.deepEqual(statuses(await reconciler(committed.home, async () => { committedCalls++; return rpcResponse() }, { recoverSavedReceiptHandoffs: true }).runOnce()), ['committed'])
+  assert.equal(committedCalls, 0)
+
+  const off = await fixture()
+  t.after(off.cleanup)
+  const offPaths: string[] = []
+  assert.deepEqual(statuses(await reconciler(off.home, async (url) => {
+    offPaths.push(new URL(url).pathname)
+    return rpcResponse({ lifecycle: 'handoff_pending' })
+  }).runOnce()), ['reconciled'])
+  assert.deepEqual(offPaths, ['/rpc/reconcile_game_character_provisioning'])
+})
+
+test('legacy saved-receipt reconciliation accepts a finalized handoff-pending lifecycle tuple', async (t) => {
+  const data = await fixture()
+  t.after(data.cleanup)
+  let calls = 0
+  const result = await reconciler(data.home, async () => {
+    calls++
+    return rpcResponse()
+  }).runOnce()
+  assert.deepEqual(result.observations, [{ outcome: 'reconciled', attempts: 1 }])
+  assert.equal(calls, 1)
+})
+
+test('legacy saved-receipt reconciliation rejects a finalized active lifecycle tuple', async (t) => {
+  const data = await fixture()
+  t.after(data.cleanup)
+  let calls = 0
+  const result = await reconciler(data.home, async () => {
+    calls++
+    return rpcResponse({ lifecycle: 'active' })
+  }).runOnce()
+  assert.deepEqual(result.observations, [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }])
+  assert.equal(calls, 1)
 })
 
 test('committed receipts are fully validated but never invoke PostgREST', async (t) => {
