@@ -187,7 +187,7 @@ int main(void)
 
     /* Before an accepted ACTIVATED there is no durable source binding, so an
      * exact-looking command remains unreserved and cannot dispatch. */
-    failed+=expect(onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,
+    failed+=expect(onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,ACTOR,
         CHARACTER,ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE &&
         onboarding_snapshot_command_consumer_read(directory_fd,COMMAND,&reservation)==
@@ -196,7 +196,7 @@ int main(void)
 
     failed+=expect(onboarding_activation_binding_write(ACTOR,CORRELATION,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,NONMATCH_COMMAND)==0 &&
-        onboarding_snapshot_command_consumer_reserve(directory_fd,NONMATCH_COMMAND,
+        onboarding_snapshot_command_consumer_reserve(directory_fd,NONMATCH_COMMAND,ACTOR,
         CHARACTER,ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH &&
         onboarding_snapshot_command_consumer_read(directory_fd,NONMATCH_COMMAND,
@@ -206,10 +206,10 @@ int main(void)
 
     failed+=expect(onboarding_activation_binding_write(ACTOR,CORRELATION,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,COMMAND)==0 &&
-        onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,ACTOR,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
-        onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(directory_fd,COMMAND,ACTOR,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY &&
         onboarding_snapshot_command_consumer_read(directory_fd,COMMAND,&reservation)==
@@ -229,7 +229,7 @@ int main(void)
     candidate_dispatches=0;
     failed+=expect(onboarding_activation_binding_write(ACTOR,CORRELATION,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,STALE_COMMAND)==0 &&
-        onboarding_snapshot_command_consumer_reserve(directory_fd,STALE_COMMAND,CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(directory_fd,STALE_COMMAND,ACTOR,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
         onboarding_snapshot_command_consumer_read(directory_fd,STALE_COMMAND,&stale)==
@@ -241,7 +241,7 @@ int main(void)
         onboarding_activation_binding_read(STALE_COMMAND,&source)!=0 &&
         onboarding_snapshot_command_consumer_read(directory_fd,STALE_COMMAND,&stale)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED &&
-        onboarding_snapshot_command_consumer_reserve(directory_fd,STALE_COMMAND,CHARACTER,
+        onboarding_snapshot_command_consumer_reserve(directory_fd,STALE_COMMAND,ACTOR,CHARACTER,
         ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,CORRELATION)==
         ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_NO_CANDIDATE &&
         dispatch_candidate(&capability,&stale,&candidate)==0 && capability.armed &&

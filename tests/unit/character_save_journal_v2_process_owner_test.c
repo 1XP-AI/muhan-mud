@@ -7,22 +7,8 @@
  */
 #include "character_save_journal_v2_process_owner.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#ifndef O_DIRECTORY
-#define O_DIRECTORY 0
-#endif
-
-#define RESERVATION_ACTOR "11111111-1111-4111-8111-111111111111"
-#define RESERVATION_CORRELATION "22222222-2222-4222-8222-222222222222"
-#define RESERVATION_CHARACTER "33333333-3333-4333-8333-333333333333"
-#define RESERVATION_COMMAND "44444444-4444-4444-8444-444444444444"
 
 typedef struct fixture {
     character_save_journal_v2_process_owner owner;
@@ -36,11 +22,6 @@ typedef struct fixture {
     int observer_set_calls, observer_invoke_calls, direct_observer_calls;
     int handoff_observer_calls, reset_calls, close_calls, global_store_installed;
     int handoff_drain_calls, handoff_drain_result;
-    int reservation_consumer_calls;
-    int reservation_directory_close_fail;
-    int reservation_directory_close_calls;
-    int reservation_directory_last_closed_fd;
-    onboarding_snapshot_command_consumer_result reservation_consumer_result;
     int bound_previous_store, binding_current;
     char trace[32];
     unsigned int trace_length;
@@ -60,23 +41,6 @@ typedef struct fixture {
 
 static fixture *current;
 
-onboarding_snapshot_command_consumer_result
-onboarding_snapshot_command_consumer_reserve(int directory_fd,
-    const char *command_id, const char *expected_actor_user_id,
-    const char *expected_character_id, onboarding_activation_binding_mode expected_mode,
-    const char *expected_correlation_id)
-{
-    current->reservation_consumer_calls++;
-    if(directory_fd != current->owner.snapshot_reservation_directory_fd ||
-       strcmp(command_id, RESERVATION_COMMAND) ||
-       strcmp(expected_actor_user_id, RESERVATION_ACTOR) ||
-       strcmp(expected_correlation_id, RESERVATION_CORRELATION) ||
-       strcmp(expected_character_id, RESERVATION_CHARACTER) ||
-       expected_mode != ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION)
-        return ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID;
-    return current->reservation_consumer_result;
-}
-
 static int expect(int condition, const char *message)
 {
     if(condition) return 0;
@@ -90,16 +54,6 @@ static void mark(char event)
         current->trace[current->trace_length++] = event;
         current->trace[current->trace_length] = 0;
     }
-}
-
-/* The close seam models the POSIX outcome that matters to ownership: close
- * may report failure after the kernel has released the descriptor. */
-int character_save_journal_v2_process_owner_test_close(int directory_fd)
-{
-    current->reservation_directory_close_calls++;
-    current->reservation_directory_last_closed_fd=directory_fd;
-    if(close(directory_fd)) return -1;
-    return current->reservation_directory_close_fail ? -1:0;
 }
 
 static int fake_deadline(void *opaque, char output[64])
@@ -672,254 +626,6 @@ static int test_handoff_replaces_generic_observer_and_ticks_only_explicitly(void
     return failed;
 }
 
-static int test_explicit_reservation_directory_owner_boundary(void)
-{
-    fixture test;
-    char root[]="/tmp/muhan-owner-reservation.XXXXXX", directory[256];
-    struct stat status;
-    int caller_fd, owned_fd, failed=0;
-    unsigned int trace_length;
-    int set_calls;
-
-    caller_fd=-1; owned_fd=-1;
-    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/private",root) >=
-       (int)sizeof(directory) || mkdir(directory,0700) ||
-       (caller_fd=open(directory,O_RDONLY|O_DIRECTORY)) < 0) return 1;
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    test.reservation_consumer_result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-        RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_NOT_READY &&
-        !test.reservation_consumer_calls,
-        "an unbound owner must not touch the descriptor-local consumer");
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
-        (owned_fd=test.owner.snapshot_reservation_directory_fd) >= 0 && owned_fd != caller_fd &&
-        (fcntl(owned_fd,F_GETFD)&FD_CLOEXEC) && fstat(owned_fd,&status)==0 &&
-        S_ISDIR(status.st_mode) && (status.st_mode&0777)==0700 &&
-        fcntl(caller_fd,F_GETFD)>=0,
-        "start must retain only its CLOEXEC duplicate of the caller directory descriptor");
-    trace_length=test.trace_length;
-    set_calls=test.set_calls;
-    failed+=expect(character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-        RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_RESERVED &&
-        test.reservation_consumer_calls==1 && test.trace_length==trace_length &&
-        test.set_calls==set_calls && !test.handoff_drain_calls,
-        "only an idle READY writer may consume an exact tuple without save, ACK, or capture work");
-    test.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING;
-    failed+=expect(character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-        RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_BUSY &&
-        test.reservation_consumer_calls==1,
-        "a busy PlayerStore must keep the reservation consumer out of the save path");
-    test.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
-    test.reservation_consumer_result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY;
-    failed+=expect(character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-        RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_EXACT_RETRY &&
-        test.reservation_consumer_calls==2,
-        "the explicit exact retry must remain idempotent");
-    test.reservation_consumer_result=ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_TUPLE_MISMATCH;
-    failed+=expect(character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-        RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_FAILED_CLOSED &&
-        test.reservation_consumer_calls==3 && test.trace_length==trace_length,
-        "a consumer tuple mismatch must fail closed without changing owner save authority");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    errno=0;
-    failed+=expect(owned_fd>=0 && fcntl(owned_fd,F_GETFD)<0 && errno==EBADF &&
-        fcntl(caller_fd,F_GETFD)>=0 && test.owner.snapshot_reservation_directory_fd<0,
-        "shutdown must close only the owner duplicate and preserve the caller descriptor");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    close(caller_fd); rmdir(directory); rmdir(root);
-    return failed;
-}
-
-static int test_reservation_directory_feature_off_and_unsafe_failure(void)
-{
-    fixture test;
-    char root[]="/tmp/muhan-owner-reservation-unsafe.XXXXXX", directory[256];
-    int caller_fd, stale_fd, failed=0;
-
-    caller_fd=-1;
-    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/private",root) >=
-       (int)sizeof(directory) || mkdir(directory,0700) ||
-       (caller_fd=open(directory,O_RDONLY|O_DIRECTORY))<0) return 1;
-    setup(&test);
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
-        test.owner.snapshot_reservation_directory_fd<0 && !test.reservation_consumer_calls,
-        "an absent opt-in flag must keep a supplied descriptor entirely inert");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=-1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
-        character_save_journal_v2_process_owner_reserve_activated(&test.owner,
-            RESERVATION_ACTOR,RESERVATION_CORRELATION,RESERVATION_CHARACTER,
-            ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION,RESERVATION_COMMAND)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_OFF &&
-        test.owner.snapshot_reservation_directory_fd<0 && !test.reservation_consumer_calls,
-        "an absent descriptor must remain feature-off and make no consumer call");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    setup(&test); chmod(directory,0755);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY &&
-        !test.deadline_calls && !test.uuid_calls && !test.reservation_consumer_calls &&
-        test.owner.snapshot_reservation_directory_fd<0 && fcntl(caller_fd,F_GETFD)>=0,
-        "an unsafe reservation directory must fail closed before startup and preserve caller ownership");
-    chmod(directory,0700);
-    stale_fd=open(directory,O_RDONLY|O_DIRECTORY);
-    if(stale_fd<0 || close(stale_fd)) failed++;
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=stale_fd;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY &&
-        !test.deadline_calls && !test.uuid_calls &&
-        test.owner.snapshot_reservation_directory_fd<0 && fcntl(caller_fd,F_GETFD)>=0,
-        "a stale caller descriptor must fail closed before owner startup");
-    close(caller_fd); rmdir(directory); rmdir(root);
-    return failed;
-}
-
-static int test_reservation_directory_failed_start_releases_duplicate(void)
-{
-    fixture test;
-    char root[]="/tmp/muhan-owner-reservation-failed-start.XXXXXX", directory[256];
-    int caller_fd, failed=0;
-
-    caller_fd=-1;
-    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/private",root) >=
-       (int)sizeof(directory) || mkdir(directory,0700) ||
-       (caller_fd=open(directory,O_RDONLY|O_DIRECTORY))<0) return 1;
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    test.deadline_fail=1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_DEADLINE &&
-        test.owner.snapshot_reservation_directory_fd<0 && fcntl(caller_fd,F_GETFD)>=0,
-        "every post-duplication failed start must release the owner duplicate only");
-    test.deadline_fail=0;
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK &&
-        test.owner.snapshot_reservation_directory_fd>=0 &&
-        fcntl(caller_fd,F_GETFD)>=0,
-        "the caller descriptor remains usable for an explicit restart after failed start");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    close(caller_fd); rmdir(directory); rmdir(root);
-    return failed;
-}
-
-static int test_reservation_directory_close_failure_lifecycle(void)
-{
-    fixture test;
-    char root[]="/tmp/muhan-owner-reservation-close.XXXXXX", directory[256];
-    int caller_fd, bad_fd, owned_fd, failed=0;
-
-    caller_fd=-1; bad_fd=-1;
-    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/private",root) >=
-       (int)sizeof(directory) || mkdir(directory,0700) ||
-       (caller_fd=open(directory,O_RDONLY|O_DIRECTORY))<0) return 1;
-
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    test.reservation_directory_close_fail=1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    if(character_save_journal_v2_process_owner_start(&test.owner)) failed++;
-    owned_fd=test.owner.snapshot_reservation_directory_fd;
-    failed+=expect(character_save_journal_v2_process_owner_shutdown(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
-        test.reservation_directory_close_calls==1 &&
-        test.reservation_directory_last_closed_fd==owned_fd && owned_fd>=0 &&
-        fcntl(owned_fd,F_GETFD)<0 && errno==EBADF && fcntl(caller_fd,F_GETFD)>=0 &&
-        test.owner.snapshot_reservation_directory_fd<0,
-        "an ambiguous directory close failure must be diagnostic, discard only the owner duplicate, and preserve caller ownership");
-    failed+=expect(character_save_journal_v2_process_owner_shutdown(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
-        test.reservation_directory_close_calls==1,
-        "idempotent shutdown must not retry an ambiguous directory close");
-
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    test.deadline_fail=1;
-    test.reservation_directory_close_fail=1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_DEADLINE &&
-        test.owner.shutdown_result==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
-        test.reservation_directory_close_calls==1 &&
-        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
-        fcntl(caller_fd,F_GETFD)>=0 &&
-        test.owner.snapshot_reservation_directory_fd<0,
-        "a failed start must retain its legacy startup cause while exposing one ambiguous duplicate-close failure");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    failed+=expect(test.reservation_directory_close_calls==1,
-        "failed-start cleanup must not be repeated by a later shutdown");
-
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=caller_fd;
-    test.shutdown_during_deadline=1;
-    test.reservation_directory_close_fail=1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED &&
-        test.owner.shutdown_result==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
-        test.reservation_directory_close_calls==1 &&
-        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
-        fcntl(caller_fd,F_GETFD)>=0 &&
-        test.owner.snapshot_reservation_directory_fd<0,
-        "deferred cancellation must release the duplicate once, surface ambiguity, and preserve caller ownership");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    failed+=expect(test.reservation_directory_close_calls==1,
-        "cancelled-start cleanup must remain idempotent after an ambiguous close");
-
-    if((bad_fd=open("/dev/null",O_RDONLY))<0) failed++;
-    setup(&test);
-    test.configuration.snapshot_reservation_enabled=1;
-    test.configuration.snapshot_reservation_directory_fd=bad_fd;
-    test.reservation_directory_close_fail=1;
-    character_save_journal_v2_process_owner_init(&test.owner,&test.configuration);
-    failed+=expect(character_save_journal_v2_process_owner_start(&test.owner)==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY &&
-        test.owner.shutdown_result==
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED &&
-        test.reservation_directory_close_calls==1 &&
-        fcntl(test.reservation_directory_last_closed_fd,F_GETFD)<0 && errno==EBADF &&
-        fcntl(bad_fd,F_GETFD)>=0 &&
-        test.owner.snapshot_reservation_directory_fd<0,
-        "failed reservation validation must surface one ambiguous duplicate-close failure without claiming caller ownership");
-    (void)character_save_journal_v2_process_owner_shutdown(&test.owner);
-    failed+=expect(test.reservation_directory_close_calls==1,
-        "validation cleanup must not retry an ambiguous directory close");
-
-    close(bad_fd); close(caller_fd); rmdir(directory); rmdir(root);
-    return failed;
-}
-
 int main(void)
 {
     return test_validate_and_early_cutpoints() |
@@ -929,9 +635,5 @@ int main(void)
         test_prior_store_restore_and_external_takeover() |
         test_reentrant_startup_shutdown_is_deferred() |
         test_stage_observer_reaches_recovery_and_player_store() |
-        test_handoff_replaces_generic_observer_and_ticks_only_explicitly() |
-        test_explicit_reservation_directory_owner_boundary() |
-        test_reservation_directory_feature_off_and_unsafe_failure() |
-        test_reservation_directory_failed_start_releases_duplicate() |
-        test_reservation_directory_close_failure_lifecycle();
+        test_handoff_replaces_generic_observer_and_ticks_only_explicitly();
 }

@@ -1,13 +1,6 @@
 #include "character_save_journal_v2_process_owner.h"
 
-#include <fcntl.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#ifdef CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE
-extern int CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE(int directory);
-#endif
 
 static int process_owner_text(const char *text, unsigned long capacity)
 {
@@ -81,66 +74,6 @@ static void process_owner_clear_held(character_save_journal_v2_process_owner *ow
     memset(&owner->live_ops, 0, sizeof(owner->live_ops));
 }
 
-typedef enum process_owner_reservation_directory_release_result {
-    PROCESS_OWNER_RESERVATION_DIRECTORY_NOT_HELD = 0,
-    PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSED = 1,
-    PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED = 2
-} process_owner_reservation_directory_release_result;
-
-static int process_owner_reservation_directory_close(int directory)
-{
-#ifdef CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE
-    return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_TEST_CLOSE(directory);
-#else
-    return close(directory);
-#endif
-}
-
-static process_owner_reservation_directory_release_result
-process_owner_reservation_directory_release(
-    character_save_journal_v2_process_owner *owner)
-{
-    int directory;
-    if(!owner || owner->snapshot_reservation_directory_fd < 0)
-        return PROCESS_OWNER_RESERVATION_DIRECTORY_NOT_HELD;
-    directory=owner->snapshot_reservation_directory_fd;
-    /* POSIX close failure can still mean the kernel released directory.  Give
-     * up this private descriptor before invoking close so re-entry and later
-     * shutdown cannot retry an ambiguous close against a reused fd number. */
-    owner->snapshot_reservation_directory_fd=-1;
-    return process_owner_reservation_directory_close(directory) ?
-        PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED :
-        PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSED;
-}
-
-static void process_owner_reservation_directory_discard(
-    character_save_journal_v2_process_owner *owner)
-{
-    if(process_owner_reservation_directory_release(owner) ==
-       PROCESS_OWNER_RESERVATION_DIRECTORY_CLOSE_FAILED)
-        owner->shutdown_result =
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
-}
-
-static int process_owner_reservation_directory_prepare(
-    character_save_journal_v2_process_owner *owner)
-{
-    struct stat status;
-    int directory;
-    if(!owner->configuration.snapshot_reservation_enabled ||
-       owner->configuration.snapshot_reservation_directory_fd < 0) return 0;
-    directory=fcntl(owner->configuration.snapshot_reservation_directory_fd,
-        F_DUPFD_CLOEXEC,3);
-    if(directory < 0) return -1;
-    owner->snapshot_reservation_directory_fd=directory;
-    if(fstat(directory,&status) || !S_ISDIR(status.st_mode) ||
-       status.st_uid != geteuid() || (status.st_mode&0777) != 0700) {
-        process_owner_reservation_directory_discard(owner);
-        return -1;
-    }
-    return 0;
-}
-
 static void process_owner_unwind(character_save_journal_v2_process_owner *owner)
 {
     if(owner->writer_held &&
@@ -148,7 +81,6 @@ static void process_owner_unwind(character_save_journal_v2_process_owner *owner)
         owner->shutdown_result =
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
     process_owner_clear_held(owner);
-    process_owner_reservation_directory_discard(owner);
     owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
 }
 
@@ -168,10 +100,8 @@ process_owner_stop_start(character_save_journal_v2_process_owner *owner,
     owner->startup_result = result;
     if(unwind)
         process_owner_unwind(owner);
-    else {
-        process_owner_reservation_directory_discard(owner);
+    else
         owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
-    }
     owner->operation_active = 0;
     owner->shutdown_requested = 0;
     return owner->startup_result;
@@ -200,11 +130,6 @@ void character_save_journal_v2_process_owner_init(
     owner->snapshot_tick_result =
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
     owner->snapshot_handoff_result = CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_INVALID;
-    owner->snapshot_reservation_directory_fd=-1;
-    owner->snapshot_reservation_consumer_result=
-        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID;
-    owner->snapshot_reservation_result=
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_OFF;
 }
 
 character_save_journal_v2_process_owner_startup_result
@@ -240,13 +165,6 @@ character_save_journal_v2_process_owner_start(
         return owner->startup_result;
     }
 
-    owner->shutdown_result = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_OK;
-    if(process_owner_reservation_directory_prepare(owner)) {
-        owner->startup_result =
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_RESERVATION_DIRECTORY;
-        return owner->startup_result;
-    }
-
     owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTING;
     owner->operation_active = 1;
     owner->shutdown_requested = 0;
@@ -260,12 +178,6 @@ character_save_journal_v2_process_owner_start(
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_NOT_READY :
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF;
     owner->snapshot_handoff_result = CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_INVALID;
-    owner->snapshot_reservation_consumer_result=
-        ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_INVALID;
-    owner->snapshot_reservation_result=(owner->configuration.snapshot_reservation_enabled &&
-        owner->configuration.snapshot_reservation_directory_fd >= 0) ?
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_NOT_READY :
-        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_OFF;
     memset(deadline, 0, sizeof(deadline));
     callback_result = configuration->acquire_deadline(
         configuration->acquire_deadline_opaque, deadline);
@@ -349,7 +261,6 @@ character_save_journal_v2_process_owner_shutdown(
         return owner->shutdown_result;
     }
     if(!owner->player_store_installed && !owner->writer_held &&
-       owner->snapshot_reservation_directory_fd < 0 &&
        (owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_NEW ||
         owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED))
         return owner->shutdown_result;
@@ -361,7 +272,6 @@ character_save_journal_v2_process_owner_shutdown(
         owner->shutdown_result =
             CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SHUTDOWN_CLOSE_FAILED;
     if(owner->writer_held) process_owner_clear_held(owner);
-    process_owner_reservation_directory_discard(owner);
     if(owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_NEW)
         owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;
     owner->operation_active = 0;
@@ -409,49 +319,4 @@ character_save_journal_v2_process_owner_snapshot_tick(
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OK :
         CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_HANDOFF_FAILED;
     return owner->snapshot_tick_result;
-}
-
-character_save_journal_v2_process_owner_reservation_result
-character_save_journal_v2_process_owner_reserve_activated(
-    character_save_journal_v2_process_owner *owner,
-    const char *actor_user_id,
-    const char *correlation_id,
-    const char *character_id,
-    onboarding_activation_binding_mode mode,
-    const char *command_id)
-{
-    onboarding_snapshot_command_consumer_result result;
-    if(!owner) return CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_NOT_READY;
-    if(!owner->configuration.snapshot_reservation_enabled ||
-       owner->configuration.snapshot_reservation_directory_fd < 0) {
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_OFF;
-        return owner->snapshot_reservation_result;
-    }
-    if(owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY ||
-       !owner->writer_held || owner->snapshot_reservation_directory_fd < 0) {
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_NOT_READY;
-        return owner->snapshot_reservation_result;
-    }
-    if(owner->operation_active || owner->player_store.state !=
-       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE) {
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_BUSY;
-        return owner->snapshot_reservation_result;
-    }
-    result=onboarding_snapshot_command_consumer_reserve(
-        owner->snapshot_reservation_directory_fd,command_id,actor_user_id,
-        character_id,mode,correlation_id);
-    owner->snapshot_reservation_consumer_result=result;
-    if(result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_RESERVED)
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_RESERVED;
-    else if(result == ONBOARDING_SNAPSHOT_COMMAND_CONSUMER_EXACT_RETRY)
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_EXACT_RETRY;
-    else
-        owner->snapshot_reservation_result=
-            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_RESERVATION_FAILED_CLOSED;
-    return owner->snapshot_reservation_result;
 }
