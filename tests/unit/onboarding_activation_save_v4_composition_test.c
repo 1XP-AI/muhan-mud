@@ -1,0 +1,509 @@
+/* Explicit activation capability -> bridge -> PlayerStore V4 composition. */
+#include "character_save_journal_v2_player_store.h"
+#include "onboarding_activation_save_bridge.h"
+#include "mstruct.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum fake_outcome {
+    FAKE_PREPARED,
+    FAKE_PUBLISHED,
+    FAKE_WRONG_TUPLE,
+    FAKE_WRONG_NAME
+} fake_outcome;
+
+typedef struct fixture {
+    character_save_journal_v2_player_store store;
+    character_save_journal_v2_writer_context writer_context;
+    character_save_journal_v2_live_ops live_ops;
+    character_save_journal_v2_rpc_transport transport;
+    player_record_serializer_limits limits;
+    onboarding_activation_save_capability capability;
+    onboarding_activation_save_bridge bridge;
+    character_save_journal_v2_writer_tuple tuple;
+    creature player;
+    char buffer[256];
+    char actor[37], correlation[37], character[37], command[37], name[32];
+    int validate_calls, renew_calls, bootstrap_calls, uuid_calls, serializer_calls;
+    int v3_calls, v4_calls, resolver_calls, route_calls, prepared_calls, publish_calls;
+    int candidate_exact;
+    fake_outcome outcome;
+} fixture;
+
+static fixture *fixtures[2];
+static int fixture_count;
+
+int player_name_is_valid(const unsigned char *name, unsigned long minimum,
+                         unsigned long maximum)
+{
+    (void)minimum;
+    return name && name[0] && strlen((const char *)name) <= maximum;
+}
+
+static int expect(int ok, const char *message)
+{
+    if(ok) return 0;
+    fprintf(stderr, "onboarding_activation_save_v4_composition_test: %s\n", message);
+    return 1;
+}
+
+static fixture *fixture_for_writer(const character_save_journal_v2_writer_context *writer)
+{
+    int index;
+    for(index = 0; index < fixture_count; index++)
+        if(writer == &fixtures[index]->writer_context) return fixtures[index];
+    return 0;
+}
+
+static fixture *fixture_for_live_ops(const character_save_journal_v2_live_ops *ops)
+{
+    int index;
+    for(index = 0; index < fixture_count; index++)
+        if(ops == &fixtures[index]->live_ops) return fixtures[index];
+    return 0;
+}
+
+static fixture *fixture_for_player(const creature *player)
+{
+    int index;
+    for(index = 0; index < fixture_count; index++)
+        if(player == &fixtures[index]->player) return fixtures[index];
+    return 0;
+}
+
+static void make_tuple(fixture *test, const char *world, const char *instance,
+                       unsigned long long epoch)
+{
+    memset(&test->tuple, 0, sizeof(test->tuple));
+    strcpy(test->tuple.world_id, world);
+    strcpy(test->tuple.writer_instance_id, instance);
+    test->tuple.writer_epoch = epoch;
+}
+
+static void make_route(fixture *test,
+                       character_save_journal_v2_bound_route_v3 *route)
+{
+    memset(route, 0, sizeof(*route));
+    strcpy(route->character_id, test->character);
+    memcpy(route->legacy_name, test->name, strlen(test->name));
+    route->legacy_name_length = strlen(test->name);
+}
+
+static void register_fixture(fixture *test)
+{
+    if(fixture_count < 2) fixtures[fixture_count++] = test;
+}
+
+static void setup(fixture *test, const char *actor, const char *correlation,
+                  const char *character, const char *command, const char *name,
+                  const char *world, const char *instance, unsigned long long epoch)
+{
+    memset(test, 0, sizeof(*test));
+    strcpy(test->actor, actor);
+    strcpy(test->correlation, correlation);
+    strcpy(test->character, character);
+    strcpy(test->command, command);
+    strcpy(test->name, name);
+    strcpy(test->player.name, name);
+    make_tuple(test, world, instance, epoch);
+    test->transport.state = CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_READY;
+    test->live_ops.transport = &test->transport;
+    test->limits.max_depth = 64;
+    test->limits.max_objects = 8192;
+    character_save_journal_v2_player_store_init(&test->store, &test->writer_context,
+        &test->live_ops, test->buffer, sizeof(test->buffer), &test->limits,
+        0, 0, 0, 0, 0, 0);
+    register_fixture(test);
+}
+
+static int absent_bootstrap(void *opaque,
+    const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_live_ops *ops, const unsigned char *name, size_t length)
+{
+    fixture *test = (fixture *)opaque;
+    if(!test || writer != &test->writer_context || ops != &test->live_ops ||
+       length != strlen(test->name) || memcmp(name, test->name, length)) return -1;
+    test->bootstrap_calls++;
+    return 0;
+}
+
+static int begin_explicit(fixture *test)
+{
+    return onboarding_activation_save_bridge_begin(&test->bridge, &test->capability,
+        test->command, test->actor, test->correlation, test->character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test->name) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY &&
+        character_save_journal_v2_player_store_set_candidate_resolver(&test->store,
+        onboarding_activation_save_bridge_resolve, &test->bridge) == 0;
+}
+
+static int arm(fixture *test)
+{
+    return onboarding_activation_save_capability_capture(&test->capability,
+        test->actor, test->correlation, test->character,
+        ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test->command, test->name) ==
+        ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK;
+}
+
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_validate_held(
+    const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_writer_tuple *tuple)
+{
+    fixture *test = fixture_for_writer(writer);
+    if(!test || !tuple) return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+    test->validate_calls++;
+    *tuple = test->tuple;
+    return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK;
+}
+
+character_save_journal_v2_rpc_transport_state
+character_save_journal_v2_rpc_transport_get_state(
+    const character_save_journal_v2_rpc_transport *transport)
+{
+    return transport ? transport->state : CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_CLOSED;
+}
+
+character_save_journal_v2_rpc_transport_outcome
+character_save_journal_v2_live_ops_writer_epoch_renew(void *opaque,
+    const character_save_journal_v2_writer_tuple *tuple, const char *deadline)
+{
+    fixture *test = fixture_for_live_ops((character_save_journal_v2_live_ops *)opaque);
+    if(!test || !tuple || !deadline || memcmp(tuple, &test->tuple, sizeof(*tuple)))
+        return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_INVALID;
+    test->renew_calls++;
+    return CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK;
+}
+
+character_save_journal_v2_route_lookup_result
+character_save_journal_v2_live_ops_route_lookup_v3(void *opaque, const char *world,
+    const unsigned char *name, size_t length, character_save_journal_v2_route_reply_v3 *reply)
+{
+    fixture *test = fixture_for_live_ops((character_save_journal_v2_live_ops *)opaque);
+    if(!test || !world || strcmp(world, test->tuple.world_id) || !name ||
+       length != strlen(test->name) || memcmp(name, test->name, length) || !reply)
+        return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_FAILURE;
+    test->route_calls++;
+    memset(reply, 0, sizeof(*reply));
+    reply->status = CHARACTER_SAVE_JOURNAL_V2_ROUTE_CALLBACK_STATUS_OK;
+    reply->row_count = 1;
+    strcpy(reply->world_id, test->tuple.world_id);
+    strcpy(reply->character_id, test->character);
+    memcpy(reply->legacy_name, test->name, length);
+    reply->legacy_name_length = length;
+    return CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK;
+}
+
+character_save_journal_v2_receipt_result
+character_save_journal_v2_live_ops_receipt_callback(void *opaque,
+    const character_save_journal_v2_receipt *receipt)
+{
+    (void)opaque;
+    (void)receipt;
+    return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;
+}
+
+int character_save_journal_v2_bootstrap_absent_head(
+    const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_live_ops *ops, const unsigned char *name, size_t length)
+{
+    (void)writer;
+    (void)ops;
+    (void)name;
+    (void)length;
+    return -1;
+}
+
+int player_record_serialize_bounded(creature *player, char perm_only, char *buffer,
+    unsigned long capacity, unsigned long *written,
+    const player_record_serializer_limits *limits)
+{
+    static const char record[] = "composition-record";
+    fixture *test = fixture_for_player(player);
+    if(!test || perm_only || !buffer || capacity < sizeof(record) || !written || !limits)
+        return PLAYER_RECORD_SERIALIZER_INVALID;
+    test->serializer_calls++;
+    memcpy(buffer, record, sizeof(record));
+    *written = sizeof(record);
+    return PLAYER_RECORD_SERIALIZER_OK;
+}
+
+static int deadline(void *opaque, char output[64])
+{
+    fixture *test = (fixture *)opaque;
+    if(!test || !output) return -1;
+    strcpy(output, "2026-09-06T00:00:00Z");
+    return 0;
+}
+
+static int generated_uuid(void *opaque, char output[37])
+{
+    fixture *test = (fixture *)opaque;
+    if(!test || !output) return -1;
+    test->uuid_calls++;
+    strcpy(output, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+    return 0;
+}
+
+static int delegated_load(void *opaque, char *name, creature **player)
+{
+    fixture *test = (fixture *)opaque;
+    if(!test || !name || !player) return PLAYER_STORE_IO_ERROR;
+    *player = &test->player;
+    return PLAYER_STORE_NOT_FOUND;
+}
+
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v3(
+    const character_save_journal_v2_writer_context *writer,
+    const character_save_journal_v2_protocol_held_request_v3 *request,
+    const character_save_journal_v2_protocol_operations_v3 *operations,
+    character_save_journal_v2_protocol_report *report)
+{
+    fixture *test = fixture_for_writer(writer);
+    const unsigned char *bytes = 0;
+    size_t length = 0;
+    if(!test || !request || !operations || !report ||
+       strcmp(request->command_uuid, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee") ||
+       operations->serialize(operations->serialize_opaque, &test->tuple, 0,
+       request->command_uuid, &bytes, &length) || !bytes || !length)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    test->v3_calls++;
+    report->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;
+    return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK;
+}
+
+character_save_journal_v2_protocol_result
+character_save_journal_v2_protocol_save_held_v4(
+    const character_save_journal_v2_writer_context *writer,
+    const character_save_journal_v2_protocol_held_request_v3 *request,
+    const character_save_journal_v2_protocol_operations_v4 *operations,
+    character_save_journal_v2_protocol_report *report)
+{
+    fixture *test = fixture_for_writer(writer);
+    character_save_journal_v2_writer_tuple candidate_writer;
+    character_save_journal_v2_bound_route_v3 route;
+    character_save_journal_v2_protocol_candidate_v4 candidate;
+    character_save_journal_v2_route_reply_v3 reply;
+    const unsigned char *bytes = 0;
+    size_t length = 0;
+    int found;
+
+    if(!test || !request || !operations || !report ||
+       operations->resolve_candidate != onboarding_activation_save_bridge_resolve ||
+       operations->resolve_candidate_opaque != &test->bridge) return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    test->v4_calls++;
+    memset(report, 0, sizeof(*report));
+    candidate_writer = test->tuple;
+    if(test->outcome == FAKE_WRONG_TUPLE) candidate_writer.writer_epoch++;
+    make_route(test, &route);
+    if(test->outcome == FAKE_WRONG_NAME) route.legacy_name[0] = 'Z';
+    memset(&candidate, 0, sizeof(candidate));
+    found = operations->resolve_candidate(operations->resolve_candidate_opaque,
+        &candidate_writer, &route, request->canonical_legacy_name,
+        request->canonical_legacy_name_length, &candidate);
+    test->resolver_calls++;
+    if(test->outcome == FAKE_WRONG_TUPLE || test->outcome == FAKE_WRONG_NAME) {
+        report->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;
+        return found < 0 ? CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE :
+            CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    }
+    if(found != 1 || strcmp(candidate.command_uuid, test->command) ||
+       memcmp(&candidate.writer, &test->tuple, sizeof(candidate.writer)) ||
+       strcmp(candidate.character_id, test->character) ||
+       candidate.canonical_legacy_name_length != strlen(test->name) ||
+       memcmp(candidate.canonical_legacy_name, test->name, strlen(test->name)))
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    test->candidate_exact = 1;
+    if(operations->route_lookup(operations->route_opaque, test->tuple.world_id,
+       request->canonical_legacy_name, request->canonical_legacy_name_length,
+       &reply) != CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK ||
+       operations->serialize(operations->serialize_opaque, &test->tuple, &route,
+       candidate.command_uuid, &bytes, &length) || !bytes || !length)
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    test->prepared_calls++;
+    if(test->outcome == FAKE_PREPARED) {
+        report->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED;
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_PUBLISH;
+    }
+    test->publish_calls++;
+    report->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PUBLISHED;
+    return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ACK_DEFERRED;
+}
+
+static void initialize_store_callbacks(fixture *test)
+{
+    test->store.lease_deadline = deadline;
+    test->store.lease_deadline_opaque = test;
+    test->store.command_uuid = generated_uuid;
+    test->store.command_uuid_opaque = test;
+    test->store.file_load = delegated_load;
+    test->store.file_load_opaque = test;
+    (void)character_save_journal_v2_player_store_set_absent_bootstrap(&test->store,
+        absent_bootstrap, test);
+}
+
+static int test_exact_tuple_and_published_once(void)
+{
+    fixture test;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    failed += expect(arm(&test) &&
+        onboarding_activation_save_bridge_begin(&test.bridge, &test.capability,
+        "55555555-5555-4555-8555-555555555555", test.actor, test.correlation,
+        test.character, ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION, test.name) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_REJECTED && test.capability.armed &&
+        begin_explicit(&test), "only the exact descriptor tuple and command may begin");
+    test.outcome = FAKE_PUBLISHED;
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_OK && test.candidate_exact &&
+        test.v4_calls == 1 && !test.v3_calls &&
+        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !test.capability.armed &&
+        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_INVALID,
+        "a published exact V4 candidate consumes its descriptor capability exactly once");
+    return failed;
+}
+
+static int test_prepared_retains_same_command_retry(void)
+{
+    fixture test;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    failed += expect(arm(&test) && begin_explicit(&test), "an armed descriptor begins its selected save");
+    test.outcome = FAKE_PREPARED;
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.prepared_calls == 1 &&
+        !test.publish_calls && onboarding_activation_save_bridge_finish(&test.bridge,
+        &test.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED &&
+        test.capability.armed && begin_explicit(&test),
+        "PREPARED retains the exact descriptor capability for its command retry");
+    test.outcome = FAKE_PUBLISHED;
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_OK && test.v4_calls == 2 &&
+        test.candidate_exact && onboarding_activation_save_bridge_finish(&test.bridge,
+        &test.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED &&
+        !test.capability.armed,
+        "the same command retries and consumes only after PUBLISHED");
+    return failed;
+}
+
+static int test_wrong_tuple_fails_closed(void)
+{
+    fixture test;
+    char before[sizeof(test.buffer)];
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    memset(test.buffer, 'W', sizeof(test.buffer));
+    memcpy(before, test.buffer, sizeof(before));
+    failed += expect(arm(&test) && begin_explicit(&test), "the wrong-tuple case begins from an exact capability");
+    test.outcome = FAKE_WRONG_TUPLE;
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.v4_calls == 1 &&
+        test.resolver_calls == 1 && !test.candidate_exact && !test.serializer_calls &&
+        !test.route_calls && !test.prepared_calls && !test.publish_calls &&
+        !memcmp(test.buffer, before, sizeof(before)) && test.capability.armed &&
+        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED,
+        "a mismatched writer tuple fails closed before caller-buffer or durable mutation");
+    failed += expect(begin_explicit(&test), "a retained capability permits an exact command retry");
+    test.outcome = FAKE_WRONG_NAME;
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_IO_ERROR && test.v4_calls == 2 &&
+        test.resolver_calls == 2 && !test.serializer_calls && !test.route_calls &&
+        !test.prepared_calls && !test.publish_calls &&
+        !memcmp(test.buffer, before, sizeof(before)) && test.capability.armed &&
+        onboarding_activation_save_bridge_finish(&test.bridge, &test.store.last_report) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_RETAINED,
+        "a substituted route name also fails closed without mutation");
+    return failed;
+}
+
+static int test_v3_fallback_untouched(void)
+{
+    fixture test;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&test, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    initialize_store_callbacks(&test);
+    failed += expect(character_save_journal_v2_player_store_save(&test.store,
+        test.name, &test.player) == PLAYER_STORE_OK && test.v3_calls == 1 &&
+        !test.v4_calls && test.uuid_calls == 1 && test.serializer_calls == 1 &&
+        !test.capability.armed, "ordinary saves retain the original V3 fallback path");
+    return failed;
+}
+
+static int test_independent_fixtures_do_not_cross_contaminate(void)
+{
+    fixture alpha, beta;
+    int failed = 0;
+    fixture_count = 0;
+    setup(&alpha, "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444", "Alpha", "m3-a",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 7);
+    setup(&beta, "12121212-1212-4212-8212-121212121212",
+        "23232323-2323-4232-8232-232323232323",
+        "34343434-3434-4434-8434-343434343434",
+        "45454545-4545-4454-8454-454545454545", "Beta", "m3-b",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", 9);
+    initialize_store_callbacks(&alpha);
+    initialize_store_callbacks(&beta);
+    alpha.outcome = FAKE_PUBLISHED;
+    beta.outcome = FAKE_PUBLISHED;
+    failed += expect(arm(&alpha) && arm(&beta) && begin_explicit(&alpha) &&
+        begin_explicit(&beta) && character_save_journal_v2_player_store_save(
+        &alpha.store, alpha.name, &alpha.player) == PLAYER_STORE_OK &&
+        character_save_journal_v2_player_store_save(&beta.store, beta.name,
+        &beta.player) == PLAYER_STORE_OK && alpha.candidate_exact && beta.candidate_exact &&
+        alpha.v4_calls == 1 && beta.v4_calls == 1 && alpha.route_calls == 1 &&
+        beta.route_calls == 1 && onboarding_activation_save_bridge_finish(&alpha.bridge,
+        &alpha.store.last_report) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED &&
+        onboarding_activation_save_bridge_finish(&beta.bridge, &beta.store.last_report) ==
+        ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !alpha.capability.armed &&
+        !beta.capability.armed,
+        "independent descriptor fixtures keep their candidates, tuples, and consumption isolated");
+    return failed;
+}
+
+int main(void)
+{
+    int failed;
+    setenv("MUD_M3_MODE", "shadow", 1);
+    setenv("MUD_M3_PLAYER_SNAPSHOT_V1", "handoff", 1);
+    failed = test_exact_tuple_and_published_once() |
+        test_prepared_retains_same_command_retry() |
+        test_wrong_tuple_fails_closed() | test_v3_fallback_untouched() |
+        test_independent_fixtures_do_not_cross_contaminate();
+    unsetenv("MUD_M3_MODE");
+    unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    if(failed) return 1;
+    puts("onboarding_activation_save_v4_composition_test: ok");
+    return 0;
+}

@@ -253,6 +253,12 @@ onboarding-activation-save-bridge-sanitizer-test:
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_save_bridge_sanitizer_test
 	python3 ../tests/unit/onboarding_activation_save_bridge_static_test.py
 
+# Test-only V4 composition: fake weak protocol hooks keep this outside live linkage.
+onboarding-activation-save-v4-composition-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_save_v4_composition_test.c character_save_journal_v2_player_store.c onboarding_activation_save_bridge.c onboarding_activation_save_capability.c -o /tmp/muhan-unit/onboarding_activation_save_v4_composition_test
+	/tmp/muhan-unit/onboarding_activation_save_v4_composition_test
+
 # Local-only command reservation seam.  This deliberately stays out of both
 # OBJECTS and M3_RUNTIME_OBJECTS until a separate runtime wiring slice exists.
 onboarding-snapshot-command-consumer-test:
