@@ -119,7 +119,13 @@ static int command_exists(const char *root, const char *suffix)
         !join(path, sizeof(path), root, relative) && !lstat(path, &status);
 }
 
-static int setup(char root[PATH_MAX])
+static int root_removed(const char *path)
+{
+    struct stat status;
+    return lstat(path, &status) && errno == ENOENT;
+}
+
+static int setup(char root[PATH_MAX], int fail_after_mkdtemp)
 {
     char temporary[PATH_MAX], writer_instance[256], writer_epoch[256];
     int count;
@@ -127,20 +133,24 @@ static int setup(char root[PATH_MAX])
     count = snprintf(root, PATH_MAX, "%s/muhan-v4-composition-XXXXXX", temporary);
     if(count < 0 || count >= PATH_MAX) return -1;
     if(!mkdtemp(root)) return -1;
+    if(fail_after_mkdtemp) goto cleanup;
     count = snprintf(writer_instance, sizeof(writer_instance),
         "version=2\nkind=writer-instance\nwriter_instance_id=%s\n", instance);
-    if(count < 0 || (size_t)count >= sizeof(writer_instance)) return -1;
+    if(count < 0 || (size_t)count >= sizeof(writer_instance)) goto cleanup;
     count = snprintf(writer_epoch, sizeof(writer_epoch),
         "version=2\nkind=writer-epoch\nworld_id=%s\nwriter_instance_id=%s\nwriter_epoch=7\n",
         world, instance);
-    if(count < 0 || (size_t)count >= sizeof(writer_epoch)) return -1;
-    return directory(root, "player") || directory(root, "player/66") ||
+    if(count < 0 || (size_t)count >= sizeof(writer_epoch)) goto cleanup;
+    if(!(directory(root, "player") || directory(root, "player/66") ||
         directory(root, "character-save-stage") ||
         directory(root, "character-save-journal") ||
         leaf(root, "character-save-journal/writer-instance.v2", writer_instance,
              strlen(writer_instance)) ||
         leaf(root, "character-save-journal/writer-epoch.v2", writer_epoch,
-             strlen(writer_epoch)) ? -1 : 0;
+             strlen(writer_epoch)))) return 0;
+cleanup:
+    remove_tree(root);
+    return -1;
 }
 
 static character_save_journal_v2_route_lookup_result route_lookup(void *opaque,
@@ -219,7 +229,15 @@ static int activate(onboarding_activation_save_capability *capability,
         (const char *)name) == ONBOARDING_ACTIVATION_SAVE_BRIDGE_READY;
 }
 
-static int run_case(int fail_publish)
+static int test_setup_cleanup(void)
+{
+    char root[PATH_MAX];
+    memset(root, 0, sizeof(root));
+    return expect(setup(root, 1) && root[0] && root_removed(root),
+        "setup removes an mkdtemp journal when a later setup step fails");
+}
+
+static int run_case(int fail_publish, int fail_close)
 {
     char root[PATH_MAX];
     character_save_journal_v2_writer_context writer;
@@ -240,7 +258,7 @@ static int run_case(int fail_publish)
     memset(&capability, 0, sizeof(capability));
     memset(&bridge, 0, sizeof(bridge));
     memset(&test, 0, sizeof(test));
-    if(setup(root)) {
+    if(setup(root, 0)) {
         fprintf(stderr, "onboarding_activation_save_v4_protocol_composition_test: fixture setup failed\n");
         return 1;
     }
@@ -290,7 +308,14 @@ static int run_case(int fail_publish)
             ONBOARDING_ACTIVATION_SAVE_BRIDGE_CONSUMED && !capability.armed,
             "the production V4 implementation reports PUBLISHED and consumes only then");
     }
-    if(character_save_journal_v2_writer_close(&writer) || remove_tree(root)) failed++;
+    if(fail_close) character_save_journal_v2_writer_fail_close_once_for_test(1);
+    {
+        int close_result = character_save_journal_v2_writer_close(&writer);
+        int cleanup_result = remove_tree(root);
+        failed += expect(close_result == (fail_close ? -1 : 0) &&
+            cleanup_result == 0 && root_removed(root),
+            "fixture cleanup runs and removes the journal even when writer close fails");
+    }
     return failed;
 }
 
@@ -303,7 +328,8 @@ int main(void)
     character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());
     setenv("MUD_M3_MODE", "shadow", 1);
     setenv("MUD_M3_PLAYER_SNAPSHOT_V1", "handoff", 1);
-    failed = run_case(1) | run_case(0);
+    failed = test_setup_cleanup() | run_case(1, 0) | run_case(0, 0) |
+        run_case(0, 1);
     unsetenv("MUD_M3_MODE");
     unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
     if(failed) return 1;
