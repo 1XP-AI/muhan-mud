@@ -16,6 +16,9 @@
 
 typedef struct feature_off_environment {
     const char *mode;
+    const char *muhan_home;
+    const char *world_id;
+    const char *conninfo_file;
 } feature_off_environment;
 
 typedef struct failing_shadow {
@@ -95,7 +98,11 @@ static const char *feature_off_getenv(void *opaque, const char *name)
 {
     feature_off_environment *environment=(feature_off_environment *)opaque;
 
-    return !strcmp(name, "MUD_M3_MODE") ? environment->mode : 0;
+    if(!strcmp(name, "MUD_M3_MODE")) return environment->mode;
+    if(!strcmp(name, "MUHAN_HOME")) return environment->muhan_home;
+    if(!strcmp(name, "MUD_M3_WORLD_ID")) return environment->world_id;
+    if(!strcmp(name, "MUD_M3_CONNINFO_FILE")) return environment->conninfo_file;
+    return 0;
 }
 
 /* This is the one side effect the real shadow process owner would make to
@@ -205,6 +212,44 @@ int main(void)
         CHARACTER_SAVE_JOURNAL_V2_RUNTIME_DISABLED && shadow.start_calls==0 &&
         !shadow.binding.active,
         "off mode must not let the shadow owner bind PlayerStore");
+
+    /* A shadow-looking mode with an incomplete or malformed exact tuple is
+     * not feature-off, but it must still fail closed before it can replace the
+     * legacy PlayerStore binding. */
+    environment.mode="shadow";
+    environment.world_id="world-a";
+    environment.conninfo_file="/tmp/m3-unused.conninfo";
+    character_save_journal_v2_runtime_init(&runtime, &dependencies);
+    failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "shadow without MUHAN_HOME must preserve legacy PlayerStore authority");
+    environment.muhan_home="relative";
+    character_save_journal_v2_runtime_init(&runtime, &dependencies);
+    failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "invalid MUHAN_HOME must preserve legacy PlayerStore authority");
+    environment.muhan_home=root;
+    environment.world_id="World";
+    character_save_journal_v2_runtime_init(&runtime, &dependencies);
+    failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "invalid MUD_M3_WORLD_ID must preserve legacy PlayerStore authority");
+    environment.world_id="world-a";
+    environment.conninfo_file="relative";
+    character_save_journal_v2_runtime_init(&runtime, &dependencies);
+    failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "invalid MUD_M3_CONNINFO_FILE must preserve legacy PlayerStore authority");
+    environment.mode="Shadow";
+    character_save_journal_v2_runtime_init(&runtime, &dependencies);
+    failed+=expect(character_save_journal_v2_runtime_start(&runtime)==
+        CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED && shadow.start_calls==0 &&
+        !shadow.binding.active,
+        "non-exact MUD_M3_MODE must preserve legacy PlayerStore authority");
 
     memset(&input, 0, sizeof(input));
     strcpy(input.name, "Legacy");

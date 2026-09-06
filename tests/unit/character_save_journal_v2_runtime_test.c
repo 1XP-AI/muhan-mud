@@ -43,7 +43,7 @@ typedef struct fake_secret_file {
     int open_calls, stat_calls, read_calls, close_calls;
     const char *bytes;
     size_t length;
-    int short_read, close_error, mutate_during_read;
+    int short_read, close_error, mutate_during_read, group_readable;
 } fake_secret_file;
 
 typedef struct fake_shadow {
@@ -124,7 +124,8 @@ static int fake_secret_stat(void *opaque, int descriptor, struct stat *status)
 {
     fake_secret_file *file=(fake_secret_file *)opaque;
     (void)descriptor; file->stat_calls++; memset(status,0,sizeof(*status));
-    status->st_mode=S_IFREG|0600; status->st_nlink=1; status->st_uid=geteuid(); status->st_size=(off_t)file->length;
+    status->st_mode=S_IFREG|(file->group_readable ? 0640 : 0600);
+    status->st_nlink=1; status->st_uid=geteuid(); status->st_size=(off_t)file->length;
     status->st_mtime=11; status->st_ctime=13;
 #if defined(__APPLE__)
     status->st_mtimespec.tv_nsec=file->mutate_during_read&&file->read_calls ? 2 : 1;
@@ -424,6 +425,53 @@ static int test_shadow_requires_explicit_environment_before_conninfo_io(void)
     return failed;
 }
 
+/* Shadow is an exact opt-in tuple.  Every rejection here happens before the
+ * starter can acquire the legacy PlayerStore binding. */
+static int test_shadow_requires_exact_mode_and_safe_conninfo_file(void)
+{
+    character_save_journal_v2_runtime runtime;
+    fake_environment environment; fake_database database; fake_secret_file file;
+    fake_shadow shadow; const char *invalid_mode[]={"Shadow","shadow ","shadowx",0};
+    int index, failed=0;
+
+    memset(&environment,0,sizeof(environment)); environment.muhan_home="/muhan";
+    environment.world_id="world-a"; environment.conninfo_file="/fake-secret";
+    for(index=0;invalid_mode[index];index++) {
+        environment.mode=invalid_mode[index]; fake_database_ready(&database);
+        memset(&file,0,sizeof(file)); file.bytes="dbname=m3"; file.length=strlen(file.bytes);
+        memset(&shadow,0,sizeof(shadow)); runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+        failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&
+                       file.open_calls==0&&shadow.start_calls==0&&database.connect_calls==0,
+                       "only the exact shadow mode token may reach shadow startup");
+    }
+    environment.mode="shadow"; environment.world_id=0; fake_database_ready(&database);
+    memset(&file,0,sizeof(file)); file.bytes="dbname=m3"; file.length=strlen(file.bytes); memset(&shadow,0,sizeof(shadow));
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&
+                   file.open_calls==0&&shadow.start_calls==0&&database.connect_calls==0,
+                   "shadow must require MUD_M3_WORLD_ID before any authority can start");
+    environment.world_id="world-a"; environment.conninfo_file=0; fake_database_ready(&database);
+    memset(&file,0,sizeof(file)); file.bytes="dbname=m3"; file.length=strlen(file.bytes); memset(&shadow,0,sizeof(shadow));
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&
+                   file.open_calls==0&&shadow.start_calls==0&&database.connect_calls==0,
+                   "shadow must require MUD_M3_CONNINFO_FILE before any authority can start");
+    environment.conninfo_file="relative"; fake_database_ready(&database);
+    memset(&file,0,sizeof(file)); file.bytes="dbname=m3"; file.length=strlen(file.bytes); memset(&shadow,0,sizeof(shadow));
+    runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&
+                   file.open_calls==0&&shadow.start_calls==0&&database.connect_calls==0,
+                   "shadow must reject a non-absolute MUD_M3_CONNINFO_FILE before authority startup");
+    environment.conninfo_file="/fake-secret"; fake_database_ready(&database);
+    memset(&file,0,sizeof(file)); file.bytes="dbname=m3"; file.length=strlen(file.bytes); file.group_readable=1;
+    memset(&shadow,0,sizeof(shadow)); runtime_shadow_init(&runtime,&environment,&database,&file,&shadow);
+    failed|=expect(character_save_journal_v2_runtime_start(&runtime)==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED&&
+                   file.open_calls==1&&file.stat_calls==1&&shadow.start_calls==0&&database.connect_calls==0&&
+                   !runtime.shadow_active,
+                   "shadow must reject a group-readable conninfo file without changing authority");
+    return failed;
+}
+
 static int test_shadow_transfers_one_scrubbed_conninfo_and_shutdowns_once(void)
 {
     character_save_journal_v2_runtime runtime;
@@ -517,6 +565,7 @@ int main(void)
     failed|=test_probe_detects_nanosecond_secret_mutation_and_wipes_on_failure();
     failed|=test_probe_wipes_conninfo_without_losing_ready_state();
     failed|=test_shadow_requires_explicit_environment_before_conninfo_io();
+    failed|=test_shadow_requires_exact_mode_and_safe_conninfo_file();
     failed|=test_shadow_transfers_one_scrubbed_conninfo_and_shutdowns_once();
     failed|=test_active_shadow_reinitialization_is_non_destructive();
     failed|=test_shadow_start_failure_unwinds_and_scrubs();
