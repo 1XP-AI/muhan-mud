@@ -223,11 +223,10 @@ export function MudPortal({ configResult }: MudPortalProps) {
     gatewayStatus.state,
   );
   const worldReady = gatewayStatus.state === "ready" || gatewayStatus.state === "provisioned";
-  const ownedCharacterIds = roster.characters.map((character) => character.id);
   const terminalAllowed = shouldOpenGatewaySocket(
     roster.status,
     activeOwnerId === session.user.id ? activeCharacterId : null,
-    ownedCharacterIds,
+    roster.characters,
   );
   const activeCharacter = terminalAllowed
     ? roster.characters.find((character) => character.id === activeCharacterId)

@@ -24,7 +24,7 @@ test('onboarding contract cannot become an active MUD session before ready', () 
   assert.equal(shouldOpenOnboardingSocket('ready', 'provision'), false)
   assert.equal(createOnboardingSocketContract('ready', 'claim'), null)
   assert.equal(shouldOpenGatewaySocket('empty', null, []), false)
-  assert.equal(shouldOpenGatewaySocket('empty', '11111111-1111-4111-8111-111111111111', ['11111111-1111-4111-8111-111111111111']), false)
+  assert.equal(shouldOpenGatewaySocket('empty', '11111111-1111-4111-8111-111111111111', [{ id: '11111111-1111-4111-8111-111111111111', lifecycle: 'active' }]), false)
 })
 
 test('onboarding auth is exact and URL derives a path without leaking query data', () => {

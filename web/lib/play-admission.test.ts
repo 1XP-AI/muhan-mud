@@ -47,11 +47,11 @@ test("authenticated empty roster stays isolated until one exact active completio
   assert.equal(activeCharacters.length, 1);
   assert.equal(activeCharacters[0]?.id, characterId);
   assert.equal(
-    shouldOpenGatewaySocket("ready", characterId, activeCharacters.map(({ id }) => id)),
+    shouldOpenGatewaySocket("ready", characterId, activeCharacters),
     true,
   );
   assert.equal(
-    shouldOpenGatewaySocket("ready", otherCharacterId, activeCharacters.map(({ id }) => id)),
+    shouldOpenGatewaySocket("ready", otherCharacterId, activeCharacters),
     false,
   );
 });

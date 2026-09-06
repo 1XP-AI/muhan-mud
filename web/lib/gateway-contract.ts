@@ -45,12 +45,14 @@ export function createGatewayAuthFrame(
 export function shouldOpenGatewaySocket(
   rosterStatus: "loading" | "error" | "empty" | "ready",
   characterId: string | null,
-  ownedCharacterIds: readonly string[],
+  ownedCharacters: readonly { id: string; lifecycle: string }[],
 ): boolean {
   return (
     rosterStatus === "ready" &&
     characterId !== null &&
-    ownedCharacterIds.includes(characterId)
+    ownedCharacters.some(
+      (character) => character.id === characterId && character.lifecycle === "active",
+    )
   );
 }
 

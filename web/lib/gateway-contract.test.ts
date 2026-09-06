@@ -11,6 +11,7 @@ import {
 } from "./gateway-contract.ts";
 
 const characterId = "00000000-0000-4000-8000-000000000001";
+const activeCharacter = { id: characterId, lifecycle: "active" as const };
 
 test("auth frame has the exact Gateway contract", () => {
   assert.deepEqual(createGatewayAuthFrame("access-token", characterId), {
@@ -21,10 +22,21 @@ test("auth frame has the exact Gateway contract", () => {
 });
 
 test("socket opening requires an explicitly selected owned character", () => {
-  assert.equal(shouldOpenGatewaySocket("loading", characterId, [characterId]), false);
-  assert.equal(shouldOpenGatewaySocket("ready", null, [characterId]), false);
+  assert.equal(shouldOpenGatewaySocket("loading", characterId, [activeCharacter]), false);
+  assert.equal(shouldOpenGatewaySocket("ready", null, [activeCharacter]), false);
   assert.equal(shouldOpenGatewaySocket("ready", characterId, []), false);
-  assert.equal(shouldOpenGatewaySocket("ready", characterId, [characterId]), true);
+  assert.equal(shouldOpenGatewaySocket("ready", characterId, [activeCharacter]), true);
+});
+
+test("socket opening requires an active observed roster row", () => {
+  assert.equal(
+    shouldOpenGatewaySocket("ready", characterId, [{ id: characterId, lifecycle: "active" }]),
+    true,
+  );
+  assert.equal(
+    shouldOpenGatewaySocket("ready", characterId, [{ id: characterId, lifecycle: "suspended" }]),
+    false,
+  );
 });
 
 test("normal Gateway close is not retried by the terminal", () => {
