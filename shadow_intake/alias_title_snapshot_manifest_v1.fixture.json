@@ -1,5 +1,11 @@
 {
   "contract": "AliasTitleSnapshotManifestV1",
+  "snapshot_wire_contract": {
+    "format": "CDTO",
+    "version": 1,
+    "kind": 9,
+    "schema": "AliasTitleSnapshotV1"
+  },
   "first_record": {
     "event_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0101",
     "world_id": "muhan-prod",
@@ -10,18 +16,27 @@
     "writer_revision": 9,
     "command_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0104",
     "correlation_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0105",
-    "manifest_format": "CDTO",
-    "manifest_kind": 9,
-    "manifest_schema": "AliasTitleSnapshotManifestV1",
+    "companion_manifest_schema": "AliasTitleSnapshotManifestV1",
     "recorded_at": "2026-09-06T00:00:00Z",
-    "canonical_cdto_wire_hex": "09000102",
-    "canonical_cdto_digest_sha256": "a3cb6c5af0aab9c82e276c9dc9b0ba37ff7e64a57f2c4b09c08a0493f9306ed2",
-    "canonical_cdto_length": 4
+    "canonical_alias_title_snapshot_v1_wire_hex": "4d55484344544f00000100090000003e0001020000000200010002090000001a016e00056e6f7274680161000d61747461636b2074617267657400030b00000001010004090000000552756c6572d0c08f3ceb36620b0c7c47890070c4b0f5111f97007b26832b56916b42191715",
+    "canonical_alias_title_snapshot_v1_digest_sha256": "d0c08f3ceb36620b0c7c47890070c4b0f5111f97007b26832b56916b42191715",
+    "canonical_alias_title_snapshot_v1_length": 110
   },
   "attempts": [
     {"name": "first", "changes": {}, "expected": "first_recorded"},
     {"name": "exact_retry", "changes": {}, "expected": "exact_retry_idempotent"},
-    {"name": "changed_revision", "changes": {"writer_revision": 10}, "expected": "immutable_conflict"},
-    {"name": "changed_wire", "changes": {"canonical_cdto_wire_hex": "09000103"}, "expected": "immutable_conflict"}
+    {"name": "conflict_world_id", "changes": {"world_id": "muhan-stage"}, "expected": "immutable_conflict"},
+    {"name": "conflict_canonical_legacy_name_key", "changes": {"canonical_legacy_name_key": "001122334455"}, "expected": "immutable_conflict"},
+    {"name": "conflict_character_id", "changes": {"character_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0198"}, "expected": "immutable_conflict"},
+    {"name": "conflict_writer_instance_id", "changes": {"writer_instance_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0197"}, "expected": "immutable_conflict"},
+    {"name": "conflict_writer_epoch", "changes": {"writer_epoch": 43}, "expected": "immutable_conflict"},
+    {"name": "conflict_writer_revision", "changes": {"writer_revision": 10}, "expected": "immutable_conflict"},
+    {"name": "conflict_command_id", "changes": {"command_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0196"}, "expected": "immutable_conflict"},
+    {"name": "conflict_correlation_id", "changes": {"correlation_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0195"}, "expected": "immutable_conflict"},
+    {"name": "conflict_companion_manifest_schema", "changes": {"companion_manifest_schema": "OtherManifestV1"}, "expected": "immutable_conflict"},
+    {"name": "conflict_recorded_at", "changes": {"recorded_at": "2026-09-06T00:00:01Z"}, "expected": "immutable_conflict"},
+    {"name": "conflict_wire", "changes": {"canonical_alias_title_snapshot_v1_wire_hex": "4d55484344544f00000100090000003e0001020000000200010002090000001a016e00056e6f7274680161000d61747461636b2074617267657400030b00000001010004090000000552756c6572d0c08f3ceb36620b0c7c47890070c4b0f5111f97007b26832b56916b42191714"}, "expected": "immutable_conflict"},
+    {"name": "conflict_digest", "changes": {"canonical_alias_title_snapshot_v1_digest_sha256": "e0c08f3ceb36620b0c7c47890070c4b0f5111f97007b26832b56916b42191715"}, "expected": "immutable_conflict"},
+    {"name": "conflict_length", "changes": {"canonical_alias_title_snapshot_v1_length": 109}, "expected": "immutable_conflict"}
   ]
 }
