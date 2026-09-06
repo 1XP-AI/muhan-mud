@@ -321,6 +321,21 @@ test('exact identity and sequence retry is ledger-idempotent with no character w
   assert.equal(store.batches.size, 1)
 })
 
+test('a pre-tuple historic ledger batch fails closed instead of accepting an unverifiable exact replay', async () => {
+  const store = new BatchMemoryStore()
+  const value = identity()
+  await importBatch(store, [record('Alice')], { identity: value, streamId: 'main', sequence: 0, apply: true })
+  store.memberIdentities.clear()
+
+  await assert.rejects(
+    () => importBatch(store, [record('Alice')], { identity: value, streamId: 'main', sequence: 0, apply: true }),
+    (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_identity_conflict',
+  )
+  assert.equal(store.writes, 1)
+  assert.equal(store.members.size, 1)
+  assert.equal(store.watermarks.get('batch-world|main'), 0)
+})
+
 test('exact retry uses the durable tuple after its imported character has live lifecycle and storage drift', async () => {
   const store = new BatchMemoryStore()
   const value = identity()

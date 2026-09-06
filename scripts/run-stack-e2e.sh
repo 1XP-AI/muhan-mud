@@ -137,6 +137,7 @@ apply_sql "$repo_root/supabase/migrations/20260929000000_imported_unclaimed_batc
 apply_sql "$repo_root/supabase/migrations/20260930000000_imported_unclaimed_claim_provenance_gate.sql"
 apply_sql "$repo_root/supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql"
 apply_sql "$repo_root/supabase/migrations/20261008000000_imported_unclaimed_batch_member_identity.sql"
+apply_sql "$repo_root/supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql"
 
 postgres_port="$(docker port "$postgres_name" 5432/tcp 2>/dev/null | sed -n '1s/.*://p' || true)"
 if [[ -z "$postgres_port" ]]; then

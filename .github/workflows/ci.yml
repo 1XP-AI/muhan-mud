@@ -66,6 +66,7 @@ jobs:
           bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_member_identity_static_contract.sh
+          bash supabase/tests/imported_unclaimed_historic_batch_tuple_gate_static_contract.sh
           bash supabase/tests/legacy_locator_resolver_static_contract.sh
           bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
           bash supabase/tests/bank_snapshot_v1_topology_shadow_static_contract.sh
@@ -260,6 +261,10 @@ jobs:
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261008000000_imported_unclaimed_batch_member_identity.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261002000000_legacy_locator_resolver.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261003000000_player_snapshot_v1_inventory_graph_shadow.sql
@@ -276,6 +281,10 @@ jobs:
             --file=supabase/tests/imported_unclaimed_claim_provenance_gate_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_member_legacy_locator_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_member_identity_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_historic_batch_tuple_gate_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/legacy_locator_resolver_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
@@ -398,13 +407,17 @@ jobs:
           set -euo pipefail
           # This primary disposable database has the identity checkpoint but
           # not the later isolated-evidence migrations. Apply the importer's
-          # exact immutable batch/provenance/locator prerequisites before its
-          # store opens, replaying each as the contract lane does.
+          # exact immutable batch/provenance/tuple prerequisites before its
+          # store opens, replaying each as the executable contract lane does.
           for pass in 1 2; do
             psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
             psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
             psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261008000000_imported_unclaimed_batch_member_identity.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql
           done
+          psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/imported_unclaimed_batch_member_identity_contract.sql
+          psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/imported_unclaimed_historic_batch_tuple_gate_contract.sql
           pnpm --filter @muhan/character-inventory-importer test:integration
 
   build-and-smoke:
