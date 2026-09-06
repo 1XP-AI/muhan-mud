@@ -77,6 +77,7 @@ pub mod alias_title_snapshot_v1;
 pub mod legacy_identity_evidence_v1;
 pub mod player_snapshot_normalized_v1;
 pub mod player_snapshot_v1;
+pub mod player_snapshot_v1_artifact;
 
 pub const TYPE_U8: u8 = 1;
 pub const TYPE_U16: u8 = 2;

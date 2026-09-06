@@ -5,3 +5,18 @@ edition = "2021"
 
 [lib]
 path = "src/lib.rs"
+
+[features]
+# This only makes the read-only observer executable available for an explicit
+# shadow run.  It has no C build or live-runtime integration.
+player-snapshot-v1-artifact-shadow-observer = []
+
+[[bin]]
+name = "player_snapshot_v1_artifact_shadow_verify"
+path = "src/bin/player_snapshot_v1_artifact_shadow_verify.rs"
+required-features = ["player-snapshot-v1-artifact-shadow-observer"]
+
+[[test]]
+name = "player_snapshot_v1_artifact_shadow_verifier"
+path = "tests/player_snapshot_v1_artifact_shadow_verifier.rs"
+required-features = ["player-snapshot-v1-artifact-shadow-observer"]
