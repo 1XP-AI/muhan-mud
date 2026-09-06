@@ -11,6 +11,9 @@ import { loadConfig } from '../../services/gateway/src/config.js'
 import { createGateway, type RunningGateway } from '../../services/gateway/src/gateway.js'
 import { SupabaseCharacterAuthorizer } from '../../services/gateway/src/character-authorizer.js'
 import { SupabaseOnboardingAuthorizer, type OnboardingAuthorizer } from '../../services/gateway/src/onboarding-authorizer.js'
+import { createBatchIdentity } from '../../services/character-inventory-importer/src/batch-identity.js'
+import { importBatch, importRecords, type InventoryRecord } from '../../services/character-inventory-importer/src/inventory.js'
+import { PostgresImportStore } from '../../services/character-inventory-importer/src/postgres-store.js'
 import { NodeReconcilerFilesystem, OnboardingReconciler } from '../../services/onboarding-reconciler/src/reconciler.js'
 import {
   runWebStackAcceptance,
@@ -29,6 +32,10 @@ const cancelledCorrelation = '22222222-2222-4222-8222-222222222222'
 const correlation = '33333333-3333-4333-8333-333333333333'
 const badCorrelation = '55555555-5555-4555-8555-555555555555'
 const denialCorrelation = '77777777-7777-4777-8777-777777777777'
+const importedClaimCorrelation = '66666666-6666-4666-8666-666666666666'
+const wrongPasswordCorrelation = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const expiredClaimCorrelation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const missingMemberCorrelation = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 // C create_ply accepts passwords up to 14 bytes.
 const password = 'stack-e2e-pass'
 const accessToken = 'stack-e2e-browser-token'
@@ -39,6 +46,9 @@ const requestedName = 'StackHero'
 const canonicalName = 'Stackhero'
 const badRequestedName = 'StackBad'
 const badCanonicalName = 'Stackbad'
+const importedClaimName = 'Importhero'
+const missingMemberName = 'Orphanhero'
+const webClaimName = 'Webclaim'
 const webProvisionName = 'Webhero'
 const origin = 'http://localhost:3000'
 const root = resolve(process.env.STACK_E2E_ROOT ?? process.cwd())
@@ -117,10 +127,21 @@ async function prepareFixture(): Promise<void> {
   await mkdir(join(fixture, 'log', 'auth'), { recursive: true })
 }
 
-function startMud(binary: string, port: number): ChildProcess {
+function startMud(binary: string, port: number, trustedAdmission = true): ChildProcess {
+  const {
+    MUD_REQUIRE_TRUSTED_ADMISSION: _ignoredTrustedAdmission,
+    MUD_ADMISSION_SECRET: _ignoredAdmissionSecret,
+    ...environment
+  } = process.env
   const child = spawn(binary, ['-r', String(port)], {
     cwd: fixture,
-    env: { ...process.env, MUHAN_HOME: fixture, MUD_ENABLE_ONBOARDING: '1', MUD_REQUIRE_TRUSTED_ADMISSION: '1', MUD_ADMISSION_SECRET: admissionSecret, LC_ALL: 'C.UTF-8' },
+    env: {
+      ...environment,
+      MUHAN_HOME: fixture,
+      MUD_ENABLE_ONBOARDING: trustedAdmission ? '1' : '0',
+      ...(trustedAdmission ? { MUD_REQUIRE_TRUSTED_ADMISSION: '1', MUD_ADMISSION_SECRET: admissionSecret } : {}),
+      LC_ALL: 'C.UTF-8',
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   })
   const capture = (data: Buffer): void => {
@@ -186,6 +207,50 @@ async function waitForMud(port: number, child: ChildProcess): Promise<void> {
       socket.once('error', (error) => { socket.destroy(); reject(error) })
     })
   }, 20_000)
+}
+
+function legacyPlayerPath(name: string): string {
+  return join(fixture, 'player', createHash('sha1').update(name).digest('hex').slice(0, 2), name)
+}
+
+async function createDisposableLegacyPlayer(port: number, name: string): Promise<void> {
+  const net = await import('node:net')
+  const socket = net.createConnection({ host: '127.0.0.1', port })
+  let transcript = ''
+  socket.on('data', (data: Buffer) => { transcript = `${transcript}${data.toString('utf8')}`.slice(-16_000) })
+  await once(socket, 'connect')
+  const expect = async (pattern: RegExp): Promise<void> => eventually(() => assert.match(transcript, pattern))
+  try {
+    await expect(/당신의 이름은 무엇입니까/)
+    socket.write(`${name}\n`)
+    await expect(/하시겠습니까/)
+    socket.write('예\n')
+    await expect(/엔터/)
+    socket.write('\n')
+    await expect(/남자입니까/)
+    socket.write('남\n')
+    await expect(/직업을 고르세요/)
+    socket.write('4\n')
+    await expect(/능력:/)
+    socket.write('12 10 12 10 10\n')
+    await expect(/익숙한 무기를/)
+    socket.write('1\n')
+    await expect(/성향을 고르십시요/)
+    socket.write('선\n')
+    await expect(/종족을 고르십시요/)
+    socket.write('7\n')
+    await expect(/새 암호를/)
+    socket.write(`${password}\n`)
+    await eventually(async () => { await stat(legacyPlayerPath(name)) })
+  } finally {
+    socket.destroy()
+    if (!socket.destroyed) await raceWithTimeout(once(socket, 'close'), 5_000)
+  }
+}
+
+function legacyInventoryRecord(name: string, sha256: string, byteSize: number): InventoryRecord {
+  const shard = createHash('sha1').update(name).digest('hex').slice(0, 2)
+  return { name, canonicalNameKey: name, relativePath: `player/${shard}/${name}`, observedShard: shard, expectedShard: shard, byteSize, sha256 }
 }
 
 class Browser {
@@ -278,6 +343,15 @@ async function openGame(address: string, characterId: string): Promise<Browser> 
   return browser
 }
 
+async function assertNormalAdmissionDenied(address: string, characterId: string): Promise<void> {
+  const ws = new WebSocket(`${address.replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin })
+  await once(ws, 'open')
+  const closed = once(ws, 'close') as Promise<[number]>
+  ws.send(JSON.stringify({ type: 'auth', accessToken, characterId }))
+  const [code] = await closed
+  assert.equal(code, 1008)
+}
+
 async function closeAndWait(ws: any): Promise<void> {
   if (ws.readyState === WebSocket.OPEN) ws.close()
   if (ws.readyState !== WebSocket.CLOSED) {
@@ -348,6 +422,67 @@ async function main(): Promise<void> {
       ('${webProvisionActor}', 'authenticated', 'authenticated', now()),
       ('${webClaimActor}', 'authenticated', 'authenticated', now())
       on conflict (id) do nothing`)
+
+    // Build three C-owned, synthetic legacy files before the trusted-admission
+    // stack starts.  They are never copied from the source tree or relabelled
+    // in SQL: the importer below is the only path that admits their DB rows.
+    const legacyMudPort = await choosePort()
+    mud = startMud(process.env.STACK_E2E_BINARY, legacyMudPort, false)
+    await waitForMud(legacyMudPort, mud)
+    await createDisposableLegacyPlayer(legacyMudPort, importedClaimName)
+    await createDisposableLegacyPlayer(legacyMudPort, missingMemberName)
+    await createDisposableLegacyPlayer(legacyMudPort, webClaimName)
+    await stopMud(mud)
+    mud = undefined
+
+    const importedClaimPlayer = legacyPlayerPath(importedClaimName)
+    const missingMemberPlayer = legacyPlayerPath(missingMemberName)
+    const webClaimPlayer = legacyPlayerPath(webClaimName)
+    const importedClaimBytes = await readFile(importedClaimPlayer)
+    const missingMemberBytes = await readFile(missingMemberPlayer)
+    const webClaimBytes = await readFile(webClaimPlayer)
+    const importedClaimDigest = createHash('sha256').update(importedClaimBytes).digest('hex')
+    const missingMemberDigest = createHash('sha256').update(missingMemberBytes).digest('hex')
+    const webClaimDigest = createHash('sha256').update(webClaimBytes).digest('hex')
+    const databaseUrl = process.env.STACK_E2E_DATABASE_URL
+    assert.ok(databaseUrl, 'runner must provide a disposable PostgreSQL URL for the real importer')
+    const importer = new PostgresImportStore(databaseUrl)
+    try {
+      const sourceManifest = Buffer.from(`${importedClaimDigest}\n${webClaimDigest}\n`, 'utf8')
+      const batch = createBatchIdentity({
+        worldId: 'muhan', sourceManifestId: 'stack-e2e-legacy-fixture-v1',
+        sourceSha256: createHash('sha256').update(sourceManifest).digest('hex'),
+        sourceByteSize: sourceManifest.byteLength, parserVersion: '1.0.0', abi: 1,
+        startMarker: 'imported-claim', endMarker: 'web-claim',
+      })
+      const batchRecords = [
+        legacyInventoryRecord(importedClaimName, importedClaimDigest, importedClaimBytes.byteLength),
+        legacyInventoryRecord(webClaimName, webClaimDigest, webClaimBytes.byteLength),
+      ]
+      const admitted = await importBatch(importer, batchRecords, { identity: batch, streamId: 'stack-e2e', sequence: 0, apply: true })
+      assert.deepEqual(admitted, {
+        wouldInsert: 0, inserted: 2, idempotent: 0,
+        quarantined: { invalid_metadata: 0, duplicate_input_identity: 0, owned_row: 0, lifecycle_conflict: 0, hash_conflict: 0, identity_conflict: 0 },
+        streamId: 'stack-e2e', sequence: 0, ledger: 'committed',
+      })
+      const retry = await importBatch(importer, batchRecords, { identity: batch, streamId: 'stack-e2e', sequence: 0, apply: true })
+      assert.equal(retry.ledger, 'idempotent')
+      assert.equal(retry.idempotent, 2)
+      const unprovenanced = await importRecords(importer, [legacyInventoryRecord(missingMemberName, missingMemberDigest, missingMemberBytes.byteLength)], { worldId: 'muhan', apply: true })
+      assert.equal(unprovenanced.inserted, 1)
+    } finally {
+      await importer.close()
+    }
+    const importedClaimCharacterId = await sql(`select id from public.game_characters where world_id = 'muhan' and legacy_name_key = '${importedClaimName}'`)
+    const missingMemberCharacterId = await sql(`select id from public.game_characters where world_id = 'muhan' and legacy_name_key = '${missingMemberName}'`)
+    const webClaimCharacterId = await sql(`select id from public.game_characters where world_id = 'muhan' and legacy_name_key = '${webClaimName}'`)
+    assert.match(importedClaimCharacterId, /^[0-9a-f-]{36}$/)
+    assert.match(webClaimCharacterId, /^[0-9a-f-]{36}$/)
+    assert.equal(await sql(`select count(*) from private.game_imported_unclaimed_batch_members where character_id in ('${importedClaimCharacterId}', '${webClaimCharacterId}')`), '2')
+    assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_name_sha1 || '|' || legacy_shard from private.game_imported_unclaimed_batch_member_legacy_locators where character_id = '${importedClaimCharacterId}'`), `${importedClaimName}|${createHash('sha1').update(importedClaimName).digest('hex')}|${createHash('sha1').update(importedClaimName).digest('hex').slice(0, 2)}`)
+    assert.equal(await sql(`select count(*) from private.game_imported_unclaimed_batch_members where character_id = '${missingMemberCharacterId}'`), '0')
+    assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
+    evidence.events.push({ case: 'disposable-legacy-import', result: 'real-importBatch-member-locator-exact-retry' })
 
     // RED/GREEN guard: /onboarding is not routable with the feature disabled,
     // therefore the C connector must remain untouched.
@@ -568,58 +703,102 @@ async function main(): Promise<void> {
     process.stderr.write('stack-e2e: recovery-game-green\n')
     evidence.events.push({ case: 'recovered-mud1-admission', result: 'regular-ws-and-game-command' })
 
-    // Claim gate: reuse the known C player file produced by the failed
-    // provisioning attempt as an imported_unclaimed record in this disposable
-    // database. The claim flow still verifies the original password inside C;
-    // PostgREST receives only the verified canonical name and actor binding.
-    // The normal MUD1 session above may legitimately flush a newer legacy
-    // player snapshot on shutdown. Import records therefore pin the exact
-    // bytes that the subsequent C claim will verify, not the earlier recovery
-    // receipt hash.
-    const claimPlayer = join(fixture, 'player', createHash('sha1').update(badCanonicalName).digest('hex').slice(0, 2), badCanonicalName)
-    const claimDigest = createHash('sha256').update(await readFile(claimPlayer)).digest('hex')
-    await sql(`update public.game_characters set lifecycle = 'imported_unclaimed', owner_user_id = null, claimed_at = null, imported_file_sha256 = '${claimDigest}' where id = '${badCharacterId}'`)
-    assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') || '|' || imported_file_sha256 from public.game_characters where id = '${badCharacterId}'`), `imported_unclaimed|<null>|${claimDigest}`)
-    const claimCorrelation = '66666666-6666-4666-8666-666666666666'
+    // Claim gate: use the C-created files that the real importer admitted
+    // above.  No lifecycle or ownership value is relabelled in this fixture.
+    // The positive target carries the immutable batch/member/locator proof;
+    // the orphan was deliberately imported through the legacy non-ledger path
+    // to prove that a C-visible file alone cannot be claimed.
     const claimMudPort = await choosePort()
     mud = startMud(process.env.STACK_E2E_BINARY, claimMudPort)
     await waitForMud(claimMudPort, mud)
     const claimConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `claim-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(claimMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
-    gateway = createGateway(claimConfig, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(claimConfig), onboardingAuthorizer: new SupabaseOnboardingAuthorizer(claimConfig) })
+    const claimAuthorizer = new SupabaseOnboardingAuthorizer(claimConfig)
+    const expiringClaimAuthorizer: OnboardingAuthorizer = {
+      begin: (request) => claimAuthorizer.begin(request),
+      cancelUnreserved: (request) => claimAuthorizer.cancelUnreserved(request),
+      reserve: (request) => claimAuthorizer.reserve(request),
+      challenge: async (request) => {
+        const challenge = await claimAuthorizer.challenge(request)
+        if (request.correlationId === expiredClaimCorrelation) {
+          // Preserve the table's exact 90-second invariant while making this
+          // disposable challenge stale before C can submit the verified
+          // password. This mutates no character lifecycle or ownership data.
+          await sql(`update private.game_character_claim_attempts set allowed_at = now() - interval '91 seconds', allow_expires_at = now() - interval '1 second' where correlation_id = '${expiredClaimCorrelation}'`)
+        }
+        return challenge
+      },
+      finalize: (request) => claimAuthorizer.finalize(request),
+      reconcile: (request) => claimAuthorizer.reconcile(request),
+      claim: (request) => claimAuthorizer.claim(request),
+      activateHandoff: (request) => claimAuthorizer.activateHandoff(request),
+      bindSnapshotCommand: (request) => claimAuthorizer.bindSnapshotCommand(request),
+    }
+    gateway = createGateway(claimConfig, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(claimConfig), onboardingAuthorizer: expiringClaimAuthorizer })
     gateway.server.listen(0, '127.0.0.1')
     await once(gateway.server, 'listening')
     process.stderr.write('stack-e2e: claim-gateway-listening\n')
-    const claim = await openOnboarding(gateway.address(), claimCorrelation, 'claim')
-    claim.send(`${badCanonicalName}\n`)
+
+    const missingMember = await openOnboarding(gateway.address(), missingMemberCorrelation, 'claim')
+    missingMember.send(`${missingMemberName}\n`)
+    await eventually(() => assert.ok(missingMember.json('error')))
+    assert.equal(missingMember.text().includes('암호를 넣어 주십시요'), false)
+    assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') from public.game_characters where id = '${missingMemberCharacterId}'`), 'imported_unclaimed|<null>')
+    await assertNormalAdmissionDenied(gateway.address(), missingMemberCharacterId)
+    await closeAndWait(missingMember.ws)
+
+    const wrongPassword = await openOnboarding(gateway.address(), wrongPasswordCorrelation, 'claim')
+    wrongPassword.send(`${importedClaimName}\n`)
+    await eventually(() => assert.match(wrongPassword.text(), /암호를 넣어 주십시요/))
+    wrongPassword.send('wrong-password\n')
+    await eventually(() => assert.ok(wrongPassword.json('error')))
+    assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') from public.game_characters where id = '${importedClaimCharacterId}'`), 'imported_unclaimed|<null>')
+    assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
+    await assertNormalAdmissionDenied(gateway.address(), importedClaimCharacterId)
+    await closeAndWait(wrongPassword.ws)
+
+    const expiredClaim = await openOnboarding(gateway.address(), expiredClaimCorrelation, 'claim')
+    expiredClaim.send(`${importedClaimName}\n`)
+    await eventually(() => assert.match(expiredClaim.text(), /암호를 넣어 주십시요/))
+    expiredClaim.send(`${password}\n`)
+    await eventually(() => assert.ok(expiredClaim.json('error')))
+    assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') from public.game_characters where id = '${importedClaimCharacterId}'`), 'imported_unclaimed|<null>')
+    assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
+    await assertNormalAdmissionDenied(gateway.address(), importedClaimCharacterId)
+    await closeAndWait(expiredClaim.ws)
+
+    const claim = await openOnboarding(gateway.address(), importedClaimCorrelation, 'claim')
+    claim.send(`${importedClaimName}\n`)
     await eventually(() => assert.match(claim.text(), /암호를 넣어 주십시요/))
     claim.send(`${password}\n`)
     await eventually(() => assert.ok(claim.json('claimed')))
     process.stderr.write('stack-e2e: claim-rpc-green\n')
     await closeAndWait(claim.ws)
-    const claimState = await sql(`select i.status || '|' || c.lifecycle || '|' || c.owner_user_id || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${badCharacterId}' where i.correlation_id = '${claimCorrelation}'`)
-    assert.equal(claimState, `finalized|active|${actor}|${badCanonicalName}`)
-    evidence.events.push({ case: 'legacy-claim', result: 'C-password-verified-rpc-claimed' })
+    const claimState = await sql(`select i.status || '|' || c.lifecycle || '|' || c.owner_user_id || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${importedClaimCharacterId}' where i.correlation_id = '${importedClaimCorrelation}'`)
+    assert.equal(claimState, `finalized|active|${actor}|${importedClaimName}`)
+    assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
+    evidence.events.push({ case: 'legacy-claim', result: 'batch-provenanced-C-password-verified-rpc-handoff-active' })
+    evidence.events.push({ case: 'legacy-claim-denials', result: 'missing-member-wrong-password-expired-no-owner-no-normal-admission' })
 
     // A subsequent claim against the now-active target must be denied at the
     // challenge RPC. C must not receive ALLOW or expose its password prompt,
     // and the existing owner/lifecycle must remain unchanged.
     const denied = await openOnboarding(gateway.address(), denialCorrelation, 'claim')
-    denied.send(`${badCanonicalName}\n`)
+    denied.send(`${importedClaimName}\n`)
     await eventually(() => assert.ok(denied.json('error')))
     assert.equal(denied.text().includes('암호를 넣어 주십시요'), false)
-    const deniedState = await sql(`select lifecycle || '|' || c.owner_user_id from public.game_characters c where c.id = '${badCharacterId}'`)
+    const deniedState = await sql(`select lifecycle || '|' || c.owner_user_id from public.game_characters c where c.id = '${importedClaimCharacterId}'`)
     assert.equal(deniedState, `active|${actor}`)
     await closeAndWait(denied.ws)
     evidence.events.push({ case: 'legacy-claim-denial', result: 'challenge-denied-owner-unchanged' })
 
     // The claimed row must immediately use the unchanged normal MUD1 lane.
     process.stderr.write('stack-e2e: claim-before-mud1\n')
-    const claimedGame = await openGame(gateway.address(), badCharacterId)
+    const claimedGame = await openGame(gateway.address(), importedClaimCharacterId)
     process.stderr.write('stack-e2e: claim-mud1-ready\n')
     claimedGame.send('건강\n')
     await eventually(() => assert.match(claimedGame.text(), /체력/))
     await closeAndWait(claimedGame.ws)
-    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${badCharacterId}'`), '0'))
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${importedClaimCharacterId}'`), '0'))
     process.stderr.write('stack-e2e: claim-game-green\n')
     evidence.events.push({ case: 'claimed-mud1-admission', result: 'regular-ws-and-game-command' })
 
@@ -627,8 +806,6 @@ async function main(): Promise<void> {
     // UI receives a deterministic Auth response only because PostgREST is not
     // an Auth server; every roster read, onboarding frame, C prompt, lifecycle
     // transition, and subsequent ordinary MUD admission is otherwise live.
-    const webClaimDigest = createHash('sha256').update(await readFile(claimPlayer)).digest('hex')
-    await sql(`update public.game_characters set lifecycle = 'imported_unclaimed', owner_user_id = null, claimed_at = null, imported_file_sha256 = '${webClaimDigest}' where id = '${badCharacterId}'`)
     const webPort = await choosePort()
     web = startWebStackServer({
       gatewayUrl: `${gateway.address().replace('http:', 'ws:')}/ws`,
@@ -655,7 +832,7 @@ async function main(): Promise<void> {
       },
       claim: {
         accessToken: webClaimJwt,
-        characterName: badCanonicalName,
+        characterName: webClaimName,
         email: 'web-claim@example.test',
         gamePassword: password,
         userId: webClaimActor,
@@ -663,8 +840,8 @@ async function main(): Promise<void> {
     })
     const webProvisionState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where owner_user_id = '${webProvisionActor}'`)
     assert.equal(webProvisionState, `active|${webProvisionActor}|${webProvisionName}`)
-    const webClaimState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where id = '${badCharacterId}'`)
-    assert.equal(webClaimState, `active|${webClaimActor}|${badCanonicalName}`)
+    const webClaimState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where id = '${webClaimCharacterId}'`)
+    assert.equal(webClaimState, `active|${webClaimActor}|${webClaimName}`)
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
     evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-ui-active-roster-and-mud1-admission' })
     evidence.status = 'passed'

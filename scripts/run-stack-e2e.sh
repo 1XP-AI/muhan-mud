@@ -40,6 +40,14 @@ trap cleanup EXIT INT TERM
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# This runner creates disposable Docker/PostgreSQL/MUD processes and is an
+# explicit CI gate only.  Local development must use its hermetic unit/static
+# contracts; do not start this stack outside CI.
+if [[ "${CI:-}" != "true" ]]; then
+  echo "stack-e2e: CI-only disposable gate (set CI=true in the CI job)" >&2
+  exit 2
+fi
+
 for command in docker node pnpm make curl; do
   command -v "$command" >/dev/null || {
     echo "stack-e2e: required command not found: $command" >&2
@@ -61,6 +69,7 @@ if ! docker network create --internal "$network_name" >/dev/null; then
 fi
 network_created=1
 if ! docker run -d --name "$postgres_name" --network "$network_name" \
+  -p 127.0.0.1::5432 \
   --mount type=tmpfs,destination=/var/lib/postgresql/data,tmpfs-size=512m \
   -e POSTGRES_PASSWORD="$pg_password" -e POSTGRES_DB=stack_e2e \
   postgres:17-alpine >/dev/null; then
@@ -99,10 +108,9 @@ apply_sql "$repo_root/supabase/migrations/20260905000000_claim_fingerprint_safet
 apply_sql "$repo_root/supabase/migrations/20260906000000_claim_actor_rate_limit.sql"
 apply_sql "$repo_root/supabase/migrations/20260907000000_claim_challenge_safety.sql"
 apply_sql "$repo_root/supabase/migrations/20260908000000_service_rpc_fresh_clock.sql"
-# Keep the existing stack at the pre-handoff lifecycle checkpoint, but expose
-# the real shard-aware finalizer RPC to its focused admission contract below.
-# Later handoff migrations intentionally change the old stack's completion
-# protocol and belong to their own contract lane.
+# Apply the complete handoff/provenance lane so the stack test exercises an
+# importer-admitted legacy row through claim activation, never a fixture-only
+# lifecycle relabel.
 apply_sql "$repo_root/supabase/migrations/20260909000000_m3_shadow_receipts.sql"
 apply_sql "$repo_root/supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql"
 apply_sql "$repo_root/supabase/migrations/20260911000000_m3_writer_session.sql"
@@ -116,6 +124,23 @@ apply_sql "$repo_root/supabase/migrations/20260918000000_m3_absent_head_seed.sql
 apply_sql "$repo_root/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql"
 apply_sql "$repo_root/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql"
 apply_sql "$repo_root/supabase/migrations/20260921000000_legacy_identity_evidence_binding.sql"
+apply_sql "$repo_root/supabase/migrations/20260922000000_onboarding_handoff_lifecycle.sql"
+apply_sql "$repo_root/supabase/migrations/20260922100000_onboarding_handoff_gate.sql"
+apply_sql "$repo_root/supabase/migrations/20260923000000_onboarding_snapshot_eligibility_outbox.sql"
+apply_sql "$repo_root/supabase/migrations/20260924000000_onboarding_snapshot_fulfillment.sql"
+apply_sql "$repo_root/supabase/migrations/20260925000000_onboarding_snapshot_fulfillment_corrective.sql"
+apply_sql "$repo_root/supabase/migrations/20260926000000_onboarding_snapshot_fulfillment_terminal_semantics.sql"
+apply_sql "$repo_root/supabase/migrations/20260927000000_onboarding_snapshot_command_binding.sql"
+apply_sql "$repo_root/supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql"
+apply_sql "$repo_root/supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql"
+apply_sql "$repo_root/supabase/migrations/20260930000000_imported_unclaimed_claim_provenance_gate.sql"
+apply_sql "$repo_root/supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql"
+
+postgres_port="$(docker port "$postgres_name" 5432/tcp 2>/dev/null | sed -n '1s/.*://p' || true)"
+if [[ -z "$postgres_port" ]]; then
+  echo "stack-e2e: BLOCKED (PostgreSQL host port was not published; no prune was attempted)" >&2
+  exit 2
+fi
 
 if ! docker create --name "$postgrest_name" --network bridge \
   -p 127.0.0.1::3000 \
@@ -168,6 +193,7 @@ STACK_E2E_PG_PASSWORD="$pg_password" \
 STACK_E2E_ROOT="$repo_root" \
 STACK_E2E_FIXTURE="$work_dir/fixture" \
 STACK_E2E_REST_URL="http://127.0.0.1:${postgrest_port}" \
+STACK_E2E_DATABASE_URL="postgres://postgres:${pg_password}@127.0.0.1:${postgres_port}/stack_e2e" \
 STACK_E2E_SERVICE_ROLE_JWT="$service_role_jwt" \
 STACK_E2E_JWT_SECRET="$jwt_secret" \
 STACK_E2E_BINARY="$work_dir/frp.new" \
