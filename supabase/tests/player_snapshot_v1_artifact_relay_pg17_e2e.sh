@@ -47,14 +47,6 @@ fi
 echo "RED PostgreSQL 17: PlayerSnapshotV1 artifact relay RPC is absent through migration 140"
 run_super --file=/workspace/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
 run_super --file=/workspace/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
-# Forward dependencies are replayed deliberately: the disposable E2E depends
-# on their idempotent role/RPC setup before it reaches migration 190.
-run_super --file=/workspace/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
-run_super --file=/workspace/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
-run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
-run_super --file=/workspace/supabase/migrations/20260918000000_m3_absent_head_seed.sql
-run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
-run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
 
 run_super <<'SQL'
 alter role mud_writer_login password 'contract-only-writer-password';
@@ -76,16 +68,6 @@ select private.record_legacy_published_receipt(
   'pva-relay-e2e', 'E2ehero', 'a9510000-0000-0000-0000-000000000001'::uuid,
   'c9510000-0000-0000-0000-000000000001'::uuid, 'b9510000-0000-0000-0000-000000000001'::uuid,
   :'relay_e2e_request_sha256', 1::bigint, 1::bigint, 'absent', null, repeat('a', 64), 1::smallint);
-insert into private.game_character_m4_file_snapshot_manifests (
-  character_id, command_id, world_id, legacy_name_key, receipt_request_sha256,
-  writer_instance_id, writer_epoch, writer_revision, file_post_sha256, storage_format,
-  receipt_acknowledged_at, snapshot_format, snapshot_sha256, snapshot_octets
-)
-select character_id, command_id, world_id, legacy_name_key, request_sha256,
-  writer_instance_id, writer_epoch, writer_revision, post_sha256, storage_format,
-  acknowledged_at, 'legacy-file-manifest-v1', post_sha256, 9
-from private.game_character_shadow_receipts
-where command_id = 'c9510000-0000-0000-0000-000000000001'::uuid;
 SQL
 
 request_sha256="$(run_super --tuples-only --no-align --command="select request_sha256 from private.game_character_shadow_receipts where command_id = 'c9510000-0000-0000-0000-000000000001'::uuid")"
@@ -96,13 +78,15 @@ request_sha256="$(run_super --tuples-only --no-align --command="select request_s
 # disposable PostgreSQL network namespace and a container-local working directory.
 docker run --rm --network "container:$container" \
   --volume "$repo_root/services/m4-file-snapshot-manifest-relay:/source:ro" \
+  --volume "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex:/fixtures/player_snapshot_v1_canonical.hex:ro" \
   --env PLAYER_SNAPSHOT_V1_RELAY_E2E_DATABASE_URL="postgresql://mud_writer_login:contract-only-writer-password@127.0.0.1:5432/postgres" \
   --env PLAYER_SNAPSHOT_V1_RELAY_E2E_SUPER_DATABASE_URL="postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres" \
   --env PLAYER_SNAPSHOT_V1_RELAY_E2E_REQUEST_SHA256="$request_sha256" \
+  --env PLAYER_SNAPSHOT_V1_RELAY_E2E_C_STYLE_SNAPSHOT_FIXTURE=/fixtures/player_snapshot_v1_canonical.hex \
   node:22.15.1-alpine3.21 sh -euc '
     mkdir -p /workspace
     cp -a /source/package.json /source/package-lock.json /source/tsconfig.json /source/src /source/test /workspace/
     cd /workspace
     npm ci --ignore-scripts --no-audit --no-fund
-    node node_modules/tsx/dist/cli.mjs test/player-snapshot-v1-artifact-pg17-e2e.ts
+    node node_modules/tsx/dist/cli.mjs test/player-snapshot-v1-manifest-first-pg17-e2e.ts
   '

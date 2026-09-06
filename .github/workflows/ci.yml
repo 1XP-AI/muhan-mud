@@ -334,7 +334,7 @@ jobs:
           set -euo pipefail
           bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
 
-      - name: Run PlayerSnapshotV1 Linux filesystem relay PostgreSQL 17 E2E
+      - name: Run PlayerSnapshotV1 manifest-first Linux filesystem relay PostgreSQL 17 E2E
         if: runner.os == 'Linux'
         shell: bash
         run: |
