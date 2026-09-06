@@ -389,6 +389,18 @@ m3-feature-off-legacy-authority-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_feature_off_legacy_authority_test.c character_save_journal_v2_runtime.c player_store.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/m3_feature_off_legacy_authority_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_feature_off_legacy_authority_sanitizer_test
 
+# This links the real bulk-save caller and savegame adapter against a
+# deterministic shadow-binding seam; it never opens a database or network.
+m3-live-save-all-shadow-binding-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DUSE_M3_RUNTIME -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/m3_live_save_all_shadow_binding_test.c files2.c command8.c global.c character_save_journal_v2_runtime.c player_store.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_live_save_all_shadow_binding_test
+	/tmp/muhan-unit/m3_live_save_all_shadow_binding_test
+
+m3-live-save-all-shadow-binding-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DUSE_M3_RUNTIME -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_live_save_all_shadow_binding_test.c files2.c command8.c global.c character_save_journal_v2_runtime.c player_store.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_live_save_all_shadow_binding_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_live_save_all_shadow_binding_sanitizer_test
+
 character-snapshot-shadow-outbox-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_prod.o
