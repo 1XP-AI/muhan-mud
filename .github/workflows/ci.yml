@@ -726,6 +726,13 @@ jobs:
           set -euo pipefail
           ./scripts/run-admission-identity-conformance.sh
 
+      - name: MUD1C admission-context C/Gateway conformance
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-mud1c-admission-context-conformance.sh
+
       - name: Browser xterm onboarding contract
         if: matrix.runner == 'ubuntu-latest'
         shell: bash

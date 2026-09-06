@@ -214,7 +214,8 @@ long *parsed;
 {
     size_t index;
     long result = 0L, digit;
-    if(!length || length > 19U || !parsed) return 0;
+    if(!length || length > 19U || !parsed ||
+       (length > 1U && value[0] == '0')) return 0;
     for(index=0U; index<length; ++index) {
         if(value[index] < '0' || value[index] > '9') return 0;
         digit = (long)(value[index] - '0');
