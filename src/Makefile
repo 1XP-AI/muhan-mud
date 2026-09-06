@@ -347,14 +347,17 @@ onboarding-activated-command-snapshot-harness-sanitizer-test: onboarding-activat
 
 # Feature-off receipt proof at the existing artifact/journal boundary.  It is
 # intentionally not linked by either the default or M3 live object graph.
-onboarding-activation-snapshot-receipt-test: m3-feature-off-legacy-authority-test
+onboarding-activation-snapshot-receipt-static-test:
+	python3 ../tests/unit/onboarding_activation_snapshot_receipt_static_test.py
+
+onboarding-activation-snapshot-receipt-test: m3-feature-off-legacy-authority-test onboarding-activation-snapshot-receipt-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_test
+	$(CC) $(V2_TEST_CFLAGS) -DONBOARDING_ACTIVATION_SNAPSHOT_RECEIPT_TESTING -I. ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_test
 	/tmp/muhan-unit/onboarding_activation_snapshot_receipt_test
 
-onboarding-activation-snapshot-receipt-sanitizer-test: m3-feature-off-legacy-authority-sanitizer-test
+onboarding-activation-snapshot-receipt-sanitizer-test: m3-feature-off-legacy-authority-sanitizer-test onboarding-activation-snapshot-receipt-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_sanitizer_test
+	$(CC) $(V2_TEST_CFLAGS) -DONBOARDING_ACTIVATION_SNAPSHOT_RECEIPT_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_snapshot_receipt_sanitizer_test
 
 # Caller-owned composition only: this bridge installer remains outside both
