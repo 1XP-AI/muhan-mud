@@ -325,6 +325,21 @@ async function submitOnboardingInput(page: Page, value: string): Promise<void> {
   await expect(command).toHaveValue("");
 }
 
+async function submitOnboardingXtermInput(page: Page, value: string): Promise<void> {
+  // This deliberately targets xterm's browser-owned textarea instead of the
+  // responsive fallback form. In particular, the claim password reaches the
+  // live C prompt through the exact keyboard/onData/WebSocket route a desktop
+  // player uses; the value is never inspected or rendered by this assertion.
+  const terminal = page.getByLabel("캐릭터 온보딩 터미널");
+  await expect(terminal).toBeVisible();
+  const xtermInput = terminal.locator("textarea.xterm-helper-textarea");
+  await expect(xtermInput).toBeAttached();
+  await terminal.click();
+  await expect(xtermInput).toBeFocused();
+  await page.keyboard.type(value);
+  await page.keyboard.press("Enter");
+}
+
 async function assertRosterThenAdmission(page: Page, characterName: string): Promise<void> {
   await expect(page.locator(".selected-character-bar strong")).toHaveText(characterName);
   await expect(page.getByText("무한대전 세계와 연결됐습니다.")).toBeVisible();
@@ -386,9 +401,10 @@ export async function runWebStackAcceptance({
     await signInToEmptyRoster(claimPage, claim);
     await claimPage.getByRole("button", { name: "기존 캐릭터 연결" }).click();
     await expect(claimPage.getByRole("heading", { name: "기존 캐릭터 연결" })).toBeVisible();
-    await submitOnboardingInput(claimPage, claim.characterName);
-    await claimPage.getByLabel("게임 비밀번호 입력").fill(claim.gamePassword);
-    await claimPage.getByRole("button", { name: "보내기" }).click();
+    await submitOnboardingXtermInput(claimPage, claim.characterName);
+    const claimTerminal = claimPage.getByLabel("캐릭터 온보딩 터미널");
+    await expect(claimTerminal).toContainText(/암호를 넣어 주십시요/);
+    await submitOnboardingXtermInput(claimPage, claim.gamePassword);
     await assertRosterThenAdmission(claimPage, claim.characterName);
     await claimContext.close();
   } finally {

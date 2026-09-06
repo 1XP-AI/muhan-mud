@@ -844,8 +844,11 @@ async function main(): Promise<void> {
     assert.equal(webProvisionState, `active|${webProvisionActor}|${webProvisionName}`)
     const webClaimState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where id = '${webClaimCharacterId}'`)
     assert.equal(webClaimState, `active|${webClaimActor}|${webClaimName}`)
+    assert.equal(await sql(`select count(*) from private.game_imported_unclaimed_batch_members where character_id = '${webClaimCharacterId}'`), '1')
+    assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_name_sha1 || '|' || legacy_shard from private.game_imported_unclaimed_batch_member_legacy_locators where character_id = '${webClaimCharacterId}'`), `${webClaimName}|${createHash('sha1').update(webClaimName).digest('hex')}|${createHash('sha1').update(webClaimName).digest('hex').slice(0, 2)}`)
+    assert.equal(createHash('sha256').update(await readFile(webClaimPlayer)).digest('hex'), webClaimDigest)
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
-    evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-ui-active-roster-and-mud1-admission' })
+    evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-xterm-claim-password-active-roster-provenance-sha-mud1-admission' })
     evidence.status = 'passed'
   } catch (error) {
     scenarioFailed = true

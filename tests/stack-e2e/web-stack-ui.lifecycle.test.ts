@@ -249,6 +249,23 @@ test("web stack cleanup reports an already-unsuccessful server exit", async () =
   );
 });
 
+test("browser claim acceptance enters the C password through the rendered xterm keyboard path", async () => {
+  const webRunner = await readFile(new URL("./web-stack-ui.ts", import.meta.url), "utf8");
+  const claimAcceptance = webRunner.slice(webRunner.indexOf("const claimContext"));
+
+  assert.match(webRunner, /async function submitOnboardingXtermInput/);
+  assert.match(webRunner, /getByLabel\("캐릭터 온보딩 터미널"\)/);
+  assert.match(webRunner, /textarea\.xterm-helper-textarea/);
+  assert.match(webRunner, /toBeFocused\(\)/);
+  assert.match(webRunner, /page\.keyboard\.type\(value\)/);
+  assert.match(webRunner, /page\.keyboard\.press\("Enter"\)/);
+  assert.match(claimAcceptance, /submitOnboardingXtermInput\(claimPage, claim\.characterName\)/);
+  assert.match(claimAcceptance, /claimTerminal\)\.toContainText\(\/암호를 넣어 주십시요\//);
+  assert.match(claimAcceptance, /submitOnboardingXtermInput\(claimPage, claim\.gamePassword\)/);
+  assert.match(claimAcceptance, /assertRosterThenAdmission\(claimPage, claim\.characterName\)/);
+  assert.doesNotMatch(claimAcceptance, /게임 비밀번호 입력/);
+});
+
 test("runner starts a dedicated process group, targets pnpm descendants, and retains cleanup failures", async () => {
   const [webRunner, stackHarness, ciWorkflow] = await Promise.all([
     readFile(new URL("./web-stack-ui.ts", import.meta.url), "utf8"),
