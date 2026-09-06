@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
+import type { BankSnapshotV1Artifact } from './bank-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
 import type { ImmutablePlayerSnapshotLevelProjectionEvidence, ImmutablePlayerSnapshotLevelProjectionReader } from './player-snapshot-v1-level-comparator.js'
 import type { ImmutablePlayerSnapshotV1FullPayloadEvidence, ImmutablePlayerSnapshotV1FullPayloadReader } from './player-snapshot-v1-full-payload-rehearsal.js'
@@ -15,6 +16,12 @@ export interface ManifestStore {
 
 export interface PlayerSnapshotV1ArtifactStore {
   recordPlayerSnapshotV1Artifact(artifact: PlayerSnapshotV1Artifact): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
+/** Detached bank evidence writer; never used by the manifest or player relays. */
+export interface BankSnapshotV1TopologyShadowStore {
+  recordBankSnapshotV1TopologyShadow(artifact: BankSnapshotV1Artifact): Promise<StoreOutcome>
   close?(): Promise<void>
 }
 
@@ -154,6 +161,25 @@ export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1Ar
     } finally { client.release() }
   }
 
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+export class PostgresBankSnapshotV1TopologyShadowStore implements BankSnapshotV1TopologyShadowStore {
+  private readonly pool: PgPool
+  constructor(databaseUrl: string, pool?: PgPool) { this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: assertDatabaseUrl(databaseUrl), max: 1 }) }
+  async recordBankSnapshotV1TopologyShadow(artifact: BankSnapshotV1Artifact): Promise<StoreOutcome> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_bank_snapshot_v1_topology_shadow_for_receipt($1::uuid,$2::uuid,$3::text,$4::text,$5::bigint,$6::text,$7::bigint,$8::jsonb)',
+        [artifact.characterId, artifact.commandId, artifact.receiptRequestSha256, artifact.sourcePostSha256, artifact.sourceOctets, artifact.bankSha256, artifact.bankOctets, JSON.stringify(artifact.nodes)],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
   async close(): Promise<void> { await this.pool.end() }
 }
 
