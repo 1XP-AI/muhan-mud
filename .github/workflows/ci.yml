@@ -475,6 +475,14 @@ jobs:
           make -C src character-save-journal-v2-runtime-native-test \
             CC=gcc PG_CONFIG=pg_config
 
+      - name: Exercise M3 live-save production graph (Linux)
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src m3-feature-off-legacy-authority-test CC=gcc
+          make -C src m3-live-save-all-shadow-binding-test CC=gcc
+
       - name: Player snapshot portable contract (Linux/macOS)
         if: matrix.runner != 'windows-latest'
         shell: bash
@@ -638,6 +646,8 @@ jobs:
           make -C src character-save-journal-v2-process-owner-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
           make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
+          make -C src m3-feature-off-legacy-authority-sanitizer-test CC=gcc
+          make -C src m3-live-save-all-shadow-binding-sanitizer-test CC=gcc
           make -C src character-snapshot-shadow-outbox-sanitizer-test CC=gcc
           make -C src cdto-v1-sanitizer-test CC=gcc
           make -C src object-v1-sanitizer-test CC=gcc

@@ -156,6 +156,7 @@ unit-test:
 	$(MAKE) onboarding-activation-owner-runtime-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) m3-feature-off-legacy-authority-test
+	$(MAKE) m3-live-save-all-shadow-binding-test
 	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) m3-wake-v1-test
 	$(MAKE) m3-wake-supervisor-test
