@@ -3,6 +3,7 @@ import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
 import type { ImmutablePlayerSnapshotLevelProjectionEvidence, ImmutablePlayerSnapshotLevelProjectionReader } from './player-snapshot-v1-level-comparator.js'
+import type { ImmutablePlayerSnapshotV1FullPayloadEvidence, ImmutablePlayerSnapshotV1FullPayloadReader } from './player-snapshot-v1-full-payload-rehearsal.js'
 
 export type StoreOutcome = 'RECORDED' | 'EXACT_RETRY'
 
@@ -252,6 +253,55 @@ export class PostgresPlayerSnapshotV1LevelProjectionReader implements ImmutableP
   async close(): Promise<void> { await this.pool.end() }
 }
 
+/**
+ * Explicit full-payload rehearsal reader. It is intentionally a separate
+ * login from the metadata differential reader, has no write API, and is not
+ * constructed by a relay or default CLI.
+ */
+export class PostgresPlayerSnapshotV1FullPayloadRehearsalReader implements ImmutablePlayerSnapshotV1FullPayloadReader {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertFullPayloadRehearsalDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async findByCommandId(commandId: string): Promise<readonly ImmutablePlayerSnapshotV1FullPayloadEvidence[]> {
+    const client = await this.pool.connect()
+    try {
+      await assertFullPayloadRehearsalConnectionContract(client)
+      const result = await client.query<Record<string, unknown>>(
+        `select a.character_id::text as "characterId", a.command_id::text as "commandId",
+          a.world_id as "worldId", a.legacy_name_key as "legacyNameKey",
+          a.receipt_request_sha256 as "receiptRequestSha256",
+          a.writer_instance_id::text as "writerInstanceId", a.writer_epoch::text as "writerEpoch",
+          a.writer_revision::text as "writerRevision", a.source_post_sha256 as "sourcePostSha256",
+          a.source_octets::text as "sourceOctets", a.storage_format::text as "storageFormat",
+          a.receipt_acknowledged_at::text as "receiptAcknowledgedAt",
+          a.snapshot_format as "snapshotFormat", a.snapshot_sha256 as "snapshotSha256",
+          a.snapshot_octets::text as "snapshotOctets", a.payload as "payload",
+          json_build_object(
+            'characterId', r.character_id::text, 'commandId', r.command_id::text,
+            'worldId', r.world_id, 'legacyNameKey', r.legacy_name_key,
+            'requestSha256', r.request_sha256, 'writerInstanceId', r.writer_instance_id::text,
+            'writerEpoch', r.writer_epoch::text, 'writerRevision', r.writer_revision::text,
+            'postSha256', r.post_sha256, 'storageFormat', r.storage_format::text,
+            'acknowledgedAt', r.acknowledged_at::text
+          ) as "receipt"
+         from private.game_character_player_snapshot_v1_artifacts a
+         join private.game_character_shadow_receipts r
+           on r.character_id = a.character_id and r.command_id = a.command_id
+         where a.command_id = $1::uuid
+         order by a.character_id`,
+        [commandId],
+      )
+      return result.rows.map(parseFullPayloadRehearsalEvidence)
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
 interface ReplayDifferentialConnectionCheck {
   currentUser: unknown
   sessionUser: unknown
@@ -314,6 +364,40 @@ async function assertReplayLevelProjectionConnectionContract(client: PgClient): 
   }
 }
 
+interface FullPayloadRehearsalConnectionCheck extends ReplayDifferentialConnectionCheck {
+  canArtifactInsert: unknown
+  canArtifactUpdate: unknown
+  canArtifactDelete: unknown
+  canReceiptInsert: unknown
+  canReceiptUpdate: unknown
+  canReceiptDelete: unknown
+}
+
+/** The full payload is only readable through its distinct read-only login. */
+async function assertFullPayloadRehearsalConnectionContract(client: PgClient): Promise<void> {
+  const result = await client.query<FullPayloadRehearsalConnectionCheck>(
+    `select current_user as "currentUser", session_user as "sessionUser",
+      current_setting('default_transaction_read_only', true) as "defaultTransactionReadOnly",
+      current_setting('transaction_read_only', true) as "transactionReadOnly",
+      false as "canInsert", false as "canUpdate", false as "canDelete",
+      false as "canTruncate", false as "canReferences", false as "canTrigger",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'INSERT') as "canArtifactInsert",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'UPDATE') as "canArtifactUpdate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'DELETE') as "canArtifactDelete",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'INSERT') as "canReceiptInsert",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'UPDATE') as "canReceiptUpdate",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'DELETE') as "canReceiptDelete"`,
+  )
+  const check = result.rows[0]
+  if (!check || check.currentUser !== 'mud_full_payload_rehearsal_reader_login'
+    || check.sessionUser !== 'mud_full_payload_rehearsal_reader_login'
+    || check.defaultTransactionReadOnly !== 'on' || check.transactionReadOnly !== 'on'
+    || check.canArtifactInsert !== false || check.canArtifactUpdate !== false || check.canArtifactDelete !== false
+    || check.canReceiptInsert !== false || check.canReceiptUpdate !== false || check.canReceiptDelete !== false) {
+    throw new Error('invalid full payload rehearsal database connection')
+  }
+}
+
 function parseReplayDifferentialArtifactEvidence(value: Record<string, unknown>): PlayerSnapshotV1ReplayArtifactEvidence {
   const octets = typeof value.snapshotOctets === 'string' && /^\d+$/.test(value.snapshotOctets) ? Number(value.snapshotOctets) : NaN
   if (typeof value.commandId !== 'string' || typeof value.characterId !== 'string'
@@ -346,6 +430,58 @@ function parseReplayLevelProjectionEvidence(value: Record<string, unknown>): Imm
   }
 }
 
+function parseFullPayloadRehearsalEvidence(value: Record<string, unknown>): ImmutablePlayerSnapshotV1FullPayloadEvidence {
+  const snapshotOctets = typeof value.snapshotOctets === 'string' && /^\d+$/.test(value.snapshotOctets) ? Number(value.snapshotOctets) : NaN
+  const payload = value.payload instanceof Uint8Array ? Buffer.from(value.payload) : undefined
+  if (typeof value.characterId !== 'string' || !UUID_RE.test(value.characterId)
+    || typeof value.commandId !== 'string' || !UUID_RE.test(value.commandId)
+    || typeof value.worldId !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(value.worldId)
+    || typeof value.legacyNameKey !== 'string' || value.legacyNameKey.length < 1 || value.legacyNameKey.length > 14
+    || typeof value.receiptRequestSha256 !== 'string' || !SHA256_RE.test(value.receiptRequestSha256)
+    || typeof value.writerInstanceId !== 'string' || !UUID_RE.test(value.writerInstanceId)
+    || !positiveDbInteger(value.writerEpoch) || !positiveDbInteger(value.writerRevision)
+    || typeof value.sourcePostSha256 !== 'string' || !SHA256_RE.test(value.sourcePostSha256)
+    || !positiveDbInteger(value.sourceOctets) || !positiveDbInteger(value.storageFormat)
+    || BigInt(value.storageFormat) > 32_767n || typeof value.receiptAcknowledgedAt !== 'string' || !value.receiptAcknowledgedAt
+    || value.snapshotFormat !== 'player-snapshot-v1' || typeof value.snapshotSha256 !== 'string' || !SHA256_RE.test(value.snapshotSha256)
+    || !Number.isSafeInteger(snapshotOctets) || snapshotOctets < 48 || snapshotOctets > 4_194_352
+    || !payload || payload.length !== snapshotOctets || !isFullPayloadReceipt(value.receipt)) {
+    throw new Error('invalid full payload rehearsal database result')
+  }
+  return {
+    characterId: value.characterId, commandId: value.commandId, worldId: value.worldId,
+    legacyNameKey: value.legacyNameKey, receiptRequestSha256: value.receiptRequestSha256,
+    writerInstanceId: value.writerInstanceId, writerEpoch: value.writerEpoch, writerRevision: value.writerRevision,
+    sourcePostSha256: value.sourcePostSha256, sourceOctets: value.sourceOctets, storageFormat: value.storageFormat,
+    receiptAcknowledgedAt: value.receiptAcknowledgedAt, snapshotFormat: 'player-snapshot-v1',
+    snapshotSha256: value.snapshotSha256, snapshotOctets, payload, receipt: value.receipt,
+  }
+}
+
+function positiveDbInteger(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^[1-9][0-9]{0,18}$/.test(value)) return false
+  try { return BigInt(value) <= 9_223_372_036_854_775_807n } catch { return false }
+}
+
+function isFullPayloadReceipt(value: unknown): value is ImmutablePlayerSnapshotV1FullPayloadEvidence['receipt'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const receipt = value as Record<string, unknown>
+  const keys = Object.keys(receipt).sort()
+  return keys.length === 11 && keys.every((key, index) => key === [
+    'acknowledgedAt', 'characterId', 'commandId', 'legacyNameKey', 'postSha256', 'requestSha256',
+    'storageFormat', 'worldId', 'writerEpoch', 'writerInstanceId', 'writerRevision',
+  ][index]) && typeof receipt.characterId === 'string' && UUID_RE.test(receipt.characterId)
+    && typeof receipt.commandId === 'string' && UUID_RE.test(receipt.commandId)
+    && typeof receipt.worldId === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(receipt.worldId)
+    && typeof receipt.legacyNameKey === 'string' && receipt.legacyNameKey.length >= 1 && receipt.legacyNameKey.length <= 14
+    && typeof receipt.requestSha256 === 'string' && SHA256_RE.test(receipt.requestSha256)
+    && typeof receipt.writerInstanceId === 'string' && UUID_RE.test(receipt.writerInstanceId)
+    && positiveDbInteger(receipt.writerEpoch) && positiveDbInteger(receipt.writerRevision)
+    && typeof receipt.postSha256 === 'string' && SHA256_RE.test(receipt.postSha256)
+    && positiveDbInteger(receipt.storageFormat) && BigInt(receipt.storageFormat) <= 32_767n
+    && typeof receipt.acknowledgedAt === 'string' && receipt.acknowledgedAt.length > 0
+}
+
 /** Reject REST/Supabase credentials and require the dedicated direct-DB login. */
 export function assertDatabaseUrl(value: string | undefined): string {
   if (!value) throw new Error('invalid relay configuration')
@@ -371,5 +507,20 @@ export function assertReplayDifferentialDatabaseUrl(value: string | undefined): 
     || /service_role|anon|authenticated/i.test(url.username)
     || /service_role|apikey|authorization|access_token|jwt/i.test(url.search)
     || /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(value)) throw new Error('invalid replay differential configuration')
+  return value
+}
+
+/** Full payload rehearsal has a distinct least-privilege direct reader login. */
+export function assertFullPayloadRehearsalDatabaseUrl(value: string | undefined): string {
+  if (!value) throw new Error('invalid full payload rehearsal configuration')
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('invalid full payload rehearsal configuration') }
+  const options = url.searchParams.getAll('options')
+  if ((url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') || !url.hostname
+    || url.username !== 'mud_full_payload_rehearsal_reader_login'
+    || options.length !== 1 || options[0]!.trim() !== '-c default_transaction_read_only=on'
+    || /service_role|anon|authenticated/i.test(url.username)
+    || /service_role|apikey|authorization|access_token|jwt/i.test(url.search)
+    || /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(value)) throw new Error('invalid full payload rehearsal configuration')
   return value
 }
