@@ -11,6 +11,10 @@ export interface GatewayConfig {
   mudOnboardingEnabled: boolean
   /** Mirrors the C adapter: only the exact environment value "1" opts in. */
   mudOnboardingEvidenceEnabled: boolean
+  /** Per direct-TCP-peer onboarding upgrades; zero deliberately disables it. */
+  onboardingSourceAttemptLimit: number
+  onboardingSourceAttemptWindowMs: number
+  onboardingSourceAttemptMaxKeys: number
   authDisabled: boolean
   supabaseUrl?: string
   supabaseAuthUrl?: string
@@ -199,6 +203,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     requireSecureTransport: environment === 'production',
     mudOnboardingEnabled,
     mudOnboardingEvidenceEnabled,
+    // Disabled by default because deployments behind an unconfigured reverse
+    // proxy would otherwise count every browser as the proxy's one address.
+    onboardingSourceAttemptLimit: requiredInteger(env.MUD_ONBOARDING_SOURCE_ATTEMPT_LIMIT, 'MUD_ONBOARDING_SOURCE_ATTEMPT_LIMIT', 0, 0),
+    onboardingSourceAttemptWindowMs: requiredInteger(env.MUD_ONBOARDING_SOURCE_ATTEMPT_WINDOW_MS, 'MUD_ONBOARDING_SOURCE_ATTEMPT_WINDOW_MS', 60_000, 100),
+    onboardingSourceAttemptMaxKeys: requiredInteger(env.MUD_ONBOARDING_SOURCE_ATTEMPT_MAX_KEYS, 'MUD_ONBOARDING_SOURCE_ATTEMPT_MAX_KEYS', 10_000, 1),
     authDisabled,
     supabaseUrl,
     supabaseAuthUrl,

@@ -17,6 +17,7 @@ import { TelnetParser } from './telnet.js'
 import { createOnboardingTicket, OnboardingControlDemultiplexer, OnboardingProtocolError, parseOnboardingAuthFrame, type OnboardingControl } from './onboarding-protocol.js'
 import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type BindSnapshotCommandRequest, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
 import { GatewayEvidenceFinalizer, SupabaseEvidenceFinalizerTransport, type FinalizeLegacyIdentityEvidenceRequest } from './evidence-finalizer.js'
+import { authoritativeOnboardingSourceAddress, OnboardingSourceAttemptLimiter } from './onboarding-source-attempt-limiter.js'
 
 const PROTOCOL = 'muhan.v1'
 const ONBOARDING_PROTOCOL = 'muhan.onboarding.v1'
@@ -191,6 +192,12 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
     ? new GatewayEvidenceFinalizer(new SupabaseEvidenceFinalizerTransport(config))
     : undefined)
   const connectTcp = dependencies.connectTcp ?? ((host, port) => createConnection({ host, port }))
+  const onboardingAttemptLimiter = new OnboardingSourceAttemptLimiter({
+    maxAttempts: config.onboardingSourceAttemptLimit,
+    windowMs: config.onboardingSourceAttemptWindowMs,
+    maxKeys: config.onboardingSourceAttemptMaxKeys,
+    now,
+  })
   let accepting = true
   let activeConnections = 0
   const sessions = new Set<GatewaySession | OnboardingSession>()
@@ -249,6 +256,14 @@ export function createGateway(config: GatewayConfig, dependencies: GatewayDepend
     if (activeConnections >= config.maxConnections) {
       socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
       socket.destroy()
+      return
+    }
+    // This happens before WebSocket upgrade/session construction, so a denied
+    // browser attempt cannot authenticate or open a TCP connection to the MUD.
+    // The source is request.socket.remoteAddress only; X-Forwarded-For is not
+    // trusted without a separately configured proxy trust boundary.
+    if (onboarding && !onboardingAttemptLimiter.allow(authoritativeOnboardingSourceAddress(request.socket.remoteAddress))) {
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n')
       return
     }
     const target = onboarding ? onboardingWebSocketServer : webSocketServer
