@@ -41,8 +41,9 @@ effect and remain available to a later one-shot scan. The separate legacy
 The separate `player-snapshot-v1-artifact-cli` continues to provide opt-in
 replay observation. It builds the pinned Rust `player_snapshot_v1_replay_verify`
 binary and injects its absolute path through
-`M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`; that observer is not enabled by
-the paired manifest-first image. When enabled, the relay passes only the
+`M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`, together with a separate absolute,
+node-writable `M4_PLAYER_SNAPSHOT_V1_REPLAY_JOURNAL_PATH`; that observer is
+not enabled by the paired manifest-first image. When enabled, the relay passes only the
 already-validated canonical CDTO bytes on stdin and the immutable artifact
 `snapshot_sha256` as fixed shell-free arguments; an unavailable, timed-out, or
 rejecting verifier is reported as `replayFailed` without changing relay,
