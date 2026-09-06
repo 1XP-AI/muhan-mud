@@ -21,4 +21,4 @@ COPY --from=relay-build /build/services/m4-file-snapshot-manifest-relay/dist ./d
 COPY --from=core-dto-build --chmod=0555 /build/rust/target/release/player_snapshot_v1_replay_verify /usr/local/libexec/muhan/player_snapshot_v1_replay_verify
 ENV M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH=/usr/local/libexec/muhan/player_snapshot_v1_replay_verify
 USER node
-ENTRYPOINT ["node", "dist/player-snapshot-v1-artifact-cli.js"]
+ENTRYPOINT ["node", "dist/player-snapshot-v1-manifest-first-cli.js"]

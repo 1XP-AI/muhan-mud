@@ -29,13 +29,20 @@ function call. SQLSTATE `22023` is counted as invalid, `P0001` as conflict,
 and class `08`/transport failures as retryable. The JSON output is aggregate
 only and contains no paths, names, hashes, payloads, or credentials.
 
-The dedicated `player-snapshot-v1-artifact-cli` image builds the pinned Rust
-`player_snapshot_v1_replay_verify` binary and injects its absolute path through
-`M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`. The artifact relay sends only the
-already-parsed CDTO payload to that binary; `replayObserved` and
-`replayDisabled` are aggregate observation counters only, and neither result
-changes database recording or legacy M4 headers. A missing runner, an invalid
-path, execution failure, or invalid report is counted as `replayDisabled`.
+The paired-shadow image uses the dedicated
+`player-snapshot-v1-manifest-first-cli` entrypoint. For every complete M3
+PlayerSnapshotV1/legacy-manifest pair it records the canonical manifest first,
+then records the artifact only when that manifest record was recorded or an
+exact retry. It never deletes, renames, rewrites, acknowledges, fulfills, or
+projects source evidence; incomplete or malformed pairs have no database side
+effect and remain available to a later one-shot scan. The separate legacy
+`cli` manifest relay remains available through the package `start` command.
+
+The separate `player-snapshot-v1-artifact-cli` continues to provide opt-in
+replay observation. It builds the pinned Rust `player_snapshot_v1_replay_verify`
+binary and injects its absolute path through
+`M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`; that observer is not enabled by
+the paired manifest-first image.
 
 Onboarding-eligibility fulfillment is a separate, default-OFF authority step.
 Only `M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED=true` supplies that

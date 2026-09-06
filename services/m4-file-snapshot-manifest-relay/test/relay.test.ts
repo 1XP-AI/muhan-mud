@@ -12,6 +12,8 @@ import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
 import { main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
+import { main as manifestFirstRelayMain } from '../src/player-snapshot-v1-manifest-first-cli.js'
+import { relayPlayerSnapshotV1ManifestFirstOnce, type PlayerSnapshotV1ManifestFirstFilesystem } from '../src/player-snapshot-v1-manifest-first-relay.js'
 import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
@@ -789,4 +791,129 @@ test('PlayerSnapshotV1 raw-U8 level projection adapter uses SET ROLE and one par
   assert.deepEqual(queries[1]?.values, [
     input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets,
   ])
+})
+
+test('paired shadow relay records the manifest before its PlayerSnapshotV1 artifact and exactly retries both', async () => {
+  const manifest = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const sourceEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact) }
+  const originalEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact) }
+  const calls: string[] = []
+  let attempt = 0
+  const filesystem: PlayerSnapshotV1ManifestFirstFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: sourceEvidence.artifact, receiptManifestBytes: sourceEvidence.manifest }],
+  }
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async (value) => { calls.push(`manifest:${value.commandId}`); return attempt === 0 ? 'RECORDED' : 'EXACT_RETRY' },
+    recordPlayerSnapshotV1Artifact: async (value) => { calls.push(`artifact:${value.commandId}`); return attempt++ === 0 ? 'RECORDED' : 'EXACT_RETRY' },
+  }
+
+  const recorded = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+  const retried = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+
+  assert.deepEqual(calls, [`manifest:${first}`, `artifact:${first}`, `manifest:${first}`, `artifact:${first}`])
+  assert.equal(recorded.manifestRecorded, 1)
+  assert.equal(recorded.artifactRecorded, 1)
+  assert.equal(retried.manifestExactRetry, 1)
+  assert.equal(retried.artifactExactRetry, 1)
+  assert.deepEqual(sourceEvidence, originalEvidence)
+})
+
+test('paired shadow relay does not invoke the artifact RPC when manifest delivery fails and retries unchanged evidence', async () => {
+  const manifest = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const sourceEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact) }
+  const originalEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact) }
+  const calls: string[] = []
+  let manifestAttempts = 0
+  const filesystem: PlayerSnapshotV1ManifestFirstFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: sourceEvidence.artifact, receiptManifestBytes: sourceEvidence.manifest }],
+  }
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async () => {
+      calls.push('manifest')
+      if (manifestAttempts++ === 0) throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' })
+      return 'RECORDED'
+    },
+    recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return 'RECORDED' },
+  }
+
+  const failed = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+  assert.equal(failed.retryable, 1)
+  assert.equal(failed.artifactDelivered, 0)
+  assert.deepEqual(calls, ['manifest'])
+  assert.deepEqual(sourceEvidence, originalEvidence)
+
+  const retried = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+  assert.equal(retried.manifestRecorded, 1)
+  assert.equal(retried.artifactRecorded, 1)
+  assert.deepEqual(calls, ['manifest', 'manifest', 'artifact'])
+  assert.deepEqual(sourceEvidence, originalEvidence)
+})
+
+test('paired shadow relay preserves malformed and initially missing pair evidence without side effects', async () => {
+  const manifest = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const sourceEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact), malformed: Buffer.from('not-a-manifest') }
+  const originalEvidence = { manifest: Buffer.from(manifest), artifact: Buffer.from(artifact), malformed: Buffer.from('not-a-manifest') }
+  const calls: string[] = []
+  let scan = 0
+  const filesystem: PlayerSnapshotV1ManifestFirstFilesystem = {
+    scan: async () => {
+      scan++
+      if (scan === 1) return [
+        { name: `${first}.player-snapshot-v1`, bytes: sourceEvidence.artifact, error: 'invalid' },
+        { name: `${second}.player-snapshot-v1`, bytes: sourceEvidence.artifact, receiptManifestBytes: sourceEvidence.malformed },
+      ]
+      return [{ name: `${first}.player-snapshot-v1`, bytes: sourceEvidence.artifact, receiptManifestBytes: sourceEvidence.manifest }]
+    },
+  }
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async () => { calls.push('manifest'); return 'RECORDED' },
+    recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return 'RECORDED' },
+  }
+
+  const incomplete = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+  assert.equal(incomplete.invalid, 2)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(sourceEvidence, originalEvidence)
+
+  const retried = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem)
+  assert.equal(retried.delivered, 1)
+  assert.deepEqual(calls, ['manifest', 'artifact'])
+  assert.deepEqual(sourceEvidence, originalEvidence)
+})
+
+test('combined entrypoint has no fulfillment or projection capability by default', async () => {
+  const calls: unknown[][] = []
+  const writes: string[] = []
+  let closed = 0
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async () => 'RECORDED',
+    recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
+    close: async () => { closed++ },
+  }
+  const dependencies = {
+    createStore: () => store,
+    relay: async (...args: Parameters<typeof relayPlayerSnapshotV1ManifestFirstOnce>) => {
+      calls.push(args)
+      return {
+        visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
+        manifestDelivered: 0, manifestRecorded: 0, manifestExactRetry: 0,
+        artifactDelivered: 0, artifactRecorded: 0, artifactExactRetry: 0,
+      }
+    },
+    writeStdout: (value: string) => { writes.push(value) },
+  }
+  const environment = {
+    M4_FILE_SNAPSHOT_OUTBOX_DIR: '/immutable/outbox',
+    DATABASE_URL: 'postgresql://mud_writer_login@localhost/postgres',
+    M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true',
+  }
+
+  assert.equal(await manifestFirstRelayMain(environment, ['--once'], dependencies), 0)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.length, 2)
+  assert.equal(closed, 1)
+  assert.equal(writes.length, 1)
 })
