@@ -12,7 +12,7 @@
     "test:legacy:unit": "make -C src unit-test",
     "test:legacy:scenario": "./scripts/run-ai-scenario.sh",
     "test:legacy": "pnpm test:legacy:unit && pnpm test:legacy:scenario",
-    "test:browser": "playwright test --config=tests/browser-e2e/playwright.config.ts",
+    "test:browser": "playwright test --config=tests/browser-e2e/playwright.config.ts && playwright test --config=tests/browser-e2e/playwright.feature-off.config.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {

@@ -20,8 +20,11 @@ type MockRosterCharacter = {
 };
 
 type BrowserBoundaryState = {
+  heldRosterResponses: Array<() => void>;
   roster: MockRosterCharacter[];
+  rosterFulfillments: number;
   rosterRequests: number;
+  holdRosterResponses: boolean;
 };
 
 const browserBoundaryStates = new WeakMap<Page, BrowserBoundaryState>();
@@ -33,7 +36,13 @@ declare global {
 }
 
 async function installBoundaries(page: Page): Promise<void> {
-  const state: BrowserBoundaryState = { roster: [], rosterRequests: 0 };
+  const state: BrowserBoundaryState = {
+    heldRosterResponses: [],
+    roster: [],
+    rosterFulfillments: 0,
+    rosterRequests: 0,
+    holdRosterResponses: false,
+  };
   browserBoundaryStates.set(page, state);
 
   await page.route("**/auth/v1/token**", async (route) => {
@@ -75,11 +84,15 @@ async function installBoundaries(page: Page): Promise<void> {
 
   await page.route("**/rest/v1/game_characters**", async (route) => {
     state.rosterRequests += 1;
+    if (state.holdRosterResponses) {
+      await new Promise<void>((resolve) => state.heldRosterResponses.push(resolve));
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify(state.roster),
     });
+    state.rosterFulfillments += 1;
   });
 
   await page.addInitScript(() => {
@@ -247,6 +260,12 @@ async function onboardingBytes(page: Page): Promise<number[][]> {
   });
 }
 
+async function expectOnboardingTerminalText(page: Page, expected: string): Promise<void> {
+  await expect.poll(async () => (
+    await page.locator(".onboarding-viewport .xterm-screen").textContent()
+  ) ?? "").toContain(expected);
+}
+
 async function normalGatewayTraffic(page: Page): Promise<{
   messages: string[];
   sentBytes: number[][];
@@ -266,6 +285,13 @@ function setMockActiveRoster(page: Page, character: MockRosterCharacter): void {
   state.roster = [character];
 }
 
+function releaseHeldRosterResponses(page: Page): void {
+  const state = browserBoundaryStates.get(page);
+  if (!state) throw new Error("mocked browser boundaries were not installed");
+  state.holdRosterResponses = false;
+  for (const release of state.heldRosterResponses.splice(0)) release();
+}
+
 async function completeOnboardingToActiveRoster(
   page: Page,
   completion: "provisioned" | "claimed",
@@ -275,13 +301,21 @@ async function completeOnboardingToActiveRoster(
   if (!state) throw new Error("mocked browser boundaries were not installed");
 
   const requestsBeforeCompletion = state.rosterRequests;
+  const fulfillmentsBeforeCompletion = state.rosterFulfillments;
+  state.holdRosterResponses = true;
   setMockActiveRoster(page, character);
   await emitOnboardingControl(page, { type: completion, characterId: character.id });
 
-  // Completion can only hand the browser to the ordinary /ws terminal after
-  // the owned, active roster request has resolved.
+  // A request beginning is not enough: while the active-roster response is
+  // deliberately held, no ordinary /ws socket or auth frame may exist.
   expect(await normalGatewaySocketCount(page)).toBe(0);
   await expect.poll(() => state.rosterRequests).toBeGreaterThan(requestsBeforeCompletion);
+  await expect.poll(() => state.heldRosterResponses.length).toBeGreaterThan(0);
+  expect(state.rosterFulfillments).toBe(fulfillmentsBeforeCompletion);
+  expect(await normalGatewayTraffic(page)).toEqual({ messages: [], sentBytes: [] });
+
+  releaseHeldRosterResponses(page);
+  await expect.poll(() => state.rosterFulfillments).toBeGreaterThan(fulfillmentsBeforeCompletion);
 }
 
 async function assertGatewayAdmissionAfterOnboarding(
@@ -325,7 +359,8 @@ for (const completedFlow of [
       legacy_name: "Provisioner",
       lifecycle: "active" as const,
     },
-    cVisiblePrompts: ["이름? ", "성별? "],
+    cVisibleOutput: ["\r\n이름? ", "\r\n성별? "],
+    safePromptText: ["이름? ", "성별? "],
     commandLines: ["Provisioner", "m"],
   },
   {
@@ -337,9 +372,9 @@ for (const completedFlow of [
       legacy_name: "Claimhero",
       lifecycle: "active" as const,
     },
-    cVisiblePrompts: ["기존 이름? ", "게임 비밀번호? "],
+    cVisibleOutput: ["\r\n기존 이름? ", "\r\n게임 비밀번호? "],
+    safePromptText: ["기존 이름? ", "게임 비밀번호? "],
     commandLines: ["Claimhero"],
-    password: "legacy-claim-secret",
   },
 ]) {
   test(`C-visible ${completedFlow.mode} transcript refreshes an active roster before normal admission`, async ({ page }) => {
@@ -352,31 +387,30 @@ for (const completedFlow of [
     const normalSocketCountBeforeTranscript = await normalGatewaySocketCount(page);
     expect(normalSocketCountBeforeTranscript).toBe(0);
 
-    const visibleTranscript = completedFlow.cVisiblePrompts.map((prompt) =>
-      [...new TextEncoder().encode(prompt)],
+    const visibleTranscript = completedFlow.cVisibleOutput.map((output) =>
+      [...new TextEncoder().encode(output)],
     );
     await emitOnboardingBytes(page, visibleTranscript[0]!);
-    for (const line of completedFlow.commandLines) {
+    await expectOnboardingTerminalText(page, completedFlow.safePromptText[0]!);
+    for (const [index, line] of completedFlow.commandLines.entries()) {
       const command = page.getByLabel("온보딩 입력");
       await command.fill(line);
       await page.getByRole("button", { name: "보내기" }).click();
-      if (line !== completedFlow.commandLines.at(-1)) {
-        await emitOnboardingBytes(page, visibleTranscript[completedFlow.commandLines.indexOf(line) + 1]!);
+      if (index + 1 < completedFlow.commandLines.length) {
+        await emitOnboardingBytes(page, visibleTranscript[index + 1]!);
+        await expectOnboardingTerminalText(page, completedFlow.safePromptText[index + 1]!);
       }
     }
 
     const expectedOnboardingBytes = completedFlow.commandLines.map((line) =>
       [...new TextEncoder().encode(`${line}\n`)],
     );
-    if (completedFlow.password) {
-      // Telnet's echo negotiation and its prompt are the final C-visible
-      // claim step; CHALLENGE and ALLOW remain private to the Gateway/C lane.
+    if (completedFlow.mode === "claim") {
+      // Telnet's echo negotiation and its prompt are C-visible; only the
+      // safe prompt text is rendered/asserted here, never a password.
       await emitOnboardingControl(page, { type: "echo", enabled: false });
       await emitOnboardingBytes(page, [255, 251, 1, ...visibleTranscript[1]!]);
-      const password = page.getByLabel("게임 비밀번호 입력");
-      await password.fill(completedFlow.password);
-      await page.getByRole("button", { name: "보내기" }).click();
-      expectedOnboardingBytes.push([...new TextEncoder().encode(`${completedFlow.password}\n`)]);
+      await expectOnboardingTerminalText(page, completedFlow.safePromptText[1]!);
     }
     await expect.poll(() => onboardingBytes(page)).toEqual(expectedOnboardingBytes);
 
@@ -396,22 +430,6 @@ for (const completedFlow of [
     }]);
   });
 }
-
-test("feature-off keeps the empty roster unreachable from the onboarding socket", async ({ page }) => {
-  test.skip(
-    process.env.MUD_ONBOARDING_ENABLED !== "false",
-    "run this focused mock-browser contract with MUD_ONBOARDING_ENABLED=false",
-  );
-
-  await signInToEmptyRoster(page);
-  await expect(page.getByRole("button", { name: "새 캐릭터 만들기" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "기존 캐릭터 연결" })).toHaveCount(0);
-  await expect(page.getByText("이 서버에서는 기존 캐릭터 연결을 웹에서 시작할 수 없습니다.")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => (
-    window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")).length ?? 0
-  ))).toBe(0);
-  expect(await normalGatewaySocketCount(page)).toBe(0);
-});
 
 test("provision mounts real xterm and sends typed and pasted input as exact onboarding bytes", async ({ page }) => {
   await signInToEmptyRoster(page);

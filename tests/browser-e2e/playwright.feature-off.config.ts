@@ -1,18 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = 3123;
+const port = 3124;
 
 export default defineConfig({
   testDir: ".",
-  testIgnore: "mud-portal.feature-off.spec.ts",
+  testMatch: "mud-portal.feature-off.spec.ts",
   fullyParallel: false,
   workers: 1,
   timeout: 20_000,
   expect: { timeout: 5_000 },
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  reporter: [["list"], ["json", { outputFile: "output/playwright/browser-results.json" }]],
-  outputDir: "output/playwright/test-results",
+  reporter: [["list"], ["json", { outputFile: "output/playwright/browser-feature-off-results.json" }]],
+  outputDir: "output/playwright/feature-off-test-results",
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: "retain-on-failure",
@@ -20,12 +20,7 @@ export default defineConfig({
     video: "off",
     serviceWorkers: "block",
   },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  projects: [{ name: "chromium-feature-off", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     command: `pnpm --filter @muhan/web dev --hostname 127.0.0.1 --port ${port}`,
     cwd: process.cwd(),
@@ -37,7 +32,7 @@ export default defineConfig({
       SUPABASE_PUBLIC_URL: `http://127.0.0.1:${port}`,
       SUPABASE_PUBLISHABLE_KEY: "public-test-key-placeholder",
       MUD_GATEWAY_URL: "ws://gateway.local:9911/ws",
-      MUD_ONBOARDING_ENABLED: "true",
+      MUD_ONBOARDING_ENABLED: "false",
     },
   },
 });
