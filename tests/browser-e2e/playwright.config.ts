@@ -36,7 +36,9 @@ export default defineConfig({
       SUPABASE_PUBLIC_URL: `http://127.0.0.1:${port}`,
       SUPABASE_PUBLISHABLE_KEY: "public-test-key-placeholder",
       MUD_GATEWAY_URL: "ws://gateway.local:9911/ws",
-      MUD_ONBOARDING_ENABLED: "true",
+      // The feature-off browser contract starts the same mocked app with this
+      // value set to false from its focused local test command.
+      MUD_ONBOARDING_ENABLED: process.env.MUD_ONBOARDING_ENABLED ?? "true",
     },
   },
 });

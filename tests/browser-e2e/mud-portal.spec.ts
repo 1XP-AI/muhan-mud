@@ -204,6 +204,14 @@ async function fakeSocketCount(page: Page): Promise<number> {
   return page.evaluate(() => window.__muhanFakeSockets?.length ?? 0);
 }
 
+async function normalGatewaySocketCount(page: Page): Promise<number> {
+  return page.evaluate(() => (
+    window.__muhanFakeSockets?.filter(
+      (entry) => entry.url.includes("gateway.local") && !entry.url.includes("/onboarding"),
+    ).length ?? 0
+  ));
+}
+
 async function waitForOnboardingSocket(
   page: Page,
   mode: "provision" | "claim" = "provision",
@@ -225,6 +233,33 @@ async function emitOnboardingControl(
   }, control);
 }
 
+async function emitOnboardingBytes(page: Page, bytes: number[]): Promise<void> {
+  await page.evaluate((value) => {
+    const sockets = window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")) ?? [];
+    sockets[sockets.length - 1]?.emitMessage(new Uint8Array(value).buffer);
+  }, bytes);
+}
+
+async function onboardingBytes(page: Page): Promise<number[][]> {
+  return page.evaluate(() => {
+    const sockets = window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")) ?? [];
+    return sockets[sockets.length - 1]?.sentBytes ?? [];
+  });
+}
+
+async function normalGatewayTraffic(page: Page): Promise<{
+  messages: string[];
+  sentBytes: number[][];
+}> {
+  return page.evaluate(() => {
+    const sockets = window.__muhanFakeSockets?.filter(
+      (entry) => entry.url.includes("gateway.local") && !entry.url.includes("/onboarding"),
+    ) ?? [];
+    const socket = sockets[sockets.length - 1];
+    return { messages: socket?.messages ?? [], sentBytes: socket?.sentBytes ?? [] };
+  });
+}
+
 function setMockActiveRoster(page: Page, character: MockRosterCharacter): void {
   const state = browserBoundaryStates.get(page);
   if (!state) throw new Error("mocked browser boundaries were not installed");
@@ -243,6 +278,9 @@ async function completeOnboardingToActiveRoster(
   setMockActiveRoster(page, character);
   await emitOnboardingControl(page, { type: completion, characterId: character.id });
 
+  // Completion can only hand the browser to the ordinary /ws terminal after
+  // the owned, active roster request has resolved.
+  expect(await normalGatewaySocketCount(page)).toBe(0);
   await expect.poll(() => state.rosterRequests).toBeGreaterThan(requestsBeforeCompletion);
 }
 
@@ -287,6 +325,8 @@ for (const completedFlow of [
       legacy_name: "Provisioner",
       lifecycle: "active" as const,
     },
+    cVisiblePrompts: ["이름? ", "성별? "],
+    commandLines: ["Provisioner", "m"],
   },
   {
     mode: "claim" as const,
@@ -297,14 +337,48 @@ for (const completedFlow of [
       legacy_name: "Claimhero",
       lifecycle: "active" as const,
     },
+    cVisiblePrompts: ["기존 이름? ", "게임 비밀번호? "],
+    commandLines: ["Claimhero"],
+    password: "legacy-claim-secret",
   },
 ]) {
-  test(`completed ${completedFlow.mode} refreshes to an active roster and permits normal game admission`, async ({ page }) => {
+  test(`C-visible ${completedFlow.mode} transcript refreshes an active roster before normal admission`, async ({ page }) => {
     await signInToEmptyRoster(page);
     await page.getByRole("button", {
       name: completedFlow.mode === "provision" ? "새 캐릭터 만들기" : "기존 캐릭터 연결",
     }).click();
     await waitForOnboardingSocket(page, completedFlow.mode);
+
+    const normalSocketCountBeforeTranscript = await normalGatewaySocketCount(page);
+    expect(normalSocketCountBeforeTranscript).toBe(0);
+
+    const visibleTranscript = completedFlow.cVisiblePrompts.map((prompt) =>
+      [...new TextEncoder().encode(prompt)],
+    );
+    await emitOnboardingBytes(page, visibleTranscript[0]!);
+    for (const line of completedFlow.commandLines) {
+      const command = page.getByLabel("온보딩 입력");
+      await command.fill(line);
+      await page.getByRole("button", { name: "보내기" }).click();
+      if (line !== completedFlow.commandLines.at(-1)) {
+        await emitOnboardingBytes(page, visibleTranscript[completedFlow.commandLines.indexOf(line) + 1]!);
+      }
+    }
+
+    const expectedOnboardingBytes = completedFlow.commandLines.map((line) =>
+      [...new TextEncoder().encode(`${line}\n`)],
+    );
+    if (completedFlow.password) {
+      // Telnet's echo negotiation and its prompt are the final C-visible
+      // claim step; CHALLENGE and ALLOW remain private to the Gateway/C lane.
+      await emitOnboardingControl(page, { type: "echo", enabled: false });
+      await emitOnboardingBytes(page, [255, 251, 1, ...visibleTranscript[1]!]);
+      const password = page.getByLabel("게임 비밀번호 입력");
+      await password.fill(completedFlow.password);
+      await page.getByRole("button", { name: "보내기" }).click();
+      expectedOnboardingBytes.push([...new TextEncoder().encode(`${completedFlow.password}\n`)]);
+    }
+    await expect.poll(() => onboardingBytes(page)).toEqual(expectedOnboardingBytes);
 
     await completeOnboardingToActiveRoster(
       page,
@@ -312,8 +386,32 @@ for (const completedFlow of [
       completedFlow.character,
     );
     await assertGatewayAdmissionAfterOnboarding(page, completedFlow.character);
+
+    const normalTraffic = await normalGatewayTraffic(page);
+    expect(normalTraffic.sentBytes).toEqual([]);
+    expect(normalTraffic.messages.map((message) => JSON.parse(message))).toEqual([{
+      type: "auth",
+      accessToken: ACCESS_TOKEN,
+      characterId: completedFlow.character.id,
+    }]);
   });
 }
+
+test("feature-off keeps the empty roster unreachable from the onboarding socket", async ({ page }) => {
+  test.skip(
+    process.env.MUD_ONBOARDING_ENABLED !== "false",
+    "run this focused mock-browser contract with MUD_ONBOARDING_ENABLED=false",
+  );
+
+  await signInToEmptyRoster(page);
+  await expect(page.getByRole("button", { name: "새 캐릭터 만들기" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "기존 캐릭터 연결" })).toHaveCount(0);
+  await expect(page.getByText("이 서버에서는 기존 캐릭터 연결을 웹에서 시작할 수 없습니다.")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")).length ?? 0
+  ))).toBe(0);
+  expect(await normalGatewaySocketCount(page)).toBe(0);
+});
 
 test("provision mounts real xterm and sends typed and pasted input as exact onboarding bytes", async ({ page }) => {
   await signInToEmptyRoster(page);
