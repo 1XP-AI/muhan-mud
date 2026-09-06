@@ -41,5 +41,8 @@ int bank_store_load(char *name, struct object **object);
 /* The FileStore uses the unchanged legacy open/read_obj/write_obj mechanics. */
 int file_bank_store_save(char *name, struct object *object);
 int file_bank_store_load(char *name, struct object **object);
+/* Fixed FileStore locator for read-only, metadata-only evidence.  It never
+ * consults or changes the active bank_store binding. */
+int file_bank_store_open_readonly(char *name);
 
 #endif
