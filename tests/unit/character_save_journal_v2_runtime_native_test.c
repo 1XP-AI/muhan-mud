@@ -43,6 +43,8 @@ void test_free(void *memory);
 #define character_player_snapshot_v1_handoff_enable_receipt_pair test_snapshot_handoff_enable_receipt_pair
 #define character_player_snapshot_v1_receipt_pair_commit test_snapshot_receipt_pair_commit
 #define player_snapshot_v1_native_abi_supported test_snapshot_native_abi_supported
+#define character_player_snapshot_v1_artifact_load_metadata_for_command test_artifact_load_metadata_for_command
+#define character_player_snapshot_v1_read_rehearsal_load test_read_rehearsal_load
 
 #include "character_save_journal_v2_runtime_native.c"
 
@@ -73,11 +75,15 @@ void test_free(void *memory);
 #undef character_player_snapshot_v1_handoff_enable_receipt_pair
 #undef character_player_snapshot_v1_receipt_pair_commit
 #undef player_snapshot_v1_native_abi_supported
+#undef character_player_snapshot_v1_artifact_load_metadata_for_command
+#undef character_player_snapshot_v1_read_rehearsal_load
 #undef malloc
 #undef free
 
 #include <stdio.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static union {
     long alignment;
@@ -94,6 +100,14 @@ static int process_owner_shutdown_calls;
 static int process_owner_snapshot_tick_calls;
 static int transport_close_calls;
 static int default_load_calls;
+static int artifact_metadata_load_calls;
+static int read_rehearsal_load_calls;
+static int supplied_artifact_metadata_result;
+static character_player_snapshot_v1_read_rehearsal_result
+    supplied_read_rehearsal_result;
+static int supplied_artifact_metadata_directory_fd;
+static char supplied_artifact_metadata_command[37];
+static const character_player_snapshot_v1_read_rehearsal *supplied_rehearsal;
 static int snapshot_capture_native_init_calls;
 static int snapshot_handoff_init_calls;
 static int snapshot_handoff_enable_receipt_pair_calls;
@@ -231,6 +245,34 @@ int test_player_store_default_load(char *name, struct creature **player)
     if(strcmp(name,"legacy")) return PLAYER_STORE_NOT_FOUND;
     *player=(struct creature *)&fake_player_storage;
     return PLAYER_STORE_OK;
+}
+
+int test_artifact_load_metadata_for_command(int directory_fd,
+    const char command_id[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1],
+    character_player_snapshot_v1_artifact_metadata *metadata)
+{
+    artifact_metadata_load_calls++;
+    supplied_artifact_metadata_directory_fd=directory_fd;
+    (void)snprintf(supplied_artifact_metadata_command,
+        sizeof(supplied_artifact_metadata_command),"%s",command_id);
+    if(metadata) {
+        memset(metadata,0,sizeof(*metadata));
+        if(supplied_artifact_metadata_result==
+           CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK)
+            memcpy(metadata->command_id,command_id,sizeof(metadata->command_id));
+    }
+    return supplied_artifact_metadata_result;
+}
+
+int test_read_rehearsal_load(
+    const character_player_snapshot_v1_read_rehearsal *rehearsal,
+    char *name, struct creature **player,
+    character_player_snapshot_v1_read_rehearsal_result *result_out)
+{
+    read_rehearsal_load_calls++;
+    supplied_rehearsal=rehearsal;
+    if(result_out) *result_out=supplied_read_rehearsal_result;
+    return test_player_store_default_load(name,player);
 }
 
 void test_process_owner_init(character_save_journal_v2_process_owner *owner,
@@ -403,6 +445,14 @@ static void reset_fakes(void)
     process_owner_snapshot_tick_calls=0;
     transport_close_calls=0;
     default_load_calls=0;
+    artifact_metadata_load_calls=0;
+    read_rehearsal_load_calls=0;
+    supplied_artifact_metadata_result=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK;
+    supplied_read_rehearsal_result=CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_MATCHED;
+    supplied_artifact_metadata_directory_fd=-1;
+    memset(supplied_artifact_metadata_command,0,
+        sizeof(supplied_artifact_metadata_command));
+    supplied_rehearsal=0;
     snapshot_capture_native_init_calls=0;
     snapshot_handoff_init_calls=0;
     snapshot_handoff_enable_receipt_pair_calls=0;
@@ -431,6 +481,31 @@ static void reset_fakes(void)
     memset(idle_diagnostic,0,sizeof(idle_diagnostic));
     memset(supplied_conninfo,0,sizeof(supplied_conninfo));
     (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID");
+}
+
+static int read_rehearsal_root_create(char root[])
+{
+    char directory[128];
+
+    if(!mkdtemp(root)) return -1;
+    if(snprintf(directory,sizeof(directory),"%s/%s",root,
+       CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)<0||
+       mkdir(directory,0700)) {
+        rmdir(root);
+        return -1;
+    }
+    return 0;
+}
+
+static void read_rehearsal_root_remove(const char *root)
+{
+    char directory[128];
+
+    if(snprintf(directory,sizeof(directory),"%s/%s",root,
+       CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY)>=0)
+        (void)rmdir(directory);
+    (void)rmdir(root);
 }
 
 static int test_native_owns_root_and_world_for_process_lifetime(void)
@@ -471,6 +546,11 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
         native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
         PLAYER_STORE_OK&&loaded&&default_load_calls==1,
         "native owner file fallback must use the PlayerStore default seam");
+    failed|=expect(!native.read_rehearsal_armed&&
+        !artifact_metadata_load_calls&&!read_rehearsal_load_calls&&
+        native.read_rehearsal_last_result==
+        CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_DISABLED,
+        "absent selector must do no artifact or receipt rehearsal work");
     root[1]='X';
     world[0]='x';
     failed|=expect(!strcmp(native.process_owner.configuration.root,
@@ -489,6 +569,106 @@ static int test_native_owns_root_and_world_for_process_lifetime(void)
     failed|=expect(bytes_are_zero(native.muhan_home,sizeof(native.muhan_home))&&
         bytes_are_zero(native.world_id,sizeof(native.world_id)),
         "shutdown must clear native-owned routing strings");
+    return failed;
+}
+
+static int test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only(void)
+{
+    static const char selector[]="10000000-0000-4000-8000-000000000001";
+    character_save_journal_v2_runtime_native native;
+    char root[]="/tmp/muhan-read-rehearsal-XXXXXX";
+    struct creature *loaded;
+    int failed=0;
+    int mismatch;
+
+    reset_fakes();
+    failed|=expect(read_rehearsal_root_create(root)==0,
+        "read rehearsal fixture must create its private immutable directory");
+    if(failed) return failed;
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID",
+        "not-a-command-uuid",1)==0,"test must set an invalid selector");
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "invalid selector must not reject the native shadow owner");
+    loaded=0;
+    failed|=expect(!native.read_rehearsal_armed&&!artifact_metadata_load_calls&&
+        native.process_owner.configuration.file_load(
+        native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
+        PLAYER_STORE_OK&&loaded&&default_load_calls==1&&!read_rehearsal_load_calls,
+        "invalid selector must retain the exact default FileStore callback");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID",
+        selector,1)==0,"test must preserve an exact selector for corrupt evidence");
+    supplied_artifact_metadata_result=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_CORRUPT;
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "malformed selected artifact must not reject the native shadow owner");
+    loaded=0;
+    failed|=expect(!native.read_rehearsal_armed&&artifact_metadata_load_calls==1&&
+        native.read_rehearsal_last_result==
+        CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_ARTIFACT_MISMATCH&&
+        native.process_owner.configuration.file_load(
+        native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
+        PLAYER_STORE_OK&&loaded&&default_load_calls==1&&!read_rehearsal_load_calls,
+        "malformed selected artifact must fail diagnostic-only and retain legacy load");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID",
+        selector,1)==0,"test must set an exact selector");
+    supplied_artifact_metadata_result=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_NOT_FOUND;
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "unavailable selected artifact must not reject the native shadow owner");
+    loaded=0;
+    failed|=expect(!native.read_rehearsal_armed&&artifact_metadata_load_calls==1&&
+        !strcmp(supplied_artifact_metadata_command,selector)&&
+        native.read_rehearsal_last_result==
+        CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_ARTIFACT_MISMATCH&&
+        native.process_owner.configuration.file_load(
+        native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
+        PLAYER_STORE_OK&&loaded&&default_load_calls==1&&!read_rehearsal_load_calls,
+        "missing exact artifact must remain a closed diagnostic with no receipt work");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID",
+        selector,1)==0,"test must restore an exact selector");
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "exact selected artifact must arm after the native shadow is live");
+    failed|=expect(native.read_rehearsal_armed&&artifact_metadata_load_calls==1&&
+        native.read_rehearsal_artifact_directory_fd>=0&&
+        !strcmp(native.read_rehearsal_artifact.command_id,selector),
+        "arm must retain only the exact immutable selected metadata");
+    for(mismatch=CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_MATCHED;
+        mismatch<=CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_SEMANTIC_MISMATCH;
+        mismatch++) {
+        supplied_read_rehearsal_result=
+            (character_player_snapshot_v1_read_rehearsal_result)mismatch;
+        loaded=0;
+        failed|=expect(native.process_owner.configuration.file_load(
+            native.process_owner.configuration.file_load_opaque,"legacy",&loaded)==
+            PLAYER_STORE_OK&&loaded&&read_rehearsal_load_calls==mismatch+1&&
+            default_load_calls==mismatch+1&&supplied_rehearsal&&
+            supplied_rehearsal->writer==&native.process_owner.held_writer&&
+            supplied_rehearsal->expected_artifact==&native.read_rehearsal_artifact&&
+            native.read_rehearsal_last_result==mismatch,
+            "every rehearsal result must preserve the caller-bound legacy result");
+    }
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+    failed|=expect(!native.read_rehearsal_armed&&
+        native.read_rehearsal_artifact_directory_fd==-1&&
+        bytes_are_zero(&native.read_rehearsal_artifact,
+        sizeof(native.read_rehearsal_artifact)),
+        "shutdown must close and wipe the owned rehearsal capability");
+    read_rehearsal_root_remove(root);
     return failed;
 }
 
@@ -851,6 +1031,7 @@ int main(void)
 {
     int failed=0;
     failed|=test_native_owns_root_and_world_for_process_lifetime();
+    failed|=test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only();
     failed|=test_native_snapshot_handoff_opt_in_has_only_explicit_tick();
     failed|=test_native_snapshot_handoff_abi_mismatch_stays_silent();
     failed|=test_native_rejects_unbounded_borrowed_strings_before_connect();

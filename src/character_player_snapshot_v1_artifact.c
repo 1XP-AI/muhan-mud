@@ -478,6 +478,30 @@ size_t *snapshot_length;
     return CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK;
 }
 
+int character_player_snapshot_v1_artifact_load_metadata_for_command(
+    directory_fd,command_id,metadata)
+int directory_fd;
+const char command_id[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1];
+character_player_snapshot_v1_artifact_metadata *metadata;
+{
+    character_player_snapshot_v1_artifact_metadata key;
+    uint8_t *snapshot;
+    size_t snapshot_length;
+    int result;
+
+    if(metadata) memset(metadata,0,sizeof(*metadata));
+    if(!command_id||!metadata||!cpsa_uuid(command_id))
+        return CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_INVALID;
+    memset(&key,0,sizeof(key));
+    memcpy(key.command_id,command_id,sizeof(key.command_id));
+    snapshot=0;
+    snapshot_length=0U;
+    result=character_player_snapshot_v1_artifact_load(directory_fd,&key,
+        metadata,&snapshot,&snapshot_length);
+    character_player_snapshot_v1_artifact_free(snapshot);
+    return result;
+}
+
 void character_player_snapshot_v1_artifact_free(snapshot)
 uint8_t *snapshot;
 { free(snapshot); }

@@ -49,6 +49,13 @@ int character_player_snapshot_v1_artifact_load(
     int directory_fd, const character_player_snapshot_v1_artifact_metadata *key,
     character_player_snapshot_v1_artifact_metadata *metadata,
     uint8_t **snapshot, size_t *snapshot_length);
+/* Bounded read-only lookup for the one immutable artifact selected by an
+ * exact command UUID.  It never scans a directory or chooses a candidate;
+ * snapshot bytes are validated by the normal loader then discarded. */
+int character_player_snapshot_v1_artifact_load_metadata_for_command(
+    int directory_fd,
+    const char command_id[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1],
+    character_player_snapshot_v1_artifact_metadata *metadata);
 int character_player_snapshot_v1_artifact_filename(
     const character_player_snapshot_v1_artifact_metadata *metadata,
     char *output, size_t output_size);

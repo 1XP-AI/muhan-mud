@@ -21,6 +21,7 @@ SRC = ROOT / "src"
 PLAYER_STORE = SRC / "player_store.c"
 PLAYER_FILE_STORE = SRC / "file_player_store.c"
 M3_DEFAULT_LOAD_CONSUMER = SRC / "character_save_journal_v2_runtime_native.c"
+M3_READ_REHEARSAL = SRC / "character_player_snapshot_v1_read_rehearsal.c"
 
 # These are deliberately source-level exceptions.  They are not approved for
 # the target design; changing or removing them is expected during later M3
@@ -115,6 +116,12 @@ class PlayerWriterContractTest(unittest.TestCase):
         self.assertEqual(source.count("file_player_store_load("), 1)
         self.assertEqual(source.count("player_store_default_load("), 1)
         self.assertEqual(native_source.count("player_store_default_load("), 1)
+        self.assertEqual(
+            M3_READ_REHEARSAL.read_text(encoding="utf-8").count(
+                "player_store_default_load("
+            ),
+            1,
+        )
 
         # A new direct serializer/backend call is the regression this guard
         # prevents.  Keep the two allowlists separate so allowing the dispatch
@@ -127,7 +134,11 @@ class PlayerWriterContractTest(unittest.TestCase):
                     r"\bfile_player_store_(?:save|load)\s*\(",
                     f"{path.relative_to(ROOT)} bypasses PlayerStore",
                 )
-            if path not in {PLAYER_STORE, M3_DEFAULT_LOAD_CONSUMER}:
+            if path not in {
+                PLAYER_STORE,
+                M3_DEFAULT_LOAD_CONSUMER,
+                M3_READ_REHEARSAL,
+            }:
                 self.assertNotRegex(
                     text,
                     r"\bplayer_store_default_load\s*\(",

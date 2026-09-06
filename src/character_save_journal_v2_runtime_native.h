@@ -8,6 +8,7 @@
 #include "character_save_journal_v2_process_owner.h"
 #include "character_save_journal_v2_rpc_transport_native.h"
 #include "character_player_snapshot_v1_capture_native.h"
+#include "character_player_snapshot_v1_read_rehearsal.h"
 #endif
 
 /* This is the only M3 runtime unit that includes or calls libpq.  The live
@@ -31,6 +32,12 @@ typedef struct character_save_journal_v2_runtime_native {
     /* Native runtime owns this one private descriptor.  The activation gate
      * only borrows it while dispatching an explicit capability. */
     int activation_reservation_directory_fd;
+    /* A separate read-only descriptor backs an exact, opt-in rehearsal.
+     * It is never a directory scan, capture consumer, or write capability. */
+    int read_rehearsal_artifact_directory_fd;
+    character_player_snapshot_v1_artifact_metadata read_rehearsal_artifact;
+    character_player_snapshot_v1_read_rehearsal_result read_rehearsal_last_result;
+    int read_rehearsal_armed;
     int shadow_active;
     /* The MUD host owns these injected seams and invokes the bounded drain
      * only from its serialized idle-turn boundary. */

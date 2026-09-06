@@ -2,6 +2,7 @@
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
 #include "player_snapshot_v1.h"
 #include "character_player_snapshot_v1_receipt_pair.h"
+#include "character_player_snapshot_v1_read_rehearsal.h"
 #include "character_save_journal_v2_uuid_native.h"
 #endif
 
@@ -21,6 +22,8 @@
 #define RUNTIME_NATIVE_SERIALIZER_MAX_OBJECTS 8192UL
 #define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV "MUD_M3_PLAYER_SNAPSHOT_V1"
 #define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE "handoff"
+#define RUNTIME_NATIVE_READ_REHEARSAL_COMMAND_ENV \
+    "MUD_M3_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_COMMAND_UUID"
 #define RUNTIME_NATIVE_SNAPSHOT_IDLE_CADENCE_SECONDS 1L
 #define RUNTIME_NATIVE_SNAPSHOT_IDLE_FAILURE_LOG_SECONDS 60L
 #define RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY \
@@ -81,6 +84,31 @@ static int runtime_native_snapshot_handoff_enabled(void)
             LONG_MIN<=INT64_MIN&&LONG_MAX>=INT64_MAX,PLAYER);
 }
 
+static int runtime_native_read_rehearsal_command_uuid(
+    char output[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1])
+{
+    const char *value;
+    unsigned int index;
+
+    if(!output) return 0;
+    value=getenv(RUNTIME_NATIVE_READ_REHEARSAL_COMMAND_ENV);
+    if(!value) return 0;
+    for(index=0;index<CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH;
+        index++) {
+        if(!value[index]) return 0;
+        if(index==8U||index==13U||index==18U||index==23U) {
+            if(value[index]!='-') return 0;
+        } else if(!((value[index]>='0'&&value[index]<='9')||
+                    (value[index]>='a'&&value[index]<='f')))
+            return 0;
+    }
+    if(value[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH]) return 0;
+    if(value[14]!='4'||(value[19]!='8'&&value[19]!='9'&&
+        value[19]!='a'&&value[19]!='b')) return 0;
+    memcpy(output,value,CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1);
+    return 1;
+}
+
 static int runtime_native_command_uuid(void *opaque,
     char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH+1])
 {
@@ -92,8 +120,75 @@ static int runtime_native_command_uuid(void *opaque,
 static int runtime_native_file_load(void *opaque, char *name,
     struct creature **player)
 {
-    (void)opaque;
-    return player_store_default_load(name,player);
+    character_save_journal_v2_runtime_native *native=
+        (character_save_journal_v2_runtime_native *)opaque;
+    character_player_snapshot_v1_read_rehearsal rehearsal;
+
+    if(!native||runtime_native_active_owner!=native||!native->shadow_active||
+       !native->read_rehearsal_armed||
+       native->read_rehearsal_artifact_directory_fd<0)
+        return player_store_default_load(name,player);
+    memset(&rehearsal,0,sizeof(rehearsal));
+    rehearsal.writer=&native->process_owner.held_writer;
+    rehearsal.artifact_directory_fd=native->read_rehearsal_artifact_directory_fd;
+    rehearsal.expected_artifact=&native->read_rehearsal_artifact;
+    return character_player_snapshot_v1_read_rehearsal_load(&rehearsal,name,
+        player,&native->read_rehearsal_last_result);
+}
+
+static int runtime_native_read_rehearsal_artifact_directory_open(
+    character_save_journal_v2_runtime_native *native)
+{
+    struct stat status;
+    int root,directory;
+
+    if(!native||!native->muhan_home[0]) return -1;
+    root=-1;
+    directory=-1;
+    root=open(native->muhan_home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(root<0) goto failed;
+    directory=openat(root,CHARACTER_PLAYER_SNAPSHOT_V1_CAPTURE_DIRECTORY,
+        O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0||fstat(directory,&status)||!S_ISDIR(status.st_mode)||
+       status.st_uid!=geteuid()||(status.st_mode&0777)!=0700) goto failed;
+    if(close(root)) {
+        close(directory);
+        return -1;
+    }
+    native->read_rehearsal_artifact_directory_fd=directory;
+    return 0;
+failed:
+    if(directory>=0) close(directory);
+    if(root>=0) close(root);
+    return -1;
+}
+
+static void runtime_native_read_rehearsal_arm(
+    character_save_journal_v2_runtime_native *native)
+{
+    char command_id[CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_UUID_LENGTH+1];
+    int artifact_result;
+
+    if(!native||!native->shadow_active||
+       !runtime_native_read_rehearsal_command_uuid(command_id)) return;
+    if(runtime_native_read_rehearsal_artifact_directory_open(native)) {
+        native->read_rehearsal_last_result=
+            CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_ARTIFACT_MISMATCH;
+        return;
+    }
+    artifact_result=character_player_snapshot_v1_artifact_load_metadata_for_command(
+        native->read_rehearsal_artifact_directory_fd,command_id,
+        &native->read_rehearsal_artifact);
+    if(artifact_result!=CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK) {
+        close(native->read_rehearsal_artifact_directory_fd);
+        native->read_rehearsal_artifact_directory_fd=-1;
+        runtime_native_wipe(&native->read_rehearsal_artifact,
+            sizeof(native->read_rehearsal_artifact));
+        native->read_rehearsal_last_result=
+            CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_ARTIFACT_MISMATCH;
+        return;
+    }
+    native->read_rehearsal_armed=1;
 }
 
 /* This is the native caller that owns the directory FD.  The generic owner,
@@ -132,11 +227,22 @@ static void runtime_native_shadow_shutdown(void *opaque)
         (character_save_journal_v2_runtime_native *)opaque;
 
     if(!native) return;
+    /* Unbind first in the callback's view: process_owner shutdown restores
+     * the prior PlayerStore before any native-owned rehearsal state can go. */
+    native->read_rehearsal_armed=0;
     (void)character_save_journal_v2_process_owner_shutdown(&native->process_owner);
     if(native->activation_reservation_directory_fd>=0) {
         close(native->activation_reservation_directory_fd);
         native->activation_reservation_directory_fd=-1;
     }
+    if(native->read_rehearsal_artifact_directory_fd>=0) {
+        close(native->read_rehearsal_artifact_directory_fd);
+        native->read_rehearsal_artifact_directory_fd=-1;
+    }
+    runtime_native_wipe(&native->read_rehearsal_artifact,
+        sizeof(native->read_rehearsal_artifact));
+    native->read_rehearsal_last_result=
+        CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_DISABLED;
     character_save_journal_v2_rpc_transport_close(&native->transport_native.transport);
     if(native->serializer_buffer) {
         runtime_native_wipe(native->serializer_buffer,
@@ -199,7 +305,7 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     configuration.candidate_uuid=runtime_native_command_uuid;
     configuration.candidate_uuid_opaque=0;
     configuration.file_load=runtime_native_file_load;
-    configuration.file_load_opaque=0;
+    configuration.file_load_opaque=native;
     native->snapshot_handoff_enabled=0;
     if(runtime_native_snapshot_handoff_enabled()) {
         character_player_snapshot_v1_capture_native_init(&native->snapshot_capture);
@@ -215,6 +321,7 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     if(character_save_journal_v2_process_owner_start(&native->process_owner)!=
        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) goto failed;
     native->shadow_active=1;
+    runtime_native_read_rehearsal_arm(native);
     (void)runtime_native_activation_reservation_directory_open(native);
     return 0;
 
@@ -387,6 +494,9 @@ void character_save_journal_v2_runtime_native_init(
     native->dependencies.file_opaque=0;
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
     native->activation_reservation_directory_fd=-1;
+    native->read_rehearsal_artifact_directory_fd=-1;
+    native->read_rehearsal_last_result=
+        CHARACTER_PLAYER_SNAPSHOT_V1_READ_REHEARSAL_DISABLED;
     character_save_journal_v2_rpc_transport_native_init(&native->transport_native);
     native->dependencies.shadow_operations=&runtime_native_shadow_operations;
     native->dependencies.shadow_opaque=native;

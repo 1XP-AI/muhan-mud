@@ -72,6 +72,7 @@ M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_
 	character_player_snapshot_v1_capture.o \
 	character_player_snapshot_v1_capture_native.o \
 	character_player_snapshot_v1_artifact.o character_player_snapshot_v1_receipt_pair.o \
+	character_player_snapshot_v1_read_rehearsal.o \
 	character_snapshot_shadow_outbox.o player_snapshot_v1.o \
 	object_graph_v1.o cdto_v1.o
 

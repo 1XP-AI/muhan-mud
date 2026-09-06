@@ -150,6 +150,17 @@ int main(void)
         "load must verify and return exact canonical bytes");
     character_player_snapshot_v1_artifact_free(read_snapshot);
     read_snapshot = 0;
+    failed |= expect(character_player_snapshot_v1_artifact_load_metadata_for_command(
+        directory_fd, first.command_id, &loaded) ==
+        CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_OK &&
+        !strcmp(loaded.command_id, first.command_id) &&
+        !strcmp(loaded.snapshot_sha256, first.snapshot_sha256),
+        "exact command lookup must validate one immutable artifact without discovery");
+    memset(&loaded, 0, sizeof(loaded));
+    failed |= expect(character_player_snapshot_v1_artifact_load_metadata_for_command(
+        directory_fd, "not-a-command-uuid", &loaded) ==
+        CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_INVALID && !loaded.command_id[0],
+        "metadata lookup must reject a malformed selector before any artifact read");
     failed |= expect(character_player_snapshot_v1_artifact_store(directory_fd,
         &first, snapshot, snapshot_length) == CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_EXACT_RETRY,
         "same key and exact artifact must be an exact retry");
