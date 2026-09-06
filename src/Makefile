@@ -156,6 +156,7 @@ unit-test:
 	$(MAKE) onboarding-activation-owner-runtime-test
 	$(MAKE) character-save-journal-v2-runtime-test
 	$(MAKE) m3-feature-off-legacy-authority-test
+	$(MAKE) onboarding-activation-snapshot-receipt-test
 	$(MAKE) m3-live-save-all-shadow-binding-test
 	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) m3-wake-v1-test
@@ -343,6 +344,18 @@ onboarding-activated-command-snapshot-harness-sanitizer-test: onboarding-activat
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activated_command_snapshot_harness_test.c onboarding_snapshot_command_consumer.c onboarding_activation_binding.c onboarding_activation_save_capability.c onboarding_activation_save_bridge.c resource_path.c -o /tmp/muhan-unit/onboarding_activated_command_snapshot_harness_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activated_command_snapshot_harness_sanitizer_test
+
+# Feature-off receipt proof at the existing artifact/journal boundary.  It is
+# intentionally not linked by either the default or M3 live object graph.
+onboarding-activation-snapshot-receipt-test: m3-feature-off-legacy-authority-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_test
+	/tmp/muhan-unit/onboarding_activation_snapshot_receipt_test
+
+onboarding-activation-snapshot-receipt-sanitizer-test: m3-feature-off-legacy-authority-sanitizer-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/onboarding_activation_snapshot_receipt_test.c onboarding_activation_snapshot_receipt.c -o /tmp/muhan-unit/onboarding_activation_snapshot_receipt_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/onboarding_activation_snapshot_receipt_sanitizer_test
 
 # Caller-owned composition only: this bridge installer remains outside both
 # default and generic M3 runtime object graphs.
