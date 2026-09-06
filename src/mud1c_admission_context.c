@@ -372,15 +372,15 @@ size_t *written;
     char mac[MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN + 1U];
     size_t signed_length;
     if(written) *written = 0U;
-    if(output && output_size) output[0] = 0;
+    if(output && output_size) memset(output, 0, output_size);
     if(!output || !output_size || !written || !mc_secret(secret) || !mc_signed(context, output, output_size, &signed_length)) return MUD1C_ADMISSION_CONTEXT_INVALID;
-    if(signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN >= output_size || signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN > MUD1C_ADMISSION_CONTEXT_MAX_WIRE || mud1c_admission_context_hmac_sha256_hex(secret, output, signed_length, mac) != MUD1C_ADMISSION_CONTEXT_OK) { output[0] = 0; return MUD1C_ADMISSION_CONTEXT_INVALID; }
+    if(signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN >= output_size || signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN > MUD1C_ADMISSION_CONTEXT_MAX_WIRE || mud1c_admission_context_hmac_sha256_hex(secret, output, signed_length, mac) != MUD1C_ADMISSION_CONTEXT_OK) { memset(output, 0, output_size); return MUD1C_ADMISSION_CONTEXT_INVALID; }
     output[signed_length] = '|'; memcpy(output + signed_length + 1U, mac, MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN); output[signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN] = 0;
     *written = signed_length + 1U + MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN;
     return MUD1C_ADMISSION_CONTEXT_OK;
 #else
     (void)context; (void)secret;
-    if(output && output_size) output[0] = 0;
+    if(output && output_size) memset(output, 0, output_size);
     if(written) *written = 0U;
     return MUD1C_ADMISSION_CONTEXT_DISABLED;
 #endif

@@ -61,8 +61,13 @@ static void test_rejections(void)
     unsigned char wire[MUD1C_ADMISSION_CONTEXT_MAX_WIRE + 2U];
     unsigned char tiny[1];
     char mac[MUD1C_ADMISSION_CONTEXT_HMAC_HEX_LEN + 1U];
-    size_t length;
+    size_t length, capacity;
     context_fill(&input);
+    assert(mud1c_admission_context_format(&input, TEST_SECRET, wire, sizeof(wire), &length) == MUD1C_ADMISSION_CONTEXT_OK);
+    capacity = length;
+    memset(wire, 0xa5, sizeof(wire));
+    length = 99U;
+    assert(mud1c_admission_context_format(&input, TEST_SECRET, wire, capacity, &length) == MUD1C_ADMISSION_CONTEXT_INVALID && !length && zeroed(wire, capacity));
     tiny[0] = 0xa5U;
     length = 99U;
     assert(mud1c_admission_context_format(&input, TEST_SECRET, tiny, sizeof(tiny), &length) == MUD1C_ADMISSION_CONTEXT_INVALID && !length && !tiny[0]);
