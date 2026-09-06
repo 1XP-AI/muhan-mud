@@ -88,5 +88,6 @@ docker run --rm --network "container:$container" \
     cp -a /source/package.json /source/package-lock.json /source/tsconfig.json /source/src /source/test /workspace/
     cd /workspace
     npm ci --ignore-scripts --no-audit --no-fund
+    npm run build
     node node_modules/tsx/dist/cli.mjs test/player-snapshot-v1-manifest-first-pg17-e2e.ts
   '

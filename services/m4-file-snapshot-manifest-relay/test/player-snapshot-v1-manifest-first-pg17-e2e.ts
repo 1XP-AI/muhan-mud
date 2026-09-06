@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
-import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
-import { relayPlayerSnapshotV1ManifestFirstOnce } from '../src/player-snapshot-v1-manifest-first-relay.js'
-import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, type ManifestStore, type PlayerSnapshotV1ArtifactStore } from '../src/store.js'
+import { isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 
@@ -17,6 +16,33 @@ interface SqlClient {
 }
 
 interface PgModule { Client: new (options: { connectionString: string }) => SqlClient }
+
+interface ManifestFirstSummary {
+  visited: number
+  valid: number
+  delivered: number
+  recorded: number
+  exactRetry: number
+  invalid: number
+  conflict: number
+  retryable: number
+  unknown: number
+  ioError: number
+  manifestDelivered: number
+  manifestRecorded: number
+  manifestExactRetry: number
+  artifactDelivered: number
+  artifactRecorded: number
+  artifactExactRetry: number
+}
+
+interface CliResult { code: number | null, stdout: string, stderr: string }
+interface EvidenceState {
+  names: string[]
+  outboxMode: string
+  files: Record<string, { mode: string, mtimeNs: string, ctimeNs: string, bytes: string }>
+}
+interface DatabaseState { manifests: string, artifacts: string, paired: string, legacy: string, capabilities: string }
 
 function required(name: string): string {
   const value = process.env[name]
@@ -35,20 +61,10 @@ const commandId = 'c9510000-0000-0000-0000-000000000001'
 const worldId = 'pva-relay-e2e'
 const writerInstanceId = 'b9510000-0000-0000-0000-000000000001'
 const sourcePostSha256 = 'a'.repeat(64)
-
-interface EvidenceState {
-  names: string[]
-  outboxMode: string
-  files: Record<string, { mode: string, mtimeNs: string, ctimeNs: string, bytes: string }>
-}
-
-interface DatabaseState { manifests: string, artifacts: string, legacy: string }
+const serviceRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const cliPath = join(serviceRoot, 'dist', 'player-snapshot-v1-manifest-first-cli.js')
 
 async function canonicalCStyleSnapshot(): Promise<Buffer> {
-  // The source tree has a canonical C PlayerSnapshotV1 payload fixture, but
-  // no production C runtime target that emits a reusable paired outbox.  This
-  // closed seam preserves C FileStore authority while exercising its exact
-  // immutable wire payload through the real PostgreSQL relay stores.
   const hex = (await readFile(cStyleSnapshotFixture, 'ascii')).trim()
   assert.match(hex, /^(?:[0-9a-f]{2})+$/)
   const payload = Buffer.from(hex, 'hex')
@@ -78,15 +94,17 @@ function artifact(payload: Uint8Array): Buffer {
   ].join('\n'), 'ascii'), Buffer.from(payload)])
 }
 
-async function createOutbox(files: Readonly<Record<string, Uint8Array>>): Promise<string> {
+async function createOutbox(payload: Uint8Array): Promise<string> {
   let outboxPath: string | undefined
   try {
-    outboxPath = await mkdtemp(join(tmpdir(), 'pva-manifest-first-e2e-'))
+    outboxPath = await mkdtemp(join(tmpdir(), 'pva-manifest-first-cli-e2e-'))
     await chmod(outboxPath, 0o700)
-    for (const [name, bytes] of Object.entries(files)) {
-      await writeFile(join(outboxPath, name), bytes, { flag: 'wx', mode: 0o600 })
-      await chmod(join(outboxPath, name), 0o600)
-    }
+    await writeFile(join(outboxPath, `${commandId}.manifest`), receipt(), { flag: 'wx', mode: 0o600 })
+    await writeFile(join(outboxPath, `${commandId}.player-snapshot-v1`), artifact(payload), { flag: 'wx', mode: 0o600 })
+    await Promise.all([
+      chmod(join(outboxPath, `${commandId}.manifest`), 0o600),
+      chmod(join(outboxPath, `${commandId}.player-snapshot-v1`), 0o600),
+    ])
     return outboxPath
   } catch (error) {
     if (outboxPath) await rm(outboxPath, { recursive: true, force: true })
@@ -114,103 +132,90 @@ async function databaseState(client: SqlClient): Promise<DatabaseState> {
         where character_id = $1::uuid and command_id = $2::uuid) as manifests,
       (select count(*)::text from private.game_character_player_snapshot_v1_artifacts
         where character_id = $1::uuid and command_id = $2::uuid) as artifacts,
+      (select count(*)::text from private.game_character_player_snapshot_v1_artifacts a
+        join private.game_character_m4_file_snapshot_manifests m
+          on m.character_id = a.character_id and m.command_id = a.command_id
+        where a.character_id = $1::uuid and a.command_id = $2::uuid
+          and m.request_sha256 = a.receipt_request_sha256
+          and m.writer_instance_id = a.writer_instance_id
+          and m.writer_epoch = a.writer_epoch and m.writer_revision = a.writer_revision
+          and m.post_sha256 = a.source_post_sha256 and m.storage_format = a.storage_format) as paired,
       jsonb_build_object(
         'receipts', coalesce((select jsonb_agg(to_jsonb(r) order by r.command_id)
           from private.game_character_shadow_receipts r where r.character_id = $1::uuid), '[]'::jsonb),
         'head', (select to_jsonb(h) from private.game_character_legacy_heads h where h.character_id = $1::uuid),
         'legacy_snapshot', coalesce((select jsonb_agg(to_jsonb(s) order by s.revision)
           from private.game_character_snapshots s where s.character_id = $1::uuid), '[]'::jsonb)
-      )::text as legacy
+      )::text as legacy,
+      (select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'private' and p.proname in (
+          'fulfill_game_character_onboarding_snapshot_eligibility',
+          'record_player_snapshot_v1_level_projection_for_receipt')) as capabilities
   `, [characterId, commandId])
   return result.rows[0]!
 }
 
-async function closeAll(paths: readonly string[], stores: readonly { close(): Promise<void> }[], client: SqlClient): Promise<void> {
-  await Promise.all([...stores.map((store) => store.close()), client.end(), ...paths.map((path) => rm(path, { recursive: true, force: true }))])
+function runCli(outboxPath: string): Promise<CliResult> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(process.execPath, [cliPath, '--once'], {
+      cwd: serviceRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl, M4_FILE_SNAPSHOT_OUTBOX_DIR: outboxPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (code) => { resolveResult({ code, stdout, stderr }) })
+  })
+}
+
+function parsedSummary(result: CliResult): ManifestFirstSummary {
+  assert.equal(result.code, 0, 'the production CLI must exit successfully')
+  assert.equal(result.stderr, '', 'the production CLI must not report an error')
+  assert.match(result.stdout, /^\{[^\n]+\}\n$/)
+  const summary: unknown = JSON.parse(result.stdout)
+  if (typeof summary !== 'object' || summary === null || Array.isArray(summary)) throw new Error('the production CLI must emit an object summary')
+  assert.equal('fulfillmentDelivered' in summary, false)
+  assert.equal('projectionDelivered' in summary, false)
+  return summary as ManifestFirstSummary
 }
 
 async function main(): Promise<void> {
   assert.equal(process.platform, 'linux', 'the descriptor-rooted filesystem E2E must run in Linux')
-  const payload = await canonicalCStyleSnapshot()
-  const manifestBytes = receipt()
-  const artifactBytes = artifact(payload)
-  const validOutbox = await createOutbox({
-    [`${commandId}.manifest`]: manifestBytes,
-    [`${commandId}.player-snapshot-v1`]: artifactBytes,
-  })
-  const malformedOutbox = await createOutbox({
-    [`${commandId}.manifest`]: manifestBytes,
-    [`${commandId}.player-snapshot-v1`]: Buffer.from('not-a-c-player-snapshot-v1-artifact'),
-  })
-  const missingOutbox = await createOutbox({ [`${commandId}.manifest`]: manifestBytes })
-  const manifestStore = new PostgresManifestStore(databaseUrl)
-  const artifactStore = new PostgresPlayerSnapshotV1ArtifactStore(databaseUrl)
+  await stat(cliPath)
+  const outboxPath = await createOutbox(await canonicalCStyleSnapshot())
   const superClient = new (require('pg') as PgModule).Client({ connectionString: superDatabaseUrl })
-
   try {
     await superClient.connect()
-    const sourceBefore = await evidenceState(validOutbox)
-    const malformedBefore = await evidenceState(malformedOutbox)
-    const missingBefore = await evidenceState(missingOutbox)
+    const sourceBefore = await evidenceState(outboxPath)
     assert.deepEqual(sourceBefore.names, [`${commandId}.manifest`, `${commandId}.player-snapshot-v1`])
     assert.equal(sourceBefore.outboxMode, '700')
     assert.deepEqual(Object.values(sourceBefore.files).map((file) => file.mode), ['600', '600'])
-
     const before = await databaseState(superClient)
-    assert.deepEqual(before, { manifests: '0', artifacts: '0', legacy: before.legacy })
-    const calls: string[] = []
-    const realManifestFirstStore: ManifestStore & PlayerSnapshotV1ArtifactStore = {
-      recordManifest: async (value) => {
-        calls.push('manifest')
-        return manifestStore.recordManifest(value)
-      },
-      recordPlayerSnapshotV1Artifact: async (value) => {
-        calls.push('artifact')
-        if (calls.length === 2) {
-          const staged = await databaseState(superClient)
-          assert.equal(staged.manifests, '1', 'the real manifest record must exist before the artifact store call')
-          assert.equal(staged.artifacts, '0', 'the artifact must not be inserted before manifest-first delivery')
-        }
-        return artifactStore.recordPlayerSnapshotV1Artifact(value)
-      },
-    }
-    assert.equal('fulfillGameCharacterOnboardingSnapshotEligibility' in realManifestFirstStore, false)
-    assert.equal('recordPlayerSnapshotV1LevelProjection' in realManifestFirstStore, false)
-    const filesystem = new NodePlayerSnapshotV1ArtifactFilesystem()
+    assert.deepEqual(before, { manifests: '0', artifacts: '0', paired: '0', legacy: before.legacy, capabilities: '0' })
 
-    assert.deepEqual(await relayPlayerSnapshotV1ManifestFirstOnce(validOutbox, realManifestFirstStore, filesystem), {
+    assert.deepEqual(parsedSummary(await runCli(outboxPath)), {
       visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
       manifestDelivered: 1, manifestRecorded: 1, manifestExactRetry: 0,
       artifactDelivered: 1, artifactRecorded: 1, artifactExactRetry: 0,
     })
-    assert.deepEqual(calls, ['manifest', 'artifact'])
     const recorded = await databaseState(superClient)
-    assert.deepEqual(recorded, { manifests: '1', artifacts: '1', legacy: before.legacy })
-    assert.deepEqual(await evidenceState(validOutbox), sourceBefore, 'manifest-first delivery must not mutate C-style source evidence')
+    assert.deepEqual(recorded, { manifests: '1', artifacts: '1', paired: '1', legacy: before.legacy, capabilities: '0' })
+    assert.deepEqual(await evidenceState(outboxPath), sourceBefore, 'the production CLI must not mutate source evidence')
 
-    assert.deepEqual(await relayPlayerSnapshotV1ManifestFirstOnce(validOutbox, realManifestFirstStore, filesystem), {
+    const retry = parsedSummary(await runCli(outboxPath))
+    assert.deepEqual(retry, {
       visited: 1, valid: 1, delivered: 1, recorded: 0, exactRetry: 1, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
       manifestDelivered: 1, manifestRecorded: 0, manifestExactRetry: 1,
       artifactDelivered: 1, artifactRecorded: 0, artifactExactRetry: 1,
     })
-    assert.deepEqual(calls, ['manifest', 'artifact', 'manifest', 'artifact'])
-    assert.deepEqual(await databaseState(superClient), recorded, 'an exact rerun must be database-idempotent')
-    assert.deepEqual(await evidenceState(validOutbox), sourceBefore, 'an exact rerun must not mutate C-style source evidence')
-
-    assert.deepEqual(await relayPlayerSnapshotV1ManifestFirstOnce(malformedOutbox, realManifestFirstStore, filesystem).then((result) => ({
-      visited: result.visited, valid: result.valid, delivered: result.delivered, invalid: result.invalid,
-    })), { visited: 1, valid: 0, delivered: 0, invalid: 1 })
-    assert.deepEqual(await databaseState(superClient), recorded, 'a malformed pair must add no rows')
-    assert.deepEqual(await evidenceState(malformedOutbox), malformedBefore, 'a malformed pair must remain immutable')
-
-    assert.deepEqual(await relayPlayerSnapshotV1ManifestFirstOnce(missingOutbox, realManifestFirstStore, filesystem).then((result) => ({
-      visited: result.visited, valid: result.valid, delivered: result.delivered, invalid: result.invalid,
-    })), { visited: 0, valid: 0, delivered: 0, invalid: 0 })
-    assert.deepEqual(await databaseState(superClient), recorded, 'a missing pair member must add no rows')
-    assert.deepEqual(await evidenceState(missingOutbox), missingBefore, 'a missing pair member must remain immutable')
-    console.log('GREEN PostgreSQL 17 Linux: manifest-first relay records the immutable C-style pair before its artifact, retries exactly, and leaves malformed/missing evidence inert')
+    assert.deepEqual(await databaseState(superClient), recorded, 'the production CLI exact retry must add no rows')
+    assert.deepEqual(await evidenceState(outboxPath), sourceBefore, 'the production CLI exact retry must not mutate source evidence')
+    console.log('GREEN PostgreSQL 17 Linux: compiled manifest-first CLI records the immutable pair manifest-before-artifact, retries exactly, and leaves source evidence inert')
   } finally {
-    await closeAll([validOutbox, malformedOutbox, missingOutbox], [manifestStore, artifactStore], superClient)
+    await Promise.all([superClient.end(), rm(outboxPath, { recursive: true, force: true })])
   }
 }
 
