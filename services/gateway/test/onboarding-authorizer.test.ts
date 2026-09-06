@@ -98,6 +98,68 @@ test('handoff activation rejects pending or non-finalized evidence before normal
   }
 })
 
+test('provision and claim activation expose an active handoff only for the exact browser actor, correlation, and character', async () => {
+  for (const mode of ['provision', 'claim'] as const) {
+    const activation = { actorUserId: actor, correlationId: correlation, characterId: character, mode }
+    const exactRow = {
+      character_id: character,
+      actor_user_id: actor,
+      correlation_id: correlation,
+      lifecycle: 'active',
+      onboarding_status: 'finalized',
+    }
+    const calls: Array<{ url: URL, init?: RequestInit }> = []
+    const active = new SupabaseOnboardingAuthorizer(config(), async (url, init) => {
+      calls.push({ url: new URL(url), init })
+      return Response.json([exactRow])
+    })
+    assert.deepEqual(await active.activateHandoff(activation), { characterId: character })
+    assert.equal(calls[0]!.url.pathname, '/rpc/activate_game_character_onboarding_handoff')
+    assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), {
+      p_actor_user_id: actor,
+      p_correlation_id: correlation,
+      p_character_id: character,
+      p_mode: mode,
+    })
+
+    for (const response of [
+      { ...exactRow, actor_user_id: '123e4567-e89b-12d3-a456-426614174099' },
+      { ...exactRow, correlation_id: '123e4567-e89b-12d3-a456-426614174099' },
+      { ...exactRow, character_id: '123e4567-e89b-12d3-a456-426614174099' },
+    ]) {
+      const crossed = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([response]))
+      await assert.rejects(() => crossed.activateHandoff(activation), OnboardingAuthorizationError)
+    }
+  }
+})
+
+test('expired or replayed onboarding intent responses fail closed before they can activate a roster entry', async () => {
+  const now = new Date('2026-09-02T00:00:00.000Z').getTime()
+  const request = {
+    actorUserId: actor,
+    correlationId: correlation,
+    mode: 'claim' as const,
+    expiresAt: new Date('2026-09-02T00:05:00.000Z'),
+  }
+  const expired = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{
+    correlation_id: correlation,
+    actor_user_id: actor,
+    mode: 'claim',
+    status: 'finalized',
+    expires_at: '2026-09-02T00:00:00.000Z',
+  }]), () => now)
+  await assert.rejects(() => expired.begin(request), OnboardingAuthorizationError)
+
+  const replayed = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([{
+    correlation_id: '123e4567-e89b-12d3-a456-426614174099',
+    actor_user_id: actor,
+    mode: 'claim',
+    status: 'finalized',
+    expires_at: '2026-09-02T00:04:00.000Z',
+  }]), () => now)
+  await assert.rejects(() => replayed.begin(request), OnboardingAuthorizationError)
+})
+
 test('snapshot command binding uses the migration RPC contract and accepts only BOUND outcomes', async () => {
   const calls: Array<{ url: URL, init?: RequestInit }> = []
   const request = {

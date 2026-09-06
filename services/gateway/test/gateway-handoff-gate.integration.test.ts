@@ -175,7 +175,9 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
   }
   async beginSession(request: BeginCharacterSessionRequest): Promise<AuthorizedCharacter> {
     this.beginSessionCalls += 1
-    if (!this.active) throw new Error('handoff is still pending')
+    if (!this.active || request.actorUserId !== actor || request.characterId !== character || this.leaseSessionId) {
+      throw new Error('owner-active roster admission was refused')
+    }
     this.readyLeases += 1
     this.leaseSessionId = request.sessionId
     return { legacyNameKey: 'Hero' }
@@ -459,7 +461,7 @@ test('mismatched C evidence is rejected without opening the normal admission gat
   assert.equal(received.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"provisioned"')), false)
 })
 
-test('claim evidence keeps private controls and normal admission locked until CLAIMED activates the handoff', async (t) => {
+test('claim binding reaches the active owner roster once, then only the exact browser actor and character can receive a normal MUD1 handoff', async (t) => {
   const trace: string[] = []
   const mud = new HeldEvidenceCompletionMudSocket('claim', cEvidence('Alice', 'b'.repeat(64)), trace)
   const authorizer = new PendingHandoffAuthorizer(false, 'claim', trace)
@@ -469,7 +471,13 @@ test('claim evidence keeps private controls and normal admission locked until CL
     onboardingAuthorizer: authorizer,
     characterAuthorizer: authorizer,
     evidenceFinalizer: finalizer,
-    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    authenticator: {
+      verify: async (token) => ({
+        sub: token === 'other-browser-token' ? '123e4567-e89b-12d3-a456-426614174099' : actor,
+        expiresAtMs: token === 'expired-browser-token' ? Date.now() - 1 : Date.now() + 60_000,
+        claims: {},
+      }),
+    },
     connectTcp: () => {
       connections += 1
       const socket = connections === 1 ? mud : new AdmissionMudSocket(authorizer.admissionTickets)
@@ -518,6 +526,19 @@ test('claim evidence keeps private controls and normal admission locked until CL
   }])
   assert.ok(hasText(onboardingMessages, `{"type":"claimed","characterId":"${character}"}`))
 
+  for (const rejected of [
+    { accessToken: 'other-browser-token', characterId: character, label: 'wrong browser actor' },
+    { accessToken: 'browser-token', characterId: '123e4567-e89b-12d3-a456-426614174099', label: 'wrong character' },
+    { accessToken: 'expired-browser-token', characterId: character, label: 'expired browser identity' },
+  ]) {
+    const denied = new WebSocket(`${base}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+    await once(denied, 'open')
+    const deniedClosed = once(denied, 'close')
+    denied.send(JSON.stringify({ type: 'auth', accessToken: rejected.accessToken, characterId: rejected.characterId }))
+    await deniedClosed
+    assert.deepEqual(authorizer.admissionTickets, [], `${rejected.label} must not mint a MUD1 ticket`)
+  }
+
   const after = new WebSocket(`${base}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
   await once(after, 'open')
   const afterClosed = once(after, 'close')
@@ -526,6 +547,14 @@ test('claim evidence keeps private controls and normal admission locked until CL
   await eventually(() => assert.equal(authorizer.admissionTickets.length, 1))
   await eventually(() => assert.ok(hasText(afterMessages, '{"type":"ready"}')))
   assert.equal(authorizer.readyLeases, 1)
+
+  const replay = new WebSocket(`${base}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+  await once(replay, 'open')
+  const replayClosed = once(replay, 'close')
+  replay.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token', characterId: character }))
+  await replayClosed
+  assert.equal(authorizer.admissionTickets.length, 1, 'a replayed active character lease must not mint a second MUD1 ticket')
+
   after.close()
   await afterClosed
   await eventually(() => assert.equal(authorizer.leaseReleases, 1))
@@ -562,5 +591,7 @@ for (const scenario of [
     assert.deepEqual(authorizer.calls, scenario.expectedCalls)
     assert.deepEqual(trace, scenario.finalizerFails ? ['evidence'] : scenario.activationFails ? ['evidence', 'activate'] : ['evidence', 'activate', 'bind'])
     assert.equal(hasText(received, `{"type":"provisioned","characterId":"${character}"}`), false)
+    assert.equal(authorizer.beginSessionCalls, 0, 'a rejected handoff must not reach normal character admission')
+    assert.deepEqual(authorizer.admissionTickets, [], 'a rejected handoff must not mint a normal MUD admission ticket')
   })
 }
