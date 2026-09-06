@@ -40,6 +40,8 @@ cargo test --locked --manifest-path "$repo_root/rust/Cargo.toml" --target-dir "$
   --test player_snapshot_normalized_v1_cli normalized_projection_cli_is_versioned_machine_readable_and_byte_stable -- --exact
 cargo build --locked --manifest-path "$repo_root/rust/Cargo.toml" --target-dir "$rust_target_dir" -p muhan-core-dto --bin player_snapshot_v1_normalized_project
 
-M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER="$rust_target_dir/debug/player_snapshot_v1_normalized_project" \
-  pnpm --dir "$repo_root/services/m4-file-snapshot-manifest-relay" exec tsx --test \
-  test/*.test.ts
+(
+  cd "$repo_root/services/m4-file-snapshot-manifest-relay"
+  M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER="$rust_target_dir/debug/player_snapshot_v1_normalized_project" \
+    npm exec -- tsx --test test/*.test.ts
+)
