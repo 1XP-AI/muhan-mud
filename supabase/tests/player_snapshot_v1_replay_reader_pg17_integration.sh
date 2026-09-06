@@ -11,7 +11,9 @@ command -v node >/dev/null || { echo "M5e replay reader integration requires a b
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="m5e-replay-reader-${RANDOM}-${RANDOM}"
 reader_password="m5e-reader-${RANDOM}-${RANDOM}"
+full_payload_reader_password="m5e-full-payload-reader-${RANDOM}-${RANDOM}"
 comparator_cli="$repo_root/services/m4-file-snapshot-manifest-relay/dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js"
+full_payload_reader_module="$repo_root/services/m4-file-snapshot-manifest-relay/dist/store.js"
 fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex"
 fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
 [[ "$fixture_hex" =~ ^[0-9a-f]+$ && "${#fixture_hex}" -eq 3556 ]] || {
@@ -19,6 +21,9 @@ fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
 }
 [[ -f "$comparator_cli" ]] || {
   echo "M5e replay reader integration requires the compiled v2 comparator dist" >&2; exit 2;
+}
+[[ -f "$full_payload_reader_module" ]] || {
+  echo "M5e replay reader integration requires the compiled full payload reader dist" >&2; exit 2;
 }
 
 umask 077
@@ -49,6 +54,12 @@ run_reader() {
   docker exec --interactive --env PGPASSWORD="$reader_password" \
     --env PGOPTIONS='-c default_transaction_read_only=on' "$container" \
     psql --host=127.0.0.1 --username=mud_replay_reader_login --dbname=postgres \
+      --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"
+}
+run_full_payload_reader() {
+  docker exec --interactive --env PGPASSWORD="$full_payload_reader_password" \
+    --env PGOPTIONS='-c default_transaction_read_only=on' "$container" \
+    psql --host=127.0.0.1 --username=mud_full_payload_rehearsal_reader_login --dbname=postgres \
       --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"
 }
 
@@ -195,6 +206,11 @@ artifact_ownership_after_replay="$(run_super --tuples-only --no-align --command=
 [[ "$artifact_ownership_before_first_m5e" == "$artifact_ownership_after_replay" ]] || { echo "reader migration replay changed artifact ownership" >&2; exit 1; }
 
 run_super --file=/workspace/supabase/tests/player_snapshot_v1_replay_reader_contract.sql
+run_super --file=/workspace/supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
+run_super --file=/workspace/supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
+run_super --file=/workspace/supabase/tests/player_snapshot_v1_full_payload_rehearsal_reader_contract.sql
+run_super --command="alter role mud_full_payload_rehearsal_reader_login password '$full_payload_reader_password'"
+full_payload_reader_database_url="postgresql://mud_full_payload_rehearsal_reader_login:${full_payload_reader_password}@127.0.0.1:${postgres_port}/postgres?options=-c%20default_transaction_read_only%3Don"
 run_super --file=/workspace/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
 run_super --file=/workspace/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
 run_super --file=/workspace/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
@@ -203,7 +219,8 @@ run_super --file=/workspace/supabase/tests/player_snapshot_v1_level_projection_r
 # Seed one valid immutable artifact as the disposable database owner.  The
 # reader never needs the payload, and the before/after fingerprint proves its
 # blocked mutation attempts leave this evidence untouched.
-run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_artifacts (character_id, command_id, world_id, legacy_name_key, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, storage_format, receipt_acknowledged_at, snapshot_format, snapshot_sha256, snapshot_octets, payload) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', 'm5e-reader', 'M5ereader', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')); set session_replication_role = origin;"
+run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_artifacts (character_id, command_id, world_id, legacy_name_key, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, storage_format, receipt_acknowledged_at, snapshot_format, snapshot_sha256, snapshot_octets, payload) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', 'm5e-reader', 'M5ereader', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, repeat('b', 64), 9, 1, timestamptz '2026-10-04 00:00:00+00', 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')); set session_replication_role = origin;"
+run_super --command="set session_replication_role = replica; insert into private.game_character_shadow_receipts (character_id, command_id, world_id, legacy_name_key, request_sha256, writer_instance_id, writer_epoch, writer_revision, expected_state, expected_sha256, post_sha256, storage_format, acknowledged_at) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', 'm5e-reader', 'M5ereader', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, 'absent', null, repeat('b', 64), 1, timestamptz '2026-10-04 00:00:00+00'); set session_replication_role = origin;"
 run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_level_projections (character_id, command_id, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, snapshot_sha256, snapshot_octets, raw_level_u8) values ('a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001', repeat('a', 64), 'b9500000-0000-0000-0000-000000000001', 1, 1, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42); set session_replication_role = origin;"
 run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_artifacts (character_id, command_id, world_id, legacy_name_key, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, storage_format, receipt_acknowledged_at, snapshot_format, snapshot_sha256, snapshot_octets, payload) values ('a9500000-0000-0000-0000-000000000010', 'c9500000-0000-0000-0000-000000000010', 'm5e-reader', 'M5ereader0', repeat('a', 64), 'b9500000-0000-0000-0000-000000000010', 1, 10, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')), ('a9500000-0000-0000-0000-000000000011', 'c9500000-0000-0000-0000-000000000011', 'm5e-reader', 'M5ereader255', repeat('a', 64), 'b9500000-0000-0000-0000-000000000011', 1, 11, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')), ('a9500000-0000-0000-0000-000000000012', 'c9500000-0000-0000-0000-000000000012', 'm5e-reader', 'M5ereaderMissing', repeat('a', 64), 'b9500000-0000-0000-0000-000000000012', 1, 12, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')), ('a9500000-0000-0000-0000-000000000013', 'c9500000-0000-0000-0000-000000000013', 'm5e-reader', 'M5ereaderDuplicateA', repeat('a', 64), 'b9500000-0000-0000-0000-000000000013', 1, 13, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')), ('a9500000-0000-0000-0000-000000000014', 'c9500000-0000-0000-0000-000000000013', 'm5e-reader', 'M5ereaderDuplicateB', repeat('a', 64), 'b9500000-0000-0000-0000-000000000014', 1, 14, repeat('b', 64), 9, 1, clock_timestamp(), 'player-snapshot-v1', encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), decode('$fixture_hex', 'hex')); set session_replication_role = origin;"
 run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_level_projections (character_id, command_id, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, snapshot_sha256, snapshot_octets, raw_level_u8) values ('a9500000-0000-0000-0000-000000000010', 'c9500000-0000-0000-0000-000000000010', repeat('a', 64), 'b9500000-0000-0000-0000-000000000010', 1, 10, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 0), ('a9500000-0000-0000-0000-000000000011', 'c9500000-0000-0000-0000-000000000011', repeat('a', 64), 'b9500000-0000-0000-0000-000000000011', 1, 11, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 255), ('a9500000-0000-0000-0000-000000000013', 'c9500000-0000-0000-0000-000000000013', repeat('a', 64), 'b9500000-0000-0000-0000-000000000013', 1, 13, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42), ('a9500000-0000-0000-0000-000000000014', 'c9500000-0000-0000-0000-000000000013', repeat('a', 64), 'b9500000-0000-0000-0000-000000000014', 1, 14, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42); set session_replication_role = origin;"
@@ -212,6 +229,47 @@ before_projection_fingerprint="$(run_super --tuples-only --no-align --command="s
 
 reader_contract="$(run_reader --tuples-only --no-align --command="select (current_user = 'mud_replay_reader_login' and session_user = 'mud_replay_reader_login' and current_user = session_user and current_setting('default_transaction_read_only') = 'on' and current_setting('transaction_read_only') = 'on' and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'insert') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'update') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'delete') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'truncate') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'references') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'trigger'))::text")"
 [[ "$reader_contract" == true ]] || { echo "reader login/session/read-only or mutation privilege contract failed" >&2; exit 1; }
+
+full_payload_reader_contract="$(run_full_payload_reader --tuples-only --no-align --command="select (current_user = 'mud_full_payload_rehearsal_reader_login' and session_user = 'mud_full_payload_rehearsal_reader_login' and current_user = session_user and current_setting('default_transaction_read_only') = 'on' and current_setting('transaction_read_only') = 'on' and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'insert') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'update') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'delete') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'truncate') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'references') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'trigger') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'insert') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'update') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'delete') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'truncate') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'references') and not has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'trigger'))::text")"
+[[ "$full_payload_reader_contract" == true ]] || { echo "full payload reader login/session/read-only or mutation privilege contract failed" >&2; exit 1; }
+
+full_payload_evidence="$(run_full_payload_reader --tuples-only --no-align --command="select (count(*) = 1 and bool_and(a.character_id = 'a9500000-0000-0000-0000-000000000001'::uuid and a.command_id = 'c9500000-0000-0000-0000-000000000001'::uuid and a.world_id = 'm5e-reader' and a.legacy_name_key = 'M5ereader' and a.receipt_request_sha256 = repeat('a', 64) and a.writer_instance_id = 'b9500000-0000-0000-0000-000000000001'::uuid and a.writer_epoch = 1 and a.writer_revision = 1 and a.source_post_sha256 = repeat('b', 64) and a.source_octets = 9 and a.storage_format = 1 and a.receipt_acknowledged_at = timestamptz '2026-10-04 00:00:00+00' and a.snapshot_format = 'player-snapshot-v1' and a.snapshot_sha256 = encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex') and a.snapshot_octets = octet_length(decode('$fixture_hex', 'hex')) and encode(a.payload, 'hex') = '$fixture_hex' and r.character_id = a.character_id and r.command_id = a.command_id and r.world_id = a.world_id and r.legacy_name_key = a.legacy_name_key and r.request_sha256 = a.receipt_request_sha256 and r.writer_instance_id = a.writer_instance_id and r.writer_epoch = a.writer_epoch and r.writer_revision = a.writer_revision and r.post_sha256 = a.source_post_sha256 and r.storage_format = a.storage_format and r.acknowledged_at = a.receipt_acknowledged_at))::text from private.game_character_player_snapshot_v1_artifacts a join private.game_character_shadow_receipts r on r.character_id = a.character_id and r.command_id = a.command_id where a.command_id = 'c9500000-0000-0000-0000-000000000001'::uuid")"
+[[ "$full_payload_evidence" == true ]] || { echo "full payload reader actual-login joined evidence check failed" >&2; exit 1; }
+FULL_PAYLOAD_READER_MODULE="$full_payload_reader_module" \
+FULL_PAYLOAD_READER_DATABASE_URL="$full_payload_reader_database_url" \
+FULL_PAYLOAD_FIXTURE_HEX="$fixture_hex" \
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
+const { PostgresPlayerSnapshotV1FullPayloadRehearsalReader } = await import(pathToFileURL(process.env.FULL_PAYLOAD_READER_MODULE).href)
+const fixture = Buffer.from(process.env.FULL_PAYLOAD_FIXTURE_HEX, 'hex')
+const reader = new PostgresPlayerSnapshotV1FullPayloadRehearsalReader(process.env.FULL_PAYLOAD_READER_DATABASE_URL)
+try {
+  const rows = await reader.findByCommandId('c9500000-0000-0000-0000-000000000001')
+  assert.equal(rows.length, 1)
+  const [row] = rows
+  assert.equal(row.characterId, 'a9500000-0000-0000-0000-000000000001')
+  assert.equal(row.commandId, 'c9500000-0000-0000-0000-000000000001')
+  assert.equal(row.snapshotSha256, createHash('sha256').update(fixture).digest('hex'))
+  assert.deepEqual(row.payload, fixture)
+  assert.deepEqual(row.receipt, {
+    characterId: row.characterId, commandId: row.commandId, worldId: row.worldId,
+    legacyNameKey: row.legacyNameKey, requestSha256: row.receiptRequestSha256,
+    writerInstanceId: row.writerInstanceId, writerEpoch: row.writerEpoch,
+    writerRevision: row.writerRevision, postSha256: row.sourcePostSha256,
+    storageFormat: row.storageFormat, acknowledgedAt: row.receiptAcknowledgedAt,
+  })
+} finally {
+  await reader.close()
+}
+NODE
+if run_full_payload_reader --command="select expected_state from private.game_character_shadow_receipts" >/dev/null 2>&1; then
+  echo "full payload reader unexpectedly selected restricted receipt column" >&2; exit 1
+fi
+if run_full_payload_reader --command="insert into private.game_character_shadow_receipts default values" >/dev/null 2>&1; then
+  echo "full payload reader unexpectedly mutated receipts" >&2; exit 1
+fi
 
 metadata_count="$(run_reader --tuples-only --no-align --command="select count(*) from (select command_id, character_id, receipt_request_sha256, source_post_sha256, snapshot_format, snapshot_sha256, snapshot_octets from private.game_character_player_snapshot_v1_artifacts where command_id = 'c9500000-0000-0000-0000-000000000001'::uuid order by character_id) evidence")"
 [[ "$metadata_count" == 1 ]] || { echo "reader metadata SELECT did not return seeded evidence" >&2; exit 1; }

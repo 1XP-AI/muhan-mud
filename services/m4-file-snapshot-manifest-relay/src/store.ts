@@ -364,13 +364,23 @@ async function assertReplayLevelProjectionConnectionContract(client: PgClient): 
   }
 }
 
-interface FullPayloadRehearsalConnectionCheck extends ReplayDifferentialConnectionCheck {
+interface FullPayloadRehearsalConnectionCheck {
+  currentUser: unknown
+  sessionUser: unknown
+  defaultTransactionReadOnly: unknown
+  transactionReadOnly: unknown
   canArtifactInsert: unknown
   canArtifactUpdate: unknown
   canArtifactDelete: unknown
+  canArtifactTruncate: unknown
+  canArtifactReferences: unknown
+  canArtifactTrigger: unknown
   canReceiptInsert: unknown
   canReceiptUpdate: unknown
   canReceiptDelete: unknown
+  canReceiptTruncate: unknown
+  canReceiptReferences: unknown
+  canReceiptTrigger: unknown
 }
 
 /** The full payload is only readable through its distinct read-only login. */
@@ -379,21 +389,27 @@ async function assertFullPayloadRehearsalConnectionContract(client: PgClient): P
     `select current_user as "currentUser", session_user as "sessionUser",
       current_setting('default_transaction_read_only', true) as "defaultTransactionReadOnly",
       current_setting('transaction_read_only', true) as "transactionReadOnly",
-      false as "canInsert", false as "canUpdate", false as "canDelete",
-      false as "canTruncate", false as "canReferences", false as "canTrigger",
       has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'INSERT') as "canArtifactInsert",
       has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'UPDATE') as "canArtifactUpdate",
       has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'DELETE') as "canArtifactDelete",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'TRUNCATE') as "canArtifactTruncate",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'REFERENCES') as "canArtifactReferences",
+      has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'TRIGGER') as "canArtifactTrigger",
       has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'INSERT') as "canReceiptInsert",
       has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'UPDATE') as "canReceiptUpdate",
-      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'DELETE') as "canReceiptDelete"`,
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'DELETE') as "canReceiptDelete",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'TRUNCATE') as "canReceiptTruncate",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'REFERENCES') as "canReceiptReferences",
+      has_table_privilege(current_user, 'private.game_character_shadow_receipts', 'TRIGGER') as "canReceiptTrigger"`,
   )
   const check = result.rows[0]
   if (!check || check.currentUser !== 'mud_full_payload_rehearsal_reader_login'
     || check.sessionUser !== 'mud_full_payload_rehearsal_reader_login'
     || check.defaultTransactionReadOnly !== 'on' || check.transactionReadOnly !== 'on'
     || check.canArtifactInsert !== false || check.canArtifactUpdate !== false || check.canArtifactDelete !== false
-    || check.canReceiptInsert !== false || check.canReceiptUpdate !== false || check.canReceiptDelete !== false) {
+    || check.canArtifactTruncate !== false || check.canArtifactReferences !== false || check.canArtifactTrigger !== false
+    || check.canReceiptInsert !== false || check.canReceiptUpdate !== false || check.canReceiptDelete !== false
+    || check.canReceiptTruncate !== false || check.canReceiptReferences !== false || check.canReceiptTrigger !== false) {
     throw new Error('invalid full payload rehearsal database connection')
   }
 }

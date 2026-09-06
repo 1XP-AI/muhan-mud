@@ -31,7 +31,9 @@ const connectionContract = {
   currentUser: 'mud_full_payload_rehearsal_reader_login', sessionUser: 'mud_full_payload_rehearsal_reader_login',
   defaultTransactionReadOnly: 'on', transactionReadOnly: 'on',
   canArtifactInsert: false, canArtifactUpdate: false, canArtifactDelete: false,
+  canArtifactTruncate: false, canArtifactReferences: false, canArtifactTrigger: false,
   canReceiptInsert: false, canReceiptUpdate: false, canReceiptDelete: false,
+  canReceiptTruncate: false, canReceiptReferences: false, canReceiptTrigger: false,
 }
 
 function reader(rows: readonly unknown[] | Error): ImmutablePlayerSnapshotV1FullPayloadReader {
@@ -100,6 +102,17 @@ test('full payload reader uses its dedicated read-only login and exactly one par
   assert.match(queries[1]!.sql, /\ba\.payload\b/)
   assert.match(queries[1]!.sql, /where a\.command_id = \$1::uuid/)
   assert.deepEqual(queries[1]!.values, [commandId])
+  for (const [relation, prefix] of [
+    ['private.game_character_player_snapshot_v1_artifacts', 'canArtifact'],
+    ['private.game_character_shadow_receipts', 'canReceipt'],
+  ] as const) {
+    for (const [privilege, suffix] of [
+      ['INSERT', 'Insert'], ['UPDATE', 'Update'], ['DELETE', 'Delete'],
+      ['TRUNCATE', 'Truncate'], ['REFERENCES', 'References'], ['TRIGGER', 'Trigger'],
+    ] as const) {
+      assert.match(queries[0]!.sql, new RegExp(`has_table_privilege\\(current_user, '${relation}', '${privilege}'\\) as "${prefix}${suffix}"`))
+    }
+  }
 })
 
 test('full payload reader rejects malformed evidence and any non-read-only or mutating database session', async () => {
@@ -111,9 +124,12 @@ test('full payload reader rejects malformed evidence and any non-read-only or mu
     const reader = new PostgresPlayerSnapshotV1FullPayloadRehearsalReader(readerUrl, poolForRows([row], []))
     await assert.rejects(() => reader.findByCommandId(commandId), /invalid full payload rehearsal database result/)
   }
+  const mutatingContracts = Object.keys(connectionContract)
+    .filter((field) => field.startsWith('canArtifact') || field.startsWith('canReceipt'))
+    .map((field) => ({ ...connectionContract, [field]: true }))
   for (const contract of [
     { ...connectionContract, currentUser: 'mud_writer_login' }, { ...connectionContract, transactionReadOnly: 'off' },
-    { ...connectionContract, canArtifactInsert: true }, { ...connectionContract, canReceiptDelete: true },
+    ...mutatingContracts,
   ]) {
     const client: PgClient = { query: async <Row>() => ({ rows: [contract as Row] }), release: () => undefined }
     const reader = new PostgresPlayerSnapshotV1FullPayloadRehearsalReader(readerUrl, { connect: async () => client, end: async () => undefined })
