@@ -136,3 +136,12 @@ test('full payload reader rejects malformed evidence and any non-read-only or mu
     await assert.rejects(() => reader.findByCommandId(commandId), /invalid full payload rehearsal database connection/)
   }
 })
+
+test('full payload reader rejects a same-length payload whose digest is tampered', async () => {
+  const sameLengthTamperedPayload = Buffer.from(payload)
+  sameLengthTamperedPayload[0] ^= 1
+  const reader = new PostgresPlayerSnapshotV1FullPayloadRehearsalReader(readerUrl, poolForRows([{
+    ...evidence, snapshotOctets: String(evidence.snapshotOctets), payload: sameLengthTamperedPayload,
+  }], []))
+  await assert.rejects(() => reader.findByCommandId(commandId), /invalid full payload rehearsal database result/)
+})

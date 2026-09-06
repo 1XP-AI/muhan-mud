@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
@@ -461,7 +462,9 @@ function parseFullPayloadRehearsalEvidence(value: Record<string, unknown>): Immu
     || BigInt(value.storageFormat) > 32_767n || typeof value.receiptAcknowledgedAt !== 'string' || !value.receiptAcknowledgedAt
     || value.snapshotFormat !== 'player-snapshot-v1' || typeof value.snapshotSha256 !== 'string' || !SHA256_RE.test(value.snapshotSha256)
     || !Number.isSafeInteger(snapshotOctets) || snapshotOctets < 48 || snapshotOctets > 4_194_352
-    || !payload || payload.length !== snapshotOctets || !isFullPayloadReceipt(value.receipt)) {
+    || !payload || payload.length !== snapshotOctets
+    || createHash('sha256').update(payload).digest('hex') !== value.snapshotSha256
+    || !isFullPayloadReceipt(value.receipt)) {
     throw new Error('invalid full payload rehearsal database result')
   }
   return {
