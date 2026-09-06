@@ -1,5 +1,5 @@
-/* Test-only canonical CDTO v1 envelope codec.  This file intentionally has
- * no dependency on legacy persistence readers/writers. */
+/* Canonical CDTO v1 envelope codec.  This file intentionally has no
+ * dependency on legacy persistence readers/writers. */
 #include "cdto_v1.h"
 #include "mstruct.h"
 
