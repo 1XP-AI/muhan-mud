@@ -4,11 +4,13 @@ import { playerSnapshotV1ReplayObserverFromEnvironment } from './player-snapshot
 import { projectPlayerSnapshotV1Normalized } from './player-snapshot-v1-normalized-projection.js'
 import {
   assertDatabaseUrl,
+  PostgresPlayerSnapshotV1InventoryGraphShadowStore,
   PostgresPlayerSnapshotNormalizedV1ProjectionStore,
   PostgresPlayerSnapshotV1ArtifactStore,
   type PlayerSnapshotNormalizedV1ProjectionStore,
   type PlayerSnapshotV1ArtifactFulfillmentStore,
   type PlayerSnapshotV1ArtifactStore,
+  type PlayerSnapshotV1InventoryGraphShadowStore,
 } from './store.js'
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -22,6 +24,7 @@ type PlayerSnapshotV1ArtifactRelayStore = PlayerSnapshotV1ArtifactStore & Player
 export interface PlayerSnapshotV1ArtifactCliDependencies {
   createStore(databaseUrl: string): PlayerSnapshotV1ArtifactRelayStore
   createNormalizedProjectionStore(databaseUrl: string): PlayerSnapshotNormalizedV1ProjectionStore
+  createInventoryGraphShadowStore(databaseUrl: string): PlayerSnapshotV1InventoryGraphShadowStore
   projectNormalized(payload: Uint8Array, runnerPath: string, snapshotSha256: string): ReturnType<typeof projectPlayerSnapshotV1Normalized>
   relay: typeof relayPlayerSnapshotV1ArtifactsOnce
   replayObserverFromEnvironment: typeof playerSnapshotV1ReplayObserverFromEnvironment
@@ -31,6 +34,7 @@ export interface PlayerSnapshotV1ArtifactCliDependencies {
 const productionDependencies: PlayerSnapshotV1ArtifactCliDependencies = {
   createStore: (databaseUrl) => new PostgresPlayerSnapshotV1ArtifactStore(databaseUrl),
   createNormalizedProjectionStore: (databaseUrl) => new PostgresPlayerSnapshotNormalizedV1ProjectionStore(databaseUrl),
+  createInventoryGraphShadowStore: (databaseUrl) => new PostgresPlayerSnapshotV1InventoryGraphShadowStore(databaseUrl),
   projectNormalized: (payload, runnerPath, snapshotSha256) => projectPlayerSnapshotV1Normalized(payload, { runnerPath, snapshotSha256 }),
   relay: relayPlayerSnapshotV1ArtifactsOnce,
   replayObserverFromEnvironment: playerSnapshotV1ReplayObserverFromEnvironment,
@@ -47,6 +51,11 @@ export function isPlayerSnapshotNormalizedV1ProjectionPersistenceEnabled(env: No
   return env.M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED === 'true'
 }
 
+/** Inventory topology persistence is detached unless deliberately enabled. */
+export function isPlayerSnapshotV1InventoryGraphShadowEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env.M4_PLAYER_SNAPSHOT_V1_INVENTORY_GRAPH_SHADOW_ENABLED === 'true'
+}
+
 /** Dedicated entrypoint: the legacy manifest relay remains unchanged. */
 export async function main(
   env: NodeJS.ProcessEnv = process.env,
@@ -58,6 +67,7 @@ export async function main(
   if (!isAbsolute(outboxPath)) throw new Error('invalid relay configuration')
   const store = dependencies.createStore(assertDatabaseUrl(env.DATABASE_URL))
   let normalizedProjectionStore: PlayerSnapshotNormalizedV1ProjectionStore | undefined
+  let inventoryGraphShadowStore: PlayerSnapshotV1InventoryGraphShadowStore | undefined
   try {
     let normalizedProjectionPersistence: PlayerSnapshotV1NormalizedProjectionPersistence | undefined
     if (isPlayerSnapshotNormalizedV1ProjectionPersistenceEnabled(env)) {
@@ -69,11 +79,15 @@ export async function main(
         store: normalizedProjectionStore,
       }
     }
+    if (isPlayerSnapshotV1InventoryGraphShadowEnabled(env)) {
+      inventoryGraphShadowStore = dependencies.createInventoryGraphShadowStore(assertDatabaseUrl(env.DATABASE_URL))
+    }
     const result = await dependencies.relay(
       outboxPath, store, undefined, dependencies.replayObserverFromEnvironment(env),
       isPlayerSnapshotV1ArtifactFulfillmentEnabled(env) ? store : undefined,
       undefined,
       normalizedProjectionPersistence,
+      inventoryGraphShadowStore,
     )
     dependencies.writeStdout(`${JSON.stringify(result)}\n`)
     const failed = result.invalid > 0 || result.conflict > 0 || result.ioError > 0 || result.retryable > 0 || result.unknown > 0
@@ -81,8 +95,11 @@ export async function main(
       || (result.fulfillmentRetryable ?? 0) > 0 || (result.fulfillmentUnknown ?? 0) > 0
       || (result.normalizedProjectionInvalid ?? 0) > 0 || (result.normalizedProjectionConflict ?? 0) > 0
       || (result.normalizedProjectionRetryable ?? 0) > 0 || (result.normalizedProjectionUnknown ?? 0) > 0
+      || (result.inventoryGraphShadowInvalid ?? 0) > 0 || (result.inventoryGraphShadowConflict ?? 0) > 0
+      || (result.inventoryGraphShadowRetryable ?? 0) > 0 || (result.inventoryGraphShadowUnknown ?? 0) > 0
     return failed ? 1 : 0
   } finally {
+    await inventoryGraphShadowStore?.close?.()
     await normalizedProjectionStore?.close?.()
     await store.close?.()
   }

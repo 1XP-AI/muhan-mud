@@ -7,6 +7,7 @@ import {
   type PlayerSnapshotV1ArtifactFulfillmentOutcome,
   type PlayerSnapshotV1ArtifactFulfillmentStore,
   type PlayerSnapshotV1ArtifactStore,
+  type PlayerSnapshotV1InventoryGraphShadowStore,
   type PlayerSnapshotV1LevelProjectionStore,
   type PlayerSnapshotNormalizedV1ProjectionStore,
 } from './store.js'
@@ -42,6 +43,13 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   normalizedProjectionConflict?: number
   normalizedProjectionRetryable?: number
   normalizedProjectionUnknown?: number
+  inventoryGraphShadowDelivered?: number
+  inventoryGraphShadowRecorded?: number
+  inventoryGraphShadowExactRetry?: number
+  inventoryGraphShadowInvalid?: number
+  inventoryGraphShadowConflict?: number
+  inventoryGraphShadowRetryable?: number
+  inventoryGraphShadowUnknown?: number
   fulfillmentDelivered?: number
   fulfillmentFulfilled?: number
   fulfillmentExactRetry?: number
@@ -140,6 +148,16 @@ function withFulfillmentCounters(result: PlayerSnapshotV1ArtifactRelaySummary): 
   result.fulfillmentUnknown = 0
 }
 
+function withInventoryGraphShadowCounters(result: PlayerSnapshotV1ArtifactRelaySummary): void {
+  result.inventoryGraphShadowDelivered = 0
+  result.inventoryGraphShadowRecorded = 0
+  result.inventoryGraphShadowExactRetry = 0
+  result.inventoryGraphShadowInvalid = 0
+  result.inventoryGraphShadowConflict = 0
+  result.inventoryGraphShadowRetryable = 0
+  result.inventoryGraphShadowUnknown = 0
+}
+
 function incrementFulfillmentOutcome(
   result: PlayerSnapshotV1ArtifactRelaySummary,
   outcome: PlayerSnapshotV1ArtifactFulfillmentOutcome,
@@ -169,6 +187,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   fulfillmentStoreOrProjection?: PlayerSnapshotV1ArtifactFulfillmentStore | PlayerSnapshotV1LevelProjectionStore,
   projectionStoreOrFulfillment?: PlayerSnapshotV1LevelProjectionStore | PlayerSnapshotV1ArtifactFulfillmentStore,
   normalizedProjectionPersistence?: PlayerSnapshotV1NormalizedProjectionPersistence,
+  inventoryGraphShadowStore?: PlayerSnapshotV1InventoryGraphShadowStore,
 ): Promise<PlayerSnapshotV1ArtifactRelaySummary> {
   const result = summary()
   // Accept either side-effect ordering so existing projection callers remain
@@ -182,6 +201,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   }
   if (fulfillmentStore) withFulfillmentCounters(result)
   if (normalizedProjectionPersistence) withNormalizedProjectionCounters(result)
+  if (inventoryGraphShadowStore) withInventoryGraphShadowCounters(result)
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>
   try { files = await filesystem.scan(outboxPath) }
   catch { result.ioError++; return result }
@@ -216,6 +236,33 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
       else if (outcome === 'EXACT_RETRY') { result.exactRetry++; result.delivered++; artifactSettled = true }
       else result.unknown++
     } catch (error) { result[classifyDatabaseError(error)]++ }
+    // Migration 20261003000000 is an explicit, default-off shadow writer. It
+    // receives only settled immutable receipt/artifact metadata; the database
+    // function resolves the durable artifact evidence itself.
+    if (artifactSettled && inventoryGraphShadowStore) {
+      try {
+        const outcome = await inventoryGraphShadowStore.recordPlayerSnapshotV1InventoryGraphShadow({
+          characterId: artifact.characterId,
+          commandId: artifact.commandId,
+          receiptRequestSha256: artifact.receiptRequestSha256,
+          sourcePostSha256: artifact.sourcePostSha256,
+          sourceOctets: artifact.sourceOctets,
+        })
+        if (outcome === 'RECORDED') {
+          result.inventoryGraphShadowRecorded = (result.inventoryGraphShadowRecorded ?? 0) + 1
+          result.inventoryGraphShadowDelivered = (result.inventoryGraphShadowDelivered ?? 0) + 1
+        } else if (outcome === 'EXACT_RETRY') {
+          result.inventoryGraphShadowExactRetry = (result.inventoryGraphShadowExactRetry ?? 0) + 1
+          result.inventoryGraphShadowDelivered = (result.inventoryGraphShadowDelivered ?? 0) + 1
+        } else result.inventoryGraphShadowUnknown = (result.inventoryGraphShadowUnknown ?? 0) + 1
+      } catch (error) {
+        const category = classifyDatabaseError(error)
+        if (category === 'invalid') result.inventoryGraphShadowInvalid = (result.inventoryGraphShadowInvalid ?? 0) + 1
+        else if (category === 'conflict') result.inventoryGraphShadowConflict = (result.inventoryGraphShadowConflict ?? 0) + 1
+        else if (category === 'retryable') result.inventoryGraphShadowRetryable = (result.inventoryGraphShadowRetryable ?? 0) + 1
+        else result.inventoryGraphShadowUnknown = (result.inventoryGraphShadowUnknown ?? 0) + 1
+      }
+    }
     if (artifactSettled && fulfillmentStore) {
       try {
         const outcome = await fulfillmentStore.fulfillGameCharacterOnboardingSnapshotEligibility(

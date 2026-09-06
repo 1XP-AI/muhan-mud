@@ -61,6 +61,25 @@ export interface PlayerSnapshotV1LevelProjectionStore {
 }
 
 /**
+ * Closed receipt/artifact metadata for the inventory topology shadow writer.
+ * The database resolves and validates the already-recorded immutable artifact;
+ * raw bytes, decoded values, player inputs, and configuration are deliberately
+ * not representable at this boundary.
+ */
+export interface PlayerSnapshotV1InventoryGraphShadowInput {
+  characterId: string
+  commandId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  sourceOctets: string
+}
+
+export interface PlayerSnapshotV1InventoryGraphShadowStore {
+  recordPlayerSnapshotV1InventoryGraphShadow(input: PlayerSnapshotV1InventoryGraphShadowInput): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
+/**
  * Closed metadata plus the numeric-only projection already verified by the
  * pinned normalized-projection adapter.  Raw artifact/payload data is not
  * representable at this database boundary.
@@ -222,6 +241,35 @@ export class PostgresPlayerSnapshotV1LevelProjectionStore implements PlayerSnaps
       await client.query('set role mud_writer')
       const result = await client.query<{ outcome: string }>(
         'select outcome from private.record_player_snapshot_v1_level_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
+        [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+/**
+ * Dedicated default-off adapter for migration 20261003000000. The private
+ * function owns graph extraction from settled immutable artifact evidence.
+ */
+export class PostgresPlayerSnapshotV1InventoryGraphShadowStore implements PlayerSnapshotV1InventoryGraphShadowStore {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async recordPlayerSnapshotV1InventoryGraphShadow(input: PlayerSnapshotV1InventoryGraphShadowInput): Promise<StoreOutcome> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
         [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets],
       )
       const outcome = result.rows[0]?.outcome

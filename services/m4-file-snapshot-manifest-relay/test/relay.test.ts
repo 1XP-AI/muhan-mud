@@ -13,10 +13,10 @@ import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX } fro
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import type { PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
-import { main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
+import { isPlayerSnapshotV1InventoryGraphShadowEnabled, main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
 import { main as manifestFirstRelayMain } from '../src/player-snapshot-v1-manifest-first-cli.js'
 import { relayPlayerSnapshotV1ManifestFirstOnce, type PlayerSnapshotV1ManifestFirstFilesystem } from '../src/player-snapshot-v1-manifest-first-relay.js'
-import { PostgresManifestStore, PostgresPlayerSnapshotNormalizedV1ProjectionStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotNormalizedV1ProjectionStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
+import { PostgresManifestStore, PostgresPlayerSnapshotNormalizedV1ProjectionStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1InventoryGraphShadowStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotNormalizedV1ProjectionStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1InventoryGraphShadowStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
 const second = '22222222-2222-4222-8222-222222222222'
@@ -774,6 +774,8 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   let closed = 0
   let normalizedCreated = 0
   let normalizedClosed = 0
+  let inventoryGraphShadowCreated = 0
+  let inventoryGraphShadowClosed = 0
   const store: PlayerSnapshotV1ArtifactStore & PlayerSnapshotV1ArtifactFulfillmentStore = {
     recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
     fulfillGameCharacterOnboardingSnapshotEligibility: async () => 'FULFILLED',
@@ -786,6 +788,13 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
       return {
         recordPlayerSnapshotNormalizedV1Projection: async () => 'RECORDED' as const,
         close: async () => { normalizedClosed++ },
+      }
+    },
+    createInventoryGraphShadowStore: () => {
+      inventoryGraphShadowCreated++
+      return {
+        recordPlayerSnapshotV1InventoryGraphShadow: async () => 'RECORDED' as const,
+        close: async () => { inventoryGraphShadowClosed++ },
       }
     },
     projectNormalized: async () => normalizedProjection(),
@@ -813,6 +822,7 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   assert.equal(calls[0]?.[4], undefined)
   assert.equal(calls[0]?.[6], undefined)
   assert.equal(normalizedCreated, 0)
+  assert.equal(inventoryGraphShadowCreated, 0)
   assert.equal(writes.length, 1)
 
   assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'false' }, ['--once'], dependencies), 0)
@@ -821,6 +831,7 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   assert.equal(calls[1]?.[4], undefined)
   assert.equal(calls[1]?.[6], undefined)
   assert.equal(normalizedCreated, 0)
+  assert.equal(inventoryGraphShadowCreated, 0)
   assert.equal(writes.length, 2)
 
   assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true' }, ['--once'], dependencies), 0)
@@ -828,6 +839,7 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   assert.equal(closed, 3)
   assert.equal(calls[2]?.[4], store)
   assert.equal(calls[2]?.[6], undefined)
+  assert.equal(inventoryGraphShadowCreated, 0)
   assert.equal(writes.length, 3)
 
   assert.equal(await artifactRelayMain({
@@ -840,7 +852,16 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   assert.equal(normalizedCreated, 1)
   assert.equal(normalizedClosed, 1)
   assert.ok(calls[3]?.[6])
+  assert.equal(calls[3]?.[7], undefined)
   assert.equal(writes.length, 4)
+
+  assert.equal(await artifactRelayMain({
+    ...environment,
+    M4_PLAYER_SNAPSHOT_V1_INVENTORY_GRAPH_SHADOW_ENABLED: 'true',
+  }, ['--once'], dependencies), 0)
+  assert.equal(inventoryGraphShadowCreated, 1)
+  assert.equal(inventoryGraphShadowClosed, 1)
+  assert.ok(calls[4]?.[7])
 })
 
 test('a dual-interface side-effect store preserves projection retry after fulfillment', async () => {
@@ -1025,6 +1046,93 @@ test('PlayerSnapshotNormalizedV1 projection adapter uses only the private writer
     projection: { ...normalizedProjection(), player: { ...normalizedProjection().player, level: Number.NaN } },
   }), /invalid normalized projection persistence input/)
   assert.equal(queries.length, 2, 'malformed projection is rejected before a writer session is opened')
+})
+
+test('inventory graph shadow remains detached by default, binds settled immutable metadata, retries exactly, and fails closed', async () => {
+  const receipt = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const mismatched = playerSnapshotV1Artifact(playerSnapshotV1(), { request_sha256: 'd'.repeat(64) })
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: receipt }],
+  }
+  const mismatchFilesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: mismatched, receiptManifestBytes: receipt }],
+  }
+  let artifactAttempts = 0
+  const calls: unknown[] = []
+  const artifactStore: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => ++artifactAttempts === 1 ? 'RECORDED' : 'EXACT_RETRY',
+  }
+  const shadowStore: PlayerSnapshotV1InventoryGraphShadowStore = {
+    recordPlayerSnapshotV1InventoryGraphShadow: async (input) => {
+      calls.push(input)
+      return calls.length === 1 ? 'RECORDED' : 'EXACT_RETRY'
+    },
+  }
+
+  const detached = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem)
+  assert.equal(detached.inventoryGraphShadowDelivered, undefined)
+  assert.deepEqual(calls, [])
+
+  artifactAttempts = 0
+  const recorded = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem, undefined, undefined, undefined, undefined, shadowStore)
+  const retried = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem, undefined, undefined, undefined, undefined, shadowStore)
+  assert.equal(recorded.inventoryGraphShadowRecorded, 1)
+  assert.equal(retried.inventoryGraphShadowExactRetry, 1)
+  assert.deepEqual(calls, [first, first].map((commandId) => ({
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
+  })))
+  assert.equal(JSON.stringify(calls).match(/payload|artifact|player|credential|secret|flag/gi), null)
+
+  calls.length = 0
+  const malformed = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, mismatchFilesystem, undefined, undefined, undefined, undefined, shadowStore)
+  assert.equal(malformed.invalid, 1)
+  assert.equal(malformed.inventoryGraphShadowDelivered, 0)
+  assert.deepEqual(calls, [])
+
+  const failure = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', {
+    recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
+  }, filesystem, undefined, undefined, undefined, undefined, {
+    recordPlayerSnapshotV1InventoryGraphShadow: async () => {
+      throw Object.assign(new Error('deterministic shadow failure'), { code: 'P0001' })
+    },
+  })
+  assert.equal(failure.delivered, 1)
+  assert.equal(failure.inventoryGraphShadowConflict, 1)
+  assert.equal(failure.inventoryGraphShadowDelivered, 0)
+  assert.equal(Object.keys(failure).some((key) => /payload|digest|source|player|secret|flag/i.test(key)), false)
+})
+
+test('inventory graph shadow adapter calls only its parameterized five-metadata RPC', async () => {
+  const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+  const client: PgClient = {
+    query: async <Row>(sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values })
+      return { rows: sql.startsWith('select outcome') ? [{ outcome: 'RECORDED' } as Row] : [] }
+    },
+    release: () => undefined,
+  }
+  const pool: PgPool = { connect: async () => client, end: async () => undefined }
+  const store = new PostgresPlayerSnapshotV1InventoryGraphShadowStore('postgresql://mud_writer_login@localhost/postgres', pool)
+  const input = {
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId: first,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
+  }
+  assert.equal(await store.recordPlayerSnapshotV1InventoryGraphShadow(input), 'RECORDED')
+  assert.deepEqual(queries.map((query) => query.sql), [
+    'set role mud_writer',
+    'select outcome from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
+  ])
+  assert.deepEqual(queries[1]?.values, [
+    input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets,
+  ])
+})
+
+test('inventory graph shadow CLI capability is explicitly default-off', () => {
+  assert.equal(isPlayerSnapshotV1InventoryGraphShadowEnabled({}), false)
+  assert.equal(isPlayerSnapshotV1InventoryGraphShadowEnabled({ M4_PLAYER_SNAPSHOT_V1_INVENTORY_GRAPH_SHADOW_ENABLED: 'false' }), false)
+  assert.equal(isPlayerSnapshotV1InventoryGraphShadowEnabled({ M4_PLAYER_SNAPSHOT_V1_INVENTORY_GRAPH_SHADOW_ENABLED: 'true' }), true)
 })
 
 test('paired shadow relay records the manifest before its PlayerSnapshotV1 artifact and exactly retries both', async () => {
