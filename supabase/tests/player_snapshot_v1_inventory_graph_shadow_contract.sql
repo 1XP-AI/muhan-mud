@@ -141,11 +141,13 @@ select pg_temp.expect_state('P0001', format(
   'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
   :'pvi_request_sha256', repeat('a', 64)));
 select pg_temp.assert_true(
-  not exists (
-    select 1 from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
-     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
-  ),
-  'reconciliation excludes an artifact whose M4 manifest evidence is missing'
+  (select count(*) = 1
+     from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+    where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+      and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+      and receipt_request_sha256 = :'pvi_request_sha256'
+      and shadow_state = 'INCONSISTENT'),
+  'reconciliation retains the same receipt as INCONSISTENT when M4 manifest evidence is missing'
 );
 reset role;
 reset session authorization;
@@ -178,11 +180,13 @@ select pg_temp.expect_state('P0001', format(
   'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
   :'pvi_request_sha256', repeat('a', 64)));
 select pg_temp.assert_true(
-  not exists (
-    select 1 from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
-     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
-  ),
-  'reconciliation excludes an artifact whose M4 manifest evidence is mismatched'
+  (select count(*) = 1
+     from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+    where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+      and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+      and receipt_request_sha256 = :'pvi_request_sha256'
+      and shadow_state = 'INCONSISTENT'),
+  'reconciliation retains the same receipt as INCONSISTENT when M4 manifest evidence is mismatched'
 );
 reset role;
 reset session authorization;
@@ -200,6 +204,84 @@ select pg_temp.assert_true(
 );
 rollback to savepoint pvi_mismatched_manifest;
 release savepoint pvi_mismatched_manifest;
+
+savepoint pvi_missing_artifact;
+set local session_replication_role = replica;
+delete from private.game_character_player_snapshot_v1_artifacts
+ where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+   and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid;
+set local session_replication_role = origin;
+set local session authorization mud_writer_login;
+set local role mud_writer;
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
+  'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
+  :'pvi_request_sha256', repeat('a', 64)));
+select pg_temp.assert_true(
+  (select count(*) = 1
+     from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+    where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+      and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+      and receipt_request_sha256 = :'pvi_request_sha256'
+      and shadow_state = 'INCONSISTENT'),
+  'reconciliation retains the same receipt as INCONSISTENT when artifact evidence is missing'
+);
+reset role;
+reset session authorization;
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadows
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ) and not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadow_items
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a missing artifact rejects with P0001 and leaves no graph shadow rows'
+);
+rollback to savepoint pvi_missing_artifact;
+release savepoint pvi_missing_artifact;
+
+savepoint pvi_mismatched_artifact;
+set local session_replication_role = replica;
+update private.game_character_player_snapshot_v1_artifacts
+   set source_octets = 10
+ where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+   and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid;
+set local session_replication_role = origin;
+set local session authorization mud_writer_login;
+set local role mud_writer;
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
+  'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
+  :'pvi_request_sha256', repeat('a', 64)));
+select pg_temp.assert_true(
+  (select count(*) = 1
+     from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+    where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+      and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+      and receipt_request_sha256 = :'pvi_request_sha256'
+      and shadow_state = 'INCONSISTENT'),
+  'reconciliation retains the same receipt as INCONSISTENT when artifact evidence is mismatched'
+);
+reset role;
+reset session authorization;
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadows
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ) and not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadow_items
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a mismatched artifact rejects with P0001 and leaves no graph shadow rows'
+);
+rollback to savepoint pvi_mismatched_artifact;
+release savepoint pvi_mismatched_artifact;
+
 set local session authorization mud_writer_login;
 set local role mud_writer;
 

@@ -336,69 +336,75 @@ begin
       r.request_sha256, r.post_sha256, a.source_octets,
       a.snapshot_sha256, a.snapshot_octets,
       case
-        when s.character_id is null then 'MISSING'
-        when s.receipt_request_sha256 = r.request_sha256
-         and s.writer_instance_id = r.writer_instance_id
-         and s.writer_epoch = r.writer_epoch
-         and s.writer_revision = r.writer_revision
-         and s.source_post_sha256 = r.post_sha256
-         and s.source_octets = a.source_octets
-         and s.snapshot_sha256 = a.snapshot_sha256
-         and s.snapshot_octets = a.snapshot_octets
-         and s.item_count = (select count(*)::integer
-                               from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
-         and not exists (
-           (select node_index, parent_node_index, sibling_ordinal
-              from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
-           except
-           (select node_index, parent_node_index, sibling_ordinal
-              from private.game_character_player_snapshot_v1_inventory_graph_shadow_items as i
-             where i.character_id = r.character_id and i.command_id = r.command_id)
-         )
-         and not exists (
-           (select node_index, parent_node_index, sibling_ordinal
-              from private.game_character_player_snapshot_v1_inventory_graph_shadow_items as i
-             where i.character_id = r.character_id and i.command_id = r.command_id)
-           except
-           (select node_index, parent_node_index, sibling_ordinal
-              from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
-         ) then 'EXACT'
+        when m.character_id is null or a.character_id is null then 'INCONSISTENT'
+        when m.world_id = r.world_id
+         and m.legacy_name_key = r.legacy_name_key
+         and m.receipt_request_sha256 = r.request_sha256
+         and m.writer_instance_id = r.writer_instance_id
+         and m.writer_epoch = r.writer_epoch
+         and m.writer_revision = r.writer_revision
+         and m.file_post_sha256 = r.post_sha256
+         and m.storage_format = r.storage_format
+         and m.receipt_acknowledged_at = r.acknowledged_at
+         and m.snapshot_format = 'legacy-file-manifest-v1'
+         and m.snapshot_sha256 = r.post_sha256
+         and m.snapshot_octets between 1 and 67108864
+         and a.world_id = r.world_id
+         and a.legacy_name_key = r.legacy_name_key
+         and a.receipt_request_sha256 = r.request_sha256
+         and a.writer_instance_id = r.writer_instance_id
+         and a.writer_epoch = r.writer_epoch
+         and a.writer_revision = r.writer_revision
+         and a.source_post_sha256 = r.post_sha256
+         and a.source_octets = m.snapshot_octets
+         and a.storage_format = r.storage_format
+         and a.receipt_acknowledged_at = r.acknowledged_at
+         and a.snapshot_format = 'player-snapshot-v1'
+         and a.snapshot_octets = octet_length(a.payload)
+         and a.snapshot_octets between 48 and 4194352
+         and private.player_snapshot_v1_payload_valid(a.payload)
+         and a.snapshot_sha256 = encode(public.digest(a.payload, 'sha256'), 'hex') then
+          case
+            when s.character_id is null then 'MISSING'
+            when s.receipt_request_sha256 = r.request_sha256
+             and s.writer_instance_id = r.writer_instance_id
+             and s.writer_epoch = r.writer_epoch
+             and s.writer_revision = r.writer_revision
+             and s.source_post_sha256 = r.post_sha256
+             and s.source_octets = a.source_octets
+             and s.snapshot_sha256 = a.snapshot_sha256
+             and s.snapshot_octets = a.snapshot_octets
+             and s.item_count = (select count(*)::integer
+                                   from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
+             and not exists (
+               (select node_index, parent_node_index, sibling_ordinal
+                  from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
+               except
+               (select node_index, parent_node_index, sibling_ordinal
+                  from private.game_character_player_snapshot_v1_inventory_graph_shadow_items as i
+                 where i.character_id = r.character_id and i.command_id = r.command_id)
+             )
+             and not exists (
+               (select node_index, parent_node_index, sibling_ordinal
+                  from private.game_character_player_snapshot_v1_inventory_graph_shadow_items as i
+                 where i.character_id = r.character_id and i.command_id = r.command_id)
+               except
+               (select node_index, parent_node_index, sibling_ordinal
+                  from private.player_snapshot_v1_inventory_graph_shadow_nodes(a.payload))
+             ) then 'EXACT'
+            else 'INCONSISTENT'
+          end
         else 'INCONSISTENT'
       end,
       s.item_count, s.recorded_at
     from private.game_character_shadow_receipts as r
-    join private.game_character_m4_file_snapshot_manifests as m
+    left join private.game_character_m4_file_snapshot_manifests as m
       on m.character_id = r.character_id and m.command_id = r.command_id
-    join private.game_character_player_snapshot_v1_artifacts as a
+    left join private.game_character_player_snapshot_v1_artifacts as a
       on a.character_id = r.character_id and a.command_id = r.command_id
     left join private.game_character_player_snapshot_v1_inventory_graph_shadows as s
       on s.character_id = r.character_id and s.command_id = r.command_id
    where r.world_id = p_world_id
-     and m.world_id = r.world_id
-     and m.legacy_name_key = r.legacy_name_key
-     and m.receipt_request_sha256 = r.request_sha256
-     and m.writer_instance_id = r.writer_instance_id
-     and m.writer_epoch = r.writer_epoch
-     and m.writer_revision = r.writer_revision
-     and m.file_post_sha256 = r.post_sha256
-     and m.storage_format = r.storage_format
-     and m.receipt_acknowledged_at = r.acknowledged_at
-     and m.snapshot_format = 'legacy-file-manifest-v1'
-     and m.snapshot_sha256 = r.post_sha256
-     and a.world_id = r.world_id
-     and a.legacy_name_key = r.legacy_name_key
-     and a.receipt_request_sha256 = r.request_sha256
-     and a.writer_instance_id = r.writer_instance_id
-     and a.writer_epoch = r.writer_epoch
-     and a.writer_revision = r.writer_revision
-     and a.source_post_sha256 = r.post_sha256
-     and a.source_octets = m.snapshot_octets
-     and a.storage_format = r.storage_format
-     and a.receipt_acknowledged_at = r.acknowledged_at
-     and a.snapshot_format = 'player-snapshot-v1'
-     and a.snapshot_octets = octet_length(a.payload)
-     and private.player_snapshot_v1_payload_valid(a.payload)
-     and a.snapshot_sha256 = encode(public.digest(a.payload, 'sha256'), 'hex')
    order by r.character_id, r.writer_revision, r.command_id
    limit p_limit;
 end;
