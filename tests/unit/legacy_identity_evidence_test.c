@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "legacy_identity_evidence.h"
+#include "legacy_identity_evidence_wire.h"
 #include "mstruct.h"
 #include "player_path.h"
 #include "player_store.h"
@@ -84,13 +85,22 @@ static int expect(int condition, const char *message)
 
 static int make_regular_file(const char *path)
 {
-    unsigned char bytes[8192];
+    creature player;
+    int inventory_count;
     int fd;
 
-    memset(bytes, 'x', sizeof(bytes));
+    /* Synthetic Player V1 fixture: one native creature record followed by
+     * the legacy root-inventory count.  The decoder hook below stands in for
+     * the already-tested native decoder while this test exercises the real
+     * file-open/hash/evidence path over deterministic legacy-shaped bytes. */
+    memset(&player, 0, sizeof(player));
+    strcpy(player.name, "Alice");
+    inventory_count = 0;
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if(fd < 0) return -1;
-    if(write(fd, bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes) || close(fd) < 0)
+    if(write(fd, &player, sizeof(player)) != (ssize_t)sizeof(player) ||
+       write(fd, &inventory_count, sizeof(inventory_count)) !=
+           (ssize_t)sizeof(inventory_count) || close(fd) < 0)
         return -1;
     return 0;
 }
@@ -101,6 +111,9 @@ int main(void)
     char player_dir[512], player_file[512], shard_dir[512], expected_shard[3];
     legacy_identity_evidence first, second, invalid, missing, corrupt, io_error;
     legacy_identity_evidence read_error, changed_after_hash;
+    legacy_identity_evidence wire_decoded;
+    unsigned char *wire = 0;
+    size_t wire_length = 0;
     int failed = 0;
 
     if(!mkdtemp(root) || setenv("MUHAN_HOME", root, 1) < 0) {
@@ -130,9 +143,17 @@ int main(void)
                      strcmp(first.canonical_name, "Alice") == 0 &&
                      strcmp(first.legacy_shard, expected_shard) == 0 &&
                      strcmp(first.player_file_sha256,
-                            "18f8d2eb4a387bbc1e37ec099a7326805739bc9c99ecf0f14b808a5bcb65bf49") == 0 &&
+                            "3aa88f70383981ecc2d8888f7493dced5f18e97f62e9bb2b10e5c8e31d5c7417") == 0 &&
                      strcmp(first.storage_format, "player-v1") == 0,
                      "evidence must contain only canonical identity metadata");
+    failed += expect(legacy_identity_evidence_wire_encode(&first, &wire,
+                   &wire_length) == LEGACY_IDENTITY_EVIDENCE_WIRE_OK &&
+                   legacy_identity_evidence_wire_decode(wire, wire_length,
+                   &wire_decoded) == LEGACY_IDENTITY_EVIDENCE_WIRE_OK &&
+                   !memcmp(&first, &wire_decoded, sizeof(first)),
+                   "producer evidence must preserve its tuple through MUDLIE wire");
+    legacy_identity_evidence_wire_free(wire);
+    wire = 0;
     failed += expect(legacy_identity_evidence_inspect("aLiCe", &second) ==
                      LEGACY_IDENTITY_EVIDENCE_OK && !memcmp(&first, &second, sizeof(first)),
                      "unchanged input and player file must inspect deterministically");
