@@ -294,6 +294,8 @@ jobs:
               --file=supabase/migrations/20261011000000_pending_onboarding_snapshot_eligibility_login.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261012000000_pending_onboarding_snapshot_eligibility_login_hardening.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261013000000_private_function_execute_hardening.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/legacy_locator_resolver_contract.sql

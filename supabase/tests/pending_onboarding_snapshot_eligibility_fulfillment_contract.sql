@@ -109,20 +109,69 @@ select pg_temp.assert_true(
 );
 
 select pg_temp.assert_true(
+  exists (
+    select 1
+      from pg_proc p
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) privilege
+     where p.oid = 'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)'::regprocedure
+       and privilege.grantee = 'onboarding_snapshot_eligibility_login'::regrole
+       and privilege.privilege_type = 'EXECUTE'
+  )
+  and not exists (
+    select 1
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'private'
+       and p.oid <> 'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)'::regprocedure
+       and has_function_privilege('onboarding_snapshot_eligibility_login', p.oid, 'EXECUTE')
+  )
+  and not exists (
+    select 1
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) privilege
+     where n.nspname = 'private'
+       and privilege.grantee = 0
+       and privilege.privilege_type = 'EXECUTE'
+  ),
+  'the list login has effective execute only on its bounded RPC and no private function has PUBLIC execute'
+);
+
+-- This probe is transaction-local because the contract rolls back. It is
+-- created by the same migration owner as the CI replay, proving the default
+-- privilege hardening covers future private functions from that owner.
+create function private.pending_onboarding_snapshot_eligibility_default_execute_probe()
+returns boolean
+language sql
+as $$ select true $$;
+
+select pg_temp.assert_true(
+  not has_function_privilege(
+    'onboarding_snapshot_eligibility_login',
+    'private.pending_onboarding_snapshot_eligibility_default_execute_probe()'::regprocedure,
+    'EXECUTE'
+  )
+  and not exists (
+    select 1
+      from pg_proc p
+      cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) privilege
+     where p.oid = 'private.pending_onboarding_snapshot_eligibility_default_execute_probe()'::regprocedure
+       and privilege.grantee = 0
+       and privilege.privilege_type = 'EXECUTE'
+  ),
+  'future private functions created by the migration owner do not acquire PUBLIC execute'
+);
+
+select pg_temp.assert_true(
   not exists (
     select 1
       from pg_proc p
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'private'
        and p.oid <> 'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)'::regprocedure
-       and exists (
-         select 1
-           from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) privilege
-          where privilege.grantee = 'onboarding_snapshot_eligibility_login'::regrole
-            and privilege.privilege_type = 'EXECUTE'
-       )
+       and has_function_privilege('onboarding_snapshot_eligibility_login', p.oid, 'EXECUTE')
   ),
-  'the list login has no direct private function grant beyond the bounded list RPC'
+  'the list login has no effective private-function execute beyond the bounded list RPC'
 );
 
 select pg_temp.assert_true(
