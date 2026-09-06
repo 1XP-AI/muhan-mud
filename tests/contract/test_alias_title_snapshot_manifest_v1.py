@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Static and fixture checks for the detached alias-title shadow intake.
 
-The repository deliberately has no disposable PostgreSQL runner. These checks
-parse the narrow SQL DDL/RPC shape and exercise its deterministic retry model;
-they never connect to a database or enable this default-off contract.
+These checks parse the narrow SQL DDL/RPC shape and exercise its deterministic
+retry model; they never connect to a database or enable this default-off
+contract. The separate PG17 harness has its own static safety test and is never
+called from this file.
 """
 
 from __future__ import annotations

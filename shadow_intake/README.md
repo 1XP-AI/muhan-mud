@@ -38,31 +38,40 @@ Run without a database:
 
 ```sh
 python3 tests/contract/test_alias_title_snapshot_manifest_v1.py
+python3 tests/contract/test_pg17_alias_title_snapshot_manifest_v1_harness.py
 ```
 
 The test structurally checks both table definitions, the RPC parameter and
 immutable-comparison set, append-only triggers, and default-deny revocations.
 It also verifies that the fixture's kind-9 CDTO digest is SHA-256 of its
 encoded payload, then exercises first write, exact retry, and one conflict for
-each non-key immutable field.
+each non-key immutable field. The second test reads only the harness source to
+prove it stays opt-in, has no default database URL or broad database lifecycle
+command, and is not referenced by normal application/test sources.
 
-## Future disposable PostgreSQL 17 contract test
+## Explicit disposable PostgreSQL 17 contract harness
 
-When a disposable PG17 service is intentionally available, the future harness
-will create an empty database, apply only this SQL file, create a NOLOGIN test
-writer role, grant that role schema `USAGE` and RPC `EXECUTE`, and run SQL cases
-for the fixture. That gate must also invoke the application CDTO intake/canonical
-codec to recompute the payload SHA-256 and fully validate the kind-9 snapshot
-fields before acceptance. For example, with a throwaway database URL:
+`run_pg17_alias_title_snapshot_manifest_v1_contract.sh` is deliberately outside
+normal testing and will exit before invoking `psql` unless both conditions are
+met: `PG17_CONTRACT_RUN=1` and a caller-provided `PG17_CONTRACT_URL`. It has no
+default URL, does not create or drop databases, and must only receive an empty,
+disposable PostgreSQL 17 database whose owner can create a temporary NOLOGIN
+test role. The harness applies this detached schema, then runs all assertions in
+one rolled-back transaction: first record, exact retry, every immutable-field
+conflict, denied direct table access, append-only update/delete rejection, and
+the writer role's narrow schema-usage/RPC-execute surface.
+
+Run it only after you have independently provisioned the disposable database:
 
 ```sh
-export PG17_CONTRACT_URL='postgresql:///alias_shadow_contract'
-createdb alias_shadow_contract
-psql "$PG17_CONTRACT_URL" -v ON_ERROR_STOP=1 \
-  -f shadow_intake/alias_title_snapshot_manifest_v1.sql
-# Harness then grants only the explicit test role and invokes the RPC cases.
-dropdb alias_shadow_contract
+PG17_CONTRACT_RUN=1 \
+PG17_CONTRACT_URL='postgresql://contract_owner@127.0.0.1:5432/alias_shadow_contract' \
+  sh shadow_intake/run_pg17_alias_title_snapshot_manifest_v1_contract.sh
 ```
 
-This repository intentionally does not add that database, container, service,
-deployment configuration, or runtime invocation.
+The role/grant/data test setup rolls back; the schema remains in the supplied
+disposable database. This repository intentionally does not add a database,
+container, service, deployment configuration, runtime invocation, or normal-test
+hook. The harness also does not replace the future application CDTO intake gate:
+that gate must recompute the payload SHA-256 and fully validate the kind-9
+snapshot fields before acceptance.
