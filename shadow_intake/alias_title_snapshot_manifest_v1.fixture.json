@@ -1,0 +1,27 @@
+{
+  "contract": "AliasTitleSnapshotManifestV1",
+  "first_record": {
+    "event_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0101",
+    "world_id": "muhan-prod",
+    "canonical_legacy_name_key": "aabbccddeeff",
+    "character_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0102",
+    "writer_instance_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0103",
+    "writer_epoch": 42,
+    "writer_revision": 9,
+    "command_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0104",
+    "correlation_id": "018f12de-5f1e-7bce-9f02-5a6d4f0b0105",
+    "manifest_format": "CDTO",
+    "manifest_kind": 9,
+    "manifest_schema": "AliasTitleSnapshotManifestV1",
+    "recorded_at": "2026-09-06T00:00:00Z",
+    "canonical_cdto_wire_hex": "09000102",
+    "canonical_cdto_digest_sha256": "a3cb6c5af0aab9c82e276c9dc9b0ba37ff7e64a57f2c4b09c08a0493f9306ed2",
+    "canonical_cdto_length": 4
+  },
+  "attempts": [
+    {"name": "first", "changes": {}, "expected": "first_recorded"},
+    {"name": "exact_retry", "changes": {}, "expected": "exact_retry_idempotent"},
+    {"name": "changed_revision", "changes": {"writer_revision": 10}, "expected": "immutable_conflict"},
+    {"name": "changed_wire", "changes": {"canonical_cdto_wire_hex": "09000103"}, "expected": "immutable_conflict"}
+  ]
+}
