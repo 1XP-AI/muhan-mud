@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Bounded canonical representation of the legacy alias/title sidecar.  Its
- * only live use is an explicitly registered, post-save observer; it has no
- * save/load route, persistence contract, or text semantics of its own. */
+/* Bounded canonical representation of the legacy alias/title sidecar for an
+ * explicitly compiled test seam.  It has no production save/load route,
+ * persistence contract, or text semantics of its own. */
 #define ALIAS_TITLE_SNAPSHOT_V1_SCHEMA 1U
 #define ALIAS_TITLE_SNAPSHOT_V1_MAX_ALIASES 50U
 #define ALIAS_TITLE_SNAPSHOT_V1_ALIAS_MAX_BYTES 13U

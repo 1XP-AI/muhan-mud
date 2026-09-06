@@ -26,6 +26,13 @@ static int observer_saw_snapshot_values;
 static int failing_observer_calls;
 static int force_open_failure;
 static int legacy_print_calls;
+static creature *callback_player;
+static int reentrant_observer_calls;
+static int registering_observer_calls;
+static int replacement_observer_calls;
+static int clearing_observer_calls;
+static int replacement_saw_context;
+static char replacement_context;
 
 /* save_alias's legacy errors are irrelevant to this focused write seam test. */
 void print()
@@ -99,6 +106,58 @@ void *context;
     return -1;
 }
 
+static int reentrant_callback(wire, wire_length, context)
+const uint8_t *wire;
+size_t wire_length;
+void *context;
+{
+    (void)wire;
+    (void)wire_length;
+    (void)context;
+    ++reentrant_observer_calls;
+    save_alias(callback_player);
+    return -1;
+}
+
+static int replacement_callback(wire, wire_length, context)
+const uint8_t *wire;
+size_t wire_length;
+void *context;
+{
+    (void)wire;
+    (void)wire_length;
+    ++replacement_observer_calls;
+    replacement_saw_context = context == &replacement_context;
+    return 0;
+}
+
+static int registering_callback(wire, wire_length, context)
+const uint8_t *wire;
+size_t wire_length;
+void *context;
+{
+    (void)wire;
+    (void)wire_length;
+    (void)context;
+    ++registering_observer_calls;
+    alias_title_snapshot_v1_observer_register(replacement_callback,
+        &replacement_context);
+    return 0;
+}
+
+static int clearing_callback(wire, wire_length, context)
+const uint8_t *wire;
+size_t wire_length;
+void *context;
+{
+    (void)wire;
+    (void)wire_length;
+    (void)context;
+    ++clearing_observer_calls;
+    alias_title_snapshot_v1_observer_clear();
+    return 0;
+}
+
 static int expect(ok, message)
 int ok;
 const char *message;
@@ -122,6 +181,7 @@ int main(void)
     close(temporary);
     memset(&player, 0, sizeof(player));
     player.fd = 7;
+    callback_player = &player;
     strcpy(player.name, "observer-test");
     memset(alias, 'a', sizeof(alias) - 1U); alias[sizeof(alias) - 1U] = 0;
     memset(process, 'p', sizeof(process) - 1U); process[sizeof(process) - 1U] = 0;
@@ -160,6 +220,30 @@ int main(void)
     save_alias(&player);
     failed |= expect(failing_observer_calls == 1 && file_is_complete(),
         "observer failure must be ignored without changing the legacy save result");
+
+    alias_title_snapshot_v1_observer_register(reentrant_callback, NULL);
+    save_alias(&player);
+    failed |= expect(reentrant_observer_calls == 1 && file_is_complete(),
+        "an observer-triggered nested save must not recursively notify");
+    save_alias(&player);
+    failed |= expect(reentrant_observer_calls == 2 && file_is_complete(),
+        "the callback-in-progress guard must clear after every callback path");
+
+    alias_title_snapshot_v1_observer_register(registering_callback, NULL);
+    save_alias(&player);
+    failed |= expect(registering_observer_calls == 1 &&
+        replacement_observer_calls == 0,
+        "registration during a callback must affect only a later save");
+    save_alias(&player);
+    failed |= expect(replacement_observer_calls == 1 && replacement_saw_context,
+        "a later save must use the callback and context registered in the prior callback");
+
+    alias_title_snapshot_v1_observer_register(clearing_callback, NULL);
+    save_alias(&player);
+    save_alias(&player);
+    failed |= expect(clearing_observer_calls == 1 &&
+        replacement_observer_calls == 1 && file_is_complete(),
+        "clearing during a callback must suppress only later notifications");
     alias_title_snapshot_v1_observer_clear();
     unlink(test_output);
     return failed ? 1 : 0;

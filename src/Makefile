@@ -54,7 +54,7 @@ OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o command
 	 magic3.o magic4.o  magic5.o magic6.o magic7.o magic8.o \
 	 dm1.o dm2.o dm3.o dm4.o dm5.o dm6.o io.o \
 	  player.o creature.o room.o object.o update.o post.o action.o misc.o \
-	  special1.o compress.o alias.o alias_title_snapshot_v1.o cdto_v1.o board.o resource_path.o utf8_text.o \
+	  special1.o compress.o alias.o board.o resource_path.o utf8_text.o \
 	  player_path.o player_store.o file_player_store.o player_recovery.o trusted_admission.o onboarding_admission.o onboarding_session.o onboarding_receipt.o onboarding_activation_binding.o onboarding_activation_save_capability.o onboarding_recovery.o \
 	  legacy_identity_evidence.o legacy_identity_evidence_wire.o onboarding_evidence_control.o onboarding_evidence_emission.o
 
@@ -74,7 +74,7 @@ M3_RUNTIME_OBJECTS = character_save_journal_v2_runtime.o character_save_journal_
 	character_player_snapshot_v1_artifact.o character_player_snapshot_v1_receipt_pair.o \
 	character_player_snapshot_v1_read_rehearsal.o \
 	character_snapshot_shadow_outbox.o player_snapshot_v1.o \
-	object_graph_v1.o
+	object_graph_v1.o cdto_v1.o
 
 ifeq ($(USE_M3_RUNTIME),1)
 ifneq ($(shell uname -s),Linux)
@@ -1083,13 +1083,20 @@ cdto-v1-sanitizer-test:
 
 alias-title-snapshot-v1-observer-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/alias_title_snapshot_v1_observer_test.c alias.c alias_title_snapshot_v1.c cdto_v1.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/alias_title_snapshot_v1_observer_test
+	$(MAKE) alias-title-snapshot-v1-static-test
+	$(CC) -std=gnu89 -fcommon -DALIAS_TITLE_SNAPSHOT_V1_TEST_SEAM -I. -ffunction-sections -fdata-sections ../tests/unit/alias_title_snapshot_v1_observer_test.c alias.c alias_title_snapshot_v1.c cdto_v1.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/alias_title_snapshot_v1_observer_test
 	/tmp/muhan-unit/alias_title_snapshot_v1_observer_test
 
 alias-title-snapshot-v1-observer-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/alias_title_snapshot_v1_observer_test.c alias.c alias_title_snapshot_v1.c cdto_v1.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/alias_title_snapshot_v1_observer_sanitizer_test
+	$(MAKE) alias-title-snapshot-v1-static-test
+	$(CC) -std=gnu89 -fcommon -DALIAS_TITLE_SNAPSHOT_V1_TEST_SEAM -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/alias_title_snapshot_v1_observer_test.c alias.c alias_title_snapshot_v1.c cdto_v1.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/alias_title_snapshot_v1_observer_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/alias_title_snapshot_v1_observer_sanitizer_test
+
+alias-title-snapshot-v1-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -c alias.c -o /tmp/muhan-unit/alias_title_snapshot_v1_production.o
+	python3 ../tests/unit/alias_title_snapshot_v1_no_live_link_test.py --object /tmp/muhan-unit/alias_title_snapshot_v1_production.o --source alias.c --makefile Makefile
 
 object-v1-test:
 	mkdir -p /tmp/muhan-unit
