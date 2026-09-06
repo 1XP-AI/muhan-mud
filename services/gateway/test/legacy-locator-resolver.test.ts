@@ -51,6 +51,9 @@ test('resolver rejects noncanonical or unsafe identity before calling PostgREST'
     { worldId: 'resolver\u0000world', canonicalName },
     { worldId: 'resolver-world', canonicalName: 'a'.repeat(13) },
     { worldId: 'resolver-world', canonicalName: 'A\u0000bot' },
+    { worldId: 'resolver-world', canonicalName: '   ' },
+    { worldId: 'resolver-world', canonicalName: '.' },
+    { worldId: 'resolver-world', canonicalName: '..' },
   ]) {
     await assert.rejects(() => resolver.resolve(request), LegacyLocatorResolutionError)
   }
@@ -74,17 +77,51 @@ test('resolver accepts only one strict UUID row and hides malformed server respo
 })
 
 test('resolver rejects oversized or non-JSON responses without reading unbounded data', async () => {
+  let cancelled = false
   const oversized = new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode('[' + ' '.repeat(65 * 1024)))
-      controller.close()
+    },
+    cancel() {
+      cancelled = true
     },
   }), { headers: { 'content-type': 'application/json' } })
   const resolver = new SupabaseLegacyLocatorResolver(config(), async () => oversized)
   await assert.rejects(() => resolver.resolve({ worldId, canonicalName }), LegacyLocatorResolutionError)
+  assert.equal(cancelled, true)
 
   const nonJson = new SupabaseLegacyLocatorResolver(config(), async () => new Response('not json', {
     headers: { 'content-type': 'text/plain' },
   }))
   await assert.rejects(() => nonJson.resolve({ worldId, canonicalName }), LegacyLocatorResolutionError)
+})
+
+test('resolver aborts a fetch that never resolves', async () => {
+  let aborted = false
+  const resolver = new SupabaseLegacyLocatorResolver(config({ AUTH_TIMEOUT_MS: '100' }), async (_url, init) => {
+    const signal = init?.signal as AbortSignal
+    return await new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted = true
+        reject(new Error('aborted'))
+      }, { once: true })
+    })
+  })
+  await assert.rejects(() => resolver.resolve({ worldId, canonicalName }), LegacyLocatorResolutionError)
+  assert.equal(aborted, true)
+})
+
+test('resolver deadline aborts a stalled response body read', async () => {
+  let aborted = false
+  const resolver = new SupabaseLegacyLocatorResolver(config({ AUTH_TIMEOUT_MS: '100' }), async (_url, init) => {
+    const signal = init?.signal as AbortSignal
+    signal.addEventListener('abort', () => { aborted = true }, { once: true })
+    return new Response(new ReadableStream({
+      pull() {
+        return new Promise<void>(() => {})
+      },
+    }), { headers: { 'content-type': 'application/json' } })
+  })
+  await assert.rejects(() => resolver.resolve({ worldId, canonicalName }), LegacyLocatorResolutionError)
+  assert.equal(aborted, true)
 })

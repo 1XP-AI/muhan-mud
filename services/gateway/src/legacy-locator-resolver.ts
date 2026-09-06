@@ -55,6 +55,7 @@ function validRequest(request: LegacyLocatorRequest): boolean {
   if (typeof request?.worldId !== 'string' || typeof request.canonicalName !== 'string') return false
   if (hasUnpairedSurrogate(request.worldId) || hasUnpairedSurrogate(request.canonicalName)) return false
   if (!SAFE_WORLD_RE.test(request.worldId) || !SAFE_NAME_RE.test(request.canonicalName)) return false
+  if (/^\s+$/u.test(request.canonicalName) || request.canonicalName === '.' || request.canonicalName === '..') return false
   if (Buffer.byteLength(request.canonicalName, 'utf8') > MAX_NAME_BYTES) return false
   return canonicalNameKey(request.canonicalName) === request.canonicalName
 }
@@ -73,7 +74,7 @@ function oneRow(body: unknown): string {
   return characterId
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
+async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
   const contentType = response.headers.get('content-type')
   const contentLength = response.headers.get('content-length')
   if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType) ||
@@ -82,25 +83,44 @@ async function boundedJson(response: Response): Promise<unknown> {
   }
   const reader = response.body?.getReader()
   if (!reader) throw new LegacyLocatorResolutionError()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  while (true) {
-    const next = await reader.read()
-    if (next.done) break
-    total += next.value.byteLength
-    if (total > MAX_RPC_JSON_BYTES) throw new LegacyLocatorResolutionError()
-    chunks.push(next.value)
-  }
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
   try {
+    const chunks: Uint8Array[] = []
+    let total = 0
+    while (true) {
+      const next = await readWithAbort(reader, signal)
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > MAX_RPC_JSON_BYTES) throw new LegacyLocatorResolutionError()
+      chunks.push(next.value)
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
     return JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     throw new LegacyLocatorResolutionError()
+  } finally {
+    const cancellation = reader.cancel().catch(() => {})
+    if (!signal.aborted) await cancellation
+  }
+}
+
+async function readWithAbort(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal): Promise<Awaited<ReturnType<typeof reader.read>>> {
+  if (signal.aborted) throw new LegacyLocatorResolutionError()
+  let onAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new LegacyLocatorResolutionError())
+        signal.addEventListener('abort', onAbort, { once: true })
+      }),
+    ])
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -160,7 +180,7 @@ export class SupabaseLegacyLocatorResolver implements LegacyLocatorResolver {
         throw new LegacyLocatorResolutionError()
       }
       if (!response.ok) throw new LegacyLocatorResolutionError()
-      return await boundedJson(response)
+      return await boundedJson(response, controller.signal)
     } finally {
       clearTimeout(timer)
     }
