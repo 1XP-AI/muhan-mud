@@ -17,19 +17,6 @@ begin
 end;
 $$;
 
-create or replace function pg_temp.expect_state(p_sqlstate text, p_sql text)
-returns void language plpgsql as $$
-begin
-  begin
-    execute p_sql;
-  exception when others then
-    if sqlstate = p_sqlstate then return; end if;
-    raise;
-  end;
-  raise exception 'historic batch tuple gate contract failed: expected %, statement succeeded', p_sqlstate;
-end;
-$$;
-
 -- This row models an old ledger batch whose complete membership remains
 -- untouched. It is the sole accepted historic backfill shape.
 insert into private.game_imported_unclaimed_batches (
@@ -121,24 +108,28 @@ select pg_temp.assert_true(
   'changed or count-incomplete historic batches must remain without reconstructable tuples'
 );
 
--- The valid backfill has persisted first, so the lifecycle gate permits the
--- normal transition. Missing tuple evidence rejects before a verdict-mutating
--- lifecycle write can be committed.
-update public.game_characters set lifecycle = 'handoff_pending'
- where id = '00000000-0000-4000-8000-0000000000c1';
-select pg_temp.expect_state('P0001', $$
-  update public.game_characters set lifecycle = 'active'
-   where id = '00000000-0000-4000-8000-0000000000c2'
-$$);
-select pg_temp.expect_state('P0001', $$
-  update public.game_characters set lifecycle = 'handoff_pending'
-   where id = '00000000-0000-4000-8000-0000000000c3'
-$$);
+-- Historic tuple evidence authenticates replay only. It must not become a
+-- broad lifecycle/claim write gate: ordinary lifecycle changes remain owned
+-- by their established paths even when an old batch has no tuple evidence.
+update public.game_characters set lifecycle = 'active'
+ where id = '00000000-0000-4000-8000-0000000000c2';
+update public.game_characters
+   set lifecycle = 'handoff_pending',
+       owner_user_id = '00000000-0000-4000-8000-0000000000d2',
+       claimed_at = clock_timestamp()
+ where id = '00000000-0000-4000-8000-0000000000c3';
 select pg_temp.assert_true(
-  (select lifecycle = 'handoff_pending' from public.game_characters where id = '00000000-0000-4000-8000-0000000000c1')
-  and (select lifecycle = 'handoff_pending' from public.game_characters where id = '00000000-0000-4000-8000-0000000000c2')
-  and (select lifecycle = 'imported_unclaimed' from public.game_characters where id = '00000000-0000-4000-8000-0000000000c3'),
-  'historic lifecycle updates must fail closed without exact complete tuple evidence'
+  (select lifecycle = 'active' from public.game_characters where id = '00000000-0000-4000-8000-0000000000c2')
+  and (select lifecycle = 'handoff_pending'
+         and owner_user_id = '00000000-0000-4000-8000-0000000000d2'
+         and claimed_at is not null
+         from public.game_characters where id = '00000000-0000-4000-8000-0000000000c3')
+  and not exists (
+    select 1 from private.game_imported_unclaimed_batch_member_identities
+     where world_id = 'historic-tuple-world' and stream_id = 'main'
+       and batch_sequence in (1, 2)
+  ),
+  'ordinary lifecycle mutation stays outside historic replay policy'
 );
 
 rollback;
