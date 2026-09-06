@@ -173,6 +173,30 @@ test('auth-first trusted relay writes ticket, waits for fragmented ACK, and pres
   ws.close()
 })
 
+test('does not pass through upstream terminal bytes before the MUD1 OK admission ACK', async (t) => {
+  const mud = createServer((socket) => socket.once('data', () => {
+    socket.write('MUD1 ')
+    setTimeout(() => socket.write(Buffer.concat([
+      Buffer.from('OK\n'), Buffer.from([0xec, 0x95, 0x88, 0xff, 0xfb, 0x01])
+    ])), 80)
+  }))
+  mud.listen(0, '127.0.0.1')
+  await once(mud, 'listening')
+  const authorizer = new RecordingAuthorizer()
+  const gateway = await startGateway(mud, dependencies(authorizer))
+  t.after(async () => { await closeGateway(gateway); await closeServer(mud) })
+
+  const { ws, messages } = await openWs(gateway)
+  ws.send(authFrame())
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(ws.readyState, WebSocket.OPEN)
+  assert.deepEqual(messages, [], 'admission fragments and upstream bytes must remain gated')
+
+  await waitForMessage(messages, ({ data, isBinary }) => !isBinary && Buffer.from(data).toString() === '{"type":"ready"}')
+  await waitForMessage(messages, ({ data, isBinary }) => isBinary && Buffer.from(data).toString('utf8') === '안')
+  ws.close()
+})
+
 test('normal MUD TCP end after admission sends closed without an error and releases the lease', async (t) => {
   const mud = createServer((socket) => {
     socket.once('data', () => {
@@ -234,6 +258,7 @@ test('auth frame rejects unknown fields before authentication or MUD TCP', async
 
 for (const scenario of [
   { name: 'ERR', response: (socket: Socket) => socket.write('MUD1 ERR\n') },
+  { name: 'malformed response', response: (socket: Socket) => socket.write('MUD1 MAYBE\n') },
   { name: 'end', response: (socket: Socket) => socket.end() },
   { name: 'oversized preface', response: (socket: Socket) => socket.write(Buffer.alloc(257, 0x41)) },
   { name: 'timeout', response: (_socket: Socket) => {} }
@@ -250,6 +275,7 @@ for (const scenario of [
     ws.send(authFrame())
     await once(ws, 'close')
     assert.ok(!messages.some(({ data }) => Buffer.from(data).toString() === '{"type":"ready"}'))
+    assert.ok(!messages.some(({ isBinary }) => isBinary), 'failed admission must not create a usable relay session')
     await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
   })
 }
