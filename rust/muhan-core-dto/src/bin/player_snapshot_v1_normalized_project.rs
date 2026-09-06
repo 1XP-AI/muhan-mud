@@ -4,6 +4,13 @@
 //! artifact digest, and emits only the numeric `PlayerSnapshotNormalizedV1`
 //! allowlist/topology plus fixed projection metadata. It never renders source
 //! payload bytes, source text, keys, flags, credentials, paths, or sessions.
+//!
+//! Output transport contract: input, digest-binding, and projection failures
+//! happen before stdout is touched and therefore emit no stdout bytes. A stdout
+//! write or flush failure returns a nonzero exit status and the generic stderr
+//! rejection, but bytes already accepted by an OS stream cannot be retracted.
+//! Relay consumers must discard stdout unless the process exits successfully,
+//! stderr is empty, and stdout exactly matches this binary's documented format.
 
 use muhan_core_dto::player_snapshot_normalized_v1::{
     project_player_snapshot_v1_artifact, PlayerSnapshotNormalizedV1,
@@ -145,8 +152,8 @@ fn run_projection(
     }
 
     // Validate/canonicalize and bind the source artifact before projecting it.
-    // Both operations complete before stdout is touched, so invalid or tampered
-    // input cannot produce a partial projection.
+    // These input, digest, and projection operations complete before stdout is
+    // touched, so their failures cannot produce a partial projection.
     if verify_player_snapshot_post_save_shadow_v1(&wire, expected_digest).is_err() {
         return reject(stderr);
     }
@@ -155,6 +162,9 @@ fn run_projection(
         Err(_) => return reject(stderr),
     };
     let rendered = format_projection(&projection);
+    // OS-backed writes and flushes are not atomic: on failure, some bytes may
+    // already have reached stdout. The nonzero status and generic stderr mark
+    // that output as unusable to relay consumers.
     if stdout.write_all(rendered.as_bytes()).is_err() || stdout.flush().is_err() {
         return reject(stderr);
     }
@@ -173,7 +183,66 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::expected_snapshot_sha256;
+    use super::{expected_snapshot_sha256, run_projection, REJECTION};
+    use muhan_core_dto::{player_snapshot_v1::verify_player_snapshot_replay_v1, MAX_ENVELOPE_SIZE};
+    use std::io::{self, Cursor, Read, Write};
+    use std::process::ExitCode;
+
+    struct PartiallyFailingWriter {
+        bytes: Vec<u8>,
+        remaining_before_failure: usize,
+    }
+
+    impl Write for PartiallyFailingWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.remaining_before_failure == 0 {
+                return Err(io::Error::other("injected transport failure"));
+            }
+            let written = buffer.len().min(self.remaining_before_failure);
+            self.bytes.extend_from_slice(&buffer[..written]);
+            self.remaining_before_failure -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct OversizedReader {
+        bytes_read: usize,
+    }
+
+    impl Read for OversizedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let total = MAX_ENVELOPE_SIZE + 2;
+            let remaining = total.saturating_sub(self.bytes_read);
+            let count = remaining.min(buffer.len());
+            buffer[..count].fill(0);
+            self.bytes_read += count;
+            Ok(count)
+        }
+    }
+
+    fn canonical_fixture() -> Vec<u8> {
+        let fixture =
+            include_str!("../../../../tests/fixtures/player_snapshot_v1_canonical.hex").trim();
+        (0..fixture.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&fixture[index..index + 2], 16).expect("fixture hex"))
+            .collect()
+    }
+
+    fn fixture_digest() -> [u8; 32] {
+        verify_player_snapshot_replay_v1(&canonical_fixture())
+            .expect("fixture verifies")
+            .canonical_digest
+    }
+
+    fn assert_rejected(status: ExitCode, stderr: &[u8]) {
+        assert_eq!(status, ExitCode::from(1));
+        assert_eq!(stderr, REJECTION);
+    }
 
     #[test]
     fn expected_digest_argument_is_closed_and_lowercase() {
@@ -189,5 +258,35 @@ mod tests {
             expected_snapshot_sha256(["--snapshot-sha256".into(), "00".repeat(31)].into_iter()),
             None
         );
+    }
+
+    #[test]
+    fn runner_marks_partially_written_stdout_as_transport_failure() {
+        let mut input = Cursor::new(canonical_fixture());
+        let mut stdout = PartiallyFailingWriter {
+            bytes: Vec::new(),
+            remaining_before_failure: 9,
+        };
+        let mut stderr = Vec::new();
+
+        assert_rejected(
+            run_projection(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
+            &stderr,
+        );
+        assert_eq!(stdout.bytes, b"{\"format\"");
+    }
+
+    #[test]
+    fn runner_rejects_oversized_input_without_stdout() {
+        let mut input = OversizedReader { bytes_read: 0 };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        assert_rejected(
+            run_projection(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
+            &stderr,
+        );
+        assert!(stdout.is_empty());
+        assert_eq!(input.bytes_read, MAX_ENVELOPE_SIZE + 1);
     }
 }
