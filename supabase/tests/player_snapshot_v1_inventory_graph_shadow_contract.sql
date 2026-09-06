@@ -126,6 +126,20 @@ select pg_temp.assert_true(
 reset role;
 reset session authorization;
 
+select pg_temp.assert_true(
+  (select count(*) = 1 and min(shadow_state) = 'MISSING' and max(shadow_state) = 'MISSING'
+     from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+    where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+      and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+      and receipt_request_sha256 = :'pvi_request_sha256')
+  and not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadows
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a valid receipt -> M4 manifest -> PlayerSnapshotV1 artifact chain with no graph shadow row is returned exactly as MISSING'
+);
+
 -- Start each negative case with the production-valid immutable chain, then
 -- emulate an owner-side repair defect without permanently changing its setup.
 savepoint pvi_missing_manifest;

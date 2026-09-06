@@ -64,6 +64,7 @@ require_contract 'reconciliation retains the same receipt as INCONSISTENT when M
 require_contract 'reconciliation retains the same receipt as INCONSISTENT when M4 manifest evidence is mismatched'
 require_contract 'reconciliation retains the same receipt as INCONSISTENT when artifact evidence is missing'
 require_contract 'reconciliation retains the same receipt as INCONSISTENT when artifact evidence is mismatched'
+require_contract 'a valid receipt -> M4 manifest -> PlayerSnapshotV1 artifact chain with no graph shadow row is returned exactly as MISSING'
 require_contract "and shadow_state = 'INCONSISTENT'"
 require_contract 'A conflicting existing'
 require_contract 'the checked-in nested-inventory fixture must remain valid artifact evidence'
