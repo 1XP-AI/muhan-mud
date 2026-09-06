@@ -465,6 +465,16 @@ jobs:
           make -C src clean >/dev/null 2>&1 || true
           make -C src -j2 CC=gcc
 
+      - name: Run M3 native runtime lifecycle gate (Linux + libpq)
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev
+          make -C src character-save-journal-v2-runtime-native-test \
+            CC=gcc PG_CONFIG=pg_config
+
       - name: Player snapshot portable contract (Linux/macOS)
         if: matrix.runner != 'windows-latest'
         shell: bash
