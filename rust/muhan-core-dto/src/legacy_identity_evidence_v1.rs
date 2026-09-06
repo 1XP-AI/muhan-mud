@@ -212,12 +212,58 @@ pub fn decode(wire: &[u8]) -> Result<LegacyIdentityEvidenceV1, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IMPORTER_BINDING_FIXTURE: &str = include_str!(
+        "../../../tests/fixtures/legacy_identity_evidence_importer_binding_v1.fixture"
+    );
+
     fn hex(source: &str) -> Vec<u8> {
         let source = source.trim();
         (0..source.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&source[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    fn fixture_field<'a>(source: &'a str, key: &str) -> &'a str {
+        let prefix = format!("{key}=");
+        let mut matches = source.lines().filter_map(|line| line.strip_prefix(&prefix));
+        let value = matches.next().expect("fixture field must be present");
+        assert!(matches.next().is_none(), "fixture field must be unique");
+        value
+    }
+
+    fn assert_closed_importer_binding_fixture(source: &str) {
+        let mut keys = Vec::new();
+        for line in source.lines() {
+            let (key, value) = line.split_once('=').expect("fixture lines are key=value");
+            assert!(
+                !key.is_empty() && !value.is_empty(),
+                "fixture fields are nonempty"
+            );
+            keys.push(key);
+        }
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "canonical_name",
+                "canonicalization",
+                "contract_version",
+                "inventory_byte_size",
+                "inventory_canonical_name_key",
+                "inventory_expected_shard",
+                "inventory_name",
+                "inventory_observed_shard",
+                "inventory_relative_path",
+                "inventory_sha256",
+                "legacy_shard",
+                "outcome",
+                "player_file_sha256",
+                "storage_format",
+                "wire_hex",
+            ]
+        );
     }
     fn valid() -> LegacyIdentityEvidenceV1 {
         LegacyIdentityEvidenceV1 {
@@ -237,6 +283,79 @@ mod tests {
         ));
         assert_eq!(encode(&valid()).unwrap(), golden);
         assert_eq!(decode(&golden).unwrap(), valid());
+    }
+    #[test]
+    fn strict_wire_decode_matches_the_versioned_importer_binding_contract() {
+        assert_closed_importer_binding_fixture(IMPORTER_BINDING_FIXTURE);
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "contract_version"),
+            "1"
+        );
+
+        let wire = hex(fixture_field(IMPORTER_BINDING_FIXTURE, "wire_hex"));
+        assert_eq!(
+            wire,
+            hex(include_str!(
+                "../../../tests/fixtures/legacy_identity_evidence_wire_v1_ok.hex"
+            ))
+        );
+        let decoded = decode(&wire).expect("contract wire must strict-decode");
+        assert_eq!(encode(&decoded).unwrap(), wire);
+
+        assert_eq!(decoded.outcome, Outcome::Ok);
+        assert_eq!(fixture_field(IMPORTER_BINDING_FIXTURE, "outcome"), "ok");
+        assert_eq!(decoded.canonicalization, Canonicalization::Normalized);
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "canonicalization"),
+            "normalized"
+        );
+        assert_eq!(
+            decoded.canonical_name,
+            fixture_field(IMPORTER_BINDING_FIXTURE, "canonical_name")
+        );
+        assert_eq!(
+            decoded.legacy_shard,
+            fixture_field(IMPORTER_BINDING_FIXTURE, "legacy_shard")
+        );
+        assert_eq!(
+            decoded.player_file_sha256,
+            fixture_field(IMPORTER_BINDING_FIXTURE, "player_file_sha256")
+        );
+        assert_eq!(
+            decoded.storage_format,
+            fixture_field(IMPORTER_BINDING_FIXTURE, "storage_format")
+        );
+
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_name"),
+            decoded.canonical_name
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_canonical_name_key"),
+            decoded.canonical_name
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_observed_shard"),
+            decoded.legacy_shard
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_expected_shard"),
+            decoded.legacy_shard
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_relative_path"),
+            format!("player/{}/{}", decoded.legacy_shard, decoded.canonical_name)
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_sha256"),
+            decoded.player_file_sha256
+        );
+        assert_eq!(
+            fixture_field(IMPORTER_BINDING_FIXTURE, "inventory_byte_size")
+                .parse::<u64>()
+                .expect("inventory byte size is numeric"),
+            1
+        );
     }
     #[test]
     fn shared_invalid_input_golden_is_accepted_without_identity_or_digest() {
