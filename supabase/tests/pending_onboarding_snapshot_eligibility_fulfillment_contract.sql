@@ -26,15 +26,56 @@ select pg_temp.assert_true(
   and (select p.prosecdef and p.proconfig = array['search_path=pg_catalog, private']::text[]
          from pg_proc p
         where p.oid = 'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)'::regprocedure)
-  and has_function_privilege('service_role',
+  and has_function_privilege('onboarding_snapshot_eligibility_login',
+        'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute')
+  and has_schema_privilege('onboarding_snapshot_eligibility_login', 'private', 'usage')
+  and not has_function_privilege('service_role',
         'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute')
   and not has_function_privilege('anon',
         'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute')
   and not has_function_privilege('authenticated',
         'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute')
   and not has_function_privilege('mud_writer',
+        'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute')
+  and not has_function_privilege('mud_writer_login',
         'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)', 'execute'),
-  'the pending list is a private security-definer service-only RPC'
+  'the pending list is a private security-definer direct-login-only RPC'
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1 from pg_roles r
+     where r.rolname = 'onboarding_snapshot_eligibility_login'
+       and r.rolcanlogin
+       and not r.rolinherit
+       and not r.rolsuper
+       and not r.rolcreaterole
+       and not r.rolcreatedb
+       and not r.rolreplication
+       and not r.rolbypassrls
+       and r.rolconnlimit = 1
+  )
+  and not exists (
+    select 1 from pg_auth_members m
+      join pg_roles login on login.oid = m.member
+      join pg_roles granted on granted.oid = m.roleid
+     where login.rolname = 'onboarding_snapshot_eligibility_login'
+        or granted.rolname = 'onboarding_snapshot_eligibility_login'
+  )
+  and (select rolconfig @> array[
+      'statement_timeout=5s',
+      'lock_timeout=1s',
+      'idle_in_transaction_session_timeout=5s',
+      'search_path=pg_catalog'
+    ]::text[] from pg_roles where rolname = 'onboarding_snapshot_eligibility_login')
+  and (select cardinality(rolconfig) = 4 from pg_roles where rolname = 'onboarding_snapshot_eligibility_login')
+  and not pg_has_role('onboarding_snapshot_eligibility_login', 'mud_writer', 'member')
+  and not pg_has_role('onboarding_snapshot_eligibility_login', 'service_role', 'member')
+  and not has_table_privilege('onboarding_snapshot_eligibility_login',
+        'private.game_character_onboarding_snapshot_eligibility_outbox', 'select')
+  and not has_table_privilege('onboarding_snapshot_eligibility_login',
+        'private.game_character_onboarding_snapshot_command_bindings', 'select'),
+  'the list login is nonprivileged, has no memberships, bounded session settings, and no direct table access'
 );
 
 select pg_temp.assert_true(
@@ -48,7 +89,7 @@ select pg_temp.assert_true(
   'the list exposes only the exact immutable tuple in deterministic pending order'
 );
 
-set local role service_role;
+set local role onboarding_snapshot_eligibility_login;
 select pg_temp.expect_rejection(
   'select * from private.list_pending_game_character_onboarding_snapshot_eligibility(0)'
 );

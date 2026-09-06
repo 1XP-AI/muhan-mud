@@ -34,7 +34,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly 
   if (args.some((argument) => argument !== '--once' && argument !== '--fulfill-pending-snapshot-eligibility') ||
       (fulfillmentRun && args.length !== 1)) throw new Error('configuration rejected')
   if (fulfillmentRun) {
-    const source = new PostgresPendingOnboardingSnapshotEligibilitySource(environment(env, 'SUPABASE_SERVICE_DATABASE_URL'))
+    const source = new PostgresPendingOnboardingSnapshotEligibilitySource(environment(env, 'ONBOARDING_SNAPSHOT_ELIGIBILITY_DATABASE_URL'))
     const fulfillment = new PostgresOnboardingSnapshotEligibilityFulfillmentRpc(environment(env, 'MUD_WRITER_DATABASE_URL'))
     try {
       const result = await fulfillPendingOnboardingSnapshotEligibilityOnce(source, fulfillment, {

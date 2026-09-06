@@ -193,7 +193,7 @@ test('pending snapshot-eligibility fulfillment retries only bounded transient fa
   assert.deepEqual(result, { listed: 1, fulfilled: 1, exactRetry: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
 })
 
-test('pending snapshot-eligibility adapters call only the bounded service list and existing exact writer fulfillment RPC', async () => {
+test('pending snapshot-eligibility adapters call only the bounded direct-login list and existing exact writer fulfillment RPC', async () => {
   const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
   const client: PendingEligibilityPgClient = {
     query: async <Row>(sql: string, values?: readonly unknown[]) => {
@@ -208,7 +208,7 @@ test('pending snapshot-eligibility adapters call only the bounded service list a
     release: () => undefined,
   }
   const pool: PendingEligibilityPgPool = { connect: async () => client, end: async () => undefined }
-  const source = new PostgresPendingOnboardingSnapshotEligibilitySource('postgresql://service_role@localhost/postgres', pool)
+  const source = new PostgresPendingOnboardingSnapshotEligibilitySource('postgresql://onboarding_snapshot_eligibility_login@localhost/postgres', pool)
   const fulfillment = new PostgresOnboardingSnapshotEligibilityFulfillmentRpc('postgresql://mud_writer_login@localhost/postgres', pool)
   assert.deepEqual(await source.listPendingOnboardingSnapshotEligibility(4), [{
     correlationId: correlation, actorUserId: actor, characterId: character,
@@ -216,11 +216,21 @@ test('pending snapshot-eligibility adapters call only the bounded service list a
   }])
   assert.equal(await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(character, '123e4567-e89b-12d3-a456-426614174003'), 'FULFILLED')
   assert.deepEqual(queries, [
-    { sql: 'set role service_role', values: undefined },
     { sql: 'select correlation_id, actor_user_id, character_id, mode, command_id from private.list_pending_game_character_onboarding_snapshot_eligibility($1::integer)', values: [4] },
     { sql: 'set role mud_writer', values: undefined },
     { sql: 'select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility($1::uuid, $2::uuid)', values: [character, '123e4567-e89b-12d3-a456-426614174003'] },
   ])
+})
+
+test('pending snapshot-eligibility list adapter rejects service, writer, and option-bearing database URLs', () => {
+  const rejected = [
+    'postgresql://service_role@localhost/postgres',
+    'postgresql://mud_writer_login@localhost/postgres',
+    'postgresql://onboarding_snapshot_eligibility_login@localhost/postgres?options=-c%20role%3Dservice_role',
+  ]
+  for (const url of rejected) {
+    assert.throws(() => new PostgresPendingOnboardingSnapshotEligibilitySource(url), /reconciler configuration rejected/)
+  }
 })
 
 test('pending is observed without a database mutation', async (t) => {

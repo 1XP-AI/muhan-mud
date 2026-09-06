@@ -771,7 +771,7 @@ export interface PendingEligibilityPgClient {
 export interface PendingEligibilityPgPool { connect(): Promise<PendingEligibilityPgClient>; end(): Promise<void> }
 interface PendingEligibilityPgModule { Pool: new (options: { connectionString: string, max: number }) => PendingEligibilityPgPool }
 
-function databaseUrlForRole(value: string, role: 'service_role' | 'mud_writer_login'): string {
+function databaseUrlForRole(value: string, role: 'onboarding_snapshot_eligibility_login' | 'mud_writer_login'): string {
   let parsed: URL
   try { parsed = new URL(value) } catch { throw new Error('reconciler configuration rejected') }
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || parsed.username !== role || !parsed.hostname || parsed.search || parsed.hash) {
@@ -799,19 +799,18 @@ function isExactPendingEligibilityDatabaseRow(value: unknown): value is PendingE
     && typeof row.character_id === 'string' && typeof row.mode === 'string' && typeof row.command_id === 'string'
 }
 
-/** Direct service-role adapter for the private bounded pending-list RPC. */
+/** Direct least-privilege adapter for the private bounded pending-list RPC. */
 export class PostgresPendingOnboardingSnapshotEligibilitySource implements PendingOnboardingSnapshotEligibilitySource {
   private readonly pool: PendingEligibilityPgPool
 
   constructor(databaseUrl: string, pool?: PendingEligibilityPgPool) {
-    const validatedUrl = databaseUrlForRole(databaseUrl, 'service_role')
+    const validatedUrl = databaseUrlForRole(databaseUrl, 'onboarding_snapshot_eligibility_login')
     this.pool = pool ?? new (require('pg') as PendingEligibilityPgModule).Pool({ connectionString: validatedUrl, max: 1 })
   }
 
   async listPendingOnboardingSnapshotEligibility(limit: number): Promise<ReadonlyArray<PendingOnboardingSnapshotEligibility>> {
     const client = await this.pool.connect()
     try {
-      await client.query('set role service_role')
       const result = await client.query<PendingEligibilityDatabaseRow>(
         'select correlation_id, actor_user_id, character_id, mode, command_id from private.list_pending_game_character_onboarding_snapshot_eligibility($1::integer)',
         [limit],
