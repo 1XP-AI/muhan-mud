@@ -734,6 +734,46 @@ const char *path;
     return result;
 }
 
+/* Classify one portable PlayerSnapshotV1 fixture through the same C decoder
+ * used by the legacy-source oracle.  The input is intentionally a checked-in
+ * hex fixture, never a production save: this is the offline boundary shared
+ * with the Rust DTO corpus. */
+static int project_portable_fixture(path)
+const char *path;
+{
+    unsigned char *wire;
+    unsigned char *canonical;
+    size_t wire_length;
+    size_t canonical_length;
+    creature *clone;
+    int result;
+
+    wire = 0;
+    canonical = 0;
+    clone = 0;
+    if (parse_hex_file(path, &wire, &wire_length)) {
+        puts("reject");
+        return 0;
+    }
+    result = player_snapshot_v1_decode_clone(wire, wire_length, &clone);
+    free(wire);
+    if (result != CDTO_V1_OK || !clone) {
+        player_snapshot_v1_free_clone(clone);
+        puts("reject");
+        return 0;
+    }
+    result = player_snapshot_v1_encode_loaded(clone, &canonical, &canonical_length);
+    player_snapshot_v1_free_clone(clone);
+    if (result != CDTO_V1_OK || !canonical) {
+        cdto_v1_free_wire(canonical);
+        return -1;
+    }
+    fputs("accept ", stdout);
+    print_hex(canonical, canonical_length);
+    cdto_v1_free_wire(canonical);
+    return 0;
+}
+
 int main(argc, argv)
 int argc;
 char **argv;
@@ -792,6 +832,8 @@ char **argv;
         puts("legacy_player_snapshot_v1_oracle: ok");
         return 0;
     }
-    fprintf(stderr, "usage: %s abi-fingerprint | abi-check CONTRACT | fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex\n", argv[0]);
+    if (argc == 3 && !strcmp(argv[1], "project-portable"))
+        return project_portable_fixture(argv[2]) ? 2 : 0;
+    fprintf(stderr, "usage: %s abi-fingerprint | abi-check CONTRACT | fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex | project-portable FIXTURE.hex\n", argv[0]);
     return 2;
 }

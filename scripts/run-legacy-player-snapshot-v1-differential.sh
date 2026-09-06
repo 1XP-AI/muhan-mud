@@ -53,6 +53,13 @@ if "$oracle" abi-check "$unsupported_abi"; then
   exit 1
 fi
 
+# The versioned corpus feeds the same portable raw CDTO fixture (or named
+# malformed mutation) into the C snapshot decoder and the Rust DTO decoder.
+# The oracle path is test-only and no save/load/runtime route is involved.
+LEGACY_PLAYER_SNAPSHOT_V1_C_ORACLE="$oracle" \
+  cargo test --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto \
+  --test player_snapshot_projection_corpus
+
 verify_profile() {
   local profile="$1"
   local fixture="$2"
