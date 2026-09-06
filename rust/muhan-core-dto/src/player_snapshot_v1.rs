@@ -405,6 +405,26 @@ pub fn verify_player_snapshot_replay_v1(wire: &[u8]) -> Result<ReplayVerificatio
     verify_player_snapshot_replay(wire).map(|(_, report)| report)
 }
 
+/// Performs the pure-Rust post-save shadow check for one canonical snapshot
+/// envelope and binds its canonical projection to the caller's expected
+/// SHA-256 digest.
+///
+/// This delegates all decoding, graph validation, canonical re-encoding, and
+/// replay-report construction to [`verify_player_snapshot_replay_v1`]. On
+/// success it returns that exact V1 report; a mismatched expected digest is
+/// rejected with [`Error::DigestMismatch`]. It neither reads legacy player
+/// files nor writes state.
+pub fn verify_player_snapshot_post_save_shadow_v1(
+    wire: &[u8],
+    expected_canonical_sha256: &[u8; super::DIGEST_LENGTH],
+) -> Result<ReplayVerificationV1, Error> {
+    let report = verify_player_snapshot_replay_v1(wire)?;
+    if &report.canonical_digest != expected_canonical_sha256 {
+        return Err(Error::DigestMismatch);
+    }
+    Ok(report)
+}
+
 /// Verifies once and preserves field 7 as its exact serialized raw U8 for a
 /// closed metadata consumer. No legacy file or second payload read is involved.
 pub fn verify_player_snapshot_replay_v2(wire: &[u8]) -> Result<ReplayVerificationV2, Error> {
