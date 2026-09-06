@@ -250,9 +250,10 @@ test("web stack cleanup reports an already-unsuccessful server exit", async () =
 });
 
 test("runner starts a dedicated process group, targets pnpm descendants, and retains cleanup failures", async () => {
-  const [webRunner, stackHarness] = await Promise.all([
+  const [webRunner, stackHarness, ciWorkflow] = await Promise.all([
     readFile(new URL("./web-stack-ui.ts", import.meta.url), "utf8"),
     readFile(new URL("./stack-e2e.test.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
   ]);
 
   assert.match(webRunner, /detached: process\.platform !== "win32"/);
@@ -264,4 +265,12 @@ test("runner starts a dedicated process group, targets pnpm descendants, and ret
   assert.match(stackHarness, /if \(gateway\) await closeGatewayBounded\(gateway\)/);
   assert.match(stackHarness, /if \(mud\) await stopMudDuringFailure\(mud\)/);
   assert.match(stackHarness, /!scenarioFailed && teardownFailure/);
+
+  const lifecycleInvocation = "pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/web-stack-ui.lifecycle.test.ts";
+  assert.match(ciWorkflow, /- name: Web stack lifecycle unit contract/);
+  assert.ok(ciWorkflow.includes(lifecycleInvocation), "CI must invoke the deterministic lifecycle test directly");
+  assert.ok(
+    ciWorkflow.indexOf(lifecycleInvocation) < ciWorkflow.indexOf("./scripts/run-stack-e2e.sh"),
+    "CI must run the deterministic lifecycle test before the Docker-backed stack acceptance",
+  );
 });

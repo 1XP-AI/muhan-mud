@@ -706,6 +706,13 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           pnpm test:browser
 
+      - name: Web stack lifecycle unit contract
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/web-stack-ui.lifecycle.test.ts
+
       - name: Disposable web onboarding stack acceptance
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
