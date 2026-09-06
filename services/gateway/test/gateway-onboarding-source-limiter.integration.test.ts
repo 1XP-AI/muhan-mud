@@ -33,7 +33,9 @@ test('rejects an excess onboarding upgrade before another MUD TCP connection ope
   })
   const url = `${gateway.address().replace('http:', 'ws:')}/onboarding`
 
-  const first = new WebSocket(url, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  const first = new WebSocket(url, 'muhan.onboarding.v1', {
+    origin: 'http://localhost:3000', headers: { 'X-Forwarded-For': '203.0.113.10' }
+  })
   t.after(() => first.terminate())
   await once(first, 'open')
   first.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'provision', correlationId: correlation }))
@@ -50,12 +52,18 @@ test('rejects an excess onboarding upgrade before another MUD TCP connection ope
   second.write([
     'GET /onboarding HTTP/1.1', `Host: ${gatewayAddress.address}:${gatewayAddress.port}`,
     'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
-    'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Protocol: muhan.onboarding.v1', 'Origin: http://localhost:3000', '', ''
+    'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Protocol: muhan.onboarding.v1', 'Origin: http://localhost:3000',
+    'X-Forwarded-For: 198.51.100.20', '', ''
   ].join('\r\n'))
   const [data] = await withTimeout(response, 'the excess onboarding upgrade did not receive a response') as [Buffer]
-  assert.match(data.toString('ascii'), /^HTTP\/1\.1 429/)
+  assert.match(data.toString('ascii'), /^HTTP\/1\.1 429/, 'a spoofed forwarded address must not alter the direct-peer source limit')
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(tcpConnections, 1)
+
+  const regular = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+  t.after(() => regular.terminate())
+  await once(regular, 'open')
+  assert.equal(regular.readyState, WebSocket.OPEN, 'an exhausted onboarding source limiter must not affect normal /ws upgrades')
 })
 
 async function eventually(fn: () => void, timeoutMs = 1_000): Promise<void> {
