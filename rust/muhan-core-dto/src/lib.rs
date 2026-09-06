@@ -66,8 +66,8 @@ impl Kind {
 /// The largest legal whole envelope: a Room payload plus prefix and digest.
 pub const MAX_ENVELOPE_SIZE: usize = Kind::Room.payload_limit() + PREFIX_LENGTH + DIGEST_LENGTH;
 
-pub mod player_snapshot_v1;
 pub mod legacy_identity_evidence_v1;
+pub mod player_snapshot_v1;
 
 pub const TYPE_U8: u8 = 1;
 pub const TYPE_U16: u8 = 2;
