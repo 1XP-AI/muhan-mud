@@ -6,6 +6,7 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,17 @@
 extern int read_crt_player(int fd, creature *player);
 
 #define FIXTURE_CAPACITY 16384UL
+
+/* This test-only raw-file grammar is intentionally accepted for one audited
+ * native layout only.  The exported CDTO fixtures remain portable; this gate
+ * applies only before the oracle serializes or reads legacy struct bytes. */
+#define LEGACY_PLAYER_SNAPSHOT_V1_RAW_ABI_CONTRACT \
+    "legacy-player-snapshot-v1/raw-v1;endian=little;char=8;short=16;int=32;" \
+    "long=64;ptr=64;creature=1952;object=376;creature.level=318;" \
+    "creature.type=319;creature.hpmax=332;creature.hpcur=334;" \
+    "creature.mpmax=336;creature.mpcur=338;creature.gold=352;" \
+    "creature.first_obj=1920;object.value=304;object.shotsmax=316;" \
+    "object.shotscur=318;object.first_obj=344"
 
 typedef enum fixture_profile {
     FIXTURE_PROFILE_RICH,
@@ -51,6 +63,66 @@ void merror(char *message, char kind)
 { (void)message; (void)kind; }
 void del_active(creature *player)
 { (void)player; }
+
+static int legacy_raw_abi_contract(output, capacity)
+char *output;
+size_t capacity;
+{
+    unsigned int endian_probe;
+    const char *endian;
+    int written;
+
+    if (!output || !capacity)
+        return -1;
+    endian_probe = 1U;
+    endian = *(const unsigned char *)&endian_probe == 1U ? "little" : "other";
+    written = snprintf(output, capacity,
+        "legacy-player-snapshot-v1/raw-v1;endian=%s;char=%lu;short=%lu;int=%lu;"
+        "long=%lu;ptr=%lu;creature=%lu;object=%lu;creature.level=%lu;"
+        "creature.type=%lu;creature.hpmax=%lu;creature.hpcur=%lu;"
+        "creature.mpmax=%lu;creature.mpcur=%lu;creature.gold=%lu;"
+        "creature.first_obj=%lu;object.value=%lu;object.shotsmax=%lu;"
+        "object.shotscur=%lu;object.first_obj=%lu",
+        endian,
+        (unsigned long)CHAR_BIT,
+        (unsigned long)(sizeof(short) * CHAR_BIT),
+        (unsigned long)(sizeof(int) * CHAR_BIT),
+        (unsigned long)(sizeof(long) * CHAR_BIT),
+        (unsigned long)(sizeof(void *) * CHAR_BIT),
+        (unsigned long)sizeof(creature),
+        (unsigned long)sizeof(object),
+        (unsigned long)offsetof(creature, level),
+        (unsigned long)offsetof(creature, type),
+        (unsigned long)offsetof(creature, hpmax),
+        (unsigned long)offsetof(creature, hpcur),
+        (unsigned long)offsetof(creature, mpmax),
+        (unsigned long)offsetof(creature, mpcur),
+        (unsigned long)offsetof(creature, gold),
+        (unsigned long)offsetof(creature, first_obj),
+        (unsigned long)offsetof(object, value),
+        (unsigned long)offsetof(object, shotsmax),
+        (unsigned long)offsetof(object, shotscur),
+        (unsigned long)offsetof(object, first_obj));
+    return written >= 0 && (size_t)written < capacity ? 0 : -1;
+}
+
+static int raw_legacy_abi_supported(void)
+{
+    char actual[512];
+
+    return legacy_raw_abi_contract(actual, sizeof(actual)) == 0 &&
+        !strcmp(actual, LEGACY_PLAYER_SNAPSHOT_V1_RAW_ABI_CONTRACT);
+}
+
+static int raw_legacy_abi_matches(expected)
+const char *expected;
+{
+    char actual[512];
+
+    return expected && raw_legacy_abi_supported() &&
+        legacy_raw_abi_contract(actual, sizeof(actual)) == 0 &&
+        !strcmp(actual, expected);
+}
 
 static void set_text(value, length, text)
 char *value;
@@ -341,6 +413,8 @@ unsigned long *length;
     player_record_serializer_limits limits;
     unsigned char *buffer;
 
+    if (!raw_legacy_abi_supported())
+        return -1;
     *bytes = 0;
     *length = 0;
     buffer = (unsigned char *)malloc(FIXTURE_CAPACITY);
@@ -371,6 +445,8 @@ creature **player_out;
     creature *player;
     int result;
 
+    if (!raw_legacy_abi_supported())
+        return -1;
     *player_out = 0;
     fd = mkstemp(path);
     if (fd < 0)
@@ -667,6 +743,17 @@ char **argv;
 
     fixture_profile profile;
 
+    if (argc == 2 && !strcmp(argv[1], "abi-fingerprint")) {
+        char abi_contract[512];
+
+        if (legacy_raw_abi_contract(abi_contract, sizeof(abi_contract)))
+            return 2;
+        puts(abi_contract);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "abi-check"))
+        return raw_legacy_abi_matches(argv[2]) ? 0 : 1;
+
     if (argc == 2 && !strcmp(argv[1], "fixture")) {
         if (snapshot_fixture(FIXTURE_PROFILE_RICH, &wire, &wire_length))
             return 2;
@@ -705,6 +792,6 @@ char **argv;
         puts("legacy_player_snapshot_v1_oracle: ok");
         return 0;
     }
-    fprintf(stderr, "usage: %s fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex\n", argv[0]);
+    fprintf(stderr, "usage: %s abi-fingerprint | abi-check CONTRACT | fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex\n", argv[0]);
     return 2;
 }

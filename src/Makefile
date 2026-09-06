@@ -1023,7 +1023,10 @@ files1-decoder-test:
 
 # Test-only S1 seam: the oracle stays under tests/ and never joins OBJECTS or
 # M3_RUNTIME_OBJECTS, so legacy save/load authority remains unchanged.
-legacy-player-snapshot-v1-oracle-static-test:
+legacy-player-snapshot-v1-abi-static-test:
+	python3 ../tests/unit/legacy_player_snapshot_v1_abi_static_test.py
+
+legacy-player-snapshot-v1-oracle-static-test: legacy-player-snapshot-v1-abi-static-test
 	@if printf '%s\n' '$(OBJECTS) $(M3_RUNTIME_OBJECTS)' | grep -q 'legacy_player_snapshot_v1_oracle'; then echo "test oracle leaked into production objects" >&2; exit 1; fi
 	@for fixture in ../tests/fixtures/player_snapshot_v1_legacy_decoder_canonical.hex ../tests/fixtures/player_snapshot_v1_legacy_decoder_minimal.hex ../tests/fixtures/player_snapshot_v1_legacy_decoder_persisted_graph.hex; do test -s "$$fixture" || { echo "missing S1 legacy snapshot fixture: $$fixture" >&2; exit 1; }; done
 

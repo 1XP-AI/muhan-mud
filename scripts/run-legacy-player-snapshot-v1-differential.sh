@@ -10,6 +10,7 @@ oracle="$work_dir/legacy_player_snapshot_v1_oracle"
 passed=0
 flags=(-std=gnu89 -fcommon -I"$repo_root/src" -ffunction-sections -fdata-sections)
 link_flags=()
+expected_abi='legacy-player-snapshot-v1/raw-v1;endian=little;char=8;short=16;int=32;long=64;ptr=64;creature=1952;object=376;creature.level=318;creature.type=319;creature.hpmax=332;creature.hpcur=334;creature.mpmax=336;creature.mpcur=338;creature.gold=352;creature.first_obj=1920;object.value=304;object.shotsmax=316;object.shotscur=318;object.first_obj=344'
 
 cleanup() {
   if [[ "$passed" == 1 ]]; then rm -rf "$work_dir"; else
@@ -35,6 +36,23 @@ fi
   "$repo_root/src/player_snapshot_v1.c" "$repo_root/src/object_graph_v1.c" \
   "$repo_root/src/cdto_v1.c" "${link_flags[@]}" -o "$oracle"
 
+# CDTO fixtures stay independently portable: their Rust schema validation
+# happens before this test-only raw native-layout admission gate.
+cargo test --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto \
+  --test legacy_player_snapshot_v1_differential
+
+actual_abi="$("$oracle" abi-fingerprint)"
+if [[ "$actual_abi" != "$expected_abi" ]]; then
+  printf 'S1 legacy player snapshot unsupported raw ABI: %s\n' "$actual_abi" >&2
+  exit 1
+fi
+"$oracle" abi-check "$expected_abi"
+unsupported_abi="${expected_abi%?}x"
+if "$oracle" abi-check "$unsupported_abi"; then
+  echo 'S1 legacy player snapshot ABI mismatch was accepted' >&2
+  exit 1
+fi
+
 verify_profile() {
   local profile="$1"
   local fixture="$2"
@@ -50,7 +68,4 @@ verify_profile() {
 verify_profile rich "$repo_root/tests/fixtures/player_snapshot_v1_legacy_decoder_canonical.hex"
 verify_profile minimal "$repo_root/tests/fixtures/player_snapshot_v1_legacy_decoder_minimal.hex"
 verify_profile persisted-graph "$repo_root/tests/fixtures/player_snapshot_v1_legacy_decoder_persisted_graph.hex"
-
-cargo test --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto \
-  --test legacy_player_snapshot_v1_differential
 passed=1
