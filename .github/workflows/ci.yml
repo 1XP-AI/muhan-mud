@@ -323,6 +323,14 @@ jobs:
           PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 \
             bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
 
+      - name: Run BankSnapshotV1 topology adapter PostgreSQL 17 E2E
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
+
       - name: Run PlayerSnapshotV1 Linux filesystem relay PostgreSQL 17 E2E
         if: runner.os == 'Linux'
         shell: bash
