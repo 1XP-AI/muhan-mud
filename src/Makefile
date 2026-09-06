@@ -540,6 +540,19 @@ character-player-snapshot-v1-capture-test:
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. ../tests/unit/character_player_snapshot_v1_capture_test.c character_player_snapshot_v1_capture.c character_player_snapshot_v1_artifact.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_player_snapshot_v1_capture_test
 	/tmp/muhan-unit/character_player_snapshot_v1_capture_test
 
+# The capture/outbox seam is optional M3 composition only.  This audit keeps
+# the default legacy OBJECTS and every detached production object free of a
+# direct live save, gateway, or network edge.
+character-player-snapshot-v1-capture-no-live-link-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_capture.c -o /tmp/muhan-unit/character_player_snapshot_v1_capture_no_live_link.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_capture_native.c -o /tmp/muhan-unit/character_player_snapshot_v1_capture_native_no_live_link.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_artifact.c -o /tmp/muhan-unit/character_player_snapshot_v1_artifact_no_live_link.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_handoff.c -o /tmp/muhan-unit/character_player_snapshot_v1_handoff_no_live_link.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_player_snapshot_v1_receipt_pair.c -o /tmp/muhan-unit/character_player_snapshot_v1_receipt_pair_no_live_link.o
+	$(CC) $(V2_TEST_CFLAGS) -I. -c character_snapshot_shadow_outbox.c -o /tmp/muhan-unit/character_snapshot_shadow_outbox_no_live_link.o
+	python3 ../tests/unit/character_player_snapshot_v1_capture_no_live_link_test.py --makefile Makefile --object /tmp/muhan-unit/character_player_snapshot_v1_capture_no_live_link.o --object /tmp/muhan-unit/character_player_snapshot_v1_capture_native_no_live_link.o --object /tmp/muhan-unit/character_player_snapshot_v1_artifact_no_live_link.o --object /tmp/muhan-unit/character_player_snapshot_v1_handoff_no_live_link.o --object /tmp/muhan-unit/character_player_snapshot_v1_receipt_pair_no_live_link.o --object /tmp/muhan-unit/character_snapshot_shadow_outbox_no_live_link.o --source character_player_snapshot_v1_capture.c --source character_player_snapshot_v1_capture_native.c --source character_player_snapshot_v1_artifact.c --source character_player_snapshot_v1_handoff.c --source character_player_snapshot_v1_receipt_pair.c --source character_snapshot_shadow_outbox.c
+
 character-player-snapshot-v1-capture-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(V2_TEST_CFLAGS) -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_player_snapshot_v1_capture_test.c character_player_snapshot_v1_capture.c character_player_snapshot_v1_artifact.c player_snapshot_v1.c object_graph_v1.c cdto_v1.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c -o /tmp/muhan-unit/character_player_snapshot_v1_capture_sanitizer_test
