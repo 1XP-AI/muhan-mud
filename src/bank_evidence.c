@@ -68,15 +68,8 @@ static void be_reset(out,result) bank_evidence *out; bank_evidence_result result
 
 static int be_name_valid(name) const char *name;
 {
-    unsigned long length;
-    if(!name)return 0;
-    for(length=0;length<=PLAYER_NAME_MAX_BYTES;++length) {
-        if(!name[length])break;
-        if(name[length]=='/'||name[length]=='\\')return 0;
-    }
-    return length>0&&length<=PLAYER_NAME_MAX_BYTES&&
-        !(length==1&&name[0]=='.')&&
-        !(length==2&&name[0]=='.'&&name[1]=='.');
+    return name&&player_name_is_valid((const unsigned char *)name,
+        PLAYER_NAME_MIN_CODEPOINTS,PLAYER_NAME_MAX_CODEPOINTS);
 }
 
 static int be_file_safe(value) const struct stat *value;
@@ -191,7 +184,7 @@ const char *name; bank_evidence *out;
     if(!out)return BANK_EVIDENCE_IO_ERROR;
     be_reset(out,BANK_EVIDENCE_CORRUPT);
     if(!be_name_valid(name)){out->result=BANK_EVIDENCE_INVALID_INPUT;return out->result;}
-    fd=file_bank_store_open_readonly((char *)name);
+    fd=file_bank_store_open_readonly(name);
     if(fd<0){out->result=errno==ENOENT?BANK_EVIDENCE_NOT_FOUND:BANK_EVIDENCE_IO_ERROR;return out->result;}
     bytes=0;root=0;wire=0;wire_length=0U;result=BANK_EVIDENCE_IO_ERROR;
     if(fstat(fd,&before)<0||!be_file_safe(&before))goto done;
@@ -204,7 +197,8 @@ const char *name; bank_evidence *out;
 #ifdef BANK_EVIDENCE_TESTING
     if(be_test_after_read)be_test_after_read(be_test_after_read_opaque);
 #endif
-    if(fstat(fd,&after)<0||!be_file_safe(&after)||!be_same_file(&before,&after))goto done;
+    if(fstat(fd,&after)<0||!be_file_safe(&after)||!be_same_file(&before,&after)||
+       file_bank_store_validate_open_readonly(name,fd)<0)goto done;
     close_result=be_close(fd);fd=-1;
     if(close_result<0)goto done;
     parse.cursor=bytes;parse.end=bytes+length;parse.nodes=0U;parse.max_depth=0U;

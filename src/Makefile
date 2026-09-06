@@ -103,6 +103,7 @@ unit-test:
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/resource_tree_manifest_test.py
 	$(MAKE) bank-store-test
+	$(MAKE) bank-evidence-test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_test.c player_store.c -o /tmp/muhan-unit/player_store_test
 	/tmp/muhan-unit/player_store_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/player_store_file_test.c file_player_store.c player_path.c resource_path.c -o /tmp/muhan-unit/player_store_file_test
@@ -183,12 +184,12 @@ bank-store-test:
 # gameplay persistence path without an explicit later composition.
 bank-evidence-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -Wall -Wextra $(UNIT_LEGACY_WARN_FLAGS) -DBANK_EVIDENCE_TESTING -I. -ffunction-sections -fdata-sections ../tests/unit/bank_evidence_test.c bank_evidence.c bank_file_locator.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c bank_store.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_evidence_test
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra $(UNIT_LEGACY_WARN_FLAGS) -DBANK_EVIDENCE_TESTING -I. -ffunction-sections -fdata-sections ../tests/unit/bank_evidence_test.c bank_evidence.c bank_file_locator.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c bank_store.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_evidence_test
 	/tmp/muhan-unit/bank_evidence_test
 
 bank-evidence-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -Wno-deprecated-non-prototype -DBANK_EVIDENCE_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -ffunction-sections -fdata-sections ../tests/unit/bank_evidence_test.c bank_evidence.c bank_file_locator.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c bank_store.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_evidence_sanitizer_test
+	$(CC) -std=gnu89 -fcommon -Wno-deprecated-non-prototype -DBANK_EVIDENCE_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -ffunction-sections -fdata-sections ../tests/unit/bank_evidence_test.c bank_evidence.c bank_file_locator.c bank_snapshot_v1.c object_graph_v1.c cdto_v1.c bank_store.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/bank_evidence_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/bank_evidence_sanitizer_test
 
 # Read-only metadata seam; it stays outside default OBJECTS so login and save

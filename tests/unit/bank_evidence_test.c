@@ -11,6 +11,7 @@
 #include "mstruct.h"
 
 static char bank_path[512];
+static char replacement_path[512];
 static int store_calls;
 
 /* The active facade remains linkable for the no-dispatch assertion, but this
@@ -66,19 +67,25 @@ static int write_node(int fd, object *value, int children)
         write(fd, &children, sizeof(children)) == (ssize_t)sizeof(children) ? 0 : -1;
 }
 
-static int write_valid_bank(int trailing)
+static int write_valid_bank_at(path, root_name, trailing)
+const char *path;
+const char *root_name;
+int trailing;
 {
     object root, child;
     int fd;
     unsigned char tail = 0xaa;
-    object_init(&root, "bank-root");
+    object_init(&root, root_name);
     object_init(&child, "ruby");
-    fd = open(bank_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if(fd < 0) return -1;
     if(write_node(fd, &root, 1) || write_node(fd, &child, 0) ||
        (trailing && write(fd, &tail, 1) != 1) || close(fd) < 0) return -1;
     return 0;
 }
+
+static int write_valid_bank(int trailing)
+{ return write_valid_bank_at(bank_path, "bank-root", trailing); }
 
 static int write_deep_bank(void)
 {
@@ -103,10 +110,28 @@ static void mutate_after_read(void *opaque)
     if(fd >= 0) { (void)write(fd, &byte, 1); close(fd); }
 }
 
+static void mutate_same_size_after_read(void *opaque)
+{
+    int fd;
+    unsigned char byte = 1;
+    (void)opaque;
+    fd = open(bank_path, O_WRONLY);
+    if(fd >= 0) { (void)pwrite(fd, &byte, 1, 0); close(fd); }
+}
+
+static void replace_same_size_after_read(void *opaque)
+{
+    (void)opaque;
+    (void)rename(replacement_path, bank_path);
+}
+
 int main(void)
 {
     char root[] = "/tmp/muhan-bank-evidence.XXXXXX";
     char player[512], bank_dir[512], link_path[512], hard_path[512], long_name[32];
+    char player_real[512], bank_real[512], outside[] = "/tmp/muhan-bank-evidence-escape.XXXXXX";
+    char outside_player[512], outside_bank[512], outside_file[512];
+    char invalid_utf8[] = "\303\050", control_name[] = "bad\001name";
     object value;
     bank_evidence first, second;
     bank_store_ops unused = { unused_save, unused_load, 0 };
@@ -118,6 +143,9 @@ int main(void)
     snprintf(bank_path, sizeof(bank_path), "%s/Alice", bank_dir);
     snprintf(link_path, sizeof(link_path), "%s/Link", bank_dir);
     snprintf(hard_path, sizeof(hard_path), "%s/Hard", bank_dir);
+    snprintf(player_real, sizeof(player_real), "%s/player.real", root);
+    snprintf(bank_real, sizeof(bank_real), "%s/bank.real", player);
+    snprintf(replacement_path, sizeof(replacement_path), "%s/.Alice.replacement", bank_dir);
     if(mkdir(player, 0700) || mkdir(bank_dir, 0700)) return 2;
 
     if(write_valid_bank(0)) return 2;
@@ -140,6 +168,16 @@ int main(void)
         BANK_EVIDENCE_NOT_FOUND, &second, "missing records must be distinct and clear metadata");
     failed += expect_failure(bank_evidence_inspect("bad/name", &second),
         BANK_EVIDENCE_INVALID_INPUT, &second, "slashed names must not reach the file store");
+    failed += expect_failure(bank_evidence_inspect("", &second),
+        BANK_EVIDENCE_INVALID_INPUT, &second, "empty names must not reach the file store");
+    failed += expect_failure(bank_evidence_inspect("bad\\name", &second),
+        BANK_EVIDENCE_INVALID_INPUT, &second, "backslash names must not reach the file store");
+    failed += expect_failure(bank_evidence_inspect("bad:name", &second),
+        BANK_EVIDENCE_INVALID_INPUT, &second, "colon names rejected by player admission must not reach the file store");
+    failed += expect_failure(bank_evidence_inspect(control_name, &second),
+        BANK_EVIDENCE_INVALID_INPUT, &second, "control-byte names must not reach the file store");
+    failed += expect_failure(bank_evidence_inspect(invalid_utf8, &second),
+        BANK_EVIDENCE_INVALID_INPUT, &second, "invalid UTF-8 names must not reach the file store");
     memset(long_name, 'x', sizeof(long_name) - 1); long_name[sizeof(long_name) - 1] = 0;
     failed += expect_failure(bank_evidence_inspect(long_name, &second),
         BANK_EVIDENCE_INVALID_INPUT, &second, "overlong names must not reach the file store");
@@ -187,10 +225,51 @@ int main(void)
         &second, "non-regular sources must be rejected");
     unlink(bank_path);
 
+    if(write_valid_bank(0) || chmod(player, 0755)) return 2;
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "PLAYERPATH must remain a private directory");
+    if(chmod(player, 0700) || chmod(bank_dir, 0750)) return 2;
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "the fixed bank directory must remain private");
+    if(chmod(bank_dir, 0700)) return 2;
+    file_bank_store_test_set_expected_uid(geteuid() ? (uid_t)0 : (uid_t)1);
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "all fixed directories and leaves must retain the expected owner");
+    file_bank_store_test_reset_expected_uid();
+    if((fd = open(bank_path, O_WRONLY)) < 0 ||
+       ftruncate(fd, (off_t)BANK_EVIDENCE_MAX_OCTETS + 1) || close(fd)) return 2;
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "oversized records must be rejected before allocation");
+
+    if(!mkdtemp(outside)) return 2;
+    snprintf(outside_player, sizeof(outside_player), "%s/player", outside);
+    snprintf(outside_bank, sizeof(outside_bank), "%s/bank", outside_player);
+    snprintf(outside_file, sizeof(outside_file), "%s/Alice", outside_bank);
+    if(mkdir(outside_player, 0700) || mkdir(outside_bank, 0700) ||
+       write_valid_bank_at(outside_file, "escaped", 0)) return 2;
+    if(rename(player, player_real) || symlink(outside_player, player)) return 2;
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "PLAYERPATH symlink escapes must fail closed");
+    if(unlink(player) || rename(player_real, player)) return 2;
+    if(rename(bank_dir, bank_real) || symlink(outside_bank, bank_dir)) return 2;
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "bank-directory symlink escapes must fail closed");
+    if(unlink(bank_dir) || rename(bank_real, bank_dir)) return 2;
+
     if(write_valid_bank(0)) return 2;
     bank_evidence_test_set_after_read(mutate_after_read, 0);
     failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
         &second, "mutation after open must not yield evidence");
+    bank_evidence_test_reset();
+    if(write_valid_bank(0)) return 2;
+    bank_evidence_test_set_after_read(mutate_same_size_after_read, 0);
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "same-size in-place mutations must not yield evidence");
+    bank_evidence_test_reset();
+    if(write_valid_bank(0) || write_valid_bank_at(replacement_path, "replacement", 0)) return 2;
+    bank_evidence_test_set_after_read(replace_same_size_after_read, 0);
+    failed += expect_failure(bank_evidence_inspect("Alice", &second), BANK_EVIDENCE_IO_ERROR,
+        &second, "same-size replacement after open must not yield evidence");
     bank_evidence_test_reset();
     if(write_valid_bank(0)) return 2;
     bank_evidence_test_fail_next(BANK_EVIDENCE_TEST_FAULT_ALLOC);
@@ -205,5 +284,6 @@ int main(void)
     bank_evidence_test_reset();
 
     unlink(bank_path); rmdir(bank_dir); rmdir(player); rmdir(root);
+    unlink(outside_file); rmdir(outside_bank); rmdir(outside_player); rmdir(outside);
     return failed ? 1 : 0;
 }

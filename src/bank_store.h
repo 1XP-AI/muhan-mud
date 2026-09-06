@@ -1,6 +1,8 @@
 #ifndef BANK_STORE_H
 #define BANK_STORE_H
 
+#include <sys/types.h>
+
 struct object;
 
 /* The legacy bank backend reports only success (0) or failure (-1).  In
@@ -43,6 +45,13 @@ int file_bank_store_save(char *name, struct object *object);
 int file_bank_store_load(char *name, struct object **object);
 /* Fixed FileStore locator for read-only, metadata-only evidence.  It never
  * consults or changes the active bank_store binding. */
-int file_bank_store_open_readonly(char *name);
+int file_bank_store_open_readonly(const char *name);
+/* Rebind an opened evidence source to the current fixed FileStore path after
+ * its bytes have been consumed. */
+int file_bank_store_validate_open_readonly(const char *name, int file);
+#ifdef BANK_EVIDENCE_TESTING
+void file_bank_store_test_set_expected_uid(uid_t uid);
+void file_bank_store_test_reset_expected_uid(void);
+#endif
 
 #endif
