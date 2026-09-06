@@ -1,7 +1,7 @@
 import { parseManifest, type Manifest } from './manifest.js'
 import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX, commandFromPlayerSnapshotV1Filename, parsePlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import { MAX_MANIFEST_BYTES, isManifestFilename } from './manifest.js'
-import { scanImmutableOutboxFilesWithPolicies } from './relay.js'
+import { scanImmutableOutboxFilesWithPolicies, type ImmutableOutboxScanHooks } from './relay.js'
 import {
   classifyDatabaseError,
   type PlayerSnapshotV1ArtifactFulfillmentOutcome,
@@ -61,7 +61,10 @@ function isPlayerSnapshotV1Filename(name: Uint8Array): boolean {
  * immutable files without invoking the legacy relay or changing either file.
  */
 export class NodePlayerSnapshotV1ArtifactFilesystem implements PlayerSnapshotV1ArtifactFilesystem {
-  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
+  constructor(
+    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly scanHooks?: ImmutableOutboxScanHooks,
+  ) {}
 
   async scan(path: string): Promise<ReadonlyArray<{
     name: string
@@ -75,7 +78,7 @@ export class NodePlayerSnapshotV1ArtifactFilesystem implements PlayerSnapshotV1A
     const scanned = await scanImmutableOutboxFilesWithPolicies(path, [
       { isCandidateFilename: isManifestFilename, maximumBytes: MAX_MANIFEST_BYTES },
       { isCandidateFilename: isPlayerSnapshotV1Filename, maximumBytes: MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS + 1 },
-    ], this.platform)
+    ], this.platform, this.scanHooks)
     const receipts = scanned.filter((file) => isManifestFilename(Buffer.from(file.name)))
     const artifacts = scanned.filter((file) => isPlayerSnapshotV1Filename(Buffer.from(file.name)))
     const byName = new Map(receipts.map((file) => [file.name, file]))

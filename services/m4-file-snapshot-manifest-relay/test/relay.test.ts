@@ -6,9 +6,10 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { parsePlayerSnapshotV1Artifact } from '../src/player-snapshot-v1-artifact.js'
 import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
-import { parseManifest } from '../src/manifest.js'
-import { NodeManifestFilesystem, relayOnce, type ManifestFilesystem } from '../src/relay.js'
+import { MAX_MANIFEST_BYTES, isManifestFilename, parseManifest } from '../src/manifest.js'
+import { NodeManifestFilesystem, relayOnce, scanImmutableOutboxFiles, type ManifestFilesystem } from '../src/relay.js'
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
+import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX } from '../src/player-snapshot-v1-artifact.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
 import { main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
@@ -532,42 +533,60 @@ test('artifact filesystem never emits a cross-root receipt/artifact pair during 
   const artifactA = Buffer.from(playerSnapshotV1Artifact(playerSnapshotV1(), { writer_revision: '1' }))
   const receiptB = Buffer.from(body(first, '2'))
   const artifactB = Buffer.from(playerSnapshotV1Artifact(playerSnapshotV1(), { writer_revision: '2' }))
-  const probe = await openFile(join(root, 'probe'), 'w+')
-  const handlePrototype = Object.getPrototypeOf(probe) as {
-    read: (...args: unknown[]) => Promise<{ bytesRead: number }>
-  }
-  const originalRead = handlePrototype.read
   let replaced = false
   try {
     await chmod(root, 0o700)
     await chmod(replacement, 0o700)
-    await probe.close()
-    await rm(join(root, 'probe'))
     await writeFile(join(root, `${first}.manifest`), receiptA, { mode: 0o600 })
     await writeFile(join(root, `${first}.player-snapshot-v1`), artifactA, { mode: 0o600 })
     await writeFile(join(replacement, `${first}.manifest`), receiptB, { mode: 0o600 })
     await writeFile(join(replacement, `${first}.player-snapshot-v1`), artifactB, { mode: 0o600 })
-    handlePrototype.read = async function (this: object, ...args: unknown[]) {
-      const result = await originalRead.apply(this, args)
-      // The receipt is lexically first. Swap the pathname before the artifact
-      // stage; a second root scan would be free to read B here.
-      if (!replaced) {
+    const files = await new NodePlayerSnapshotV1ArtifactFilesystem(process.platform, {
+      afterFileRead: async (name) => {
+        // The receipt is lexically first. Replace the pathname exactly between
+        // evidence reads; the one-root scanner must keep reading A through fd.
+        if (replaced) return
+        assert.equal(name, `${first}.manifest`)
         replaced = true
         await rename(root, displaced)
         await rename(replacement, root)
-      }
-      return result
-    }
-    const files = await new NodePlayerSnapshotV1ArtifactFilesystem().scan(root)
+      },
+    }).scan(root)
     assert.equal(replaced, true)
     assert.deepEqual(files, [{
       name: `${first}.player-snapshot-v1`, bytes: artifactA, receiptManifestBytes: receiptA,
     }])
     assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.manifest`))), receiptB)
     assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.player-snapshot-v1`))), artifactB)
+
+    // The former two-root arrangement admits the same replacement between its
+    // receipt and artifact scans. Gates make the old Promise.all schedule
+    // explicit: both scans begin, but artifact B cannot open until receipt A
+    // has completed and the pathname is replaced.
+    await rename(root, replacement)
+    await rename(displaced, root)
+    let openArtifactRoot!: () => void
+    const artifactRootMayOpen = new Promise<void>((resolve) => { openArtifactRoot = resolve })
+    const [receipts, artifacts] = await Promise.all([
+      scanImmutableOutboxFiles(root, isManifestFilename, MAX_MANIFEST_BYTES, process.platform, {
+        afterFileRead: async (name) => {
+          assert.equal(name, `${first}.manifest`)
+          await rename(root, displaced)
+          await rename(replacement, root)
+          openArtifactRoot()
+        },
+      }),
+      scanImmutableOutboxFiles(
+        root,
+        (name) => Buffer.from(name).toString('utf8').endsWith(PLAYER_SNAPSHOT_V1_SUFFIX),
+        MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS + 1,
+        process.platform,
+        { beforeRootOpen: () => artifactRootMayOpen },
+      ),
+    ])
+    assert.deepEqual(receipts, [{ name: `${first}.manifest`, bytes: receiptA }])
+    assert.deepEqual(artifacts, [{ name: `${first}.player-snapshot-v1`, bytes: artifactB }])
   } finally {
-    handlePrototype.read = originalRead
-    await probe.close().catch(() => undefined)
     await rm(root, { recursive: true, force: true })
     await rm(displaced, { recursive: true, force: true })
     await rm(replacement, { recursive: true, force: true })
