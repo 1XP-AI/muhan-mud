@@ -145,8 +145,76 @@ def assert_link_composition(makefile: Path) -> None:
         re.DOTALL,
     ):
         raise SystemExit("snapshot composition is not gated by USE_M3_RUNTIME")
-    if "$(MAKE) --no-print-directory USE_M3_RUNTIME=1" not in text:
-        raise SystemExit("M3 snapshot composition lacks an explicit opt-in caller")
+
+
+def _braced_body(text: str, signature: str) -> str:
+    start = text.find(signature)
+    if start < 0:
+        raise SystemExit(f"PlayerSnapshot native caller is missing: {signature}")
+    opening = text.find("{", start)
+    if opening < 0:
+        raise SystemExit(f"PlayerSnapshot native caller has no body: {signature}")
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1 : index]
+    raise SystemExit(f"PlayerSnapshot native caller is unterminated: {signature}")
+
+
+def assert_native_snapshot_handoff_gate(native_source: Path) -> None:
+    """Prove the real M3 owner has one exact PlayerSnapshot entry point."""
+    text = native_source.read_text(encoding="utf-8")
+    if not re.search(
+        r'#define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_ENV "MUD_M3_PLAYER_SNAPSHOT_V1"',
+        text,
+    ) or not re.search(
+        r'#define RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE "handoff"', text
+    ):
+        raise SystemExit("PlayerSnapshot opt-in must retain its exact environment contract")
+
+    gate = _braced_body(text, "static int runtime_native_snapshot_handoff_enabled(void)")
+    if not re.search(
+        r"return value && !strcmp\(value,RUNTIME_NATIVE_SNAPSHOT_HANDOFF_VALUE\) &&\s*"
+        r"player_snapshot_v1_native_abi_supported\(",
+        gate,
+        re.DOTALL,
+    ):
+        raise SystemExit(
+            "PlayerSnapshot opt-in must require the exact handoff value and ABI gate"
+        )
+    if text.count("runtime_native_snapshot_handoff_enabled()") != 1:
+        raise SystemExit("PlayerSnapshot handoff gate must have exactly one native caller")
+
+    start = _braced_body(text, "static int runtime_native_shadow_start(void *opaque,")
+    branch = _braced_body(
+        start, "if(runtime_native_snapshot_handoff_enabled())"
+    )
+    required = (
+        "character_player_snapshot_v1_capture_native_init(&native->snapshot_capture);",
+        "character_player_snapshot_v1_handoff_init(&native->snapshot_handoff,",
+        "character_player_snapshot_v1_handoff_enable_receipt_pair(",
+        "configuration.snapshot_handoff=&native->snapshot_handoff;",
+        "native->snapshot_handoff_enabled=1;",
+    )
+    for statement in required:
+        if statement not in branch:
+            raise SystemExit(
+                "PlayerSnapshot capture/outbox setup escaped its exact opt-in branch: "
+                + statement
+            )
+    branch_start = start.find("if(runtime_native_snapshot_handoff_enabled())")
+    before_branch = start[:branch_start]
+    if "native->snapshot_handoff_enabled=0;" not in before_branch:
+        raise SystemExit("PlayerSnapshot default path must explicitly remain disabled")
+    for call in required[:-1]:
+        if call in before_branch or start[branch_start + len(branch) :].count(call):
+            raise SystemExit(
+                "PlayerSnapshot capture/outbox setup has a second native entry: " + call
+            )
 
 
 def undefined_symbols(path: Path) -> set[str]:
@@ -176,13 +244,15 @@ def main() -> None:
     parser.add_argument("--makefile", type=Path, required=True)
     parser.add_argument("--object", type=Path, action="append", required=True)
     parser.add_argument("--source", type=Path, action="append", required=True)
+    parser.add_argument("--native-source", type=Path, required=True)
     args = parser.parse_args()
 
-    for path in [args.makefile, *args.object, *args.source]:
+    for path in [args.makefile, args.native_source, *args.object, *args.source]:
         if not path.is_file():
             raise SystemExit(f"PlayerSnapshot capture static fixture is missing: {path}")
 
     assert_link_composition(args.makefile)
+    assert_native_snapshot_handoff_gate(args.native_source)
 
     for path in args.object:
         forbidden = sorted(undefined_symbols(path) & FORBIDDEN_UNDEFINED)

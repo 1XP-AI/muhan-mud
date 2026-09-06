@@ -723,6 +723,37 @@ static int test_native_snapshot_handoff_opt_in_has_only_explicit_tick(void)
     return failed;
 }
 
+static int test_native_snapshot_handoff_rejects_near_miss_environment_values(void)
+{
+    static const char *const rejected[] = {"", "on", "HANDOFF", "handoff "};
+    character_save_journal_v2_runtime_native native;
+    unsigned int index;
+    int failed=0;
+
+    for(index=0;index<sizeof(rejected)/sizeof(rejected[0]);index++) {
+        reset_fakes();
+        failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1",rejected[index],1)==0,
+            "test must install a rejected PlayerSnapshot environment value");
+        character_save_journal_v2_runtime_native_init(&native);
+        failed|=expect(native.dependencies.shadow_operations->start(
+            native.dependencies.shadow_opaque,"/tmp/muhan-runtime-owned",
+            "world-a","dbname=muhan")==0,
+            "rejected PlayerSnapshot opt-in value must not reject M3 shadow startup");
+        failed|=expect(!native.snapshot_handoff_enabled&&
+            !native.process_owner.configuration.snapshot_handoff&&
+            !snapshot_capture_native_init_calls&&!snapshot_handoff_init_calls&&
+            !snapshot_handoff_enable_receipt_pair_calls&&
+            character_save_journal_v2_runtime_native_snapshot_tick(&native,1)==
+            CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_SNAPSHOT_TICK_OFF&&
+            !process_owner_snapshot_tick_calls,
+            "only MUD_M3_PLAYER_SNAPSHOT_V1=handoff may initiate PlayerSnapshot capture/outbox work");
+        native.dependencies.shadow_operations->shutdown(
+            native.dependencies.shadow_opaque);
+    }
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    return failed;
+}
+
 static int test_native_snapshot_handoff_abi_mismatch_stays_silent(void)
 {
     character_save_journal_v2_runtime_native native;
@@ -1033,6 +1064,7 @@ int main(void)
     failed|=test_native_owns_root_and_world_for_process_lifetime();
     failed|=test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only();
     failed|=test_native_snapshot_handoff_opt_in_has_only_explicit_tick();
+    failed|=test_native_snapshot_handoff_rejects_near_miss_environment_values();
     failed|=test_native_snapshot_handoff_abi_mismatch_stays_silent();
     failed|=test_native_rejects_unbounded_borrowed_strings_before_connect();
     failed|=test_active_native_reinitialization_is_non_destructive();
