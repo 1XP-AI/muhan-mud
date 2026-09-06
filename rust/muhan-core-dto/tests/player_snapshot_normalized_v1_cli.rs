@@ -131,7 +131,7 @@ fn expected_output(wire: &[u8]) -> String {
         )
         .expect("writing a String cannot fail");
     }
-    output.push_str("]}}}\n");
+    output.push_str("]}}\n");
     output
 }
 

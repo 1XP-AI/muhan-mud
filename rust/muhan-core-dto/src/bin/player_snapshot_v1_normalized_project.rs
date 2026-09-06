@@ -132,7 +132,7 @@ fn format_projection(projection: &PlayerSnapshotNormalizedV1) -> String {
         )
         .expect("writing a String cannot fail");
     }
-    output.push_str("]}}}\n");
+    output.push_str("]}}\n");
     output
 }
 
