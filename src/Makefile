@@ -121,6 +121,7 @@ unit-test:
 	/tmp/muhan-unit/player_recovery_test
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/trusted_admission_test.c trusted_admission.c player_path.c utf8_text.c resource_path.c -o /tmp/muhan-unit/trusted_admission_test
 	/tmp/muhan-unit/trusted_admission_test
+	python3 ../tests/unit/trusted_admission_identity_binding_static_test.py
 	$(MAKE) onboarding-admission-test
 	python3 ../tests/unit/onboarding_credential_lifecycle_test.py
 	$(CC) -std=gnu89 -fcommon -I. ../tests/unit/onboarding_receipt_test.c onboarding_receipt.c resource_path.c -o /tmp/muhan-unit/onboarding_receipt_test
