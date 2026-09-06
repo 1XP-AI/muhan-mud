@@ -28,6 +28,10 @@ require_source 'create table if not exists private.game_character_player_snapsho
 require_source 'create table if not exists private.game_character_player_snapshot_v1_inventory_graph_shadow_items ('
 require_source 'references private.game_character_player_snapshot_v1_artifacts(character_id, command_id)'
 require_source 'references private.game_character_player_snapshot_v1_inventory_graph_shadows(character_id, command_id)'
+require_source 'v_manifest private.game_character_m4_file_snapshot_manifests%rowtype;'
+require_source 'from private.game_character_m4_file_snapshot_manifests'
+require_source "v_manifest.snapshot_format <> 'legacy-file-manifest-v1'"
+require_source 'v_artifact.source_octets <> v_manifest.snapshot_octets'
 require_source 'create or replace function private.player_snapshot_v1_inventory_graph_shadow_nodes(p_payload bytea)'
 require_source 'create or replace function private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt('
 require_source 'create or replace function private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('
@@ -39,10 +43,17 @@ require_source 'before update or delete on private.game_character_player_snapsho
 require_source 'before update or delete on private.game_character_player_snapshot_v1_inventory_graph_shadow_items'
 require_source 'grant execute on function private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(uuid,uuid,text,text,bigint)'
 require_source 'grant execute on function private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation(text,integer)'
-forbid_source '(^|[^[:alpha:]])(gameplay|legacy[_-]?file|policy|inventory[_-]?(name|description|weight|damage|value|flags))([^[:alpha:]]|$)'
+# The required manifest format literal is legacy-file-manifest-v1; reject
+# prose/schema surface that would actually read or model a legacy file instead.
+forbid_source '(^|[^[:alpha:]])(gameplay|legacy[[:space:]_-]+file[[:space:]]|policy|inventory[_-]?(name|description|weight|damage|value|flags))([^[:alpha:]]|$)'
 require_contract "'0:root:0,1:0:0,2:1:0,3:0:1,4:root:1'"
 require_contract "'EXACT_RETRY'"
 require_contract "'P0001'"
 require_contract "'service_role'"
+require_contract 'a missing M4 manifest rejects with P0001 and leaves no graph shadow rows'
+require_contract 'a mismatched M4 manifest rejects with P0001 and leaves no graph shadow rows'
+require_contract 'reconciliation excludes an artifact whose M4 manifest evidence is missing'
+require_contract 'reconciliation excludes an artifact whose M4 manifest evidence is mismatched'
+require_contract 'A conflicting existing'
 require_contract 'the checked-in nested-inventory fixture must remain valid artifact evidence'
 require_contract 'rollback;'

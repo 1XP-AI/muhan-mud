@@ -109,13 +109,6 @@ set local role mud_writer;
 select pg_temp.assert_true(private.m3_assert_writer_session(),
   'setup uses the actual writer login plus SET ROLE');
 select pg_temp.assert_true(
-  (select outcome = 'RECORDED' from private.record_m4_file_snapshot_manifest_for_receipt(
-    'a9030000-0000-0000-0000-000000000001'::uuid,
-    'c9030000-0000-0000-0000-000000000001'::uuid,
-    :'pvi_request_sha256', 'legacy-file-manifest-v1', repeat('a', 64), 9)),
-  'the acknowledged source manifest records before the graph shadow'
-);
-select pg_temp.assert_true(
   (select outcome = 'RECORDED' from private.record_player_snapshot_v1_artifact_for_receipt(
     'a9030000-0000-0000-0000-000000000001'::uuid,
     'c9030000-0000-0000-0000-000000000001'::uuid,
@@ -123,6 +116,85 @@ select pg_temp.assert_true(
     :'pvi_snapshot_sha256', :'pvi_snapshot_octets', decode(:'pvi_snapshot_payload_hex', 'hex'))),
   'the immutable receipt/source-octet-bound artifact records before the graph shadow'
 );
+
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
+  'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
+  :'pvi_request_sha256', repeat('a', 64)));
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'reconciliation excludes an artifact whose M4 manifest evidence is missing'
+);
+reset role;
+reset session authorization;
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadows
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ) and not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadow_items
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a missing M4 manifest rejects with P0001 and leaves no graph shadow rows'
+);
+
+set local session authorization mud_writer_login;
+set local role mud_writer;
+select pg_temp.assert_true(
+  (select outcome = 'RECORDED' from private.record_m4_file_snapshot_manifest_for_receipt(
+    'a9030000-0000-0000-0000-000000000001'::uuid,
+    'c9030000-0000-0000-0000-000000000001'::uuid,
+    :'pvi_request_sha256', 'legacy-file-manifest-v1', repeat('a', 64), 9)),
+  'the acknowledged source manifest records before the graph shadow'
+);
+reset role;
+reset session authorization;
+set local session_replication_role = replica;
+update private.game_character_m4_file_snapshot_manifests
+   set snapshot_octets = 10
+ where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+   and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid;
+set local session_replication_role = origin;
+set local session authorization mud_writer_login;
+set local role mud_writer;
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
+  'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
+  :'pvi_request_sha256', repeat('a', 64)));
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'reconciliation excludes an artifact whose M4 manifest evidence is mismatched'
+);
+reset role;
+reset session authorization;
+select pg_temp.assert_true(
+  not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadows
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ) and not exists (
+    select 1 from private.game_character_player_snapshot_v1_inventory_graph_shadow_items
+     where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+       and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid
+  ),
+  'a mismatched M4 manifest rejects with P0001 and leaves no graph shadow rows'
+);
+set local session_replication_role = replica;
+update private.game_character_m4_file_snapshot_manifests
+   set snapshot_octets = 9
+ where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+   and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid;
+set local session_replication_role = origin;
+set local session authorization mud_writer_login;
+set local role mud_writer;
 
 select pg_temp.expect_state('P0001', format(
   'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
@@ -182,6 +254,23 @@ $$);
 select pg_temp.expect_state('P0001', $$
   delete from private.game_character_player_snapshot_v1_inventory_graph_shadow_items;
 $$);
+
+-- A privileged repair path can bypass immutability. A conflicting existing
+-- shadow must still fail closed rather than becoming a silent retry.
+set local session_replication_role = replica;
+update private.game_character_player_snapshot_v1_inventory_graph_shadows
+   set item_count = 4
+ where character_id = 'a9030000-0000-0000-0000-000000000001'::uuid
+   and command_id = 'c9030000-0000-0000-0000-000000000001'::uuid;
+set local session_replication_role = origin;
+set local session authorization mud_writer_login;
+set local role mud_writer;
+select pg_temp.expect_state('P0001', format(
+  'select * from private.record_player_snapshot_v1_inventory_graph_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9)',
+  'a9030000-0000-0000-0000-000000000001', 'c9030000-0000-0000-0000-000000000001',
+  :'pvi_request_sha256', repeat('a', 64)));
+reset role;
+reset session authorization;
 
 select pg_temp.assert_true(
   not has_function_privilege('service_role',

@@ -162,6 +162,7 @@ set search_path = pg_catalog, private
 as $$
 declare
   v_receipt private.game_character_shadow_receipts%rowtype;
+  v_manifest private.game_character_m4_file_snapshot_manifests%rowtype;
   v_artifact private.game_character_player_snapshot_v1_artifacts%rowtype;
   v_shadow private.game_character_player_snapshot_v1_inventory_graph_shadows%rowtype;
   v_item_count integer;
@@ -183,14 +184,31 @@ begin
       message = 'PlayerSnapshotV1 inventory graph shadow arguments are invalid';
   end if;
 
+  -- Lock the complete immutable receipt -> M4 manifest -> artifact chain
+  -- before persisting a derived topology row.
   select * into v_receipt from private.game_character_shadow_receipts
+   where character_id = p_character_id and command_id = p_command_id for share;
+  select * into v_manifest from private.game_character_m4_file_snapshot_manifests
    where character_id = p_character_id and command_id = p_command_id for share;
   select * into v_artifact from private.game_character_player_snapshot_v1_artifacts
    where character_id = p_character_id and command_id = p_command_id for share;
   if v_receipt.character_id is null
+     or v_manifest.character_id is null
      or v_artifact.character_id is null
      or v_receipt.request_sha256 <> p_receipt_request_sha256
      or v_receipt.post_sha256 <> p_source_post_sha256
+     or v_manifest.world_id <> v_receipt.world_id
+     or v_manifest.legacy_name_key <> v_receipt.legacy_name_key
+     or v_manifest.receipt_request_sha256 <> v_receipt.request_sha256
+     or v_manifest.writer_instance_id <> v_receipt.writer_instance_id
+     or v_manifest.writer_epoch <> v_receipt.writer_epoch
+     or v_manifest.writer_revision <> v_receipt.writer_revision
+     or v_manifest.file_post_sha256 <> v_receipt.post_sha256
+     or v_manifest.storage_format <> v_receipt.storage_format
+     or v_manifest.receipt_acknowledged_at <> v_receipt.acknowledged_at
+     or v_manifest.snapshot_format <> 'legacy-file-manifest-v1'
+     or v_manifest.snapshot_sha256 <> v_receipt.post_sha256
+     or v_manifest.snapshot_octets <> p_source_octets
      or v_artifact.world_id <> v_receipt.world_id
      or v_artifact.legacy_name_key <> v_receipt.legacy_name_key
      or v_artifact.receipt_request_sha256 <> v_receipt.request_sha256
@@ -198,6 +216,7 @@ begin
      or v_artifact.writer_epoch <> v_receipt.writer_epoch
      or v_artifact.writer_revision <> v_receipt.writer_revision
      or v_artifact.source_post_sha256 <> v_receipt.post_sha256
+     or v_artifact.source_octets <> v_manifest.snapshot_octets
      or v_artifact.source_octets <> p_source_octets
      or v_artifact.storage_format <> v_receipt.storage_format
      or v_artifact.receipt_acknowledged_at <> v_receipt.acknowledged_at
@@ -348,11 +367,24 @@ begin
       end,
       s.item_count, s.recorded_at
     from private.game_character_shadow_receipts as r
+    join private.game_character_m4_file_snapshot_manifests as m
+      on m.character_id = r.character_id and m.command_id = r.command_id
     join private.game_character_player_snapshot_v1_artifacts as a
       on a.character_id = r.character_id and a.command_id = r.command_id
     left join private.game_character_player_snapshot_v1_inventory_graph_shadows as s
       on s.character_id = r.character_id and s.command_id = r.command_id
    where r.world_id = p_world_id
+     and m.world_id = r.world_id
+     and m.legacy_name_key = r.legacy_name_key
+     and m.receipt_request_sha256 = r.request_sha256
+     and m.writer_instance_id = r.writer_instance_id
+     and m.writer_epoch = r.writer_epoch
+     and m.writer_revision = r.writer_revision
+     and m.file_post_sha256 = r.post_sha256
+     and m.storage_format = r.storage_format
+     and m.receipt_acknowledged_at = r.acknowledged_at
+     and m.snapshot_format = 'legacy-file-manifest-v1'
+     and m.snapshot_sha256 = r.post_sha256
      and a.world_id = r.world_id
      and a.legacy_name_key = r.legacy_name_key
      and a.receipt_request_sha256 = r.request_sha256
@@ -360,6 +392,7 @@ begin
      and a.writer_epoch = r.writer_epoch
      and a.writer_revision = r.writer_revision
      and a.source_post_sha256 = r.post_sha256
+     and a.source_octets = m.snapshot_octets
      and a.storage_format = r.storage_format
      and a.receipt_acknowledged_at = r.acknowledged_at
      and a.snapshot_format = 'player-snapshot-v1'
