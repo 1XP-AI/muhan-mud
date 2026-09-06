@@ -528,6 +528,8 @@ async function main(): Promise<void> {
       },
       reconcile: (request) => actualOnboardingAuthorizer.reconcile(request),
       claim: (request) => actualOnboardingAuthorizer.claim(request),
+      activateHandoff: (request) => actualOnboardingAuthorizer.activateHandoff(request),
+      bindSnapshotCommand: (request) => actualOnboardingAuthorizer.bindSnapshotCommand(request),
     }
     gateway = createGateway(config, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(config), onboardingAuthorizer })
     gateway.server.listen(0, '127.0.0.1')
