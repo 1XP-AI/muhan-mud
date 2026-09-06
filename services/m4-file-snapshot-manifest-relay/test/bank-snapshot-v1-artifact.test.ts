@@ -29,18 +29,21 @@ test('bank artifact parser rejects noncanonical ObjectV1 bytes beyond the topolo
 })
 test('bank relay records exact evidence once and does not retry mismatches', async () => { const calls:string[]=[]; const fs={scan:async()=>[{name:`${id}.bank-snapshot-v1`,bytes:artifact(),receiptManifestBytes:manifest()},{name:'bad.bank-snapshot-v1',bytes:artifact(),receiptManifestBytes:manifest()}]}; const store={recordBankSnapshotV1TopologyShadow:async(a:{commandId:string})=>{calls.push(a.commandId);return calls.length===1?'RECORDED' as const:'EXACT_RETRY' as const}}; assert.equal((await relayBankSnapshotV1ArtifactsOnce('/ignored',store,fs)).recorded,1); assert.deepEqual(calls,[id]) })
 test('default M4 relay entrypoint remains detached from bank evidence', async () => { assert.doesNotMatch(await readFile(new URL('../src/cli.ts', import.meta.url), 'utf8'), /bank-snapshot-v1/i) })
-test('BankSnapshotV1 PG17 adapter harness is CI-gated and executes the real parser and store', async () => {
+test('BankSnapshotV1 PG17 adapter harness is CI-service gated and executes the real parser and store', async () => {
   const [harness, e2e] = await Promise.all([
     readFile(new URL('../../../supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh', import.meta.url), 'utf8'),
     readFile(new URL('./bank-snapshot-v1-topology-shadow-pg17-e2e.ts', import.meta.url), 'utf8'),
   ])
-  assert.match(harness, /BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_DISPOSABLE/)
-  assert.match(harness, /postgres:17-alpine/)
-  assert.match(harness, /20261005000000_bank_snapshot_v1_topology_shadow\.sql/)
+  assert.match(harness, /CI:-.*BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_CI_E2E/)
+  assert.match(harness, /BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_DATABASE_URL/)
+  assert.match(harness, /psql.*BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_SUPER_DATABASE_URL/s)
   assert.match(harness, /bank-snapshot-v1-topology-shadow-pg17-e2e\.ts/)
+  assert.doesNotMatch(harness, /\bdocker\b/)
   assert.match(e2e, /parseBankSnapshotV1Artifact/)
   assert.match(e2e, /PostgresBankSnapshotV1TopologyShadowStore/)
   assert.match(e2e, /'RECORDED'/)
   assert.match(e2e, /'EXACT_RETRY'/)
+  assert.match(e2e, /branching.*immutable canonical topology evidence/s)
   assert.match(e2e, /wrong-session|writer login and role session/)
+  assert.match(e2e, /head_state: 'existing'/)
 })

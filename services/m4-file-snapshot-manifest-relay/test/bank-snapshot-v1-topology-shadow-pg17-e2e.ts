@@ -92,13 +92,13 @@ async function main(): Promise<void> {
       (error: { code?: unknown }) => error.code === 'P0001',
       'the recorder must reject a caller outside the writer login and role session',
     )
-    const state = await superClient.query<{ item_count: string, head_state: string }>(`
-      select s.item_count::text, h.head_state
+    const state = await superClient.query<{ item_count: string, head_state: string, head_sha256: string, revision: string }>(`
+      select s.item_count::text, h.head_state, h.head_sha256, h.revision::text
       from private.game_character_bank_snapshot_v1_topology_shadows s
       join private.game_character_legacy_heads h on h.character_id = s.character_id
       where s.character_id = $1::uuid and s.command_id = $2::uuid
     `, [characterId, commandId])
-    assert.deepEqual(state.rows, [{ item_count: '1', head_state: 'absent' }], 'the detached evidence record must leave legacy authority absent')
+    assert.deepEqual(state.rows, [{ item_count: '1', head_state: 'existing', head_sha256: sourcePostSha256, revision: '1' }], 'receipt publication advances the legacy head once; detached topology evidence cannot advance it further')
     console.log('GREEN PostgreSQL 17: real BankSnapshotV1 parser and topology adapter recorded, exact-retried, and rejected conflicting or wrong-session writes')
   } finally {
     await Promise.all([store.close(), superClient.end()])

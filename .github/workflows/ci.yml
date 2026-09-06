@@ -326,10 +326,13 @@ jobs:
       - name: Run BankSnapshotV1 topology adapter PostgreSQL 17 E2E
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_CI_E2E: "1"
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_DATABASE_URL: postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:5432/legacy_identity_evidence_contract
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_SUPER_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/legacy_identity_evidence_contract
         run: |
           set -euo pipefail
-          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_DISPOSABLE=1 \
-            bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
+          bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
 
       - name: Run PlayerSnapshotV1 Linux filesystem relay PostgreSQL 17 E2E
         if: runner.os == 'Linux'
