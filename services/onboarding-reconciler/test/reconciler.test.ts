@@ -39,7 +39,7 @@ function rpcResponse(overrides: Record<string, unknown> = {}): Response {
   return Response.json([{
     character_id: character,
     actor_user_id: actor,
-    lifecycle: 'handoff_pending',
+    lifecycle: 'active',
     status: 'finalized',
     saved_file_sha256: fileHash,
     storage_format: 1,
@@ -257,12 +257,12 @@ test('opt-in recovery fails closed on evidence or activation binding mismatches,
   const offPaths: string[] = []
   assert.deepEqual(statuses(await reconciler(off.home, async (url) => {
     offPaths.push(new URL(url).pathname)
-    return rpcResponse({ lifecycle: 'handoff_pending' })
+    return rpcResponse()
   }).runOnce()), ['reconciled'])
   assert.deepEqual(offPaths, ['/rpc/reconcile_game_character_provisioning'])
 })
 
-test('legacy saved-receipt reconciliation accepts a finalized handoff-pending lifecycle tuple', async (t) => {
+test('legacy saved-receipt reconciliation accepts only the exact finalized active lifecycle tuple', async (t) => {
   const data = await fixture()
   t.after(data.cleanup)
   let calls = 0
@@ -274,16 +274,40 @@ test('legacy saved-receipt reconciliation accepts a finalized handoff-pending li
   assert.equal(calls, 1)
 })
 
-test('legacy saved-receipt reconciliation rejects a finalized active lifecycle tuple', async (t) => {
+test('legacy saved-receipt reconciliation rejects a finalized handoff-pending lifecycle tuple', async (t) => {
   const data = await fixture()
   t.after(data.cleanup)
   let calls = 0
   const result = await reconciler(data.home, async () => {
     calls++
-    return rpcResponse({ lifecycle: 'active' })
+    return rpcResponse({ lifecycle: 'handoff_pending' })
   }).runOnce()
   assert.deepEqual(result.observations, [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }])
   assert.equal(calls, 1)
+})
+
+test('the injected reconciliation response matcher permits only the exact active playable contract', async () => {
+  const fs: ReconcilerFilesystem = {
+    assertSafeDirectory: async () => {},
+    listReceiptEntries: async () => [{ name: `${correlation}.receipt`, kind: 'file' }],
+    readSmallRegularFile: async () => {
+      const bytes = Buffer.from(receipt('saved'))
+      return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length, device: 1, inode: 1, modifiedAtMs: 1, changedAtMs: 1 }
+    },
+    sha256RegularFile: async () => ({ sha256: fileHash, byteLength: fileBody.length, device: 2, inode: 2, modifiedAtMs: 1, changedAtMs: 1 }),
+  }
+  const responseCases: Array<{ label: string, response: Response, expected: RunSummary['observations'] }> = [
+    { label: 'the exact active contract', response: rpcResponse({ lifecycle: 'active' }), expected: [{ outcome: 'reconciled', attempts: 1 }] },
+    { label: 'a handoff-pending response', response: rpcResponse({ lifecycle: 'handoff_pending' }), expected: [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }] },
+    { label: 'a provisioning response', response: rpcResponse({ lifecycle: 'handoff_pending', status: 'provisioning' }), expected: [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }] },
+  ]
+  for (const { label, response, expected } of responseCases) {
+    const result = await reconciler('/isolated-home', async () => response, { fs, rpcAttempts: 1 }).runOnce()
+    assert.deepEqual(result.observations, expected, label)
+  }
+
+  const indeterminate = await reconciler('/isolated-home', async () => { throw new DOMException('request timed out', 'AbortError') }, { fs, rpcAttempts: 1 }).runOnce()
+  assert.deepEqual(indeterminate.observations, [{ outcome: 'retry_exhausted', reason: 'rpc_retry_exhausted', attempts: 1 }])
 })
 
 test('committed receipts are fully validated but never invoke PostgREST', async (t) => {

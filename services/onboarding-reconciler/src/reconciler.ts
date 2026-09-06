@@ -423,7 +423,7 @@ function matchesRpcResponse(value: unknown, receipt: Receipt): boolean {
   if (!row) return false
   return row.character_id === receipt.characterUuid
     && row.actor_user_id === receipt.actorUuid
-    && row.lifecycle === 'handoff_pending'
+    && row.lifecycle === 'active'
     && row.status === 'finalized'
     && row.saved_file_sha256 === receipt.savedFileSha256
     && row.storage_format === 1
