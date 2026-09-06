@@ -11,11 +11,12 @@ import { NodeManifestFilesystem, relayOnce, scanImmutableOutboxFiles, type Manif
 import { NodePlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX } from '../src/player-snapshot-v1-artifact.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver } from '../src/player-snapshot-v1-replay-observer.js'
+import type { PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
 import { NodePlayerSnapshotV1ReplayShadowJournal } from '../src/player-snapshot-v1-replay-shadow-journal.js'
 import { main as artifactRelayMain } from '../src/player-snapshot-v1-artifact-cli.js'
 import { main as manifestFirstRelayMain } from '../src/player-snapshot-v1-manifest-first-cli.js'
 import { relayPlayerSnapshotV1ManifestFirstOnce, type PlayerSnapshotV1ManifestFirstFilesystem } from '../src/player-snapshot-v1-manifest-first-relay.js'
-import { PostgresManifestStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
+import { PostgresManifestStore, PostgresPlayerSnapshotNormalizedV1ProjectionStore, PostgresPlayerSnapshotV1ArtifactStore, PostgresPlayerSnapshotV1LevelProjectionStore, assertDatabaseUrl, type ManifestStore, type PlayerSnapshotNormalizedV1ProjectionStore, type PlayerSnapshotV1ArtifactFulfillmentOutcome, type PlayerSnapshotV1ArtifactFulfillmentStore, type PlayerSnapshotV1ArtifactStore, type PlayerSnapshotV1LevelProjectionStore, type PgClient, type PgPool } from '../src/store.js'
 
 const first = '11111111-1111-4111-8111-111111111111'
 const second = '22222222-2222-4222-8222-222222222222'
@@ -85,6 +86,18 @@ function playerSnapshotV1Artifact(payload = playerSnapshotV1(), overrides: Parti
     `snapshot_format=${values.snapshot_format}`, `source_octets=${values.source_octets}`,
     `snapshot_sha256=${values.snapshot_sha256}`, `snapshot_octets=${values.snapshot_octets}`, '', '',
   ].join('\n'), 'ascii'), Buffer.from(payload)])
+}
+
+function normalizedProjection(): PlayerSnapshotV1NormalizedProjection {
+  return {
+    format: 'player-snapshot-v1-normalized-projection', version: 1, algorithm: 'sha-256', canonicalDigest: 'c'.repeat(64),
+    player: {
+      level: 42, hpMax: 100, hpCurrent: 99, mpMax: 50, mpCurrent: 49, experience: 123n, gold: 456n,
+      daily: Array.from({ length: 10 }, () => ({ max: 1, current: 1, lastUsed: 0n })),
+      timers: Array.from({ length: 45 }, () => ({ interval: 0n, lastUsed: 0n, misc: 0 })),
+      items: [],
+    },
+  }
 }
 
 test('parses the exact thirteen-line canonical encoding', () => {
@@ -759,6 +772,8 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   const writes: string[] = []
   let created = 0
   let closed = 0
+  let normalizedCreated = 0
+  let normalizedClosed = 0
   const store: PlayerSnapshotV1ArtifactStore & PlayerSnapshotV1ArtifactFulfillmentStore = {
     recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
     fulfillGameCharacterOnboardingSnapshotEligibility: async () => 'FULFILLED',
@@ -766,6 +781,14 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   }
   const dependencies = {
     createStore: () => { created++; return store },
+    createNormalizedProjectionStore: () => {
+      normalizedCreated++
+      return {
+        recordPlayerSnapshotNormalizedV1Projection: async () => 'RECORDED' as const,
+        close: async () => { normalizedClosed++ },
+      }
+    },
+    projectNormalized: async () => normalizedProjection(),
     relay: async (...args: Parameters<typeof relayPlayerSnapshotV1ArtifactsOnce>) => {
       calls.push(args)
       return {
@@ -788,19 +811,36 @@ test('artifact CLI keeps onboarding fulfillment absent until its explicit featur
   assert.equal(closed, 1)
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.[4], undefined)
+  assert.equal(calls[0]?.[6], undefined)
+  assert.equal(normalizedCreated, 0)
   assert.equal(writes.length, 1)
 
   assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'false' }, ['--once'], dependencies), 0)
   assert.equal(created, 2)
   assert.equal(closed, 2)
   assert.equal(calls[1]?.[4], undefined)
+  assert.equal(calls[1]?.[6], undefined)
+  assert.equal(normalizedCreated, 0)
   assert.equal(writes.length, 2)
 
   assert.equal(await artifactRelayMain({ ...environment, M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true' }, ['--once'], dependencies), 0)
   assert.equal(created, 3)
   assert.equal(closed, 3)
   assert.equal(calls[2]?.[4], store)
+  assert.equal(calls[2]?.[6], undefined)
   assert.equal(writes.length, 3)
+
+  assert.equal(await artifactRelayMain({
+    ...environment,
+    M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED: 'true',
+    M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_RUNNER: '/opt/muhan/player_snapshot_v1_normalized_project',
+  }, ['--once'], dependencies), 0)
+  assert.equal(created, 4)
+  assert.equal(closed, 4)
+  assert.equal(normalizedCreated, 1)
+  assert.equal(normalizedClosed, 1)
+  assert.ok(calls[3]?.[6])
+  assert.equal(writes.length, 4)
 })
 
 test('a dual-interface side-effect store preserves projection retry after fulfillment', async () => {
@@ -859,6 +899,132 @@ test('PlayerSnapshotV1 raw-U8 level projection adapter uses SET ROLE and one par
   assert.deepEqual(queries[1]?.values, [
     input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets,
   ])
+})
+
+test('normalized persistence binds the exact artifact and receipt before projecting or storing, remains default-off, and accepts exact retry', async () => {
+  const receipt = body(first)
+  const artifact = playerSnapshotV1Artifact()
+  const mismatched = playerSnapshotV1Artifact(playerSnapshotV1(), { request_sha256: 'd'.repeat(64) })
+  const calls: string[] = []
+  const inputs: unknown[] = []
+  let attempts = 0
+  let artifactAttempts = 0
+  const store: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return ++artifactAttempts === 1 ? 'RECORDED' : 'EXACT_RETRY' },
+  }
+  const persistence = {
+    project: async (payload: Uint8Array, snapshotSha256: string) => {
+      calls.push(`project:${snapshotSha256}`)
+      assert.deepEqual(payload, parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, artifact, parseManifest(receipt)).payload)
+      return normalizedProjection()
+    },
+    store: {
+      recordPlayerSnapshotNormalizedV1Projection: async (input: unknown) => {
+        calls.push('normalized-store')
+        inputs.push(input)
+        attempts++
+        return attempts === 1 ? 'RECORDED' as const : 'EXACT_RETRY' as const
+      },
+    },
+  }
+  const goodFilesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: receipt }],
+  }
+  const badFilesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: mismatched, receiptManifestBytes: receipt }],
+  }
+
+  const off = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, goodFilesystem)
+  assert.equal(off.normalizedProjectionDelivered, undefined)
+  assert.deepEqual(calls, ['artifact'])
+
+  calls.length = 0
+  artifactAttempts = 0
+  const rejected = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, badFilesystem, undefined, undefined, undefined, persistence)
+  assert.equal(rejected.invalid, 1)
+  assert.equal(rejected.normalizedProjectionDelivered, 0)
+  assert.deepEqual(calls, [])
+
+  const recorded = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, goodFilesystem, undefined, undefined, undefined, persistence)
+  const retried = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, goodFilesystem, undefined, undefined, undefined, persistence)
+  assert.equal(recorded.normalizedProjectionRecorded, 1)
+  assert.equal(recorded.recorded, 1)
+  assert.equal(retried.normalizedProjectionExactRetry, 1)
+  assert.equal(retried.exactRetry, 1)
+  assert.deepEqual(calls, [
+    'artifact', `project:${createHash('sha256').update(playerSnapshotV1()).digest('hex')}`, 'normalized-store',
+    'artifact', `project:${createHash('sha256').update(playerSnapshotV1()).digest('hex')}`, 'normalized-store',
+  ])
+  assert.deepEqual(inputs, [first, first].map((commandId) => ({
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
+    projection: normalizedProjection(),
+  })))
+})
+
+test('normalized persistence does not store malformed projections or deterministically failed records, and does not expose projection values', async () => {
+  const artifact = playerSnapshotV1Artifact()
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: artifact, receiptManifestBytes: body(first) }],
+  }
+  const artifactStore: PlayerSnapshotV1ArtifactStore = { recordPlayerSnapshotV1Artifact: async () => 'RECORDED' }
+  let stored = 0
+  const malformed = {
+    project: async () => { throw new Error('raw decoded artifact text must not surface') },
+    store: { recordPlayerSnapshotNormalizedV1Projection: async () => { stored++; return 'RECORDED' as const } },
+  }
+  const malformedResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem, undefined, undefined, undefined, malformed)
+  assert.equal(stored, 0)
+  assert.equal(malformedResult.normalizedProjectionInvalid, 1)
+  assert.equal(Object.keys(malformedResult).some((key) => /payload|digest|source|projectionValue/i.test(key)), false)
+
+  const failed = {
+    project: async () => normalizedProjection(),
+    store: {
+      recordPlayerSnapshotNormalizedV1Projection: async () => {
+        stored++
+        throw Object.assign(new Error('deterministic database failure'), { code: 'P0001' })
+      },
+    },
+  }
+  const failedResult = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem, undefined, undefined, undefined, failed)
+  assert.equal(stored, 1)
+  assert.equal(failedResult.normalizedProjectionConflict, 1)
+  assert.equal(failedResult.normalizedProjectionDelivered, 0)
+})
+
+test('PlayerSnapshotNormalizedV1 projection adapter uses only the private writer RPC with metadata and safe canonical projection', async () => {
+  const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+  const client: PgClient = {
+    query: async <Row>(sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values })
+      return { rows: sql.startsWith('select outcome') ? [{ outcome: 'RECORDED' } as Row] : [] }
+    },
+    release: () => undefined,
+  }
+  const pool: PgPool = { connect: async () => client, end: async () => undefined }
+  const store = new PostgresPlayerSnapshotNormalizedV1ProjectionStore('postgresql://mud_writer_login@localhost/postgres', pool)
+  const input = {
+    characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId: first,
+    receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128', projection: normalizedProjection(),
+  }
+  assert.equal(await store.recordPlayerSnapshotNormalizedV1Projection(input), 'RECORDED')
+  assert.deepEqual(queries.map((query) => query.sql), [
+    'set role mud_writer',
+    'select outcome from private.record_player_snapshot_normalized_v1_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::jsonb)',
+  ])
+  assert.deepEqual(queries[1]?.values?.slice(0, 5), [
+    input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets,
+  ])
+  const persisted = JSON.parse(String(queries[1]?.values?.[5])) as Record<string, unknown>
+  assert.deepEqual(Object.keys(persisted).sort(), ['algorithm', 'canonical_digest', 'format', 'player', 'version'])
+  assert.equal(persisted.canonical_digest, 'c'.repeat(64))
+  assert.equal(JSON.stringify(persisted).match(/payload|artifact|command|credential|secret|flag/gi), null)
+  await assert.rejects(() => store.recordPlayerSnapshotNormalizedV1Projection({
+    ...input,
+    projection: { ...normalizedProjection(), player: { ...normalizedProjection().player, level: Number.NaN } },
+  }), /invalid normalized projection persistence input/)
+  assert.equal(queries.length, 2, 'malformed projection is rejected before a writer session is opened')
 })
 
 test('paired shadow relay records the manifest before its PlayerSnapshotV1 artifact and exactly retries both', async () => {

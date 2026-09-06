@@ -6,6 +6,7 @@ import type { BankSnapshotV1Artifact } from './bank-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
 import type { ImmutablePlayerSnapshotLevelProjectionEvidence, ImmutablePlayerSnapshotLevelProjectionReader } from './player-snapshot-v1-level-comparator.js'
 import type { ImmutablePlayerSnapshotV1FullPayloadEvidence, ImmutablePlayerSnapshotV1FullPayloadReader } from './player-snapshot-v1-full-payload-rehearsal.js'
+import type { PlayerSnapshotV1NormalizedProjection } from './player-snapshot-v1-normalized-projection.js'
 
 export type StoreOutcome = 'RECORDED' | 'EXACT_RETRY'
 
@@ -56,6 +57,25 @@ export interface PlayerSnapshotV1LevelProjectionInput {
 
 export interface PlayerSnapshotV1LevelProjectionStore {
   recordPlayerSnapshotV1LevelProjection(input: PlayerSnapshotV1LevelProjectionInput): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
+/**
+ * Closed metadata plus the numeric-only projection already verified by the
+ * pinned normalized-projection adapter.  Raw artifact/payload data is not
+ * representable at this database boundary.
+ */
+export interface PlayerSnapshotNormalizedV1ProjectionInput {
+  characterId: string
+  commandId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  sourceOctets: string
+  projection: PlayerSnapshotV1NormalizedProjection
+}
+
+export interface PlayerSnapshotNormalizedV1ProjectionStore {
+  recordPlayerSnapshotNormalizedV1Projection(input: PlayerSnapshotNormalizedV1ProjectionInput): Promise<StoreOutcome>
   close?(): Promise<void>
 }
 
@@ -203,6 +223,53 @@ export class PostgresPlayerSnapshotV1LevelProjectionStore implements PlayerSnaps
       const result = await client.query<{ outcome: string }>(
         'select outcome from private.record_player_snapshot_v1_level_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint)',
         [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+function projectionInteger(value: number | bigint): string {
+  if (typeof value === 'bigint') return value.toString()
+  if (!Number.isSafeInteger(value)) throw new Error('invalid normalized projection persistence input')
+  return String(value)
+}
+
+function projectionJson(projection: PlayerSnapshotV1NormalizedProjection): string {
+  if (!SHA256_RE.test(projection.canonicalDigest)) throw new Error('invalid normalized projection persistence input')
+  const player = projection.player
+  const daily = player.daily.map((entry) => `{"current":${projectionInteger(entry.current)},"last_used":${projectionInteger(entry.lastUsed)},"max":${projectionInteger(entry.max)}}`).join(',')
+  const timers = player.timers.map((entry) => `{"interval":${projectionInteger(entry.interval)},"last_used":${projectionInteger(entry.lastUsed)},"misc":${projectionInteger(entry.misc)}}`).join(',')
+  const items = player.items.map((entry) => `{"adjustment":${projectionInteger(entry.adjustment)},"armor":${projectionInteger(entry.armor)},"child_index":${projectionInteger(entry.childIndex)},"magic_power":${projectionInteger(entry.magicPower)},"magic_realm":${projectionInteger(entry.magicRealm)},"ndice":${projectionInteger(entry.ndice)},"parent_index":${entry.parentIndex === null ? 'null' : projectionInteger(entry.parentIndex)},"pdice":${projectionInteger(entry.pdice)},"sdice":${projectionInteger(entry.sdice)},"shots_current":${projectionInteger(entry.shotsCurrent)},"shots_max":${projectionInteger(entry.shotsMax)},"special":${projectionInteger(entry.special)},"type_code":${projectionInteger(entry.typeCode)},"value":${projectionInteger(entry.value)},"wear_flag":${projectionInteger(entry.wearFlag)},"weight":${projectionInteger(entry.weight)}}`).join(',')
+  return `{"algorithm":"sha-256","canonical_digest":"${projection.canonicalDigest}","format":"player-snapshot-v1-normalized-projection","player":{"daily":[${daily}],"experience":${projectionInteger(player.experience)},"gold":${projectionInteger(player.gold)},"hp_current":${projectionInteger(player.hpCurrent)},"hp_max":${projectionInteger(player.hpMax)},"items":[${items}],"level":${projectionInteger(player.level)},"mp_current":${projectionInteger(player.mpCurrent)},"mp_max":${projectionInteger(player.mpMax)},"timers":[${timers}]},"version":1}`
+}
+
+/**
+ * Narrow writer for migration 20261006000000.  It invokes exactly the private
+ * RPC with parameterized receipt/source metadata and an allowlisted projection.
+ */
+export class PostgresPlayerSnapshotNormalizedV1ProjectionStore implements PlayerSnapshotNormalizedV1ProjectionStore {
+  private readonly pool: PgPool
+
+  constructor(databaseUrl: string, pool?: PgPool) {
+    const validatedUrl = assertDatabaseUrl(databaseUrl)
+    this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async recordPlayerSnapshotNormalizedV1Projection(input: PlayerSnapshotNormalizedV1ProjectionInput): Promise<StoreOutcome> {
+    // Validate/build the closed JSON before acquiring a writer session.  A
+    // malformed caller cannot trigger any database operation or mutation.
+    const serializedProjection = projectionJson(input.projection)
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_player_snapshot_normalized_v1_projection_for_receipt($1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::jsonb)',
+        [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets, serializedProjection],
       )
       const outcome = result.rows[0]?.outcome
       if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')

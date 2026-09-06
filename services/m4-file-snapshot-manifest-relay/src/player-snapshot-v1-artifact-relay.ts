@@ -8,8 +8,10 @@ import {
   type PlayerSnapshotV1ArtifactFulfillmentStore,
   type PlayerSnapshotV1ArtifactStore,
   type PlayerSnapshotV1LevelProjectionStore,
+  type PlayerSnapshotNormalizedV1ProjectionStore,
 } from './store.js'
 import { PlayerSnapshotV1ReplayObserver, type PlayerSnapshotV1ReplayObserver as PlayerSnapshotV1ReplayObserverContract } from './player-snapshot-v1-replay-observer.js'
+import type { PlayerSnapshotV1NormalizedProjection } from './player-snapshot-v1-normalized-projection.js'
 
 export interface PlayerSnapshotV1ArtifactRelaySummary {
   visited: number
@@ -33,6 +35,13 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   projectionConflict: number
   projectionRetryable: number
   projectionUnknown: number
+  normalizedProjectionDelivered?: number
+  normalizedProjectionRecorded?: number
+  normalizedProjectionExactRetry?: number
+  normalizedProjectionInvalid?: number
+  normalizedProjectionConflict?: number
+  normalizedProjectionRetryable?: number
+  normalizedProjectionUnknown?: number
   fulfillmentDelivered?: number
   fulfillmentFulfilled?: number
   fulfillmentExactRetry?: number
@@ -51,6 +60,15 @@ export interface PlayerSnapshotV1ArtifactFilesystem {
     receiptManifestBytes?: Uint8Array
     error?: 'invalid' | 'io'
   }>>
+}
+
+/**
+ * Explicit default-off persistence seam. The projector may read the immutable
+ * artifact, but the store only receives the already-validated numeric allowlist.
+ */
+export interface PlayerSnapshotV1NormalizedProjectionPersistence {
+  project(payload: Uint8Array, snapshotSha256: string): Promise<PlayerSnapshotV1NormalizedProjection>
+  store: PlayerSnapshotNormalizedV1ProjectionStore
 }
 
 function isPlayerSnapshotV1Filename(name: Uint8Array): boolean {
@@ -100,6 +118,16 @@ function summary(): PlayerSnapshotV1ArtifactRelaySummary {
   }
 }
 
+function withNormalizedProjectionCounters(result: PlayerSnapshotV1ArtifactRelaySummary): void {
+  result.normalizedProjectionDelivered = 0
+  result.normalizedProjectionRecorded = 0
+  result.normalizedProjectionExactRetry = 0
+  result.normalizedProjectionInvalid = 0
+  result.normalizedProjectionConflict = 0
+  result.normalizedProjectionRetryable = 0
+  result.normalizedProjectionUnknown = 0
+}
+
 function withFulfillmentCounters(result: PlayerSnapshotV1ArtifactRelaySummary): void {
   result.fulfillmentDelivered = 0
   result.fulfillmentFulfilled = 0
@@ -140,6 +168,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
   replayObserver: PlayerSnapshotV1ReplayObserverContract = new PlayerSnapshotV1ReplayObserver(undefined),
   fulfillmentStoreOrProjection?: PlayerSnapshotV1ArtifactFulfillmentStore | PlayerSnapshotV1LevelProjectionStore,
   projectionStoreOrFulfillment?: PlayerSnapshotV1LevelProjectionStore | PlayerSnapshotV1ArtifactFulfillmentStore,
+  normalizedProjectionPersistence?: PlayerSnapshotV1NormalizedProjectionPersistence,
 ): Promise<PlayerSnapshotV1ArtifactRelaySummary> {
   const result = summary()
   // Accept either side-effect ordering so existing projection callers remain
@@ -152,6 +181,7 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     if ('recordPlayerSnapshotV1LevelProjection' in sideEffect) projectionStore = sideEffect
   }
   if (fulfillmentStore) withFulfillmentCounters(result)
+  if (normalizedProjectionPersistence) withNormalizedProjectionCounters(result)
   let files: ReadonlyArray<{ name: string, bytes?: Uint8Array, receiptManifestBytes?: Uint8Array, error?: 'invalid' | 'io' }>
   try { files = await filesystem.scan(outboxPath) }
   catch { result.ioError++; return result }
@@ -203,24 +233,55 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     }
     // Immutable artifact evidence is authoritative; this projection is only a
     // best-effort migration-190 side effect after that evidence has settled.
-    if (!artifactSettled || !projectionStore) continue
+    if (artifactSettled && projectionStore) {
+      try {
+        const outcome = await projectionStore.recordPlayerSnapshotV1LevelProjection({
+          characterId: artifact.characterId,
+          commandId: artifact.commandId,
+          receiptRequestSha256: artifact.receiptRequestSha256,
+          sourcePostSha256: artifact.sourcePostSha256,
+          sourceOctets: artifact.sourceOctets,
+        })
+        if (outcome === 'RECORDED') { result.projectionRecorded++; result.projectionDelivered++ }
+        else if (outcome === 'EXACT_RETRY') { result.projectionExactRetry++; result.projectionDelivered++ }
+        else result.projectionUnknown++
+      } catch (error) {
+        const category = classifyDatabaseError(error)
+        if (category === 'invalid') result.projectionInvalid++
+        else if (category === 'conflict') result.projectionConflict++
+        else if (category === 'retryable') result.projectionRetryable++
+        else result.projectionUnknown++
+      }
+    }
+    // Migration 20261006000000 is an explicit, default-off projection side
+    // effect. Its database adapter receives neither this payload nor the raw
+    // runner text: only the adapter-validated numeric projection below.
+    if (!artifactSettled || !normalizedProjectionPersistence) continue
+    let normalizedProjection: PlayerSnapshotV1NormalizedProjection
     try {
-      const outcome = await projectionStore.recordPlayerSnapshotV1LevelProjection({
+      normalizedProjection = await normalizedProjectionPersistence.project(artifact.payload, artifact.snapshotSha256)
+    } catch {
+      result.normalizedProjectionInvalid = (result.normalizedProjectionInvalid ?? 0) + 1
+      continue
+    }
+    try {
+      const outcome = await normalizedProjectionPersistence.store.recordPlayerSnapshotNormalizedV1Projection({
         characterId: artifact.characterId,
         commandId: artifact.commandId,
         receiptRequestSha256: artifact.receiptRequestSha256,
         sourcePostSha256: artifact.sourcePostSha256,
         sourceOctets: artifact.sourceOctets,
+        projection: normalizedProjection,
       })
-      if (outcome === 'RECORDED') { result.projectionRecorded++; result.projectionDelivered++ }
-      else if (outcome === 'EXACT_RETRY') { result.projectionExactRetry++; result.projectionDelivered++ }
-      else result.projectionUnknown++
+      if (outcome === 'RECORDED') { result.normalizedProjectionRecorded = (result.normalizedProjectionRecorded ?? 0) + 1; result.normalizedProjectionDelivered = (result.normalizedProjectionDelivered ?? 0) + 1 }
+      else if (outcome === 'EXACT_RETRY') { result.normalizedProjectionExactRetry = (result.normalizedProjectionExactRetry ?? 0) + 1; result.normalizedProjectionDelivered = (result.normalizedProjectionDelivered ?? 0) + 1 }
+      else result.normalizedProjectionUnknown = (result.normalizedProjectionUnknown ?? 0) + 1
     } catch (error) {
       const category = classifyDatabaseError(error)
-      if (category === 'invalid') result.projectionInvalid++
-      else if (category === 'conflict') result.projectionConflict++
-      else if (category === 'retryable') result.projectionRetryable++
-      else result.projectionUnknown++
+      if (category === 'invalid') result.normalizedProjectionInvalid = (result.normalizedProjectionInvalid ?? 0) + 1
+      else if (category === 'conflict') result.normalizedProjectionConflict = (result.normalizedProjectionConflict ?? 0) + 1
+      else if (category === 'retryable') result.normalizedProjectionRetryable = (result.normalizedProjectionRetryable ?? 0) + 1
+      else result.normalizedProjectionUnknown = (result.normalizedProjectionUnknown ?? 0) + 1
     }
   }
   return result
