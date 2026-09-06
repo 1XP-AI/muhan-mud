@@ -116,18 +116,20 @@ trusted-alias-identity-context-v1-sanitizer-test: trusted-alias-identity-context
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/trusted_alias_identity_context_v1_sanitizer_test
 
 # This keeps MUD1's admission success byte behind two usable legacy-file
-# loads without coupling the test to a socket, gateway, or external runtime.
+# loads through the production PlayerStore facade, without coupling the test
+# to a socket, gateway, or external runtime.
 trusted-admission-file-authority-static-test:
 	python3 ../tests/unit/trusted_admission_identity_binding_static_test.py
+	python3 ../tests/unit/trusted_admission_file_authority_static_test.py
 
 trusted-admission-file-authority-test: trusted-admission-file-authority-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/trusted_admission_file_authority_test.c command1.c trusted_admission.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/trusted_admission_file_authority_test
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections ../tests/unit/trusted_admission_file_authority_test.c command1.c trusted_admission.c player_store.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/trusted_admission_file_authority_test
 	/tmp/muhan-unit/trusted_admission_file_authority_test
 
 trusted-admission-file-authority-sanitizer-test: trusted-admission-file-authority-static-test
 	mkdir -p /tmp/muhan-unit
-	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/trusted_admission_file_authority_test.c command1.c trusted_admission.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/trusted_admission_file_authority_sanitizer_test
+	$(CC) -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/trusted_admission_file_authority_test.c command1.c trusted_admission.c player_store.c player_path.c utf8_text.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/trusted_admission_file_authority_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/trusted_admission_file_authority_sanitizer_test
 
 # MUD1C is deliberately feature-off and detached: these targets are the only
