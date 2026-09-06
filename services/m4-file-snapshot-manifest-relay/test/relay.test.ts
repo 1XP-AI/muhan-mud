@@ -389,7 +389,7 @@ test('replay observation is payload-only and never changes PlayerSnapshotV1 reco
 
   assert.deepEqual(await relayPlayerSnapshotV1ArtifactsOnce('/ignored', store, filesystem, observer), {
     visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
-    replayObserved: 0, replayDisabled: 1,
+    replayObserved: 0, replayDisabled: 0, replayFailed: 1,
     projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
   })
   assert.equal(records, 1)
@@ -397,6 +397,7 @@ test('replay observation is payload-only and never changes PlayerSnapshotV1 reco
   assert.deepEqual(contexts, [{
     commandId: first, characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64),
+    snapshotSha256: createHash('sha256').update(payload).digest('hex'),
   }])
 })
 
@@ -445,7 +446,7 @@ test('every replay journal filesystem failure exposes its temporary and publish 
     assert.equal(published, failedStep === 'unlink')
     assert.deepEqual(result, {
       visited: 1, valid: 1, delivered: 1, recorded: 1, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
-      replayObserved: 0, replayDisabled: 1,
+      replayObserved: 0, replayDisabled: 0, replayFailed: 1,
       projectionDelivered: 0, projectionRecorded: 0, projectionExactRetry: 0, projectionInvalid: 0, projectionConflict: 0, projectionRetryable: 0, projectionUnknown: 0,
     })
   }

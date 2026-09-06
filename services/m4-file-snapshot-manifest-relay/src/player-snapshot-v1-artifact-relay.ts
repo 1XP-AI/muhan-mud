@@ -24,6 +24,8 @@ export interface PlayerSnapshotV1ArtifactRelaySummary {
   ioError: number
   replayObserved: number
   replayDisabled: number
+  /** Present only when an enabled diagnostic verifier failed. */
+  replayFailed?: number
   projectionDelivered: number
   projectionRecorded: number
   projectionExactRetry: number
@@ -166,14 +168,17 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     catch { result.invalid++; continue }
     result.valid++
     try {
-      if (await replayObserver.observe(artifact.payload, {
+      const replayOutcome = await replayObserver.observe(artifact.payload, {
         commandId: artifact.commandId,
         characterId: artifact.characterId,
         receiptRequestSha256: artifact.receiptRequestSha256,
         sourcePostSha256: artifact.sourcePostSha256,
-      }) === 'observed') result.replayObserved++
+        snapshotSha256: artifact.snapshotSha256,
+      })
+      if (replayOutcome === 'observed') result.replayObserved++
+      else if (replayOutcome === 'failed') result.replayFailed = (result.replayFailed ?? 0) + 1
       else result.replayDisabled++
-    } catch { result.replayDisabled++ }
+    } catch { result.replayFailed = (result.replayFailed ?? 0) + 1 }
     let artifactSettled = false
     try {
       const outcome = await store.recordPlayerSnapshotV1Artifact(artifact)

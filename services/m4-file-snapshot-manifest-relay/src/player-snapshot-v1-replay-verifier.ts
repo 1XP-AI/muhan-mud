@@ -40,6 +40,8 @@ export type ReplayVerifyProcessFactory = (
 
 export interface PlayerSnapshotV1ReplayVerifierOptions {
   runnerPath?: string
+  /** Immutable artifact digest, passed as a fixed argv value to Rust. */
+  snapshotSha256?: string
   /** A caller may only shorten the five-second safety deadline. */
   timeoutMs?: number
   /** Dependency injection for tests; production uses node:child_process.spawn. */
@@ -108,11 +110,12 @@ export async function verifyPlayerSnapshotV1Replay(
   payload: Uint8Array,
   options: PlayerSnapshotV1ReplayVerifierOptions = {},
 ): Promise<PlayerSnapshotV1ReplayVerification> {
-  const { runnerPath, processFactory = defaultProcessFactory, timeoutMs = DEFAULT_TIMEOUT_MS } = options
-  if (!runnerPath || !isAbsolute(runnerPath) || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) throw invalid()
+  const { runnerPath, snapshotSha256, processFactory = defaultProcessFactory, timeoutMs = DEFAULT_TIMEOUT_MS } = options
+  if (!runnerPath || !isAbsolute(runnerPath) || !snapshotSha256 || !LOWER_HEX_64.test(snapshotSha256)
+    || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) throw invalid()
   let child: ReplayVerifyProcess
   try {
-    child = processFactory(runnerPath, [], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    child = processFactory(runnerPath, ['--snapshot-sha256', snapshotSha256], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   } catch {
     throw invalid()
   }

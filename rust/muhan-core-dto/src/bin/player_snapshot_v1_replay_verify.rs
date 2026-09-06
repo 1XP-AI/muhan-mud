@@ -1,9 +1,9 @@
 //! Version-pinned, Rust-only verifier for one PlayerSnapshotV1 CDTO envelope.
 
 use muhan_core_dto::player_snapshot_v1::{
-    format_replay_verification_v1_report, verify_player_snapshot_replay_v1,
+    format_replay_verification_v1_report, verify_player_snapshot_post_save_shadow_v1,
 };
-use muhan_core_dto::MAX_ENVELOPE_SIZE;
+use muhan_core_dto::{DIGEST_LENGTH, MAX_ENVELOPE_SIZE};
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
@@ -15,10 +15,36 @@ fn reject(stderr: &mut impl Write) -> ExitCode {
     ExitCode::from(1)
 }
 
+/// The relay supplies the immutable artifact header digest as two fixed argv
+/// values.  The canonical CDTO stays on stdin; no shell or filesystem input is
+/// involved in this diagnostic-only bridge.
+fn expected_snapshot_sha256(mut args: impl Iterator<Item = String>) -> Option<[u8; DIGEST_LENGTH]> {
+    if args.next().as_deref() != Some("--snapshot-sha256") {
+        return None;
+    }
+    let value = args.next()?;
+    if args.next().is_some() {
+        return None;
+    }
+    if value.len() != DIGEST_LENGTH * 2
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let mut digest = [0u8; DIGEST_LENGTH];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(digest)
+}
+
 fn run_replay_verifier(
     input: &mut impl Read,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
+    expected_digest: &[u8; DIGEST_LENGTH],
 ) -> ExitCode {
     let mut wire = Vec::new();
     let max_input_octets =
@@ -29,7 +55,7 @@ fn run_replay_verifier(
         return reject(stderr);
     }
 
-    let report = match verify_player_snapshot_replay_v1(&wire) {
+    let report = match verify_player_snapshot_post_save_shadow_v1(&wire, expected_digest) {
         Ok(report) => report,
         Err(_) => return reject(stderr),
     };
@@ -44,13 +70,16 @@ fn main() -> ExitCode {
     let mut input = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    run_replay_verifier(&mut input, &mut stdout, &mut stderr)
+    let Some(expected_digest) = expected_snapshot_sha256(std::env::args().skip(1)) else {
+        return reject(&mut stderr);
+    };
+    run_replay_verifier(&mut input, &mut stdout, &mut stderr, &expected_digest)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{run_replay_verifier, REJECTION};
-    use muhan_core_dto::MAX_ENVELOPE_SIZE;
+    use super::{expected_snapshot_sha256, run_replay_verifier, REJECTION};
+    use muhan_core_dto::{player_snapshot_v1::verify_player_snapshot_replay_v1, MAX_ENVELOPE_SIZE};
     use std::io::{self, Cursor, Read, Write};
     use std::process::ExitCode;
 
@@ -116,6 +145,12 @@ mod tests {
             .collect()
     }
 
+    fn fixture_digest() -> [u8; 32] {
+        verify_player_snapshot_replay_v1(&canonical_fixture())
+            .expect("fixture verifies")
+            .canonical_digest
+    }
+
     #[test]
     fn runner_sanitizes_stdin_read_failure() {
         let mut input = FailingReader;
@@ -123,7 +158,7 @@ mod tests {
         let mut stderr = Vec::new();
 
         assert_rejected(
-            run_replay_verifier(&mut input, &mut stdout, &mut stderr),
+            run_replay_verifier(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
             &stderr,
         );
         assert!(stdout.is_empty());
@@ -136,7 +171,7 @@ mod tests {
         let mut stderr = Vec::new();
 
         assert_rejected(
-            run_replay_verifier(&mut input, &mut stdout, &mut stderr),
+            run_replay_verifier(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
             &stderr,
         );
     }
@@ -148,7 +183,7 @@ mod tests {
         let mut stderr = Vec::new();
 
         assert_rejected(
-            run_replay_verifier(&mut input, &mut stdout, &mut stderr),
+            run_replay_verifier(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
             &stderr,
         );
     }
@@ -160,10 +195,31 @@ mod tests {
         let mut stderr = Vec::new();
 
         assert_rejected(
-            run_replay_verifier(&mut input, &mut stdout, &mut stderr),
+            run_replay_verifier(&mut input, &mut stdout, &mut stderr, &fixture_digest()),
             &stderr,
         );
         assert!(stdout.is_empty());
         assert_eq!(input.bytes_read, MAX_ENVELOPE_SIZE + 1);
+    }
+
+    #[test]
+    fn runner_accepts_only_the_exact_lowercase_digest_argument() {
+        let digest = fixture_digest();
+        let text = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            expected_snapshot_sha256(["--snapshot-sha256".into(), text].into_iter()),
+            Some(digest)
+        );
+        assert_eq!(
+            expected_snapshot_sha256(["--snapshot-sha256".into(), "A".repeat(64)].into_iter()),
+            None
+        );
+        assert_eq!(
+            expected_snapshot_sha256(["--unexpected".into(), "a".repeat(64)].into_iter()),
+            None
+        );
     }
 }

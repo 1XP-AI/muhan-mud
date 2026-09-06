@@ -53,7 +53,12 @@ fn digest_hex(digest: &[u8]) -> String {
 }
 
 fn run_replay_runner(wire: &[u8]) -> Output {
+    let expected = verify_player_snapshot_replay_v1(wire)
+        .map(|report| digest_hex(&report.canonical_digest))
+        .unwrap_or_else(|_| "0".repeat(64));
     let mut child = Command::new(env!("CARGO_BIN_EXE_player_snapshot_v1_replay_verify"))
+        .arg("--snapshot-sha256")
+        .arg(expected)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -254,6 +259,29 @@ fn replay_runner_is_version_pinned_deterministic_and_metadata_only() {
     );
     assert_eq!(second.stdout, first.stdout, "repeated input is byte-stable");
     assert!(first.stderr.is_empty(), "successful run has no diagnostics");
+}
+
+#[test]
+fn replay_runner_rejects_a_mismatched_immutable_artifact_digest_without_output() {
+    let (wire, _) = &fixtures()[0];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_player_snapshot_v1_replay_verify"))
+        .arg("--snapshot-sha256")
+        .arg("0".repeat(64))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("replay verifier runner launches");
+    child
+        .stdin
+        .take()
+        .expect("runner stdin is piped")
+        .write_all(wire)
+        .expect("runner accepts fixture input");
+    let output = child.wait_with_output().expect("runner exits");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"rejected: invalid player snapshot CDTO\n");
 }
 
 #[test]

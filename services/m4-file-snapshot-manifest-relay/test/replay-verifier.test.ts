@@ -10,6 +10,7 @@ import {
 } from '../src/player-snapshot-v1-replay-verifier.js'
 
 const payload = Buffer.from('trusted payload')
+const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
 
 function report(input: Uint8Array = payload): string {
   const digest = createHash('sha256').update(input).digest('hex')
@@ -85,10 +86,10 @@ test('replay verifier accepts only an absolute runner path', async () => {
   await rejectsPublicly(() => verifyPlayerSnapshotV1Replay(payload, { runnerPath: 'player_snapshot_v1_replay_verify' }))
 })
 
-test('replay verifier passes only payload bytes to an absolute shell-free runner and returns metadata', async () => {
+test('replay verifier passes immutable artifact digest and canonical payload bytes to an absolute shell-free runner', async () => {
   const fake = fakeProcess(report())
   const result = await verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify',
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256,
     processFactory: fake.factory,
   })
   const received: Buffer[] = []
@@ -97,7 +98,7 @@ test('replay verifier passes only payload bytes to an absolute shell-free runner
   assert.deepEqual(Buffer.concat(received), payload)
   assert.deepEqual(fake.calls, [{
     file: '/opt/muhan/player_snapshot_v1_replay_verify',
-    args: [],
+    args: ['--snapshot-sha256', snapshotSha256],
     options: { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
   }])
   assert.deepEqual(result, {
@@ -109,6 +110,17 @@ test('replay verifier passes only payload bytes to an absolute shell-free runner
     canonicalOctets: payload.length,
     inventoryNodeCount: 0,
   })
+})
+
+test('replay verifier rejects an absent or malformed immutable artifact digest before spawning', async () => {
+  for (const snapshotSha256 of [undefined, 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)]) {
+    let calls = 0
+    const factory: ReplayVerifyProcessFactory = () => { calls++; throw new Error('must not spawn') }
+    await rejectsPublicly(() => verifyPlayerSnapshotV1Replay(payload, {
+      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: factory,
+    }))
+    assert.equal(calls, 0)
+  }
 })
 
 test('replay verifier maps execution and report failures to the same public error', async () => {
@@ -130,7 +142,7 @@ test('replay verifier maps execution and report failures to the same public erro
   for (const value of cases) {
     const fake = fakeProcess(value.stdout, value.stderr, value.code, value.signal)
     await rejectsPublicly(() => verifyPlayerSnapshotV1Replay(payload, {
-      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: fake.factory,
+      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: fake.factory,
     }))
   }
 })
@@ -138,7 +150,7 @@ test('replay verifier maps execution and report failures to the same public erro
 test('replay verifier maps spawn exceptions to the public error', async () => {
   const spawnFailure: ReplayVerifyProcessFactory = () => { throw new Error('untrusted runner detail') }
   await rejectsPublicly(() => verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: spawnFailure,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: spawnFailure,
   }))
 
 })
@@ -147,7 +159,7 @@ test('replay verifier waits for close after a timeout before returning its publi
   const fake = pendingProcess()
   let settled = false
   const verification = verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', timeoutMs: 1, processFactory: fake.factory,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, timeoutMs: 1, processFactory: fake.factory,
   })
   void verification.then(() => { settled = true }, () => { settled = true })
 
@@ -163,7 +175,7 @@ test('replay verifier terminates and waits for close after each process or strea
     const fake = pendingProcess()
     let settled = false
     const verification = verifyPlayerSnapshotV1Replay(payload, {
-      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: fake.factory,
+      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: fake.factory,
     })
     void verification.then(() => { settled = true }, () => { settled = true })
 
@@ -182,7 +194,7 @@ test('replay verifier preserves its public error when kill returns false or thro
     const fake = pendingProcess(kill)
     let settled = false
     const verification = verifyPlayerSnapshotV1Replay(payload, {
-      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: fake.factory,
+      runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: fake.factory,
     })
     void verification.then(() => { settled = true }, () => { settled = true })
     fake.child.emit('error', new Error('runner failed'))
@@ -208,7 +220,7 @@ test('replay verifier settles its public error when close races synchronously wi
     },
   })
   const verification = verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify',
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256,
     processFactory: (() => child as never) as ReplayVerifyProcessFactory,
   })
   child.emit('error', new Error('runner failed'))
@@ -219,7 +231,7 @@ test('replay verifier settles its public error when close races synchronously wi
 test('replay verifier enforces the 1,024 byte combined output boundary', async () => {
   const atLimit = pendingProcess()
   const atLimitVerification = verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: atLimit.factory,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: atLimit.factory,
   })
   atLimit.child.stdout.write('x'.repeat(512))
   atLimit.child.stderr.write('x'.repeat(512))
@@ -229,7 +241,7 @@ test('replay verifier enforces the 1,024 byte combined output boundary', async (
 
   const overLimit = pendingProcess()
   const overLimitVerification = verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: overLimit.factory,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: overLimit.factory,
   })
   overLimit.child.stdout.write('x'.repeat(512))
   overLimit.child.stderr.write('x'.repeat(513))
@@ -241,7 +253,7 @@ test('replay verifier enforces the 1,024 byte combined output boundary', async (
 test('replay verifier keeps child and stream error listeners harmless after close', async () => {
   const success = fakeProcess(report())
   await verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: success.factory,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: success.factory,
   })
   assert.doesNotThrow(() => {
     success.child.emit('error', new Error('late child error'))
@@ -252,7 +264,7 @@ test('replay verifier keeps child and stream error listeners harmless after clos
 
   const failure = pendingProcess()
   const verification = verifyPlayerSnapshotV1Replay(payload, {
-    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', processFactory: failure.factory,
+    runnerPath: '/opt/muhan/player_snapshot_v1_replay_verify', snapshotSha256, processFactory: failure.factory,
   })
   failure.child.emit('error', new Error('initial error'))
   failure.child.emit('close', null, 'SIGKILL')

@@ -42,7 +42,11 @@ The separate `player-snapshot-v1-artifact-cli` continues to provide opt-in
 replay observation. It builds the pinned Rust `player_snapshot_v1_replay_verify`
 binary and injects its absolute path through
 `M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH`; that observer is not enabled by
-the paired manifest-first image.
+the paired manifest-first image. When enabled, the relay passes only the
+already-validated canonical CDTO bytes on stdin and the immutable artifact
+`snapshot_sha256` as fixed shell-free arguments; an unavailable, timed-out, or
+rejecting verifier is reported as `replayFailed` without changing relay,
+artifact, receipt, PlayerStore/FileStore, settlement, or authority outcomes.
 
 Onboarding-eligibility fulfillment is a separate, default-OFF authority step.
 Only `M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED=true` supplies that

@@ -22,14 +22,15 @@ const context: PlayerSnapshotV1ReplayObservationContext = {
   characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   receiptRequestSha256: 'a'.repeat(64),
   sourcePostSha256: 'b'.repeat(64),
+  snapshotSha256: createHash('sha256').update(payload).digest('hex'),
 }
 
-test('replay observer projects fixed verification metadata and ignores extra result fields', async () => {
+test('replay observer projects fixed verification metadata and deduplicates idempotent replays', async () => {
   const journalPath = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-replay-journal-'))
-  const calls: Array<{ payload: Uint8Array, runnerPath?: string }> = []
+  const calls: Array<{ payload: Uint8Array, runnerPath?: string, snapshotSha256?: string }> = []
   const digest = createHash('sha256').update(payload).digest('hex')
   const verifier: PlayerSnapshotV1ReplayVerifier = async (value, options) => {
-    calls.push({ payload: Buffer.from(value), runnerPath: options.runnerPath })
+    calls.push({ payload: Buffer.from(value), runnerPath: options.runnerPath, snapshotSha256: options.snapshotSha256 })
     return {
       format: 'player-snapshot-v1-replay-verification', version: '1', algorithm: 'sha-256',
       inputDigest: digest, canonicalDigest: digest, canonicalOctets: value.length, inventoryNodeCount: 0,
@@ -45,8 +46,7 @@ test('replay observer projects fixed verification metadata and ignores extra res
     assert.equal(await observer.observe(payload, context), 'observed')
     assert.equal(await observer.observe(payload, context), 'observed')
     assert.deepEqual(calls, [
-      { payload, runnerPath: '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify' },
-      { payload, runnerPath: '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify' },
+      { payload, runnerPath: '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify', snapshotSha256: context.snapshotSha256 },
     ])
     const entries = await readdir(journalPath)
     assert.equal(entries.length, 1)
@@ -84,6 +84,27 @@ test('replay observer remains explicitly disabled without absolute runner and jo
     assert.equal(await observer.observe(payload, context), 'disabled')
   }
   assert.equal(called, false)
+})
+
+test('replay observer propagates the immutable artifact digest and reports verifier failures diagnostically', async () => {
+  const journalPath = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-replay-observer-diagnostic-'))
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const options: Array<{ runnerPath?: string, snapshotSha256?: string }> = []
+  const observer = playerSnapshotV1ReplayObserverFromEnvironment({
+    M4_PLAYER_SNAPSHOT_V1_REPLAY_VERIFY_PATH: '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify',
+    M4_PLAYER_SNAPSHOT_V1_REPLAY_JOURNAL_PATH: journalPath,
+  }, async (_value, value) => {
+    options.push(value)
+    throw new Error('digest mismatch must remain diagnostic')
+  })
+
+  try {
+    assert.equal(await observer.observe(payload, { ...context, snapshotSha256 }), 'failed')
+    assert.deepEqual(options, [{ runnerPath: '/usr/local/libexec/muhan/player_snapshot_v1_replay_verify', snapshotSha256 }])
+    assert.deepEqual(await readdir(journalPath), [])
+  } finally {
+    await rm(journalPath, { recursive: true, force: true })
+  }
 })
 
 test('shadow journal canonicalizes allowlisted metadata across extra fields, property order, concurrent retries, and restart', async () => {
@@ -194,7 +215,7 @@ test('replay observer treats runner and report failures as disabled without expo
   assert.equal(await observer.observe(payload, context), 'disabled')
 })
 
-test('replay observer disables malformed runtime results from an injected verifier', async () => {
+test('replay observer records malformed runtime results as diagnostic failures', async () => {
   const malformedResults: unknown[] = [
     undefined,
     null,
@@ -218,12 +239,12 @@ test('replay observer disables malformed runtime results from an injected verifi
       async () => { verifierCalls++; return result as never },
       journal,
     )
-    assert.equal(await observer.observe(payload, context), 'disabled')
+    assert.equal(await observer.observe(payload, context), 'failed')
     assert.equal(verifierCalls, 1)
   }
 })
 
-test('journal failures disable only replay observation and never leave a completed entry', async () => {
+test('journal failures remain diagnostic and never leave a completed entry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-replay-journal-failure-'))
   const journalPath = join(root, 'not-a-directory')
   const digest = createHash('sha256').update(payload).digest('hex')
@@ -236,7 +257,7 @@ test('journal failures disable only replay observation and never leave a complet
     inputDigest: digest, canonicalDigest: digest, canonicalOctets: payload.length, inventoryNodeCount: 0,
   }))
   try {
-    assert.equal(await observer.observe(payload, context), 'disabled')
+    assert.equal(await observer.observe(payload, context), 'failed')
     assert.equal(await readFile(journalPath, 'utf8'), 'not a journal directory')
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -343,7 +364,7 @@ test('shadow journal reports failed cleanup after publication instead of returni
   assert.equal(published, true)
 })
 
-test('every journal filesystem failure, including post-publish unlink, disables observation without escaping the observer boundary', async () => {
+test('every journal filesystem failure is diagnostic without escaping the observer boundary', async () => {
   for (const failedStep of ['open', 'write', 'sync', 'close', 'link', 'unlink'] as const) {
     let published = false
     const temporaryPaths: string[] = []
@@ -370,7 +391,7 @@ test('every journal filesystem failure, including post-publish unlink, disables 
       async () => completeJournalEntry().verification,
       journal,
     )
-    assert.equal(await observer.observe(payload, context), 'disabled')
+    assert.equal(await observer.observe(payload, context), 'failed')
     assert.equal(published, failedStep === 'unlink')
     assert.equal(temporaryPaths.length, 1)
   }

@@ -11,7 +11,7 @@ import {
   type PlayerSnapshotV1ReplayShadowJournal,
 } from './player-snapshot-v1-replay-shadow-journal.js'
 
-export type PlayerSnapshotV1ReplayObservation = 'observed' | 'disabled'
+export type PlayerSnapshotV1ReplayObservation = 'observed' | 'disabled' | 'failed'
 
 /** Identifiers are copied from already parsed artifact and receipt metadata. */
 export interface PlayerSnapshotV1ReplayObservationContext {
@@ -19,6 +19,8 @@ export interface PlayerSnapshotV1ReplayObservationContext {
   characterId: string
   receiptRequestSha256: string
   sourcePostSha256: string
+  /** SHA-256 from the already-validated immutable artifact header. */
+  snapshotSha256: string
 }
 
 /** The relay deliberately consumes only this binary observation outcome. */
@@ -49,6 +51,7 @@ const HASH_RE = /^[0-9a-f]{64}$/
 function isJournalContext(value: PlayerSnapshotV1ReplayObservationContext): boolean {
   return UUID_RE.test(value.commandId) && UUID_RE.test(value.characterId)
     && HASH_RE.test(value.receiptRequestSha256) && HASH_RE.test(value.sourcePostSha256)
+    && HASH_RE.test(value.snapshotSha256)
 }
 
 /**
@@ -97,6 +100,8 @@ export class PlayerSnapshotV1ReplayObserver implements PlayerSnapshotV1ReplayObs
   private readonly runnerPath: string | undefined
   private readonly verifier: PlayerSnapshotV1ReplayVerifier
   private readonly journal: PlayerSnapshotV1ReplayShadowJournal | undefined
+  /** In-process dedupe prevents replayed artifacts from rerunning diagnostics. */
+  private readonly observations = new Map<string, Promise<PlayerSnapshotV1ReplayObservation>>()
 
   constructor(
     runnerPath: string | undefined,
@@ -109,20 +114,37 @@ export class PlayerSnapshotV1ReplayObserver implements PlayerSnapshotV1ReplayObs
   }
 
   async observe(payload: Uint8Array, context: PlayerSnapshotV1ReplayObservationContext): Promise<PlayerSnapshotV1ReplayObservation> {
-    if (!this.runnerPath || !isEnabledJournal(this.journal) || !isJournalContext(context)) return 'disabled'
+    const journal = this.journal
+    const runnerPath = this.runnerPath
+    if (!runnerPath || !isEnabledJournal(journal) || !isJournalContext(context)
+      || createHash('sha256').update(payload).digest('hex') !== context.snapshotSha256) return 'disabled'
+    const key = `${context.commandId}:${context.characterId}:${context.receiptRequestSha256}:${context.sourcePostSha256}:${context.snapshotSha256}`
+    const existing = this.observations.get(key)
+    if (existing) return existing
+    const observation = this.observeOnce(payload, context, runnerPath, journal)
+    this.observations.set(key, observation)
+    return observation
+  }
+
+  private async observeOnce(
+    payload: Uint8Array,
+    context: PlayerSnapshotV1ReplayObservationContext,
+    runnerPath: string,
+    journal: PlayerSnapshotV1ReplayShadowJournal,
+  ): Promise<PlayerSnapshotV1ReplayObservation> {
     try {
-      const result: unknown = await this.verifier(payload, { runnerPath: this.runnerPath })
-      if (!isVerifiedReplayResult(result, payload)) return 'disabled'
+      const result: unknown = await this.verifier(payload, { runnerPath, snapshotSha256: context.snapshotSha256 })
+      if (!isVerifiedReplayResult(result, payload)) return 'failed'
       const entry: PlayerSnapshotV1ReplayJournalEntry = {
         format: 'player-snapshot-v1-replay-shadow-journal', version: '1',
         commandId: context.commandId, characterId: context.characterId,
         receiptRequestSha256: context.receiptRequestSha256, sourcePostSha256: context.sourcePostSha256,
         verification: projectedVerification(result),
       }
-      await this.journal.append(entry)
+      await journal.append(entry)
       return 'observed'
     } catch {
-      return 'disabled'
+      return 'failed'
     }
   }
 }
