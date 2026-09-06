@@ -217,6 +217,44 @@ static int test_inprocess_replay(void)
     return failed;
 }
 
+static int test_session_mode_configuration(void)
+{
+    int failed = 0;
+
+    unsetenv("MUD_ENABLE_ONBOARDING");
+    unsetenv("MUD_REQUIRE_TRUSTED_ADMISSION");
+    unsetenv("MUD_ADMISSION_SECRET");
+    trusted_admission_reset_for_test();
+    failed += expect(onboarding_session_mode() == 0,
+                     "C MUD1O must stay off when its opt-in is absent");
+
+    setenv("MUD_ENABLE_ONBOARDING", "1", 1);
+    trusted_admission_reset_for_test();
+    failed += expect(onboarding_session_mode() < 0,
+                     "C MUD1O must fail closed without trusted admission");
+
+    setenv("MUD_REQUIRE_TRUSTED_ADMISSION", "1", 1);
+    setenv("MUD_ADMISSION_SECRET", TEST_SECRET, 1);
+    trusted_admission_reset_for_test();
+    failed += expect(onboarding_session_mode() == 1,
+                     "the supported C MUD1O test mode requires opt-in and trusted admission");
+
+    setenv("MUD_ENABLE_ONBOARDING", "0", 1);
+    trusted_admission_reset_for_test();
+    failed += expect(onboarding_session_mode() == 0,
+                     "C MUD1O opt-out must override otherwise valid admission settings");
+
+    setenv("MUD_ENABLE_ONBOARDING", "true", 1);
+    trusted_admission_reset_for_test();
+    failed += expect(onboarding_session_mode() < 0,
+                     "C MUD1O must accept only its exact 1 opt-in");
+    unsetenv("MUD_ENABLE_ONBOARDING");
+    unsetenv("MUD_REQUIRE_TRUSTED_ADMISSION");
+    unsetenv("MUD_ADMISSION_SECRET");
+    trusted_admission_reset_for_test();
+    return failed;
+}
+
 static int test_controls(void)
 {
     static const char c_lines[][128] = {
@@ -531,6 +569,7 @@ int main(void)
     failed += test_fixture_tickets();
     failed += test_ticket_rejections();
     failed += test_inprocess_replay();
+    failed += test_session_mode_configuration();
     failed += test_controls();
     failed += test_state_guard();
     failed += test_claim_window_and_file_mutation();
