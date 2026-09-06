@@ -9,17 +9,13 @@ import re
 import subprocess
 
 
-DETACHED_OBJECTS = {
-    "character_player_snapshot_v1_capture.o",
-    "character_player_snapshot_v1_capture_native.o",
-    "character_player_snapshot_v1_artifact.o",
-    "character_player_snapshot_v1_handoff.o",
-    "character_player_snapshot_v1_receipt_pair.o",
+PLAYER_SNAPSHOT_OBJECT_PREFIXES = (
+    "character_player_snapshot_v1_",
     "character_snapshot_shadow_outbox.o",
     "player_snapshot_v1.o",
     "object_graph_v1.o",
     "cdto_v1.o",
-}
+)
 FORBIDDEN_UNDEFINED = {
     "save_ply",
     "save_all_ply",
@@ -121,21 +117,28 @@ def linked_objects(makefile: Path, m3_runtime: bool) -> set[str]:
     return _expand_words(variables.get("OBJECTS", set()), variables)
 
 
-def assert_link_composition(makefile: Path) -> None:
+def assert_link_composition(makefile: Path, audited_objects: set[str]) -> None:
     text = makefile.read_text(encoding="utf-8")
     default = linked_objects(makefile, False)
     enabled = linked_objects(makefile, True)
-    leaked = sorted(default & DETACHED_OBJECTS)
+    relevant_m3 = {
+        object_name
+        for object_name in enabled
+        if object_name.startswith(PLAYER_SNAPSHOT_OBJECT_PREFIXES)
+    }
+    leaked = sorted(default & relevant_m3)
     if leaked:
         raise SystemExit(
             "PlayerSnapshot capture leaked into feature-off legacy link: "
             + ", ".join(leaked)
         )
-    missing = sorted(DETACHED_OBJECTS - enabled)
-    if missing:
+    if audited_objects != relevant_m3:
+        missing = sorted(relevant_m3 - audited_objects)
+        extra = sorted(audited_objects - relevant_m3)
         raise SystemExit(
-            "M3 link composition omits detached snapshot objects: "
-            + ", ".join(missing)
+            "no-live-link audit object set differs from M3 PlayerSnapshot composition; "
+            "missing: " + (", ".join(missing) or "none")
+            + "; extra: " + (", ".join(extra) or "none")
         )
     if "$(OUTFILE): $(OBJECTS)" not in text or "$(CC) $(CFLAGS) $(OBJECTS)" not in text:
         raise SystemExit("legacy link recipe does not use its complete OBJECTS variable")
@@ -251,7 +254,10 @@ def main() -> None:
         if not path.is_file():
             raise SystemExit(f"PlayerSnapshot capture static fixture is missing: {path}")
 
-    assert_link_composition(args.makefile)
+    audited_objects = {
+        path.name.replace("_no_live_link", "") for path in args.object
+    }
+    assert_link_composition(args.makefile, audited_objects)
     assert_native_snapshot_handoff_gate(args.native_source)
 
     for path in args.object:
