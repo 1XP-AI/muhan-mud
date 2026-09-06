@@ -139,6 +139,7 @@ alias_title_snapshot_manifest_v1 *output;
     int status;
 
     if(!output) return CDTO_V1_INVALID_ARGUMENT;
+    if(builder && output == &builder->value) return CDTO_V1_INVALID_ARGUMENT;
     memset(output, 0, sizeof(*output));
     if(!builder || builder->supplied != TRUSTED_ALIAS_IDENTITY_CONTEXT_V1_REQUIRED)
         return CDTO_V1_INVALID_ARGUMENT;

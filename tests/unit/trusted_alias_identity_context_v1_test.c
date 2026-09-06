@@ -300,11 +300,22 @@ static void test_exact_detached_construction_and_output_clearing(void)
 static void test_build_preserves_canonical_kind_9_and_rejects_aliases(void)
 {
     trusted_alias_identity_context_v1_builder builder;
-    alias_title_snapshot_manifest_v1 output, again;
-    cdto_v1_decoded_record record;
+    alias_title_snapshot_manifest_v1 output, again, decoded, before_alias;
+    cdto_v1_decoded_record record, manifest_record;
     uint8_t *snapshot_wire, digest[CDTO_V1_DIGEST_LENGTH];
     uint8_t *manifest_wire, *manifest_again;
+    const uint16_t expected_field_ids[] = {
+        1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U
+    };
+    const uint8_t expected_field_tags[] = {
+        CDTO_V1_TYPE_U16, CDTO_V1_TYPE_TEXT, CDTO_V1_TYPE_TEXT,
+        CDTO_V1_TYPE_TEXT, CDTO_V1_TYPE_TEXT, CDTO_V1_TYPE_U64,
+        CDTO_V1_TYPE_U64, CDTO_V1_TYPE_TEXT, CDTO_V1_TYPE_TEXT,
+        CDTO_V1_TYPE_TEXT, CDTO_V1_TYPE_BYTES, CDTO_V1_TYPE_BYTES,
+        CDTO_V1_TYPE_U64
+    };
     size_t snapshot_length, manifest_length, manifest_again_length;
+    size_t index;
 
     snapshot_wire = NULL; snapshot_length = 0U;
     manifest_wire = NULL; manifest_length = 0U;
@@ -334,12 +345,45 @@ static void test_build_preserves_canonical_kind_9_and_rejects_aliases(void)
     assert(manifest_length == manifest_again_length);
     assert(!memcmp(manifest_wire, manifest_again, manifest_length));
     cdto_v1_free_wire(manifest_again);
+
+    memset(&decoded, 0, sizeof(decoded));
+    assert(alias_title_snapshot_manifest_v1_decode(manifest_wire,
+        manifest_length, &decoded) == CDTO_V1_OK);
+    assert(!strcmp(decoded.world_id, "muhan"));
+    assert(!strcmp(decoded.canonical_legacy_name_key, "616c696365"));
+    assert(!strcmp(decoded.character_id, "11111111-1111-1111-1111-111111111111"));
+    assert(!strcmp(decoded.writer_instance_id, "22222222-2222-2222-2222-222222222222"));
+    assert(decoded.writer_epoch == 7U && decoded.writer_revision == 19U);
+    assert(!strcmp(decoded.command_id, "33333333-3333-3333-3333-333333333333"));
+    assert(!strcmp(decoded.correlation_id, "44444444-4444-4444-4444-444444444444"));
+    assert(!strcmp(decoded.event_id, "55555555-5555-5555-5555-555555555555"));
+    assert(decoded.snapshot_octets == snapshot_length);
+    assert(decoded.snapshot_wire_length == snapshot_length);
+    assert(!memcmp(decoded.snapshot_wire, snapshot_wire, snapshot_length));
+    assert(!memcmp(decoded.snapshot_digest, digest, sizeof(digest)));
+
+    memset(&manifest_record, 0, sizeof(manifest_record));
+    assert(cdto_v1_decode(manifest_wire, manifest_length, &manifest_record) == CDTO_V1_OK);
+    assert(manifest_record.kind == CDTO_V1_KIND_ALIAS_TITLE_SNAPSHOT_MANIFEST);
+    assert(manifest_record.field_count == sizeof(expected_field_ids) /
+        sizeof(expected_field_ids[0]));
+    assert(manifest_record.fields[0].length == 2U);
+    assert(manifest_record.fields[0].value[0] == 0U);
+    assert(manifest_record.fields[0].value[1] == ALIAS_TITLE_SNAPSHOT_MANIFEST_V1_SCHEMA);
+    for(index = 0U; index < manifest_record.field_count; ++index) {
+        assert(manifest_record.fields[index].id == expected_field_ids[index]);
+        assert(manifest_record.fields[index].type_tag == expected_field_tags[index]);
+    }
+    cdto_v1_free_decoded(&manifest_record);
     cdto_v1_free_wire(manifest_wire);
 
     populate(&builder, snapshot_wire, snapshot_length, digest);
+    before_alias = builder.value;
     assert(trusted_alias_identity_context_v1_build(&builder,
         &builder.value) == CDTO_V1_INVALID_ARGUMENT);
-    assert(zeroed(&builder.value, sizeof(builder.value)));
+    assert(!memcmp(&builder.value, &before_alias, sizeof(builder.value)));
+    assert(trusted_alias_identity_context_v1_build(&builder, &output) == CDTO_V1_OK);
+    assert(!memcmp(&output, &before_alias, sizeof(output)));
     cdto_v1_free_wire(snapshot_wire);
 }
 

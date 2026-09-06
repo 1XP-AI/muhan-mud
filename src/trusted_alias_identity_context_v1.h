@@ -60,7 +60,10 @@ int trusted_alias_identity_context_v1_set_snapshot(
     const uint8_t *, uint64_t);
 
 /* Copies only explicitly supplied facts into output and validates them using
- * the detached manifest codec.  On failure, output is cleared. */
+ * the detached manifest codec.  output must not be the builder's stored
+ * value: that alias is rejected without changing either object, because
+ * clearing a failed output would otherwise destroy the trusted input.  For
+ * every other failure with a non-NULL output, output is cleared. */
 int trusted_alias_identity_context_v1_build(
     const trusted_alias_identity_context_v1_builder *,
     alias_title_snapshot_manifest_v1 *);
