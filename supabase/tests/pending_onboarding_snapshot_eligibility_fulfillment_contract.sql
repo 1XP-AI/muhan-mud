@@ -63,19 +63,66 @@ select pg_temp.assert_true(
         or granted.rolname = 'onboarding_snapshot_eligibility_login'
   )
   and (select rolconfig @> array[
+      'default_transaction_read_only=on',
       'statement_timeout=5s',
       'lock_timeout=1s',
       'idle_in_transaction_session_timeout=5s',
       'search_path=pg_catalog'
     ]::text[] from pg_roles where rolname = 'onboarding_snapshot_eligibility_login')
-  and (select cardinality(rolconfig) = 4 from pg_roles where rolname = 'onboarding_snapshot_eligibility_login')
+  and (select cardinality(rolconfig) = 5 from pg_roles where rolname = 'onboarding_snapshot_eligibility_login')
+  and has_database_privilege('onboarding_snapshot_eligibility_login', current_database(), 'connect')
   and not pg_has_role('onboarding_snapshot_eligibility_login', 'mud_writer', 'member')
   and not pg_has_role('onboarding_snapshot_eligibility_login', 'service_role', 'member')
   and not has_table_privilege('onboarding_snapshot_eligibility_login',
         'private.game_character_onboarding_snapshot_eligibility_outbox', 'select')
   and not has_table_privilege('onboarding_snapshot_eligibility_login',
-        'private.game_character_onboarding_snapshot_command_bindings', 'select'),
-  'the list login is nonprivileged, has no memberships, bounded session settings, and no direct table access'
+        'private.game_character_onboarding_snapshot_command_bindings', 'select')
+  and not exists (
+    select 1
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'private'
+       and c.relkind in ('r', 'p', 'v', 'm', 'f')
+       and (
+         has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'select')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'insert')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'update')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'delete')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'truncate')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'references')
+         or has_table_privilege('onboarding_snapshot_eligibility_login', c.oid, 'trigger')
+       )
+  )
+  and not exists (
+    select 1
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'private'
+       and c.relkind = 'S'
+       and (
+         has_sequence_privilege('onboarding_snapshot_eligibility_login', c.oid, 'usage')
+         or has_sequence_privilege('onboarding_snapshot_eligibility_login', c.oid, 'select')
+         or has_sequence_privilege('onboarding_snapshot_eligibility_login', c.oid, 'update')
+       )
+  ),
+  'the list login has database CONNECT, no memberships, read-only bounded session settings, and no direct private relation or sequence access'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'private'
+       and p.oid <> 'private.list_pending_game_character_onboarding_snapshot_eligibility(integer)'::regprocedure
+       and exists (
+         select 1
+           from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) privilege
+          where privilege.grantee = 'onboarding_snapshot_eligibility_login'::regrole
+            and privilege.privilege_type = 'EXECUTE'
+       )
+  ),
+  'the list login has no direct private function grant beyond the bounded list RPC'
 );
 
 select pg_temp.assert_true(

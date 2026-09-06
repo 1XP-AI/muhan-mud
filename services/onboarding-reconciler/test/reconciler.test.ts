@@ -140,7 +140,7 @@ test('pending snapshot-eligibility fulfillment passes only each exact pre-bound 
     [character, '123e4567-e89b-12d3-a456-426614174003'],
     ['123e4567-e89b-12d3-a456-426614174005', '123e4567-e89b-12d3-a456-426614174006'],
   ])
-  assert.deepEqual(result, { listed: 2, fulfilled: 1, exactRetry: 1, notEligible: 0, rejected: 0, retryExhausted: 0 })
+  assert.deepEqual(result, { listed: 2, fulfilled: 1, exactRetry: 1, alreadyFulfilled: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
 })
 
 test('pending snapshot-eligibility fulfillment preserves exact retry idempotency', async () => {
@@ -151,7 +151,20 @@ test('pending snapshot-eligibility fulfillment preserves exact retry idempotency
   }, {
     fulfillGameCharacterOnboardingSnapshotEligibility: async () => 'EXACT_RETRY',
   }, { limit: 1, attempts: 1 })
-  assert.deepEqual(result, { listed: 1, fulfilled: 0, exactRetry: 1, notEligible: 0, rejected: 0, retryExhausted: 0 })
+  assert.deepEqual(result, { listed: 1, fulfilled: 0, exactRetry: 1, alreadyFulfilled: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
+})
+
+test('pending snapshot-eligibility fulfillment counts the deployed terminal already-fulfilled outcome without retrying it', async () => {
+  let calls = 0
+  const result = await fulfillPendingOnboardingSnapshotEligibilityOnce({
+    listPendingOnboardingSnapshotEligibility: async () => [
+      { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003' },
+    ],
+  }, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => { calls++; return 'ALREADY_FULFILLED' },
+  }, { limit: 1, attempts: 3 })
+  assert.equal(calls, 1)
+  assert.deepEqual(result, { listed: 1, fulfilled: 0, exactRetry: 0, alreadyFulfilled: 1, notEligible: 0, rejected: 0, retryExhausted: 0 })
 })
 
 test('pending snapshot-eligibility fulfillment fails closed before invoking fulfillment for a malformed or duplicate pre-bound tuple', async () => {
@@ -166,7 +179,7 @@ test('pending snapshot-eligibility fulfillment fails closed before invoking fulf
     fulfillGameCharacterOnboardingSnapshotEligibility: async () => { calls.push('called'); return 'FULFILLED' },
   }, { limit: 3, attempts: 1 })
   assert.deepEqual(calls, [])
-  assert.deepEqual(result, { listed: 3, fulfilled: 0, exactRetry: 0, notEligible: 0, rejected: 3, retryExhausted: 0 })
+  assert.deepEqual(result, { listed: 3, fulfilled: 0, exactRetry: 0, alreadyFulfilled: 0, notEligible: 0, rejected: 3, retryExhausted: 0 })
 })
 
 test('pending snapshot-eligibility fulfillment retries only bounded transient failures with the unchanged exact tuple', async () => {
@@ -190,7 +203,7 @@ test('pending snapshot-eligibility fulfillment retries only bounded transient fa
     [character, '123e4567-e89b-12d3-a456-426614174003'],
   ])
   assert.deepEqual(delays, [7, 7])
-  assert.deepEqual(result, { listed: 1, fulfilled: 1, exactRetry: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
+  assert.deepEqual(result, { listed: 1, fulfilled: 1, exactRetry: 0, alreadyFulfilled: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
 })
 
 test('pending snapshot-eligibility adapters call only the bounded direct-login list and existing exact writer fulfillment RPC', async () => {
@@ -202,7 +215,7 @@ test('pending snapshot-eligibility adapters call only the bounded direct-login l
         correlation_id: correlation, actor_user_id: actor, character_id: character,
         mode: 'claim', command_id: '123e4567-e89b-12d3-a456-426614174003',
       }] as Row[] }
-      if (sql.startsWith('select outcome')) return { rows: [{ outcome: 'FULFILLED' }] as Row[] }
+      if (sql.startsWith('select outcome')) return { rows: [{ outcome: 'ALREADY_FULFILLED' }] as Row[] }
       return { rows: [] }
     },
     release: () => undefined,
@@ -214,7 +227,7 @@ test('pending snapshot-eligibility adapters call only the bounded direct-login l
     correlationId: correlation, actorUserId: actor, characterId: character,
     mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003',
   }])
-  assert.equal(await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(character, '123e4567-e89b-12d3-a456-426614174003'), 'FULFILLED')
+  assert.equal(await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(character, '123e4567-e89b-12d3-a456-426614174003'), 'ALREADY_FULFILLED')
   assert.deepEqual(queries, [
     { sql: 'select correlation_id, actor_user_id, character_id, mode, command_id from private.list_pending_game_character_onboarding_snapshot_eligibility($1::integer)', values: [4] },
     { sql: 'set role mud_writer', values: undefined },

@@ -744,7 +744,7 @@ export interface OnboardingSnapshotEligibilityFulfillmentRpc {
   fulfillGameCharacterOnboardingSnapshotEligibility(
     characterId: string,
     artifactCommandId: string,
-  ): Promise<'FULFILLED' | 'EXACT_RETRY' | 'NOT_ELIGIBLE'>
+  ): Promise<'FULFILLED' | 'EXACT_RETRY' | 'ALREADY_FULFILLED' | 'NOT_ELIGIBLE'>
 }
 
 export interface PendingOnboardingSnapshotEligibilityFulfillmentOptions {
@@ -758,6 +758,7 @@ export interface PendingOnboardingSnapshotEligibilityFulfillmentSummary {
   listed: number
   fulfilled: number
   exactRetry: number
+  alreadyFulfilled: number
   notEligible: number
   rejected: number
   retryExhausted: number
@@ -838,7 +839,7 @@ export class PostgresOnboardingSnapshotEligibilityFulfillmentRpc implements Onbo
     this.pool = pool ?? new (require('pg') as PendingEligibilityPgModule).Pool({ connectionString: validatedUrl, max: 1 })
   }
 
-  async fulfillGameCharacterOnboardingSnapshotEligibility(characterId: string, artifactCommandId: string): Promise<'FULFILLED' | 'EXACT_RETRY' | 'NOT_ELIGIBLE'> {
+  async fulfillGameCharacterOnboardingSnapshotEligibility(characterId: string, artifactCommandId: string): Promise<'FULFILLED' | 'EXACT_RETRY' | 'ALREADY_FULFILLED' | 'NOT_ELIGIBLE'> {
     const client = await this.pool.connect()
     try {
       await client.query('set role mud_writer')
@@ -847,7 +848,7 @@ export class PostgresOnboardingSnapshotEligibilityFulfillmentRpc implements Onbo
         [characterId, artifactCommandId],
       )
       const outcome = result.rows[0]?.outcome
-      if (result.rows.length !== 1 || (outcome !== 'FULFILLED' && outcome !== 'EXACT_RETRY' && outcome !== 'NOT_ELIGIBLE')) {
+      if (result.rows.length !== 1 || (outcome !== 'FULFILLED' && outcome !== 'EXACT_RETRY' && outcome !== 'ALREADY_FULFILLED' && outcome !== 'NOT_ELIGIBLE')) {
         throw new Error('unexpected onboarding snapshot fulfillment outcome')
       }
       return outcome
@@ -858,7 +859,7 @@ export class PostgresOnboardingSnapshotEligibilityFulfillmentRpc implements Onbo
 }
 
 function emptyPendingOnboardingSnapshotEligibilityFulfillmentSummary(): PendingOnboardingSnapshotEligibilityFulfillmentSummary {
-  return { listed: 0, fulfilled: 0, exactRetry: 0, notEligible: 0, rejected: 0, retryExhausted: 0 }
+  return { listed: 0, fulfilled: 0, exactRetry: 0, alreadyFulfilled: 0, notEligible: 0, rejected: 0, retryExhausted: 0 }
 }
 
 function isExactPendingOnboardingSnapshotEligibility(value: unknown): value is PendingOnboardingSnapshotEligibility {
@@ -920,6 +921,7 @@ export async function fulfillPendingOnboardingSnapshotEligibilityOnce(
         const outcome = await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(row.characterId, row.commandId)
         if (outcome === 'FULFILLED') summary.fulfilled++
         else if (outcome === 'EXACT_RETRY') summary.exactRetry++
+        else if (outcome === 'ALREADY_FULFILLED') summary.alreadyFulfilled++
         else if (outcome === 'NOT_ELIGIBLE') summary.notEligible++
         else summary.rejected++
         completed = true
