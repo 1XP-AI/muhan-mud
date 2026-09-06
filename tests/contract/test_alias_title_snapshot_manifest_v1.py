@@ -19,6 +19,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SQL_PATH = ROOT / "shadow_intake" / "alias_title_snapshot_manifest_v1.sql"
 FIXTURE_PATH = ROOT / "shadow_intake" / "alias_title_snapshot_manifest_v1.fixture.json"
+CANONICAL_MANIFEST_FIXTURE_PATH = ROOT / "tests" / "fixtures" / "alias_title_snapshot_manifest_v1_canonical.hex"
 
 METADATA_TABLE = "shadow_intake.alias_title_snapshot_manifest_v1"
 WIRE_TABLE = "shadow_intake.alias_title_snapshot_manifest_v1_snapshot_wire"
@@ -253,6 +254,24 @@ def parse_snapshot_fields(payload: bytes) -> list[tuple[int, int, bytes]]:
     return fields
 
 
+def cdto_v1_payload(wire: bytes, expected_kind: int) -> bytes:
+    if len(wire) < 48:
+        fail("CDTO wire is shorter than its header and digest trailer")
+    if wire[:8] != b"MUHCDTO\x00":
+        fail("CDTO wire is missing its magic")
+    if int.from_bytes(wire[8:10], "big") != 1:
+        fail("CDTO wire is not version 1")
+    if int.from_bytes(wire[10:12], "big") != expected_kind:
+        fail(f"CDTO wire is not kind {expected_kind}")
+    payload_length = int.from_bytes(wire[12:16], "big")
+    if len(wire) != 16 + payload_length + 32:
+        fail("CDTO wire length does not bind its declared payload length")
+    payload = wire[16:16 + payload_length]
+    if wire[-32:] != hashlib.sha256(payload).digest():
+        fail("CDTO wire digest trailer is not SHA-256(payload)")
+    return payload
+
+
 def test_fixture_snapshot_wire(fixture: dict) -> None:
     if fixture.get("contract") != "AliasTitleSnapshotManifestV1":
         fail("fixture declares the wrong companion manifest contract")
@@ -280,6 +299,30 @@ def test_fixture_snapshot_wire(fixture: dict) -> None:
     ]
     if parse_snapshot_fields(wire[16:16 + payload_length]) != expected_fields:
         fail("fixture payload is not the canonical AliasTitleSnapshotV1 field sequence")
+
+
+def test_fixture_is_bound_to_canonical_companion_manifest(fixture: dict) -> None:
+    """Keep the detached intake sample tied to the C/Rust canonical artifact."""
+    canonical_hex = CANONICAL_MANIFEST_FIXTURE_PATH.read_text(encoding="utf-8")
+    if not re.fullmatch(r"[0-9a-f]+\n", canonical_hex):
+        fail("canonical companion-manifest fixture must be lowercase hex with one newline")
+    manifest_fields = parse_snapshot_fields(
+        cdto_v1_payload(bytes.fromhex(canonical_hex), expected_kind=10)
+    )
+    if [(field_id, field_type) for field_id, field_type, _ in manifest_fields] != [
+        (1, 2), (2, 10), (3, 10), (4, 10), (5, 10), (6, 4), (7, 4),
+        (8, 10), (9, 10), (10, 10), (11, 9), (12, 9), (13, 4),
+    ]:
+        fail("canonical companion manifest field shape changed")
+    manifest_values = {field_id: value for field_id, _, value in manifest_fields}
+    first = fixture["first_record"]
+    snapshot_wire = bytes.fromhex(first["canonical_alias_title_snapshot_v1_wire_hex"])
+    if manifest_values[11] != snapshot_wire:
+        fail("shadow fixture wire must equal canonical companion manifest field 11")
+    if manifest_values[12].hex() != first["canonical_alias_title_snapshot_v1_digest_sha256"]:
+        fail("shadow fixture digest must equal canonical companion manifest field 12")
+    if int.from_bytes(manifest_values[13], "big") != first["canonical_alias_title_snapshot_v1_length"]:
+        fail("shadow fixture length must equal canonical companion manifest field 13")
 
 
 def dedupe_outcome(existing: dict[str, object] | None, candidate: dict[str, object]) -> str:
@@ -319,6 +362,7 @@ def main() -> int:
     test_static_schema_contract(SQL_PATH.read_text(encoding="utf-8"))
     fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     test_fixture_snapshot_wire(fixture)
+    test_fixture_is_bound_to_canonical_companion_manifest(fixture)
     test_fixture_dedupe_model(fixture)
     print("AliasTitleSnapshotManifestV1 static contract: ok")
     return 0

@@ -45,9 +45,13 @@ The test structurally checks both table definitions, the RPC parameter and
 immutable-comparison set, append-only triggers, and default-deny revocations.
 It also verifies that the fixture's kind-9 CDTO digest is SHA-256 of its
 encoded payload, then exercises first write, exact retry, and one conflict for
-each non-key immutable field. The second test reads only the harness source to
-prove it stays opt-in, has no default database URL or broad database lifecycle
-command, and is not referenced by normal application/test sources.
+each non-key immutable field. It additionally binds that nested wire, digest,
+and octet count to fields 11–13 of the canonical C/Rust companion-manifest
+fixture, so the detached intake sample cannot silently drift from the owned
+codec artifact. The second test reads only the harness source to prove it stays
+opt-in, has no default database URL or broad database lifecycle command, is not
+referenced by normal application/test sources, and uses that same static
+fixture data for its disposable assertions.
 
 ## Explicit disposable PostgreSQL 17 contract harness
 
