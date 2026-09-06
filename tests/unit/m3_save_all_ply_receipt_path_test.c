@@ -12,10 +12,12 @@
 #include "character_save_journal_v2_ack.h"
 #include "character_save_journal_v2_live_ops.h"
 #include "character_save_journal_v2_player_store.h"
+#include "character_save_journal_v2_process_owner.h"
 #include "character_save_journal_v2_publish.h"
 #include "character_save_journal_v2_rpc_transport.h"
 #include "character_save_journal_v2_runtime.h"
 #include "character_save_journal_v2_writer.h"
+#include "character_player_snapshot_v1_handoff.h"
 #include "mstruct.h"
 #include "mextern.h"
 #include "player_store.h"
@@ -51,7 +53,8 @@ typedef struct secret_fixture {
 } secret_fixture;
 
 typedef enum wire_call {
-    WIRE_NONE, WIRE_ASSERT, WIRE_ACQUIRE, WIRE_RENEW, WIRE_ROUTE, WIRE_RECEIPT
+    WIRE_NONE, WIRE_ASSERT, WIRE_ACQUIRE, WIRE_RENEW, WIRE_ROUTE, WIRE_SEED,
+    WIRE_RECEIPT
 } wire_call;
 
 typedef struct wire_fixture {
@@ -59,8 +62,10 @@ typedef struct wire_fixture {
     int acquire_calls;
     int renew_calls;
     int route_calls;
+    int seed_calls;
     int receipt_calls;
     int close_calls;
+    int seeded;
     wire_call current_call;
 } wire_fixture;
 
@@ -68,15 +73,15 @@ typedef struct shadow_fixture {
     char root[PATH_MAX];
     wire_fixture wire;
     character_save_journal_v2_rpc_transport transport;
-    character_save_journal_v2_live_ops live_ops;
-    character_save_journal_v2_writer_context writer;
-    character_save_journal_v2_player_store store;
-    player_store_binding binding;
+    character_save_journal_v2_process_owner owner;
+    character_player_snapshot_v1_handoff handoff;
     player_record_serializer_limits limits;
     char buffer[256];
     int start_calls;
     int shutdown_calls;
     int serializer_calls;
+    int uuid_calls;
+    int deadline_calls;
 } shadow_fixture;
 
 static int legacy_save_calls;
@@ -274,6 +279,15 @@ static void *wire_exec(void *connection, const char *sql, int count,
         wire->route_calls++;
         if(count!=2||!values||!text_equal(values[0],world)||
            !text_equal(values[1],player_name)) wire->valid=0;
+    } else if(strstr(sql,"seed_game_character_absent_head")) {
+        wire->current_call=WIRE_SEED;
+        wire->seed_calls++;
+        if(count!=6||wire->seeded||!values||!text_equal(values[0],world)||
+           !text_equal(values[1],player_name)||
+           !text_equal(values[2],character)||!text_equal(values[3],instance)||
+           !text_equal(values[4],"7")||!text_equal(values[5],"1"))
+            wire->valid=0;
+        wire->seeded=1;
     } else if(strstr(sql,"record_legacy_published_receipt")) {
         wire->current_call=WIRE_RECEIPT;
         wire->receipt_calls++;
@@ -304,14 +318,17 @@ static int wire_columns(void *result)
 static const char *wire_value(void *result, int row, int column)
 {
     wire_fixture *wire=(wire_fixture *)result;
-    static const char *route[]={world,character,"M3alpha","66","1","active","",
+    static const char *route_uninitialized[]={world,character,"M3alpha","66","1",
+        "active","","uninitialized","","0"};
+    static const char *route_absent[]={world,character,"M3alpha","66","1","active","",
         "absent","","0"};
     static const char *epoch[]={"7","2026-09-03T00:01:00Z"};
     if(!wire||row) return 0;
     if(wire->current_call==WIRE_ASSERT) return column==0 ? "t" : 0;
     if(wire->current_call==WIRE_ACQUIRE||wire->current_call==WIRE_RENEW)
         return column>=0&&column<2 ? epoch[column] : 0;
-    if(wire->current_call==WIRE_ROUTE) return column>=0&&column<10 ? route[column] : 0;
+    if(wire->current_call==WIRE_ROUTE) return column>=0&&column<10 ?
+        (wire->seeded ? route_absent[column] : route_uninitialized[column]) : 0;
     return column==0 ? "" : 0;
 }
 
@@ -338,13 +355,21 @@ static const character_save_journal_v2_rpc_transport_operations wire_operations=
 static int lease_deadline(void *opaque,
     char output[CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX+1])
 {
-    return opaque!=active_shadow ? -1 : (strcpy(output,save_deadline),0);
+    shadow_fixture *shadow=(shadow_fixture *)opaque;
+
+    if(shadow!=active_shadow) return -1;
+    strcpy(output,shadow->deadline_calls++ ? save_deadline : acquire_deadline);
+    return 0;
 }
 
 static int command_uuid(void *opaque,
     char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH+1])
 {
-    return opaque!=active_shadow ? -1 : (strcpy(output,journal_command),0);
+    shadow_fixture *shadow=(shadow_fixture *)opaque;
+
+    if(shadow!=active_shadow) return -1;
+    strcpy(output,shadow->uuid_calls++ ? journal_command : instance);
+    return 0;
 }
 
 static int journal_load(void *opaque, char *name, creature **player)
@@ -355,23 +380,11 @@ static int journal_load(void *opaque, char *name, creature **player)
     return PLAYER_STORE_NOT_FOUND;
 }
 
-/* The production first-head seam is separately covered by the live store
- * test.  This boundary focuses on save_all dispatch and receipt completion. */
-static int already_bound_absent(void *opaque,
-    const character_save_journal_v2_writer_context *writer,
-    character_save_journal_v2_live_ops *ops, const unsigned char *name,
-    size_t name_length)
-{
-    (void)writer; (void)ops;
-    return opaque==active_shadow&&name&&name_length==strlen(player_name)&&
-        !memcmp(name,player_name,name_length) ? 0 : -1;
-}
-
 static int shadow_start(void *opaque, const char *root, const char *world_id,
     const char *conninfo)
 {
     shadow_fixture *shadow=(shadow_fixture *)opaque;
-    player_store_ops operations;
+    character_save_journal_v2_process_owner_configuration configuration;
 
     if(!shadow||strcmp(root,shadow->root)||strcmp(world_id,world)||
        strcmp(conninfo,"dbname=fixture")) return -1;
@@ -382,27 +395,32 @@ static int shadow_start(void *opaque, const char *root, const char *world_id,
     if(character_save_journal_v2_rpc_transport_start(&shadow->transport,
        &wire_operations,&shadow->wire,&shadow->wire)!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK)
         return -1;
-    character_save_journal_v2_live_ops_init(&shadow->live_ops,&shadow->transport,
-        acquire_deadline);
-    if(character_save_journal_v2_writer_bootstrap(root,world,instance,
-       character_save_journal_v2_live_ops_writer_epoch_acquire,&shadow->live_ops,
-       &shadow->writer))
-        goto failed;
-    shadow->live_ops.acquire_lease_expires_at=0;
+    memset(&configuration,0,sizeof(configuration));
     shadow->limits.max_depth=64;
     shadow->limits.max_objects=8192;
-    character_save_journal_v2_player_store_init(&shadow->store,&shadow->writer,
-       &shadow->live_ops,shadow->buffer,sizeof(shadow->buffer),&shadow->limits,
-       lease_deadline,shadow,command_uuid,shadow,journal_load,shadow);
-    if(character_save_journal_v2_player_store_set_absent_bootstrap(&shadow->store,
-       already_bound_absent,shadow))
-        goto failed;
-    operations=character_save_journal_v2_player_store_build(&shadow->store);
-    if(player_store_bind(&operations,&shadow->binding))
+    character_player_snapshot_v1_handoff_init(&shadow->handoff,0);
+    configuration.root=root;
+    configuration.world_id=world_id;
+    configuration.transport=&shadow->transport;
+    configuration.buffer=shadow->buffer;
+    configuration.buffer_capacity=sizeof(shadow->buffer);
+    configuration.serializer_limits=shadow->limits;
+    configuration.acquire_deadline=lease_deadline;
+    configuration.acquire_deadline_opaque=shadow;
+    configuration.candidate_uuid=command_uuid;
+    configuration.candidate_uuid_opaque=shadow;
+    configuration.file_load=journal_load;
+    configuration.file_load_opaque=shadow;
+    /* This is the real optional process-owner handoff.  It emits the durable
+     * token/source pair while the normal save remains journal-authoritative. */
+    configuration.snapshot_handoff=&shadow->handoff;
+    character_save_journal_v2_process_owner_init(&shadow->owner,&configuration);
+    if(character_save_journal_v2_process_owner_start(&shadow->owner)!=
+       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK)
         goto failed;
     return 0;
 failed:
-    if(shadow->writer.opaque[0]) (void)character_save_journal_v2_writer_close(&shadow->writer);
+    (void)character_save_journal_v2_process_owner_shutdown(&shadow->owner);
     character_save_journal_v2_rpc_transport_close(&shadow->transport);
     active_shadow=0;
     return -1;
@@ -413,8 +431,7 @@ static void shadow_shutdown(void *opaque)
     shadow_fixture *shadow=(shadow_fixture *)opaque;
     if(!shadow) return;
     shadow->shutdown_calls++;
-    if(shadow->binding.active) (void)player_store_unbind(&shadow->binding);
-    (void)character_save_journal_v2_writer_close(&shadow->writer);
+    (void)character_save_journal_v2_process_owner_shutdown(&shadow->owner);
     character_save_journal_v2_rpc_transport_close(&shadow->transport);
     if(active_shadow==shadow) active_shadow=0;
 }
@@ -514,20 +531,32 @@ int main(void)
     start_result=character_save_journal_v2_runtime_start(&runtime);
     failed+=expect(start_result==
         CHARACTER_SAVE_JOURNAL_V2_RUNTIME_READY&&shadow.start_calls==1&&
-        shadow.binding.active,"exact shadow mode binds the real journal PlayerStore");
+        shadow.owner.player_store_binding.active,
+        "exact shadow mode binds the production journal PlayerStore");
     save_all_ply();
     failed+=expect(legacy_save_calls==2&&shadow.serializer_calls==1&&
         shadow.wire.acquire_calls==1&&shadow.wire.renew_calls==1&&
-        shadow.wire.route_calls==2&&
+        shadow.wire.route_calls==4&&shadow.wire.seed_calls==1&&
         shadow.wire.receipt_calls==1&&shadow.wire.valid&&!merror_calls,
-        "one normal bulk save reaches the journal receipt path exactly once");
+        "one normal bulk save reaches the seeded production journal receipt path exactly once");
     failed+=expect(command_exists(shadow.root,"published")&&command_exists(shadow.root,"acked")&&
         path_exists(shadow.root,"player/66/M3alpha")&&
-        shadow.store.last_report.reached==CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED,
+        shadow.owner.player_store.last_report.reached==
+        CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED,
         "the receipt follows durable journal publication and acknowledgement");
+    failed+=expect(path_exists(shadow.root,
+        "character-player-snapshot-v1-handoff/20000000-0000-4000-8000-000000000002.handoff")&&
+        path_exists(shadow.root,
+        "character-player-snapshot-v1-handoff/20000000-0000-4000-8000-000000000002.source")&&
+        shadow.handoff.report.enqueued==1&&
+        shadow.owner.player_store.last_report.snapshot_attempted==1&&
+        shadow.owner.player_store.last_report.snapshot_result==
+        CHARACTER_PLAYER_SNAPSHOT_V1_HANDOFF_OK,
+        "the optional production handoff leaves durable PREPARED evidence without gating ACK");
 
     character_save_journal_v2_runtime_shutdown(&runtime);
-    failed+=expect(shadow.shutdown_calls==1&&!shadow.binding.active&&shadow.wire.close_calls==1,
+    failed+=expect(shadow.shutdown_calls==1&&!shadow.owner.player_store_binding.active&&
+        shadow.wire.close_calls==1,
         "shadow shutdown restores the legacy binding and closes only the fixture transport");
     player_store_reset();
     memset(Ply,0,sizeof(Ply));
