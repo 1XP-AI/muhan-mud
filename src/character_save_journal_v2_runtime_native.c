@@ -322,7 +322,8 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
        CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) goto failed;
     native->shadow_active=1;
     runtime_native_read_rehearsal_arm(native);
-    (void)runtime_native_activation_reservation_directory_open(native);
+    if(native->snapshot_handoff_enabled)
+        (void)runtime_native_activation_reservation_directory_open(native);
     return 0;
 
 failed:
@@ -348,7 +349,8 @@ character_save_journal_v2_runtime_native_snapshot_tick(
 int character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
     const character_save_journal_v2_runtime_native *native)
 {
-    if(!native || !native->shadow_active) return -1;
+    if(!native || !native->shadow_active || !native->snapshot_handoff_enabled)
+        return -1;
     return native->activation_reservation_directory_fd;
 }
 

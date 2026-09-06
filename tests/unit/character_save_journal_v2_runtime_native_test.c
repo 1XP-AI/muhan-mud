@@ -508,6 +508,72 @@ static void read_rehearsal_root_remove(const char *root)
     (void)rmdir(root);
 }
 
+/* The activation save gate gets its only reservation capability through this
+ * native owner.  Keep it closed unless the immutable handoff is actually
+ * constructed: a requested-but-unsupported handoff must remain legacy-only. */
+static int test_native_activation_reservation_is_immutable_handoff_bound(void)
+{
+    character_save_journal_v2_runtime_native native;
+    char root[]="/tmp/muhan-activation-owner.XXXXXX";
+    char directory[128];
+    struct stat status;
+    int descriptor=-1;
+    int failed=0;
+
+    if(!mkdtemp(root) || snprintf(directory,sizeof(directory),"%s/%s",root,
+       RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY)>=(int)sizeof(directory))
+        return 1;
+
+    reset_fakes();
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "feature-off native shadow fixture must start");
+    failed|=expect(native.activation_reservation_directory_fd==-1&&
+        character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+        &native)==-1&&stat(directory,&status)<0&&errno==ENOENT,
+        "feature-off shadow must expose no activation reservation or snapshot candidate capability");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+
+    reset_fakes();
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must enable the exact immutable handoff token");
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "immutable handoff native shadow fixture must start");
+    descriptor=character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+        &native);
+    failed|=expect(descriptor>=0&&descriptor==
+        native.activation_reservation_directory_fd&&fstat(descriptor,&status)==0&&
+        S_ISDIR(status.st_mode)&&
+        character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+        &native)==descriptor,
+        "one live immutable handoff owner must retain one stable borrowed activation descriptor");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+    failed|=expect(character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+        &native)==-1&&fcntl(descriptor,F_GETFD)<0&&errno==EBADF,
+        "native shutdown must revoke the activation descriptor before a late event can replay it");
+    (void)rmdir(directory);
+
+    reset_fakes();
+    snapshot_native_abi_supported=0;
+    failed|=expect(setenv("MUD_M3_PLAYER_SNAPSHOT_V1","handoff",1)==0,
+        "test must request handoff for the ABI-mismatch boundary");
+    character_save_journal_v2_runtime_native_init(&native);
+    failed|=expect(native.dependencies.shadow_operations->start(
+        native.dependencies.shadow_opaque,root,"world-a","dbname=muhan")==0,
+        "ABI-mismatched shadow must retain primary runtime startup");
+    failed|=expect(native.activation_reservation_directory_fd==-1&&
+        character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+        &native)==-1&&stat(directory,&status)<0&&errno==ENOENT,
+        "ABI mismatch must leave activation save at legacy authority with no candidate capability");
+    native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
+    (void)unsetenv("MUD_M3_PLAYER_SNAPSHOT_V1");
+    (void)rmdir(root);
+    return failed;
+}
+
 static int test_native_owns_root_and_world_for_process_lifetime(void)
 {
     character_save_journal_v2_runtime_native native;
@@ -659,7 +725,8 @@ static int test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only(v
             default_load_calls==mismatch+1&&supplied_rehearsal&&
             supplied_rehearsal->writer==&native.process_owner.held_writer&&
             supplied_rehearsal->expected_artifact==&native.read_rehearsal_artifact&&
-            native.read_rehearsal_last_result==mismatch,
+            native.read_rehearsal_last_result==
+            (character_player_snapshot_v1_read_rehearsal_result)mismatch,
             "every rehearsal result must preserve the caller-bound legacy result");
     }
     native.dependencies.shadow_operations->shutdown(native.dependencies.shadow_opaque);
@@ -1062,6 +1129,7 @@ int main(void)
 {
     int failed=0;
     failed|=test_native_owns_root_and_world_for_process_lifetime();
+    failed|=test_native_activation_reservation_is_immutable_handoff_bound();
     failed|=test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only();
     failed|=test_native_snapshot_handoff_opt_in_has_only_explicit_tick();
     failed|=test_native_snapshot_handoff_rejects_near_miss_environment_values();
