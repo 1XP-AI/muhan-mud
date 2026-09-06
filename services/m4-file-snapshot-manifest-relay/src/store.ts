@@ -26,6 +26,27 @@ export interface BankSnapshotV1TopologyShadowStore {
   close?(): Promise<void>
 }
 
+/**
+ * Closed root-value projection from an already canonical BankSnapshotV1
+ * artifact. Raw bank bytes, decoded objects, and topology are intentionally
+ * not representable at this private RPC boundary.
+ */
+export interface BankSnapshotV1RootValueShadowInput {
+  characterId: string
+  commandId: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  sourceOctets: string
+  bankSha256: string
+  bankOctets: number
+  rootValue: string
+}
+
+export interface BankSnapshotV1RootValueShadowStore {
+  recordBankSnapshotV1RootValueShadow(input: BankSnapshotV1RootValueShadowInput): Promise<StoreOutcome>
+  close?(): Promise<void>
+}
+
 export type PlayerSnapshotV1ArtifactFulfillmentOutcome =
   | 'FULFILLED'
   | 'EXACT_RETRY'
@@ -126,6 +147,11 @@ interface PgModule { Pool: new (options: { connectionString: string, max: number
 const require = createRequire(import.meta.url)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
+function canonicalSignedI64(value: string): boolean {
+  if (!/^-?(?:0|[1-9][0-9]{0,18})$/.test(value) || value === '-0') return false
+  const parsed = BigInt(value)
+  return parsed >= -9223372036854775808n && parsed <= 9223372036854775807n && parsed.toString() === value
+}
 
 /** Direct PostgreSQL adapter. It performs no retries and never writes anything except through the M4 function. */
 export class PostgresManifestStore implements ManifestStore {
@@ -213,6 +239,27 @@ export class PostgresBankSnapshotV1TopologyShadowStore implements BankSnapshotV1
       const result = await client.query<{ outcome: string }>(
         'select outcome from private.record_bank_snapshot_v1_topology_shadow_for_receipt($1::uuid,$2::uuid,$3::text,$4::text,$5::bigint,$6::text,$7::bigint,$8::jsonb)',
         [artifact.characterId, artifact.commandId, artifact.receiptRequestSha256, artifact.sourcePostSha256, artifact.sourceOctets, artifact.bankSha256, artifact.bankOctets, JSON.stringify(artifact.nodes)],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+/** Dedicated parameterized writer for immutable root-value shadow evidence. */
+export class PostgresBankSnapshotV1RootValueShadowStore implements BankSnapshotV1RootValueShadowStore {
+  private readonly pool: PgPool
+  constructor(databaseUrl: string, pool?: PgPool) { this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: assertDatabaseUrl(databaseUrl), max: 1 }) }
+  async recordBankSnapshotV1RootValueShadow(input: BankSnapshotV1RootValueShadowInput): Promise<StoreOutcome> {
+    if (!canonicalSignedI64(input.rootValue)) throw new Error('invalid canonical root-value projection input')
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_bank_snapshot_v1_root_value_shadow_for_receipt($1::uuid,$2::uuid,$3::text,$4::text,$5::bigint,$6::text,$7::bigint,$8::bigint)',
+        [input.characterId, input.commandId, input.receiptRequestSha256, input.sourcePostSha256, input.sourceOctets, input.bankSha256, input.bankOctets, input.rootValue],
       )
       const outcome = result.rows[0]?.outcome
       if (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY') throw new Error('unexpected database outcome')

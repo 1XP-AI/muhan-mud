@@ -16,7 +16,7 @@ export interface BankTopologyNode { nodeIndex: number, parentNodeIndex: number |
 export interface BankSnapshotV1Artifact {
   characterId: string, commandId: string, receiptRequestSha256: string
   sourcePostSha256: string, sourceOctets: string, bankSha256: string
-  bankOctets: number, nodes: readonly BankTopologyNode[]
+  bankOctets: number, nodes: readonly BankTopologyNode[], rootValue: string
 }
 export class InvalidBankSnapshotV1ArtifactError extends Error { constructor() { super('invalid BankSnapshotV1 artifact') } }
 
@@ -75,6 +75,20 @@ function topology(payload: Uint8Array): readonly BankTopologyNode[] {
   return nodes
 }
 
+/**
+ * Extract only the signed-i64 value in node zero.  topology() has already
+ * verified the full envelope, the strict object layout, canonical fixed bytes,
+ * preorder topology, and the single root; this deliberately exposes no other
+ * object fields or raw payload bytes to a projection writer.
+ */
+function rootValue(payload: Uint8Array): string {
+  const body = payload.subarray(16, payload.length - 32)
+  const graph = body.subarray(7)
+  const g = graph.subarray(16, -32)
+  const root = g.subarray(18, 367)
+  return Buffer.from(root).readBigInt64BE(312).toString()
+}
+
 export function parseBankSnapshotV1Artifact(filename: string, bytes: Uint8Array, receipt: Manifest): BankSnapshotV1Artifact {
   const commandId = commandFromBankSnapshotV1Filename(filename)
   const at = Buffer.from(bytes).indexOf('\n\n')
@@ -87,5 +101,6 @@ export function parseBankSnapshotV1Artifact(filename: string, bytes: Uint8Array,
   const canonical = names.map((n, i) => `${n}=${v[i]}`).join('\n') + '\n\n'
   const bank = bytes.subarray(at + 2)
   if (!Buffer.from(canonical, 'ascii').equals(bytes.subarray(0, at + 2)) || commandId !== receipt.commandId || v[2] !== receipt.worldId || v[3] !== receipt.characterId || v[4] !== receipt.commandId || v[5] !== receipt.canonicalNameHex || v[6] !== receipt.requestSha256 || v[7] !== receipt.postSha256 || v[8] !== receipt.writerEpoch || v[9] !== receipt.writerRevision || BigInt(v[11]!) !== BigInt(bank.length) || createHash('sha256').update(bank).digest('hex') !== v[10]) throw new InvalidBankSnapshotV1ArtifactError()
-  return { characterId: receipt.characterId, commandId, receiptRequestSha256: receipt.requestSha256, sourcePostSha256: receipt.postSha256, sourceOctets: receipt.snapshotOctets, bankSha256: v[10]!, bankOctets: bank.length, nodes: topology(bank) }
+  const nodes = topology(bank)
+  return { characterId: receipt.characterId, commandId, receiptRequestSha256: receipt.requestSha256, sourcePostSha256: receipt.postSha256, sourceOctets: receipt.snapshotOctets, bankSha256: v[10]!, bankOctets: bank.length, nodes, rootValue: rootValue(bank) }
 }
