@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 from pathlib import Path
 
@@ -39,18 +38,30 @@ def main() -> None:
     args = parser.parse_args()
 
     make_text = args.makefile.read_text(encoding="utf-8")
-    m3_block = re.search(
-        r"^ifeq \(\$\(USE_M3_RUNTIME\),1\)\n(?P<body>.*?)^endif\n",
-        make_text, re.MULTILINE | re.DOTALL)
-    if not m3_block:
-        raise SystemExit("USE_M3_RUNTIME opt-in build block is missing")
-    if "CFLAGS += -DUSE_M3_RUNTIME" not in make_text:
+    compile_block_start = make_text.index("ifeq ($(USE_M3_RUNTIME),1)")
+    compile_block_end = make_text.index("ifeq ($(USE_RUST_RESOLVER),1)",
+                                       compile_block_start)
+    compile_block = make_text[compile_block_start:compile_block_end]
+    if "CFLAGS += -DUSE_M3_RUNTIME" not in compile_block:
         raise SystemExit("opt-in build does not define USE_M3_RUNTIME")
-    if not REQUIRED_M3_OBJECTS.issubset(set(re.findall(r"[A-Za-z0-9_]+\.o", make_text))):
+    object_definition_start = make_text.index("M3_RUNTIME_OBJECTS =")
+    runtime_bind_start = make_text.index("ifeq ($(USE_M3_RUNTIME),1)",
+                                         object_definition_start)
+    m3_object_definition = make_text[object_definition_start:runtime_bind_start]
+    m3_objects = {token for token in m3_object_definition.replace("\\", " ").split()
+                  if token.endswith(".o")}
+    if not REQUIRED_M3_OBJECTS.issubset(m3_objects):
         raise SystemExit("opt-in build omits a required M3 runtime object")
-    object_boundary = make_text.index("M3_RUNTIME_OBJECTS =")
-    default_text = make_text[:object_boundary]
-    if any(name in default_text for name in REQUIRED_M3_OBJECTS):
+    object_add = make_text.index("OBJECTS += $(M3_RUNTIME_OBJECTS)",
+                                 runtime_bind_start)
+    nearest_m3_gate = make_text.rfind("ifeq ($(USE_M3_RUNTIME),1)", 0,
+                                      object_add)
+    if nearest_m3_gate != runtime_bind_start:
+        raise SystemExit("M3 runtime object set is not behind the opt-in gate")
+    default_object_start = make_text.index("OBJECTS =")
+    default_text = make_text[default_object_start:object_definition_start]
+    if "$(M3_RUNTIME_OBJECTS)" in default_text or any(
+            name in default_text for name in REQUIRED_M3_OBJECTS):
         raise SystemExit("M3 runtime object leaked into default OBJECTS")
 
     main = args.main_source.read_text(encoding="utf-8")
