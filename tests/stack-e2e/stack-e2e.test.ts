@@ -19,6 +19,7 @@ import {
   waitForWebStackServer,
   type WebStackServer,
 } from './web-stack-ui.js'
+import { cleanupFailure, runCleanupSteps } from './lifecycle.js'
 
 const run = promisify(execFile)
 const actor = '11111111-1111-4111-8111-111111111111'
@@ -330,6 +331,7 @@ async function main(): Promise<void> {
   let gateway: RunningGateway | undefined
   let mud: ChildProcess | undefined
   let web: WebStackServer | undefined
+  let scenarioFailed = false
   try {
     assert.ok(process.env.STACK_E2E_BINARY, 'STACK_E2E_BINARY is required')
     assert.ok(process.env.STACK_E2E_SERVICE_ROLE_JWT, 'STACK_E2E_SERVICE_ROLE_JWT is required')
@@ -666,21 +668,52 @@ async function main(): Promise<void> {
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
     evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-ui-active-roster-and-mud1-admission' })
     evidence.status = 'passed'
+  } catch (error) {
+    scenarioFailed = true
+    throw error
   } finally {
-    process.stderr.write(`stack-e2e: finally-web-${web ? 'start' : 'none'}\n`)
-    // Cleanup is part of the acceptance contract: never hide a live pnpm/Next
-    // tree or an unsuccessful shutdown behind the primary scenario result.
-    if (web) await stopWebStackServer(web)
-    process.stderr.write('stack-e2e: finally-web-done\n')
-    process.stderr.write(`stack-e2e: finally-gateway-${gateway ? 'start' : 'none'}\n`)
-    if (gateway) await closeGatewayBounded(gateway).catch(() => undefined)
-    process.stderr.write(`stack-e2e: finally-gateway-done\n`)
-    process.stderr.write(`stack-e2e: finally-mud-${mud ? 'start' : 'none'}\n`)
-    if (mud) await stopMudDuringFailure(mud)
-    process.stderr.write(`stack-e2e: finally-mud-done\n`)
-    evidence.error = evidence.status === 'passed' ? undefined : 'stack-e2e failed; inspect redacted runner output'
+    // A web cleanup failure must not skip Gateway/MUD teardown or suppress
+    // evidence. If the scenario already failed, retain that original failure;
+    // otherwise surface the recorded teardown failure after all cleanup runs.
+    const cleanupFailures = await runCleanupSteps([
+      {
+        name: 'web',
+        run: async () => {
+          process.stderr.write(`stack-e2e: finally-web-${web ? 'start' : 'none'}\n`)
+          if (web) await stopWebStackServer(web)
+          process.stderr.write('stack-e2e: finally-web-done\n')
+        },
+      },
+      {
+        name: 'gateway',
+        run: async () => {
+          process.stderr.write(`stack-e2e: finally-gateway-${gateway ? 'start' : 'none'}\n`)
+          if (gateway) await closeGatewayBounded(gateway)
+          process.stderr.write('stack-e2e: finally-gateway-done\n')
+        },
+      },
+      {
+        name: 'mud',
+        run: async () => {
+          process.stderr.write(`stack-e2e: finally-mud-${mud ? 'start' : 'none'}\n`)
+          if (mud) await stopMudDuringFailure(mud)
+          process.stderr.write('stack-e2e: finally-mud-done\n')
+        },
+      },
+    ])
+    if (cleanupFailures.length > 0) evidence.status = 'failed'
+    evidence.error = evidence.status === 'passed'
+      ? undefined
+      : 'stack-e2e failed; inspect redacted runner output'
     const artifact = process.env.STACK_E2E_ARTIFACT
-    if (artifact) await writeFile(artifact, redact(JSON.stringify(evidence, null, 2)), 'utf8')
+    if (artifact) {
+      cleanupFailures.push(...await runCleanupSteps([{
+        name: 'evidence',
+        run: () => writeFile(artifact, redact(JSON.stringify(evidence, null, 2)), 'utf8'),
+      }]))
+    }
+    const teardownFailure = cleanupFailure(cleanupFailures)
+    if (!scenarioFailed && teardownFailure) throw teardownFailure
   }
 }
 

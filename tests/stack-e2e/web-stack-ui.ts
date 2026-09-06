@@ -28,13 +28,46 @@ export interface WebStackServer {
   child: ChildProcess;
 }
 
-type TimerApi = Pick<typeof globalThis, "clearTimeout" | "setTimeout">;
+interface TimerApi {
+  clearTimeout(handle: ReturnType<typeof setTimeout> | undefined): void;
+  setTimeout(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout>;
+}
+
+interface WebStackReadinessOptions {
+  fetch?: typeof globalThis.fetch;
+  now?: () => number;
+  pollIntervalMs?: number;
+  requestTimeoutMs?: number;
+  startupTimeoutMs?: number;
+  timers?: TimerApi;
+}
 
 interface WebStackStopOptions {
   graceTimeoutMs?: number;
   killTimeoutMs?: number;
   signalProcessTree?: (child: ChildProcess, signal: NodeJS.Signals) => void;
   timers?: TimerApi;
+}
+
+type WebStackExit = [number | null, NodeJS.Signals | null];
+
+function observedWebStackExit(child: ChildProcess): WebStackExit | undefined {
+  // Node sets one of these before emitting `exit`. Checking both prevents a
+  // missed event when the process group exits in the tiny gap after kill().
+  if (child.exitCode != null || child.signalCode != null) {
+    return [child.exitCode, child.signalCode];
+  }
+  return undefined;
+}
+
+function assertSuccessfulWebStackExit(
+  [code, signal]: WebStackExit,
+  expectedSignal?: NodeJS.Signals,
+): void {
+  assert.ok(
+    code === 0 || (expectedSignal !== undefined && signal === expectedSignal),
+    `web server exited unexpectedly (${code ?? signal})`,
+  );
 }
 
 export async function waitForWebStackExit(
@@ -57,7 +90,19 @@ export async function waitForWebStackExit(
       finish(() => resolve([code, signal]));
     };
 
+    const alreadyExited = observedWebStackExit(child);
+    if (alreadyExited) {
+      finish(() => resolve(alreadyExited));
+      return;
+    }
     child.once("exit", onExit);
+    // `exit` can win after the first observation but before the listener is
+    // installed. ChildProcess keeps the terminal status for this second check.
+    const exitedWhileInstalling = observedWebStackExit(child);
+    if (exitedWhileInstalling) {
+      finish(() => resolve(exitedWhileInstalling));
+      return;
+    }
     timeout = timers.setTimeout(
       () => finish(() => reject(new Error(`web server did not exit within ${timeoutMs}ms`))),
       timeoutMs,
@@ -132,21 +177,60 @@ export function startWebStackServer({
   return { baseUrl: `http://127.0.0.1:${port}`, child };
 }
 
-export async function waitForWebStackServer(server: WebStackServer): Promise<void> {
-  const deadline = Date.now() + 60_000;
+async function fetchWebStackReadiness(
+  url: string,
+  timeoutMs: number,
+  fetchRequest: typeof globalThis.fetch,
+  timers: TimerApi,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      fetchRequest(url, { signal: controller.signal }),
+      new Promise<never>((_, reject) => {
+        timeout = timers.setTimeout(() => {
+          controller.abort();
+          reject(new Error(`web server readiness request exceeded ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) timers.clearTimeout(timeout);
+  }
+}
+
+export async function waitForWebStackServer(
+  server: WebStackServer,
+  {
+    fetch: fetchRequest = globalThis.fetch,
+    now = Date.now,
+    pollIntervalMs = 100,
+    requestTimeoutMs = 2_000,
+    startupTimeoutMs = 60_000,
+    timers = globalThis,
+  }: WebStackReadinessOptions = {},
+): Promise<void> {
+  const deadline = now() + startupTimeoutMs;
   let lastError: unknown;
-  while (Date.now() < deadline) {
-    if (server.child.exitCode !== null) {
-      throw new Error(`web server exited before listening (${server.child.exitCode})`);
+  while (now() < deadline) {
+    const exited = observedWebStackExit(server.child);
+    if (exited) {
+      throw new Error(`web server exited before listening (${exited[0] ?? exited[1]})`);
     }
     try {
-      const response = await fetch(server.baseUrl);
+      const response = await fetchWebStackReadiness(
+        server.baseUrl,
+        Math.min(requestTimeoutMs, Math.max(1, deadline - now())),
+        fetchRequest,
+        timers,
+      );
       if (response.ok) return;
       lastError = new Error(`web server returned ${response.status}`);
     } catch (error) {
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise<void>((resolve) => timers.setTimeout(() => resolve(), pollIntervalMs));
   }
   throw lastError instanceof Error ? lastError : new Error("web server did not become ready");
 }
@@ -160,29 +244,35 @@ export async function stopWebStackServer(
     timers = globalThis,
   }: WebStackStopOptions = {},
 ): Promise<void> {
-  if (server.child.exitCode !== null) {
-    assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
+  const alreadyExited = observedWebStackExit(server.child);
+  if (alreadyExited) {
+    assertSuccessfulWebStackExit(alreadyExited);
     return;
   }
   try {
     signalProcessTree(server.child, "SIGTERM");
     const [code, signal] = await waitForWebStackExit(server.child, graceTimeoutMs, timers);
-    assert.ok(signal === "SIGTERM" || code === 0, `web server exited unexpectedly (${code ?? signal})`);
+    assertSuccessfulWebStackExit([code, signal], "SIGTERM");
   } catch (termError) {
     // A development server that ignores graceful termination still must not
     // outlive this disposable runner. SIGKILL targets the same pnpm/Next tree.
     // The group can exit between the initial exitCode observation and kill().
     // POSIX reports that as ESRCH, but a normal child exit is successful cleanup.
-    if (server.child.exitCode !== null) {
-      assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
+    const exitedAfterTerm = observedWebStackExit(server.child);
+    if (exitedAfterTerm) {
+      assertSuccessfulWebStackExit(exitedAfterTerm, "SIGTERM");
       return;
     }
     try {
       signalProcessTree(server.child, "SIGKILL");
-      await waitForWebStackExit(server.child, killTimeoutMs, timers);
+      const exit = await waitForWebStackExit(server.child, killTimeoutMs, timers);
+      // A fallback that observes code 1 (rather than a SIGKILL exit) must
+      // remain a failure; otherwise a broken Next process is falsely green.
+      assertSuccessfulWebStackExit(exit, "SIGKILL");
     } catch (killError) {
-      if (server.child.exitCode !== null) {
-        assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
+      const exitedAfterKill = observedWebStackExit(server.child);
+      if (exitedAfterKill) {
+        assertSuccessfulWebStackExit(exitedAfterKill, "SIGKILL");
         return;
       }
       throw new AggregateError(
@@ -250,6 +340,15 @@ async function assertRosterThenAdmission(page: Page, characterName: string): Pro
   await page.getByRole("button", { name: "게임 입장" }).click();
   await expect(page.locator(".selected-character-bar strong")).toHaveText(characterName);
   await expect(page.getByText("무한대전 세계와 연결됐습니다.")).toBeVisible();
+
+  // The ready control alone proves only Gateway authentication. Submit a
+  // normal command through MudTerminal and require the C MUD's Korean output.
+  const commandBar = page.locator(".command-bar");
+  const command = commandBar.getByLabel("명령");
+  await expect(command).toBeEnabled();
+  await command.fill("건강");
+  await commandBar.getByRole("button", { name: "보내기" }).click();
+  await expect(page.locator(".terminal-viewport")).toContainText(/체력/);
 }
 
 export async function runWebStackAcceptance({

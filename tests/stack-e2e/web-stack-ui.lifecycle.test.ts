@@ -8,7 +8,9 @@ import {
   signalWebStackProcessTree,
   stopWebStackServer,
   waitForWebStackExit,
+  waitForWebStackServer,
 } from "./web-stack-ui.js";
+import { cleanupFailure, runCleanupSteps } from "./lifecycle.js";
 
 function fakeChild(properties: Partial<ChildProcess> = {}): ChildProcess {
   return Object.assign(new EventEmitter(), properties) as ChildProcess;
@@ -44,6 +46,16 @@ test("web stack exit wait clears its bounded-wait timer after a normal exit", as
   child.emit("exit", 0, null);
   assert.deepEqual(await exited, [0, null]);
   assert.deepEqual(cleared, [timer]);
+});
+
+test("web stack exit wait observes a recorded signal-code race without waiting for a missed event", async () => {
+  const child = fakeChild({ exitCode: null, signalCode: "SIGTERM" });
+  const timers = {
+    setTimeout: () => { throw new Error("an exited child must not receive a timer"); },
+    clearTimeout: () => undefined,
+  };
+
+  assert.deepEqual(await waitForWebStackExit(child, 100, timers), [null, "SIGTERM"]);
 });
 
 test("web stack exit wait removes its exit listener when its timeout wins", async () => {
@@ -116,6 +128,20 @@ test("web stack cleanup accepts a normal exit racing process-group SIGTERM", asy
   );
 });
 
+test("web stack cleanup accepts a SIGTERM signal-code race from the detached process group", async () => {
+  const child = fakeChild({ pid: 4312, exitCode: null, signalCode: null });
+
+  await stopWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      signalProcessTree: () => {
+        Object.assign(child, { exitCode: null, signalCode: "SIGTERM" });
+        throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+      },
+    },
+  );
+});
+
 test("web stack cleanup accepts a normal exit racing fallback process-group SIGKILL", async () => {
   const child = fakeChild({ pid: 4312, exitCode: null });
   let timeoutCallback: (() => void) | undefined;
@@ -147,22 +173,95 @@ test("web stack cleanup accepts a normal exit racing fallback process-group SIGK
   assert.equal(child.listenerCount("exit"), 0);
 });
 
+test("web stack cleanup preserves an unsuccessful exit observed during SIGKILL fallback", async () => {
+  const child = fakeChild({ pid: 4312, exitCode: null, signalCode: null });
+  let timeoutCallback: (() => void) | undefined;
+
+  const stopping = stopWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      graceTimeoutMs: 1,
+      timers: {
+        setTimeout: (callback: () => void, _timeoutMs: number) => {
+          timeoutCallback = callback;
+          return { id: "timeout" } as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimeout: (_handle: ReturnType<typeof setTimeout>) => undefined,
+      },
+      signalProcessTree: (_child, signal) => {
+        if (signal === "SIGKILL") Object.assign(child, { exitCode: 1, signalCode: null });
+      },
+    },
+  );
+  timeoutCallback?.();
+  await assert.rejects(stopping, /web server exited unexpectedly \(1\)/);
+});
+
+test("web stack readiness bounds a hung fetch with an AbortSignal", async () => {
+  const child = fakeChild({ exitCode: null, signalCode: null });
+  const callbacks: Array<() => void> = [];
+  let signal: AbortSignal | undefined;
+  let timerCalls = 0;
+  const now = [0, 0, 0, 10];
+  const ready = waitForWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      startupTimeoutMs: 10,
+      requestTimeoutMs: 5,
+      now: () => now.shift() ?? 10,
+      fetch: async (_url, init) => {
+        signal = init?.signal ?? undefined;
+        return await new Promise<Response>(() => undefined);
+      },
+      timers: {
+        setTimeout: (callback: () => void, _timeoutMs: number) => {
+          timerCalls += 1;
+          if (timerCalls === 1) callbacks.push(callback);
+          else callback();
+          return { id: timerCalls } as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimeout: (_handle: ReturnType<typeof setTimeout>) => undefined,
+      },
+    },
+  );
+  callbacks.shift()?.();
+  await assert.rejects(ready, /web server readiness request exceeded 5ms/);
+  assert.equal(signal?.aborted, true);
+});
+
+test("stack teardown runs Gateway, MUD, and evidence after web cleanup fails", async () => {
+  const calls: string[] = [];
+  const failures = await runCleanupSteps([
+    { name: "web", run: async () => { calls.push("web"); throw new Error("web cleanup failed"); } },
+    { name: "gateway", run: async () => { calls.push("gateway"); } },
+    { name: "mud", run: async () => { calls.push("mud"); } },
+    { name: "evidence", run: async () => { calls.push("evidence"); } },
+  ]);
+
+  assert.deepEqual(calls, ["web", "gateway", "mud", "evidence"]);
+  assert.equal(cleanupFailure(failures)?.message, "stack-e2e web cleanup failed");
+});
+
 test("web stack cleanup reports an already-unsuccessful server exit", async () => {
   await assert.rejects(
     () => stopWebStackServer({ baseUrl: "http://127.0.0.1:1", child: fakeChild({ exitCode: 1 }) }),
-    /web server exited unsuccessfully/,
+    /web server exited unexpectedly \(1\)/,
   );
 });
 
-test("runner starts a dedicated process group and does not swallow web cleanup failures", async () => {
+test("runner starts a dedicated process group, targets pnpm descendants, and retains cleanup failures", async () => {
   const [webRunner, stackHarness] = await Promise.all([
     readFile(new URL("./web-stack-ui.ts", import.meta.url), "utf8"),
     readFile(new URL("./stack-e2e.test.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(webRunner, /detached: process\.platform !== "win32"/);
+  assert.match(webRunner, /pnpm[\s\S]*detached: process\.platform !== "win32"/);
   assert.match(webRunner, /signalProcessTree\(server\.child, "SIGTERM"\)/);
   assert.match(webRunner, /signalProcessTree\(server\.child, "SIGKILL"\)/);
+  assert.match(stackHarness, /runCleanupSteps/);
   assert.match(stackHarness, /if \(web\) await stopWebStackServer\(web\)/);
-  assert.doesNotMatch(stackHarness, /stopWebStackServer\(web\)\.catch\(/);
+  assert.match(stackHarness, /if \(gateway\) await closeGatewayBounded\(gateway\)/);
+  assert.match(stackHarness, /if \(mud\) await stopMudDuringFailure\(mud\)/);
+  assert.match(stackHarness, /!scenarioFailed && teardownFailure/);
 });
