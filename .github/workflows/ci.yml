@@ -706,6 +706,13 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           pnpm test:browser
 
+      - name: Disposable web onboarding stack acceptance
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-stack-e2e.sh
+
       - name: Rust CDTO and M3 wake protocol contracts
         if: matrix.runner == 'ubuntu-latest'
         shell: bash

@@ -20,6 +20,13 @@ DB name key and player filename match C `lowercize(name, 1)` (`Stackhero`),
 while the failed path retains the saved file and `state=saved` receipt but
 leaves DB state `provisioning|reserved|provisioning` with no `COMMIT`.
 
+The last lane starts the real Next application and Chromium against the same
+disposable Gateway, C MUD, and PostgREST resources. It stubs only the absent
+Supabase Auth endpoint with signed deterministic fixtures, then proves the
+actual UI can provision and claim, refresh each active roster, and enter the
+unchanged normal MUD socket. Chromium must already be installed (CI installs
+it immediately before this runner).
+
 Run from the repository root:
 
 ```sh

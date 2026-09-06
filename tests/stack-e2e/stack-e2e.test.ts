@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { chmod, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
@@ -12,9 +12,18 @@ import { createGateway, type RunningGateway } from '../../services/gateway/src/g
 import { SupabaseCharacterAuthorizer } from '../../services/gateway/src/character-authorizer.js'
 import { SupabaseOnboardingAuthorizer, type OnboardingAuthorizer } from '../../services/gateway/src/onboarding-authorizer.js'
 import { NodeReconcilerFilesystem, OnboardingReconciler } from '../../services/onboarding-reconciler/src/reconciler.js'
+import {
+  runWebStackAcceptance,
+  startWebStackServer,
+  stopWebStackServer,
+  waitForWebStackServer,
+  type WebStackServer,
+} from './web-stack-ui.js'
 
 const run = promisify(execFile)
 const actor = '11111111-1111-4111-8111-111111111111'
+const webProvisionActor = '88888888-8888-4888-8888-888888888888'
+const webClaimActor = '99999999-9999-4999-8999-999999999999'
 const cancelledCorrelation = '22222222-2222-4222-8222-222222222222'
 const correlation = '33333333-3333-4333-8333-333333333333'
 const badCorrelation = '55555555-5555-4555-8555-555555555555'
@@ -29,6 +38,7 @@ const requestedName = 'StackHero'
 const canonicalName = 'Stackhero'
 const badRequestedName = 'StackBad'
 const badCanonicalName = 'Stackbad'
+const webProvisionName = 'Webhero'
 const origin = 'http://localhost:3000'
 const root = resolve(process.env.STACK_E2E_ROOT ?? process.cwd())
 const require = createRequire(join(root, 'package.json'))
@@ -39,6 +49,14 @@ let browserDiagnostics = ''
 
 type Evidence = { schema: 1, status: 'passed' | 'failed', events: Array<Record<string, string>>, error?: string }
 const evidence: Evidence = { schema: 1, status: 'failed', events: [] }
+
+function browserJwt(subject: string): string {
+  const secret = process.env.STACK_E2E_JWT_SECRET
+  assert.ok(secret, 'STACK_E2E_JWT_SECRET is required')
+  const encode = (value: Record<string, unknown>) => Buffer.from(JSON.stringify(value)).toString('base64url')
+  const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ aud: 'authenticated', exp: 4_102_444_800, role: 'authenticated', sub: subject })}`
+  return `${unsigned}.${createHmac('sha256', secret).update(unsigned).digest('base64url')}`
+}
 
 function redact(value: string): string {
   return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, admissionSecret, password, accessToken]
@@ -311,11 +329,23 @@ async function closeGatewayBounded(gateway: RunningGateway): Promise<void> {
 async function main(): Promise<void> {
   let gateway: RunningGateway | undefined
   let mud: ChildProcess | undefined
+  let web: WebStackServer | undefined
   try {
     assert.ok(process.env.STACK_E2E_BINARY, 'STACK_E2E_BINARY is required')
     assert.ok(process.env.STACK_E2E_SERVICE_ROLE_JWT, 'STACK_E2E_SERVICE_ROLE_JWT is required')
+    const webProvisionJwt = browserJwt(webProvisionActor)
+    const webClaimJwt = browserJwt(webClaimActor)
+    const authenticatedSubjects = new Map([
+      [accessToken, actor],
+      [webProvisionJwt, webProvisionActor],
+      [webClaimJwt, webClaimActor],
+    ])
     await prepareFixture()
-    await sql(`insert into auth.users (id, aud, role, email_confirmed_at) values ('${actor}', 'authenticated', 'authenticated', now()) on conflict (id) do nothing`)
+    await sql(`insert into auth.users (id, aud, role, email_confirmed_at) values
+      ('${actor}', 'authenticated', 'authenticated', now()),
+      ('${webProvisionActor}', 'authenticated', 'authenticated', now()),
+      ('${webClaimActor}', 'authenticated', 'authenticated', now())
+      on conflict (id) do nothing`)
 
     // RED/GREEN guard: /onboarding is not routable with the feature disabled,
     // therefore the C connector must remain untouched.
@@ -339,7 +369,13 @@ async function main(): Promise<void> {
     const restUrl = process.env.STACK_E2E_REST_URL
     assert.ok(restUrl && !restUrl.endsWith(':0'), 'runner must provide a PostgREST URL')
     config.supabaseInternalRestUrl = restUrl
-    const authenticator = { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 120_000, claims: {} }) }
+    const authenticator = {
+      verify: async (token: string) => {
+        const sub = authenticatedSubjects.get(token)
+        if (!sub) throw new Error('unknown deterministic stack browser token')
+        return { sub, expiresAtMs: Date.now() + 120_000, claims: {} }
+      },
+    }
     const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config)
     let finalizeObservedSaved = false
     const onboardingAuthorizer: OnboardingAuthorizer = {
@@ -584,8 +620,56 @@ async function main(): Promise<void> {
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${badCharacterId}'`), '0'))
     process.stderr.write('stack-e2e: claim-game-green\n')
     evidence.events.push({ case: 'claimed-mud1-admission', result: 'regular-ws-and-game-command' })
+
+    // Browser acceptance stays inside this runner's disposable resources. The
+    // UI receives a deterministic Auth response only because PostgREST is not
+    // an Auth server; every roster read, onboarding frame, C prompt, lifecycle
+    // transition, and subsequent ordinary MUD admission is otherwise live.
+    const webClaimDigest = createHash('sha256').update(await readFile(claimPlayer)).digest('hex')
+    await sql(`update public.game_characters set lifecycle = 'imported_unclaimed', owner_user_id = null, claimed_at = null, imported_file_sha256 = '${webClaimDigest}' where id = '${badCharacterId}'`)
+    const webPort = await choosePort()
+    web = startWebStackServer({
+      gatewayUrl: `${gateway.address().replace('http:', 'ws:')}/ws`,
+      port: webPort,
+      root,
+      supabaseUrl: restUrl,
+      supabasePublishableKey: webProvisionJwt,
+    })
+    await waitForWebStackServer(web)
+    await runWebStackAcceptance({
+      server: web,
+      provision: {
+        accessToken: webProvisionJwt,
+        alignment: '선',
+        characterClass: '4',
+        characterName: webProvisionName,
+        email: 'web-provision@example.test',
+        gamePassword: password,
+        gender: '남',
+        race: '7',
+        stats: '12 10 12 10 10',
+        userId: webProvisionActor,
+        weapon: '1',
+      },
+      claim: {
+        accessToken: webClaimJwt,
+        characterName: badCanonicalName,
+        email: 'web-claim@example.test',
+        gamePassword: password,
+        userId: webClaimActor,
+      },
+    })
+    const webProvisionState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where owner_user_id = '${webProvisionActor}'`)
+    assert.equal(webProvisionState, `active|${webProvisionActor}|${webProvisionName}`)
+    const webClaimState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where id = '${badCharacterId}'`)
+    assert.equal(webClaimState, `active|${webClaimActor}|${badCanonicalName}`)
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
+    evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-ui-active-roster-and-mud1-admission' })
     evidence.status = 'passed'
   } finally {
+    process.stderr.write(`stack-e2e: finally-web-${web ? 'start' : 'none'}\n`)
+    if (web) await stopWebStackServer(web).catch(() => undefined)
+    process.stderr.write('stack-e2e: finally-web-done\n')
     process.stderr.write(`stack-e2e: finally-gateway-${gateway ? 'start' : 'none'}\n`)
     if (gateway) await closeGatewayBounded(gateway).catch(() => undefined)
     process.stderr.write(`stack-e2e: finally-gateway-done\n`)
@@ -601,6 +685,6 @@ async function main(): Promise<void> {
 // Keep the runner-owned Promise in node:test's lifecycle. A bare main().catch
 // leaves failures and cleanup outside the test worker's awaited graph, which
 // can report a pending Promise after the event loop becomes idle.
-test('real stack E2E completes with deterministic cleanup', { timeout: 120_000 }, async () => {
+test('real stack E2E completes with deterministic cleanup', { timeout: 240_000 }, async () => {
   await main()
 })

@@ -152,6 +152,7 @@ STACK_E2E_ROOT="$repo_root" \
 STACK_E2E_FIXTURE="$work_dir/fixture" \
 STACK_E2E_REST_URL="http://127.0.0.1:${postgrest_port}" \
 STACK_E2E_SERVICE_ROLE_JWT="$service_role_jwt" \
+STACK_E2E_JWT_SECRET="$jwt_secret" \
 STACK_E2E_BINARY="$work_dir/frp.new" \
 STACK_E2E_ARTIFACT="$work_dir/result.json" \
   pnpm --dir "$repo_root/services/gateway" exec tsx --test "$repo_root/tests/stack-e2e/stack-e2e.test.ts" || test_status=$?
