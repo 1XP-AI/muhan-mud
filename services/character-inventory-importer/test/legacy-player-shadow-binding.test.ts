@@ -102,6 +102,13 @@ test('binds canonical and normalized strict identity evidence to the existing lo
   }
 })
 
+test('accepts and binds valid null-prototype identity evidence', () => {
+  const record = admittedRecord()
+  const nullPrototypeEvidence = Object.create(null, Object.getOwnPropertyDescriptors(evidence(record)))
+
+  assert.deepEqual(bindLegacyPlayerShadowEvidenceV1(record, nullPrototypeEvidence), locator())
+})
+
 test('rejects every evidence identity mismatch and non-success outcome', () => {
   const record = admittedRecord()
   const valid = evidence(record)
@@ -135,7 +142,7 @@ test('rejects malformed evidence containers, extra fields, symbols, and accessor
   })
   for (const candidate of [
     { ...valid, extra: true }, withSymbol, withAccessor, withNonEnumerable, coreNonEnumerable,
-    null, [], Object.create(null, Object.getOwnPropertyDescriptors(valid)),
+    null, [],
   ]) assert.equal(bindLegacyPlayerShadowEvidenceV1(admittedRecord(), candidate), undefined)
 })
 
