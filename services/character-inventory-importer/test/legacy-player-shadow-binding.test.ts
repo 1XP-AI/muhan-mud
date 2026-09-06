@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
+  bindLegacyPlayerShadowEvidenceV1,
   bindLegacyPlayerShadowLocatorV1,
+  type LegacyIdentityEvidenceV1Shape,
   type LegacyPlayerShadowLocatorV1,
 } from '../src/legacy-player-shadow-binding.js'
 import { expectedShard, type InventoryRecord } from '../src/inventory.js'
@@ -25,6 +27,17 @@ function locator(name = 'Alice'): LegacyPlayerShadowLocatorV1 {
     canonicalName: name,
     nameSha1: createHash('sha1').update(name, 'utf8').digest('hex'),
     shard: expectedShard(name),
+  }
+}
+
+function evidence(record = admittedRecord()): LegacyIdentityEvidenceV1Shape {
+  return {
+    outcome: 'ok',
+    canonicalization: 'canonical',
+    canonicalName: record.name,
+    legacyShard: record.expectedShard,
+    playerFileSha256: record.sha256,
+    storageFormat: 'player-v1',
   }
 }
 
@@ -79,4 +92,60 @@ test('rejects extras, symbols, accessors, and non-enumerable fields', () => {
   ]) {
     assert.equal(bindLegacyPlayerShadowLocatorV1(admittedRecord(), invalid), undefined)
   }
+})
+
+test('binds canonical and normalized strict identity evidence to the existing locator shape', () => {
+  const record = admittedRecord()
+  for (const canonicalization of ['canonical', 'normalized']) {
+    const result = bindLegacyPlayerShadowEvidenceV1(record, { ...evidence(record), canonicalization })
+    assert.deepEqual(result, locator())
+  }
+})
+
+test('rejects every evidence identity mismatch and non-success outcome', () => {
+  const record = admittedRecord()
+  const valid = evidence(record)
+  const invalid = [
+    { ...valid, outcome: 'not_found' },
+    { ...valid, canonicalization: 'invalid' },
+    { ...valid, storageFormat: 'legacy-v1' },
+    { ...valid, canonicalName: 'Bob' },
+    { ...valid, legacyShard: expectedShard('Bob') },
+    { ...valid, playerFileSha256: 'b'.repeat(64) },
+    { ...valid, playerFileSha256: 'A'.repeat(64) },
+    { ...valid, playerFileSha256: 'f'.repeat(63) },
+  ]
+  for (const candidate of invalid) assert.equal(bindLegacyPlayerShadowEvidenceV1(record, candidate), undefined)
+})
+
+test('rejects malformed evidence containers, extra fields, symbols, and accessors', () => {
+  const valid = evidence()
+  const withSymbol = { ...valid, [Symbol('extra')]: true }
+  const withAccessor = Object.defineProperty({ ...valid }, 'legacyShard', {
+    enumerable: true,
+    get: () => valid.legacyShard,
+  })
+  const withNonEnumerable = Object.defineProperty({ ...valid }, 'hidden', {
+    enumerable: false,
+    value: true,
+  })
+  const coreNonEnumerable = Object.defineProperty({ ...valid }, 'legacyShard', {
+    enumerable: false,
+    value: valid.legacyShard,
+  })
+  for (const candidate of [
+    { ...valid, extra: true }, withSymbol, withAccessor, withNonEnumerable, coreNonEnumerable,
+    null, [], Object.create(null, Object.getOwnPropertyDescriptors(valid)),
+  ]) assert.equal(bindLegacyPlayerShadowEvidenceV1(admittedRecord(), candidate), undefined)
+})
+
+test('does not mutate the validated record or strict evidence on rejection or acceptance', () => {
+  const record = admittedRecord()
+  const valid = evidence(record)
+  const recordBefore = structuredClone(record)
+  const evidenceBefore = structuredClone(valid)
+  assert.deepEqual(bindLegacyPlayerShadowEvidenceV1(record, valid), locator())
+  assert.equal(bindLegacyPlayerShadowEvidenceV1(record, { ...valid, canonicalName: 'Bob' }), undefined)
+  assert.deepEqual(record, recordBefore)
+  assert.deepEqual(valid, evidenceBefore)
 })
