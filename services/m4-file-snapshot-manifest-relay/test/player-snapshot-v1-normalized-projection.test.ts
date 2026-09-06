@@ -11,11 +11,14 @@ import {
 
 const payload = Buffer.from('one immutable PlayerSnapshotV1 artifact')
 const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+// Emitted by Rust PlayerSnapshotNormalizedV1::canonical_digest for these exact fields.
+// This is intentionally a literal cross-language vector, not a Node digest helper.
+const RUST_EXTREME_VECTOR_DIGEST = 'ccbc64069c88e10f35089d0bbda2278112911b4294f44caf32fc101f41c3ff80'
 
 function projection(value: Record<string, unknown> = {}): string {
   return `${JSON.stringify({
     format: 'player-snapshot-v1-normalized-projection', version: 1, algorithm: 'sha-256',
-    canonical_digest: 'a'.repeat(64),
+    canonical_digest: RUST_EXTREME_VECTOR_DIGEST,
     player: {
       level: 42, hp_max: 100, hp_current: 99, mp_max: 50, mp_current: 49,
       experience: 9_223_372_036_854_775_807n.toString(), gold: '-9223372036854775808',
@@ -83,7 +86,7 @@ test('normalized projection passes one immutable artifact to the fixed shell-fre
     file: '/opt/muhan/player_snapshot_v1_normalized_project', args: ['--snapshot-sha256', snapshotSha256],
     options: { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
   }])
-  assert.equal(result.canonicalDigest, 'a'.repeat(64))
+  assert.equal(result.canonicalDigest, RUST_EXTREME_VECTOR_DIGEST)
   assert.equal(result.player.experience, 9_223_372_036_854_775_807n)
   assert.equal(result.player.gold, -9_223_372_036_854_775_808n)
   assert.deepEqual(Object.keys(result.player).sort(), [
@@ -105,10 +108,14 @@ test('normalized projection rejects bad configuration or a payload/digest mismat
   }
 })
 
-test('normalized projection rejects non-success, diagnostics, partial/malformed output, unknown keys, leaks, invalid bounds, and invalid topology', async () => {
+test('normalized projection rejects non-success, diagnostics, malformed output, digest mismatches, token forgery, extra lines, leaks, invalid bounds, and invalid topology', async () => {
   const cases: Array<{ stdout: string, stderr?: string, code?: number | null, signal?: NodeJS.Signals | null }> = [
     { stdout: projection(), stderr: 'diagnostic' }, { stdout: projection(), code: 1 }, { stdout: projection(), signal: 'SIGTERM' },
     { stdout: projection().slice(0, -2) }, { stdout: projection().replace('"algorithm":"sha-256"', '"algorithm":"sha-512"') },
+    { stdout: projection().replace('"hp_current":99', '"hp_current":98') },
+    { stdout: projection().replace(RUST_EXTREME_VECTOR_DIGEST, '0'.repeat(64)) },
+    { stdout: projection().replace('"level":42', '"level":{"token":"42"}') },
+    { stdout: `\n${projection()}` }, { stdout: `${projection()}\n` },
     { stdout: projection().replace('"items":[', '"flags":[],"items":[') },
     { stdout: projection().replace('"level":42', '"level":256') },
     { stdout: projection().replace('"shots_current":2', '"shots_current":3') },

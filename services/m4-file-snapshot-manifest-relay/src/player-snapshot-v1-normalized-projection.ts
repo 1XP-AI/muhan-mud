@@ -123,7 +123,11 @@ function decodeUtf8(bytes: Uint8Array): string {
 }
 
 type JsonValue = string | null | JsonNumber | JsonValue[] | { [key: string]: JsonValue }
-interface JsonNumber { readonly token: string }
+
+/** Parser-internal number marker; ordinary JSON objects must never impersonate it. */
+class JsonNumber {
+  constructor(readonly token: string) {}
+}
 
 /** A small JSON parser that retains integer tokens, avoiding i64 precision loss in JSON.parse. */
 class JsonParser {
@@ -225,7 +229,7 @@ class JsonParser {
       if (!this.digit(this.text[this.offset])) throw invalid()
       while (this.digit(this.text[this.offset])) this.offset++
     }
-    return { token: this.text.slice(start, this.offset) }
+    return new JsonNumber(this.text.slice(start, this.offset))
   }
 
   private take(value: string): boolean {
@@ -249,8 +253,7 @@ function closedObject(value: JsonValue, fields: readonly string[]): { [key: stri
 }
 
 function isJsonNumber(value: JsonValue): value is JsonNumber {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).length === 1 && typeof (value as { token?: unknown }).token === 'string'
+  return value instanceof JsonNumber
 }
 
 function number(value: JsonValue, lower: bigint, upper: bigint): bigint {
@@ -340,9 +343,66 @@ function validTopology(items: readonly PlayerSnapshotV1NormalizedItem[]): boolea
   return true
 }
 
+function u8(value: number): Buffer {
+  const output = Buffer.allocUnsafe(1)
+  output.writeUInt8(value)
+  return output
+}
+
+function i8(value: number): Buffer {
+  const output = Buffer.allocUnsafe(1)
+  output.writeInt8(value)
+  return output
+}
+
+function u16(value: number): Buffer {
+  const output = Buffer.allocUnsafe(2)
+  output.writeUInt16BE(value)
+  return output
+}
+
+function i16(value: number): Buffer {
+  const output = Buffer.allocUnsafe(2)
+  output.writeInt16BE(value)
+  return output
+}
+
+function u32(value: number): Buffer {
+  const output = Buffer.allocUnsafe(4)
+  output.writeUInt32BE(value)
+  return output
+}
+
+function i64(value: bigint): Buffer {
+  const output = Buffer.allocUnsafe(8)
+  output.writeBigInt64BE(value)
+  return output
+}
+
+/** Mirrors Rust PlayerSnapshotNormalizedV1::canonical_bytes exactly. */
+function calculatedCanonicalDigest(player: PlayerSnapshotV1NormalizedProjection['player']): string {
+  const bytes: Buffer[] = [
+    Buffer.from('muhan/player-snapshot-normalized-v1\0', 'ascii'), u16(VERSION), u8(player.level),
+    i16(player.hpMax), i16(player.hpCurrent), i16(player.mpMax), i16(player.mpCurrent),
+    i64(player.experience), i64(player.gold),
+  ]
+  for (const daily of player.daily) bytes.push(u8(daily.max), u8(daily.current), i64(daily.lastUsed))
+  for (const timer of player.timers) bytes.push(i64(timer.interval), i64(timer.lastUsed), i16(timer.misc))
+  bytes.push(u32(player.items.length))
+  for (const item of player.items) {
+    bytes.push(
+      u32(item.parentIndex ?? 0xffff_ffff), u32(item.childIndex), i64(item.value), i16(item.weight),
+      i8(item.typeCode), i8(item.adjustment), i16(item.shotsMax), i16(item.shotsCurrent), i16(item.ndice),
+      i16(item.sdice), i16(item.pdice), i8(item.armor), i8(item.wearFlag), i8(item.magicPower),
+      i8(item.magicRealm), i16(item.special),
+    )
+  }
+  return createHash('sha256').update(Buffer.concat(bytes)).digest('hex')
+}
+
 function parseProjection(stdout: Uint8Array): PlayerSnapshotV1NormalizedProjection {
   const text = decodeUtf8(stdout)
-  if (!text.endsWith('\n') || text.includes('\r')) throw invalid()
+  if (!text.endsWith('\n') || text.includes('\r') || text.indexOf('\n') !== text.length - 1) throw invalid()
   const root = closedObject(new JsonParser(text.slice(0, -1)).parse(), ['algorithm', 'canonical_digest', 'format', 'player', 'version'])
   if (string(root.format!) !== FORMAT || nativeNumber(root.version!, 1n, 1n) !== VERSION || string(root.algorithm!) !== ALGORITHM) throw invalid()
   const canonicalDigest = string(root.canonical_digest!)
@@ -358,7 +418,7 @@ function parseProjection(stdout: Uint8Array): PlayerSnapshotV1NormalizedProjecti
   if (!Array.isArray(player.items!) || player.items!.length > MAX_ITEMS) throw invalid()
   const items = player.items!.map(parseItem)
   if (!validTopology(items)) throw invalid()
-  return {
+  const projection: PlayerSnapshotV1NormalizedProjection = {
     format: FORMAT, version: VERSION, algorithm: ALGORITHM, canonicalDigest,
     player: {
       level: nativeNumber(player.level!, 0n, MAX_U8), hpMax, hpCurrent, mpMax, mpCurrent,
@@ -366,6 +426,8 @@ function parseProjection(stdout: Uint8Array): PlayerSnapshotV1NormalizedProjecti
       daily, timers, items,
     },
   }
+  if (calculatedCanonicalDigest(projection.player) !== canonicalDigest) throw invalid()
+  return projection
 }
 
 /**
