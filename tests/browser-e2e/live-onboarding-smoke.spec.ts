@@ -59,10 +59,14 @@ test.describe("operator-approved live onboarding smoke", () => {
 
     await page.getByRole("button", { name: "새 캐릭터 만들기" }).click();
     await expect(page.getByRole("heading", { name: "새 캐릭터 만들기" })).toBeVisible();
-    // This matches the real C/Gateway lifecycle: name reserves the fixture;
-    // the operator-provided wizard inputs cause C SAVED; Gateway finalizes
-    // durable ownership and sends C COMMIT before it emits `provisioned`.
+    // This matches the real C/Gateway lifecycle: C requires legacy name
+    // confirmation and an explicit blank [enter] before it reserves the
+    // fixture. The operator-provided wizard inputs cause C SAVED; Gateway
+    // finalizes durable ownership and sends C COMMIT then ACTIVATED before it
+    // emits `provisioned`.
     await submitOnboardingInput(page, fixture.characterName);
+    await submitOnboardingInput(page, "예");
+    await submitOnboardingInput(page, "");
     await submitOnboardingInput(page, fixture.gender);
     await submitOnboardingInput(page, fixture.characterClass);
     await submitOnboardingInput(page, fixture.stats);
@@ -77,7 +81,8 @@ test.describe("operator-approved live onboarding smoke", () => {
     await expect(page.getByText("새 캐릭터가 활성화됐습니다.")).toBeVisible();
 
     // Return to the roster only after the provisioned control has confirmed
-    // the full C SAVED -> Gateway finalize -> C COMMIT transaction.
+    // the full C SAVED -> Gateway finalize -> C COMMIT -> C ACTIVATED
+    // transaction.
     await page.getByRole("button", { name: "취소하고 캐릭터 선택" }).click();
     await assertActiveRosterAndGatewayAdmission(page, fixture.characterName);
   });

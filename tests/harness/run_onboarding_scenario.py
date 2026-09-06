@@ -42,6 +42,7 @@ PASSWORD = "onb-pass-123"
 ACTOR = "11111111-1111-4111-8111-111111111111"
 CORRELATION = "22222222-2222-4222-8222-222222222222"
 CHARACTER = "33333333-3333-4333-8333-333333333333"
+CLAIM_ACTIVATION_COMMAND = "12121212-1212-4121-8121-121212121212"
 
 
 class Redactor:
@@ -811,11 +812,23 @@ def main() -> int:
         if verified != expected_verified:
             raise ScenarioFailure("claim did not digest the verified on-disk player file")
         claim.send_fragmented(f"MUD1O CLAIMED|{CHARACTER}\n".encode(), 11)
-        # Activation belongs to the real Gateway's finalized handoff.  This
-        # local C peer stops after CLAIMED so it does not invent that DB step.
-        claim.sock.shutdown(socket.SHUT_RDWR)
+        # The private control peer models the real Gateway only after its
+        # finalized ownership handoff. Use a distinct command ID: the earlier
+        # provision activation has already bound CHARACTER on disk.
+        claim.send_fragmented(
+            f"MUD1O ACTIVATED|{CLAIM_ACTIVATION_COMMAND}\n".encode(), 13,
+        )
+        active = read_control(claim, b"MUD1O ACTIVE|")
+        expected_active = f"MUD1O ACTIVE|{CLAIM_ACTIVATION_COMMAND}\n".encode()
+        if active != expected_active:
+            raise ScenarioFailure("claim did not acknowledge its finalized activation command")
+        if claim.read_close() != b"":
+            raise ScenarioFailure("successful claim emitted player text instead of closing")
         claim.sock.close()
-        result["events"].append({"case": "claim-success", "response": "VERIFIED/CLAIMED"})
+        result["events"].append({
+            "case": "claim-success",
+            "response": "VERIFIED/CLAIMED/ACTIVATED/ACTIVE-close",
+        })
 
         stage = "claim-wrong-password"
         wrong = Session(connect_first(port, args.timeout, process), redactor, args.timeout)

@@ -464,14 +464,22 @@ test("mobile viewport keeps the onboarding command input usable", async ({ page 
 
   const command = page.getByLabel("온보딩 입력");
   await expect(command).toBeVisible();
+  // The legacy character-creation flow has an explicit "[enter]" gate after
+  // name confirmation.  A mobile user must therefore be able to send an empty
+  // line through this accessible command form, not only through xterm.
+  await expect(page.getByRole("button", { name: "보내기" })).toBeEnabled();
+  await page.getByRole("button", { name: "보내기" }).click();
   await command.fill("mobile-placeholder");
   await expect(page.getByRole("button", { name: "보내기" })).toBeEnabled();
   await page.getByRole("button", { name: "보내기" }).click();
   await expect.poll(async () => page.evaluate(() => {
     const sockets = window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")) ?? [];
     const socket = sockets[sockets.length - 1];
-    return socket?.sentBytes[0] ?? [];
-  })).toEqual([...new TextEncoder().encode("mobile-placeholder\n")]);
+    return socket?.sentBytes ?? [];
+  })).toEqual([
+    [...new TextEncoder().encode("\n")],
+    [...new TextEncoder().encode("mobile-placeholder\n")],
+  ]);
 });
 
 test("claim sends the legacy name and password safely, then returns to the roster", async ({ page }) => {

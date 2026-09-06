@@ -9,7 +9,7 @@ Do not use a personal account, an arbitrary character name, or an arbitrary lega
 - A pre-created web account with an empty roster and one approved, globally unique provision character name.
 - A different pre-created web account with an empty roster, plus one imported-and-unclaimed legacy character and its known legacy password.
 
-The C/Gateway provision path is not a one-name check. It preserves the legacy name confirmation and `[enter]` gate before reserving the supplied name, accepts the existing wizard's gender, class, stats, weapon, alignment, race, and game-password inputs, waits for C to emit `SAVED`, lets Gateway finalize ownership, and then lets Gateway send C `COMMIT` followed by `ACTIVATED`. The browser test waits for the resulting provisioned control, returns to the active roster, and opens a normal authenticated game session as admission evidence.
+The C/Gateway provision path is not a one-name check. It preserves the legacy name confirmation and `[enter]` gate before reserving the supplied name, accepts the existing wizard's gender, class, stats, weapon, alignment, race, and game-password inputs, waits for C to emit `SAVED`, lets Gateway finalize ownership, and then lets Gateway send C `COMMIT` followed by `ACTIVATED`. The browser test sends the name, confirmation, and an empty line in that order; it then waits for the resulting provisioned control, returns to the active roster, and opens a normal authenticated game session as admission evidence.
 
 The legacy game password is currently stored in the legacy player file and must differ from the web-login password.
 
@@ -42,7 +42,7 @@ Run only after the above preparation and approval:
 pnpm exec playwright test --config=tests/browser-e2e/live-onboarding-smoke.config.ts --project=chromium
 ```
 
-The provision case signs in only to the named existing account and sends only the supplied character name plus the supplied existing-wizard answers; it never uses the sign-up UI, generates a name, or invents an answer. It proves the `SAVED` → finalize → `COMMIT` path with the browser's post-commit provisioned control, then proves the named active roster entry and a normal authenticated game admission. The claim case signs in only to its named existing account and consumes only the supplied legacy-name/password fixture; it proves the same resulting active-roster and admission evidence.
+The provision case signs in only to the named existing account and sends only the supplied character name, the fixed legacy confirmation, its empty `[enter]`, and the supplied existing-wizard answers; it never uses the sign-up UI, generates a name, or invents an answer. It proves the `SAVED` → finalize → `COMMIT` → `ACTIVATED` path with the browser's provisioned control, then proves the named active roster entry and a normal authenticated game admission. The claim case signs in only to its named existing account and consumes only the supplied legacy-name/password fixture; it proves the same resulting active-roster and admission evidence.
 
 ## Safe default and operator checks
 

@@ -359,7 +359,10 @@ export function OnboardingTerminal({
 
   const submitMobileLine = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (composingRef.current || !mobileLine) return;
+    // The legacy character-creation confirmation explicitly requires a blank
+    // [enter]. Readiness and IME composition are the only submission gates:
+    // an empty line remains valid terminal input.
+    if (composingRef.current) return;
     if (sendInputRef.current(`${mobileLine}\n`)) {
       setMobileLine("");
       terminalRef.current?.focus();
@@ -415,7 +418,7 @@ export function OnboardingTerminal({
           type={echo ? "text" : "password"}
           value={mobileLine}
         />
-        <button disabled={!ready || !mobileLine} type="submit">
+        <button disabled={!ready} type="submit">
           보내기
         </button>
       </form>
