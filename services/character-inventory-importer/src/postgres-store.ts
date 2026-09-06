@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import type { BatchIdentity } from './batch-identity.js'
-import type { ExistingCharacter, ImportStore, ImportTransaction, InventoryRecord, LedgerBatch } from './inventory.js'
+import type { BatchMemberIdentity, ExistingCharacter, ImportStore, ImportTransaction, InventoryRecord, LedgerBatch } from './inventory.js'
 
 interface QueryResult<Row> { rows: Row[] }
 interface PgClient { query<Row = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<QueryResult<Row>>, release(): void }
@@ -34,6 +34,13 @@ interface LegacyLocatorRow {
   canonical_legacy_name: string
   legacy_name_sha1: string
   legacy_shard: string
+}
+
+interface BatchMemberIdentityRow {
+  canonical_name: string
+  legacy_shard: string
+  imported_file_sha256: string | null
+  storage_format: number
 }
 
 const require = createRequire(import.meta.url)
@@ -184,6 +191,25 @@ class PostgresImportTransaction implements ImportTransaction {
       [worldId, streamId, stableKey],
     )
     return this.batch(result.rows[0])
+  }
+
+  async findBatchMemberIdentities(worldId: string, streamId: string, sequence: number): Promise<readonly BatchMemberIdentity[]> {
+    const result = await this.client.query<BatchMemberIdentityRow>(
+      `select character.legacy_name_key as canonical_name,
+              character.legacy_shard,
+              character.imported_file_sha256,
+              character.storage_format
+         from private.game_imported_unclaimed_batch_members as member
+         join public.game_characters as character on character.id = member.character_id
+        where member.world_id = $1 and member.stream_id = $2 and member.batch_sequence = $3`,
+      [worldId, streamId, sequence],
+    )
+    return result.rows.map((row) => ({
+      canonicalName: row.canonical_name,
+      shard: row.legacy_shard,
+      sha256: row.imported_file_sha256 ?? '',
+      storageFormat: row.storage_format,
+    }))
   }
 
   async createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void> {

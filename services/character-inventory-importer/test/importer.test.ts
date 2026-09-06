@@ -87,6 +87,7 @@ class MemoryStore implements ImportStore {
         },
         lockBatchStream: async () => undefined,
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
+        findBatchMemberIdentities: async () => [],
         findBatchByIdentity: async (world, stream, stableKey) => batchIdentities.get(`${world}|${stream}|${stableKey}`),
         createBatch: async ({ identity, streamId, sequence, recordCount }) => {
           const batch = { stableKey: identity.stableKey, sequence, recordCount }

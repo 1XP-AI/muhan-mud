@@ -4,7 +4,7 @@ import test from 'node:test'
 import { createBatchIdentity } from '../src/batch-identity.js'
 import { parseImportedUnclaimedManifest } from '../src/imported-unclaimed-manifest.js'
 import { bindLegacyPlayerShadowEvidenceV1 } from '../src/legacy-player-shadow-binding.js'
-import { BatchImportError, expectedShard, importBatch, importRecords, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
+import { BatchImportError, expectedShard, importBatch, importRecords, sameBatchMemberIdentity, type BatchMemberIdentity, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
 import { EXPECTED_LEGACY_PLAYER_FILE_SHA256, importerBindingFixture } from './legacy-identity-evidence-fixture.js'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -79,6 +79,13 @@ class BatchMemoryStore implements ImportStore {
         },
         lockBatchStream: async () => undefined,
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
+        findBatchMemberIdentities: async (world, stream, sequence): Promise<readonly BatchMemberIdentity[]> => [...members.values()]
+          .filter((member) => member.worldId === world && member.streamId === stream && member.sequence === sequence)
+          .map((member) => {
+            const row = rows.get(`${world}|${member.characterId.split(':').slice(2).join(':')}`)
+            if (!row) throw new Error('missing batch member character')
+            return { canonicalName: row.legacyNameKey, shard: row.legacyShard, sha256: row.importedFileSha256 ?? '', storageFormat: row.storageFormat }
+          }),
         findBatchByIdentity: async (world, stream, stableKey) => identities.get(`${world}|${stream}|${stableKey}`),
         createBatch: async ({ identity: value, streamId, sequence, recordCount }) => {
           batchInputs.push({ identity: { ...value }, streamId, sequence, recordCount })
@@ -290,6 +297,46 @@ test('exact identity and sequence retry is ledger-idempotent with no character w
   assert.equal(store.members.size, 1)
   assert.equal(store.locators.size, 1)
   assert.equal(store.batches.size, 1)
+})
+
+test('same batch identity rejects a retry whose canonical file tuple differs', async () => {
+  const store = new BatchMemoryStore()
+  const value = identity()
+  await importBatch(store, [record('Alice')], { identity: value, streamId: 'main', sequence: 0, apply: true })
+  await assert.rejects(
+    () => importBatch(store, [{ ...record('Alice'), sha256: digest('different-file') }], { identity: value, streamId: 'main', sequence: 0, apply: true }),
+    (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_identity_conflict',
+  )
+  assert.equal(store.writes, 1)
+  assert.equal(store.members.size, 1)
+})
+
+test('same batch identity rejects a retry when the committed record count drifts', async () => {
+  const store = new BatchMemoryStore()
+  const value = identity()
+  await importBatch(store, [record('Alice')], { identity: value, streamId: 'main', sequence: 0, apply: true })
+  store.batches.get('batch-world|main|0')!.recordCount = 2
+  await assert.rejects(
+    () => importBatch(store, [record('Alice')], { identity: value, streamId: 'main', sequence: 0, apply: true }),
+    (error: unknown) => error instanceof BatchImportError && error.code === 'batch_sequence_identity_conflict',
+  )
+})
+
+test('batch member identity is an exact canonical name, shard, SHA-256, and format tuple', () => {
+  const candidate = record('Alice')
+  const valid: BatchMemberIdentity = {
+    canonicalName: candidate.canonicalNameKey,
+    shard: candidate.expectedShard,
+    sha256: candidate.sha256,
+    storageFormat: 1,
+  }
+  assert.equal(sameBatchMemberIdentity(candidate, valid), true)
+  for (const invalid of [
+    { ...valid, canonicalName: 'Bob' },
+    { ...valid, shard: '00' },
+    { ...valid, sha256: digest('different-file') },
+    { ...valid, storageFormat: 2 },
+  ]) assert.equal(sameBatchMemberIdentity(candidate, invalid), false)
 })
 
 test('an already idempotent character is never retrospectively targeted to a later batch', async () => {

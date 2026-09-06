@@ -47,6 +47,7 @@ export interface ImportTransaction {
   insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<string>
   lockBatchStream(worldId: string, streamId: string): Promise<void>
   findBatchBySequence(worldId: string, streamId: string, sequence: number): Promise<LedgerBatch | undefined>
+  findBatchMemberIdentities(worldId: string, streamId: string, sequence: number): Promise<readonly BatchMemberIdentity[]>
   findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined>
   createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void>
   /** Appends a permanent, private link from a new character to its creating batch. */
@@ -80,6 +81,14 @@ export interface LedgerBatch {
   stableKey: string
   sequence: number
   recordCount: number
+}
+
+/** Durable file identity captured by a batch member. */
+export interface BatchMemberIdentity {
+  canonicalName: string
+  shard: string
+  sha256: string
+  storageFormat: number
 }
 
 export interface BatchImportOptions {
@@ -230,6 +239,14 @@ function sameImportedIdentity(record: InventoryRecord, existing: ExistingCharact
   return undefined
 }
 
+/** Pure exact tuple contract used when replaying an already committed batch. */
+export function sameBatchMemberIdentity(record: InventoryRecord, member: BatchMemberIdentity): boolean {
+  return record.canonicalNameKey === member.canonicalName
+    && record.expectedShard === member.shard
+    && record.sha256 === member.sha256
+    && member.storageFormat === 1
+}
+
 function legacyNameSha1(canonicalName: string): string {
   return createHash('sha1').update(canonicalName, 'utf8').digest('hex')
 }
@@ -360,7 +377,13 @@ export async function importBatch(store: ImportStore, records: readonly Inventor
     await transaction.lockBatchStream(validated.identity.worldId, validated.streamId)
     const atSequence = await transaction.findBatchBySequence(validated.identity.worldId, validated.streamId, validated.sequence)
     if (atSequence) {
-      if (atSequence.stableKey !== validated.identity.stableKey) throw new BatchImportError('batch_sequence_identity_conflict')
+      if (atSequence.stableKey !== validated.identity.stableKey
+        || atSequence.recordCount !== admitted.ordered.length) throw new BatchImportError('batch_sequence_identity_conflict')
+      const members = await transaction.findBatchMemberIdentities(validated.identity.worldId, validated.streamId, validated.sequence)
+      if (members.length !== admitted.ordered.length
+        || admitted.ordered.some((record) => !members.some((member) => sameBatchMemberIdentity(record, member)))) {
+        throw new BatchImportError('batch_sequence_identity_conflict')
+      }
       return { ...base(), idempotent: atSequence.recordCount, ledger: 'idempotent' }
     }
     if (await transaction.findBatchByIdentity(validated.identity.worldId, validated.streamId, validated.identity.stableKey)) {
