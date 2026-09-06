@@ -160,6 +160,7 @@ unit-test:
 	$(MAKE) m3-feature-off-legacy-authority-test
 	$(MAKE) onboarding-activation-snapshot-receipt-test
 	$(MAKE) m3-live-save-all-shadow-binding-test
+	$(MAKE) m3-save-all-ply-receipt-path-test
 	$(MAKE) m3-runtime-idle-hook-static-test
 	$(MAKE) m3-wake-v1-test
 	$(MAKE) m3-wake-supervisor-test
@@ -435,6 +436,14 @@ m3-live-save-all-shadow-binding-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -DUSE_M3_RUNTIME -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/m3_live_save_all_shadow_binding_test.c files2.c command8.c global.c character_save_journal_v2_runtime.c player_store.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_live_save_all_shadow_binding_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/m3_live_save_all_shadow_binding_sanitizer_test
+
+# This is a hermetic integration slice for the actual legacy bulk-save caller.
+# It binds the production journal PlayerStore via the runtime's shadow seam and
+# uses only an in-process RPC fixture plus an mkdtemp journal root.
+m3-save-all-ply-receipt-path-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -DUSE_M3_RUNTIME -DCHARACTER_SAVE_JOURNAL_V2_TESTING -DCHARACTER_SAVE_JOURNAL_V2_WRITER_TESTING -DCHARACTER_SAVE_JOURNAL_V2_PUBLISH_TESTING -DCHARACTER_SAVE_JOURNAL_V2_ACK_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) ../tests/unit/m3_save_all_ply_receipt_path_test.c files2.c command8.c global.c character_save_journal_v2_runtime.c player_store.c character_save_journal_v2_player_store.c character_save_journal_v2_bootstrap.c character_save_journal_v2_live_ops.c character_save_journal_v2_rpc_transport.c character_save_journal_v2_protocol.c character_save_journal_v2_recovery.c character_save_journal_v2_ack.c character_save_journal_v2_publish.c character_save_journal_v2_route.c character_save_journal_v2_writer.c character_save_journal_v2.c utf8_text.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/m3_save_all_ply_receipt_path_test
+	/tmp/muhan-unit/m3_save_all_ply_receipt_path_test
 
 character-snapshot-shadow-outbox-test:
 	mkdir -p /tmp/muhan-unit
