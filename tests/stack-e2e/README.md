@@ -2,8 +2,11 @@
 
 `../../scripts/run-stack-e2e.sh` creates a uniquely named, internal-only
 Docker network, disposable PostgreSQL 17 container, and PostgREST container.
-It applies `bootstrap_contract.sql`, migrations 020/030/040/050/060/070, then runs the
-real C binary and Gateway against that PostgREST instance. No host volume,
+It applies `bootstrap_contract.sql`, the identity migrations through 210, then runs the
+real C binary and Gateway against that PostgREST instance. Before the broader
+onboarding scenario, a separately gated PostgreSQL 17 contract sends the shared
+admission identity fixture through the real Gateway finalizer HTTP transport and
+its shard-aware RPC. No host volume,
 named volume, existing container, or checked-in data is used; cleanup is
 installed before the first Docker object is created.
 

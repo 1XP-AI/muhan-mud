@@ -99,6 +99,23 @@ apply_sql "$repo_root/supabase/migrations/20260905000000_claim_fingerprint_safet
 apply_sql "$repo_root/supabase/migrations/20260906000000_claim_actor_rate_limit.sql"
 apply_sql "$repo_root/supabase/migrations/20260907000000_claim_challenge_safety.sql"
 apply_sql "$repo_root/supabase/migrations/20260908000000_service_rpc_fresh_clock.sql"
+# Keep the existing stack at the pre-handoff lifecycle checkpoint, but expose
+# the real shard-aware finalizer RPC to its focused admission contract below.
+# Later handoff migrations intentionally change the old stack's completion
+# protocol and belong to their own contract lane.
+apply_sql "$repo_root/supabase/migrations/20260909000000_m3_shadow_receipts.sql"
+apply_sql "$repo_root/supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql"
+apply_sql "$repo_root/supabase/migrations/20260911000000_m3_writer_session.sql"
+apply_sql "$repo_root/supabase/migrations/20260912000000_m3_live_save_route.sql"
+apply_sql "$repo_root/supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql"
+apply_sql "$repo_root/supabase/migrations/20260914000000_m4_file_snapshot_manifest.sql"
+apply_sql "$repo_root/supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql"
+apply_sql "$repo_root/supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql"
+apply_sql "$repo_root/supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql"
+apply_sql "$repo_root/supabase/migrations/20260918000000_m3_absent_head_seed.sql"
+apply_sql "$repo_root/supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql"
+apply_sql "$repo_root/supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql"
+apply_sql "$repo_root/supabase/migrations/20260921000000_legacy_identity_evidence_binding.sql"
 
 if ! docker create --name "$postgrest_name" --network bridge \
   -p 127.0.0.1::3000 \
@@ -155,7 +172,10 @@ STACK_E2E_SERVICE_ROLE_JWT="$service_role_jwt" \
 STACK_E2E_JWT_SECRET="$jwt_secret" \
 STACK_E2E_BINARY="$work_dir/frp.new" \
 STACK_E2E_ARTIFACT="$work_dir/result.json" \
-  pnpm --dir "$repo_root/services/gateway" exec tsx --test "$repo_root/tests/stack-e2e/stack-e2e.test.ts" || test_status=$?
+ADMISSION_IDENTITY_PG17_ALLOW_DISPOSABLE=1 \
+  pnpm --dir "$repo_root/services/gateway" exec tsx --test \
+    "$repo_root/tests/stack-e2e/admission-identity-pg17.integration.test.ts" \
+    "$repo_root/tests/stack-e2e/stack-e2e.test.ts" || test_status=$?
 
 if [[ -n "${STACK_E2E_OUTPUT:-}" ]] && [[ -f "$work_dir/result.json" ]]; then
   cp "$work_dir/result.json" "$STACK_E2E_OUTPUT"
