@@ -115,6 +115,26 @@ trusted-alias-identity-context-v1-sanitizer-test: trusted-alias-identity-context
 	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -I. ../tests/unit/trusted_alias_identity_context_v1_test.c trusted_alias_identity_context_v1.c alias_title_snapshot_manifest_v1.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/trusted_alias_identity_context_v1_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/trusted_alias_identity_context_v1_sanitizer_test
 
+# MUD1C is deliberately feature-off and detached: these targets are the only
+# build compositions that compile it, and neither enters legacy OBJECTS.
+mud1c-admission-context-static-test:
+	python3 ../tests/unit/mud1c_admission_context_static_test.py
+
+mud1c-admission-context-feature-off-test: mud1c-admission-context-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -I. ../tests/unit/mud1c_admission_context_feature_off_test.c mud1c_admission_context.c -o /tmp/muhan-unit/mud1c_admission_context_feature_off_test
+	/tmp/muhan-unit/mud1c_admission_context_feature_off_test
+
+mud1c-admission-context-test: mud1c-admission-context-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -DMUD1C_ADMISSION_CONTEXT_ENABLED=1 -I. ../tests/unit/mud1c_admission_context_test.c mud1c_admission_context.c -o /tmp/muhan-unit/mud1c_admission_context_test
+	/tmp/muhan-unit/mud1c_admission_context_test
+
+mud1c-admission-context-sanitizer-test: mud1c-admission-context-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -DMUD1C_ADMISSION_CONTEXT_ENABLED=1 -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -I. ../tests/unit/mud1c_admission_context_test.c mud1c_admission_context.c -o /tmp/muhan-unit/mud1c_admission_context_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/mud1c_admission_context_sanitizer_test
+
 unit-test:
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/resource_tree_manifest_test.py
