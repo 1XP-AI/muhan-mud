@@ -174,11 +174,17 @@ test('auth-first trusted relay writes ticket, waits for fragmented ACK, and pres
 })
 
 test('does not pass through upstream terminal bytes before the MUD1 OK admission ACK', async (t) => {
-  const mud = createServer((socket) => socket.once('data', () => {
-    socket.write('MUD1 ')
-    setTimeout(() => socket.write(Buffer.concat([
+  let receivedTicket: Buffer | undefined
+  let signalPartialPrefix!: () => void
+  const ticketReceivedAndPartialPrefixSent = new Promise<void>((resolve) => { signalPartialPrefix = resolve })
+  let releaseAck!: () => void
+  const ackReleased = new Promise<void>((resolve) => { releaseAck = resolve })
+  const mud = createServer((socket) => socket.once('data', (ticket) => {
+    receivedTicket = Buffer.from(ticket)
+    socket.write('MUD1 ', () => signalPartialPrefix())
+    void ackReleased.then(() => socket.write(Buffer.concat([
       Buffer.from('OK\n'), Buffer.from([0xec, 0x95, 0x88, 0xff, 0xfb, 0x01])
-    ])), 80)
+    ])))
   }))
   mud.listen(0, '127.0.0.1')
   await once(mud, 'listening')
@@ -188,10 +194,13 @@ test('does not pass through upstream terminal bytes before the MUD1 OK admission
 
   const { ws, messages } = await openWs(gateway)
   ws.send(authFrame())
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await ticketReceivedAndPartialPrefixSent
+  assert.ok(receivedTicket, 'fake MUD must receive the admission ticket')
+  assert.match(receivedTicket.toString('ascii'), /^MUD1\|[^\n]+\n$/)
   assert.equal(ws.readyState, WebSocket.OPEN)
   assert.deepEqual(messages, [], 'admission fragments and upstream bytes must remain gated')
 
+  releaseAck()
   await waitForMessage(messages, ({ data, isBinary }) => !isBinary && Buffer.from(data).toString() === '{"type":"ready"}')
   await waitForMessage(messages, ({ data, isBinary }) => isBinary && Buffer.from(data).toString('utf8') === '안')
   ws.close()
