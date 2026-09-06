@@ -22,6 +22,9 @@ create or replace function pg_temp.record_bank_nodes(p_nodes jsonb) returns text
 
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(null::jsonb)');
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[]''::jsonb)');
+select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"parentNodeIndex":null,"siblingOrdinal":0} ]''::jsonb)');
+select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":0,"siblingOrdinal":0} ]''::jsonb)');
+select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":0,"parentNodeIndex":null} ]''::jsonb)');
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0}, {"nodeIndex":1,"parentNodeIndex":null,"siblingOrdinal":1} ]''::jsonb)');
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":0,"parentNodeIndex":0,"siblingOrdinal":0} ]''::jsonb)');
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":"0","parentNodeIndex":null,"siblingOrdinal":0} ]''::jsonb)');
@@ -30,7 +33,7 @@ select jsonb_agg(jsonb_build_object('nodeIndex',i,'parentNodeIndex',case when i=
 select pg_temp.expect_state('22023',format('select pg_temp.record_bank_nodes(%L::jsonb)',:'bsv_depth_nodes'));
 select pg_temp.assert_true(not exists(select 1 from private.game_character_bank_snapshot_v1_topology_shadows where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid),'every rejected topology leaves no shadow evidence');
 
-select pg_temp.assert_true(pg_temp.record_bank_nodes('[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0},{"nodeIndex":1,"parentNodeIndex":0,"siblingOrdinal":0},{"nodeIndex":2,"parentNodeIndex":1,"siblingOrdinal":0}]'::jsonb)='RECORDED','a canonical one-root depth-three topology records');
+select pg_temp.assert_true(pg_temp.record_bank_nodes('[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0},{"nodeIndex":1,"parentNodeIndex":0,"siblingOrdinal":0},{"nodeIndex":2,"parentNodeIndex":1,"siblingOrdinal":0}]'::jsonb)='RECORDED','a canonical one-root depth-three topology with explicit null root records');
 select pg_temp.assert_true(pg_temp.record_bank_nodes('[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0},{"nodeIndex":1,"parentNodeIndex":0,"siblingOrdinal":0},{"nodeIndex":2,"parentNodeIndex":1,"siblingOrdinal":0}]'::jsonb)='EXACT_RETRY','a canonical topology exact-retries without mutation');
 select pg_temp.assert_true((select item_count=3 from private.game_character_bank_snapshot_v1_topology_shadows where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid) and (select count(*)=3 from private.game_character_bank_snapshot_v1_topology_shadow_items where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid),'only canonical topology rows are recorded');
 reset role;
