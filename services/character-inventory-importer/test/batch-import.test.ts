@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createBatchIdentity } from '../src/batch-identity.js'
+import { parseImportedUnclaimedManifest } from '../src/imported-unclaimed-manifest.js'
 import { bindLegacyPlayerShadowEvidenceV1 } from '../src/legacy-player-shadow-binding.js'
 import { BatchImportError, expectedShard, importBatch, importRecords, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
 import { EXPECTED_LEGACY_PLAYER_FILE_SHA256, importerBindingFixture } from './legacy-identity-evidence-fixture.js'
@@ -137,6 +138,94 @@ test('fixture-backed evidence binding reaches the exact batch, character, member
       legacyShard: binding.shard,
     },
   }])
+})
+
+test('fixture-derived reviewed manifest commits an exact resolver-compatible legacy character evidence chain', async () => {
+  const { evidence, record: fixtureRecord } = importerBindingFixture()
+  const worldId = 'legacy-evidence-world'
+  const streamId = 'legacy-evidence'
+  const reviewedManifest = Buffer.from(JSON.stringify({
+    format: 'muhan.imported_unclaimed_manifest',
+    format_version: 1,
+    dry_run: true,
+    candidates: [{
+      legacy_name_key: fixtureRecord.canonicalNameKey,
+      legacy_shard: fixtureRecord.expectedShard,
+      source_sha256: fixtureRecord.sha256,
+      source_size: fixtureRecord.byteSize,
+    }],
+    rejections: [],
+  }))
+  const manifest = parseImportedUnclaimedManifest(reviewedManifest)
+  const reviewedBatchIdentity = {
+    worldId,
+    sourceManifestId: 'legacy-identity-evidence-v1',
+    sourceSha256: manifest.sourceManifestSha256,
+    sourceByteSize: reviewedManifest.byteLength,
+    parserVersion: '1.0.0',
+    abi: 1,
+    startMarker: 'legacy:alice:0',
+    endMarker: 'legacy:alice:1',
+  }
+  const batchIdentity = createBatchIdentity(reviewedBatchIdentity)
+  const store = new BatchMemoryStore()
+
+  const result = await importBatch(store, [fixtureRecord], { identity: batchIdentity, streamId, sequence: 0, apply: true })
+
+  assert.equal(result.ledger, 'committed')
+  assert.deepEqual(manifest, {
+    sourceManifestSha256: digest(reviewedManifest.toString('utf8')),
+    candidates: [{
+      legacyNameKey: 'Alice',
+      legacyShard: '35',
+      sourceSha256: EXPECTED_LEGACY_PLAYER_FILE_SHA256,
+      sourceSize: 1,
+    }],
+  })
+  assert.deepEqual(store.batchInputs, [{
+    identity: {
+      ...reviewedBatchIdentity,
+      canonicalSerialization: JSON.stringify(reviewedBatchIdentity),
+      stableKey: JSON.stringify(reviewedBatchIdentity),
+    },
+    streamId,
+    sequence: 0,
+    recordCount: 1,
+  }])
+  assert.deepEqual(store.insertInputs, [{ worldId, record: fixtureRecord }])
+  assert.deepEqual(store.rows, new Map([[
+    `${worldId}|Alice`,
+    {
+      legacyName: 'Alice',
+      legacyNameKey: 'Alice',
+      legacyShard: '35',
+      importedFileSha256: EXPECTED_LEGACY_PLAYER_FILE_SHA256,
+      lifecycle: 'imported_unclaimed',
+      ownerUserId: null,
+      storageFormat: 1,
+    },
+  ]]))
+  assert.deepEqual(store.members, new Map([[
+    `character:${worldId}:Alice`,
+    { worldId, streamId, sequence: 0, characterId: `character:${worldId}:Alice` },
+  ]]))
+  assert.deepEqual(store.locators, new Map([[
+    `character:${worldId}:Alice`,
+    {
+      characterId: `character:${worldId}:Alice`,
+      canonicalName: 'Alice',
+      legacyNameSha1: createHash('sha1').update('Alice', 'utf8').digest('hex'),
+      legacyShard: '35',
+    },
+  ]]))
+
+  const character = store.rows.get(`${worldId}|Alice`)!
+  assert.deepEqual(
+    { worldId, canonicalName: character.legacyNameKey },
+    { worldId: 'legacy-evidence-world', canonicalName: 'Alice' },
+  )
+  assert.equal(character.legacyName, evidence.canonicalName)
+  assert.equal(character.legacyShard, evidence.legacyShard)
 })
 
 test('batch import commits every new character as an immutable member of its exact ledger batch before the watermark', async () => {
