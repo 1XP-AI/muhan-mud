@@ -668,7 +668,9 @@ async function main(): Promise<void> {
     evidence.status = 'passed'
   } finally {
     process.stderr.write(`stack-e2e: finally-web-${web ? 'start' : 'none'}\n`)
-    if (web) await stopWebStackServer(web).catch(() => undefined)
+    // Cleanup is part of the acceptance contract: never hide a live pnpm/Next
+    // tree or an unsuccessful shutdown behind the primary scenario result.
+    if (web) await stopWebStackServer(web)
     process.stderr.write('stack-e2e: finally-web-done\n')
     process.stderr.write(`stack-e2e: finally-gateway-${gateway ? 'start' : 'none'}\n`)
     if (gateway) await closeGatewayBounded(gateway).catch(() => undefined)

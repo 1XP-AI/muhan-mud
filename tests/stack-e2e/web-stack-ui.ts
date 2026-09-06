@@ -29,6 +29,46 @@ export interface WebStackServer {
   child: ChildProcess;
 }
 
+type TimerApi = Pick<typeof globalThis, "clearTimeout" | "setTimeout">;
+
+export async function waitForWebStackExit(
+  child: ChildProcess,
+  timeoutMs: number,
+  timers: TimerApi = globalThis,
+): Promise<[number | null, NodeJS.Signals | null]> {
+  const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => {
+        timeout = timers.setTimeout(
+          () => reject(new Error(`web server did not exit within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) timers.clearTimeout(timeout);
+  }
+}
+
+export function signalWebStackProcessTree(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  platform = process.platform,
+  kill: typeof process.kill = process.kill,
+): void {
+  assert.ok(child.pid, "web server process has no PID");
+  // pnpm starts Next as a descendant. A detached POSIX child becomes its own
+  // process-group leader, so signal the group rather than leaving Next behind.
+  if (platform !== "win32") {
+    kill(-child.pid, signal);
+    return;
+  }
+  child.kill(signal);
+}
+
 function childOutput(child: ChildProcess): { read(): string } {
   let output = "";
   const capture = (data: Buffer) => {
@@ -57,6 +97,9 @@ export function startWebStackServer({
     ["--dir", `${root}/web`, "exec", "next", "dev", "--hostname", "127.0.0.1", "--port", String(port)],
     {
       cwd: root,
+      // Keep pnpm and its Next descendants in a dedicated POSIX process group
+      // so the runner can tear down the entire tree deterministically.
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         NODE_ENV: "development",
@@ -101,13 +144,24 @@ export async function stopWebStackServer(server: WebStackServer): Promise<void> 
     assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
     return;
   }
-  const exited = once(server.child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-  server.child.kill("SIGTERM");
-  const [code, signal] = await Promise.race([
-    exited,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("web server did not exit after SIGTERM")), 15_000)),
-  ]);
-  assert.ok(signal === "SIGTERM" || code === 0, `web server exited unexpectedly (${code ?? signal})`);
+  signalWebStackProcessTree(server.child, "SIGTERM");
+  try {
+    const [code, signal] = await waitForWebStackExit(server.child, 15_000);
+    assert.ok(signal === "SIGTERM" || code === 0, `web server exited unexpectedly (${code ?? signal})`);
+  } catch (termError) {
+    // A development server that ignores graceful termination still must not
+    // outlive this disposable runner. SIGKILL targets the same pnpm/Next tree.
+    if (server.child.exitCode !== null) throw termError;
+    try {
+      signalWebStackProcessTree(server.child, "SIGKILL");
+      await waitForWebStackExit(server.child, 5_000);
+    } catch (killError) {
+      throw new AggregateError(
+        [termError, killError],
+        "web server process tree could not be terminated",
+      );
+    }
+  }
 }
 
 async function installAuthBoundary(page: Page, fixture: WebStackFixture): Promise<void> {
