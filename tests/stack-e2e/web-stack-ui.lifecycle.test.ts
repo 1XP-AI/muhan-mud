@@ -5,6 +5,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  completeClaimThroughRenderedXterm,
+  type ClaimXtermFlowDriver,
+} from "./claim-xterm-flow.js";
+import {
   signalWebStackProcessTree,
   stopWebStackServer,
   waitForWebStackExit,
@@ -249,21 +253,55 @@ test("web stack cleanup reports an already-unsuccessful server exit", async () =
   );
 });
 
-test("browser claim acceptance enters the C password through the rendered xterm keyboard path", async () => {
-  const webRunner = await readFile(new URL("./web-stack-ui.ts", import.meta.url), "utf8");
-  const claimAcceptance = webRunner.slice(webRunner.indexOf("const claimContext"));
+class RecordingClaimXtermDriver implements ClaimXtermFlowDriver {
+  readonly events: string[] = [];
+  readonly acceptedBytes: number[][] = [];
+  private ready = false;
+  private passwordPromptObserved = false;
 
-  assert.match(webRunner, /async function submitOnboardingXtermInput/);
-  assert.match(webRunner, /getByLabel\("캐릭터 온보딩 터미널"\)/);
-  assert.match(webRunner, /textarea\.xterm-helper-textarea/);
-  assert.match(webRunner, /toBeFocused\(\)/);
-  assert.match(webRunner, /page\.keyboard\.type\(value\)/);
-  assert.match(webRunner, /page\.keyboard\.press\("Enter"\)/);
-  assert.match(claimAcceptance, /submitOnboardingXtermInput\(claimPage, claim\.characterName\)/);
-  assert.match(claimAcceptance, /claimTerminal\)\.toContainText\(\/암호를 넣어 주십시요\//);
-  assert.match(claimAcceptance, /submitOnboardingXtermInput\(claimPage, claim\.gamePassword\)/);
-  assert.match(claimAcceptance, /assertRosterThenAdmission\(claimPage, claim\.characterName\)/);
-  assert.doesNotMatch(claimAcceptance, /게임 비밀번호 입력/);
+  async waitForReadyNamePrompt(): Promise<void> {
+    // Any byte before the browser observes onboarding-ready would be dropped
+    // by OnboardingTerminal, so the flow must still be silent here.
+    assert.deepEqual(this.acceptedBytes, []);
+    this.ready = true;
+    this.events.push("onboarding-ready-and-c-name-prompt");
+  }
+
+  async typeThroughRenderedXterm(value: string): Promise<void> {
+    assert.equal(this.ready, true, "xterm bytes must not be typed before readiness");
+    if (this.acceptedBytes.length > 0) {
+      assert.equal(
+        this.passwordPromptObserved,
+        true,
+        "the C password prompt must precede password bytes",
+      );
+    }
+    this.acceptedBytes.push([...new TextEncoder().encode(`${value}\n`)]);
+    this.events.push(`xterm:${value}\n`);
+  }
+
+  async waitForCPasswordPrompt(): Promise<void> {
+    assert.equal(this.acceptedBytes.length, 1, "C may prompt only after the accepted name");
+    this.passwordPromptObserved = true;
+    this.events.push("c-password-prompt");
+  }
+}
+
+test("claim xterm flow waits for readiness, sends each accepted byte sequence once, and requires the C password prompt", async () => {
+  const driver = new RecordingClaimXtermDriver();
+
+  await completeClaimThroughRenderedXterm(driver, "Claimhero", "claim-password");
+
+  assert.deepEqual(driver.acceptedBytes, [
+    [...new TextEncoder().encode("Claimhero\n")],
+    [...new TextEncoder().encode("claim-password\n")],
+  ]);
+  assert.deepEqual(driver.events, [
+    "onboarding-ready-and-c-name-prompt",
+    "xterm:Claimhero\n",
+    "c-password-prompt",
+    "xterm:claim-password\n",
+  ]);
 });
 
 test("runner starts a dedicated process group, targets pnpm descendants, and retains cleanup failures", async () => {

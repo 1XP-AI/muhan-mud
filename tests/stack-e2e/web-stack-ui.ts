@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromium, expect, type Page } from "@playwright/test";
 
+import {
+  completeClaimThroughRenderedXterm,
+  type ClaimXtermFlowDriver,
+} from "./claim-xterm-flow.js";
+
 export interface WebStackFixture {
   accessToken: string;
   email: string;
@@ -325,19 +330,36 @@ async function submitOnboardingInput(page: Page, value: string): Promise<void> {
   await expect(command).toHaveValue("");
 }
 
-async function submitOnboardingXtermInput(page: Page, value: string): Promise<void> {
-  // This deliberately targets xterm's browser-owned textarea instead of the
-  // responsive fallback form. In particular, the claim password reaches the
-  // live C prompt through the exact keyboard/onData/WebSocket route a desktop
-  // player uses; the value is never inspected or rendered by this assertion.
-  const terminal = page.getByLabel("캐릭터 온보딩 터미널");
-  await expect(terminal).toBeVisible();
-  const xtermInput = terminal.locator("textarea.xterm-helper-textarea");
-  await expect(xtermInput).toBeAttached();
-  await terminal.click();
-  await expect(xtermInput).toBeFocused();
-  await page.keyboard.type(value);
-  await page.keyboard.press("Enter");
+class PlaywrightClaimXtermFlowDriver implements ClaimXtermFlowDriver {
+  private readonly terminal;
+
+  constructor(private readonly page: Page) {
+    this.terminal = page.getByLabel("캐릭터 온보딩 터미널");
+  }
+
+  async waitForReadyNamePrompt(): Promise<void> {
+    await expect(this.terminal).toBeVisible();
+    // `OnboardingTerminal` discards xterm onData before this observed state.
+    // The C prompt also proves that the ready handler is relaying game bytes.
+    await expect(this.terminal).toHaveAttribute("data-onboarding-ready", "true");
+    await expect(this.terminal).toContainText(/당신의 이름은 무엇입니까/);
+  }
+
+  async typeThroughRenderedXterm(value: string): Promise<void> {
+    // This deliberately targets xterm's browser-owned textarea instead of the
+    // responsive fallback form. The password follows the exact desktop
+    // keyboard/onData/WebSocket route and is never rendered by this harness.
+    const xtermInput = this.terminal.locator("textarea.xterm-helper-textarea");
+    await expect(xtermInput).toBeAttached();
+    await this.terminal.click();
+    await expect(xtermInput).toBeFocused();
+    await this.page.keyboard.type(value);
+    await this.page.keyboard.press("Enter");
+  }
+
+  async waitForCPasswordPrompt(): Promise<void> {
+    await expect(this.terminal).toContainText(/암호를 넣어 주십시요/);
+  }
 }
 
 async function assertRosterThenAdmission(page: Page, characterName: string): Promise<void> {
@@ -401,10 +423,11 @@ export async function runWebStackAcceptance({
     await signInToEmptyRoster(claimPage, claim);
     await claimPage.getByRole("button", { name: "기존 캐릭터 연결" }).click();
     await expect(claimPage.getByRole("heading", { name: "기존 캐릭터 연결" })).toBeVisible();
-    await submitOnboardingXtermInput(claimPage, claim.characterName);
-    const claimTerminal = claimPage.getByLabel("캐릭터 온보딩 터미널");
-    await expect(claimTerminal).toContainText(/암호를 넣어 주십시요/);
-    await submitOnboardingXtermInput(claimPage, claim.gamePassword);
+    await completeClaimThroughRenderedXterm(
+      new PlaywrightClaimXtermFlowDriver(claimPage),
+      claim.characterName,
+      claim.gamePassword,
+    );
     await assertRosterThenAdmission(claimPage, claim.characterName);
     await claimContext.close();
   } finally {

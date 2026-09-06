@@ -384,6 +384,7 @@ export function OnboardingTerminal({
       <div
         aria-label="캐릭터 온보딩 터미널"
         className="terminal-viewport onboarding-viewport"
+        data-onboarding-ready={ready ? "true" : "false"}
         onPointerDown={() => terminalRef.current?.focus()}
         ref={containerRef}
       />
