@@ -359,6 +359,46 @@ for (const scenario of [
   })
 }
 
+test('mismatched C evidence is rejected without opening the normal admission gate', async (t) => {
+  const mud = new HeldEvidenceCompletionMudSocket('provision', cEvidence('WrongHero', 'a'.repeat(64)))
+  const authorizer = new PendingHandoffAuthorizer(false, 'provision')
+  const finalizer = new RecordingEvidenceFinalizer([])
+  let connections = 0
+  const gateway = createGateway(config(true), {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    evidenceFinalizer: finalizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => {
+      connections += 1
+      const socket = connections === 1 ? mud : new AdmissionMudSocket(authorizer.admissionTickets)
+      socket.connect()
+      return socket as unknown as import('node:net').Socket
+    },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+  const base = gateway.address().replace('http:', 'ws:')
+
+  const onboarding = new WebSocket(`${base}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(onboarding, 'open')
+  const received = messages(onboarding)
+  const closed = once(onboarding, 'close') as Promise<[number]>
+  onboarding.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.ok(hasText(received, '{"type":"onboarding-ready","mode":"provision"}')))
+  onboarding.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === `MUD1O RESERVED|${character}\n`)))
+  onboarding.send(Buffer.from('m\n'))
+
+  const [code] = await closed
+  assert.equal(code, 1008)
+  assert.deepEqual(finalizer.calls, [])
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve'])
+  assert.equal(authorizer.beginSessionCalls, 0)
+  assert.deepEqual(authorizer.admissionTickets, [])
+  assert.equal(received.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"provisioned"')), false)
+})
+
 test('claim evidence keeps private controls and normal admission locked until CLAIMED activates the handoff', async (t) => {
   const trace: string[] = []
   const mud = new HeldEvidenceCompletionMudSocket('claim', cEvidence('Alice', 'b'.repeat(64)), trace)
