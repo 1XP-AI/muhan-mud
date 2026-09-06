@@ -1099,12 +1099,17 @@ alias-title-snapshot-v1-static-test:
 	$(CC) -std=gnu89 -fcommon -I. -c alias.c -o /tmp/muhan-unit/alias_title_snapshot_v1_production.o
 	python3 ../tests/unit/alias_title_snapshot_v1_no_live_link_test.py --object /tmp/muhan-unit/alias_title_snapshot_v1_production.o --source alias.c --makefile Makefile
 
-alias-title-snapshot-v1-outbox-test:
+alias-title-snapshot-v1-outbox-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) $(V2_TEST_CFLAGS) -I. -c alias_title_snapshot_v1_outbox.c -o /tmp/muhan-unit/alias_title_snapshot_v1_outbox_production.o
+	python3 ../tests/unit/alias_title_snapshot_v1_outbox_no_live_link_test.py --object /tmp/muhan-unit/alias_title_snapshot_v1_outbox_production.o --source alias_title_snapshot_v1_outbox.c --header alias_title_snapshot_v1_outbox.h --makefile Makefile
+
+alias-title-snapshot-v1-outbox-test: alias-title-snapshot-v1-outbox-static-test
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror -Wno-deprecated-non-prototype -DALIAS_TITLE_SNAPSHOT_V1_OUTBOX_TESTING -I. ../tests/unit/alias_title_snapshot_v1_outbox_test.c alias_title_snapshot_v1_outbox.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/alias_title_snapshot_v1_outbox_test
 	/tmp/muhan-unit/alias_title_snapshot_v1_outbox_test
 
-alias-title-snapshot-v1-outbox-sanitizer-test:
+alias-title-snapshot-v1-outbox-sanitizer-test: alias-title-snapshot-v1-outbox-static-test
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror -Wno-deprecated-non-prototype -DALIAS_TITLE_SNAPSHOT_V1_OUTBOX_TESTING -I. -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/alias_title_snapshot_v1_outbox_test.c alias_title_snapshot_v1_outbox.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/alias_title_snapshot_v1_outbox_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/alias_title_snapshot_v1_outbox_sanitizer_test
