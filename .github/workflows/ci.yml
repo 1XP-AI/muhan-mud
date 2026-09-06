@@ -314,8 +314,12 @@ jobs:
           npm test
           npm run typecheck
           npm run build
+          # The full-payload rehearsal remains default-off; this binary is
+          # built only for its isolated disposable PostgreSQL 17 contract.
+          cargo build --locked --release --manifest-path ../../rust/Cargo.toml \
+            -p muhan-core-dto --bin player_snapshot_v1_replay_verify
 
-      - name: Run PlayerSnapshotV1 replay-reader PostgreSQL 17 contract
+      - name: Run PlayerSnapshotV1 replay-reader and full-payload rehearsal PostgreSQL 17 contract
         if: runner.os == 'Linux'
         shell: bash
         run: |

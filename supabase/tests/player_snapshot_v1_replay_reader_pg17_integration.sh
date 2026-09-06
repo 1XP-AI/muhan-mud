@@ -14,6 +14,8 @@ reader_password="m5e-reader-${RANDOM}-${RANDOM}"
 full_payload_reader_password="m5e-full-payload-reader-${RANDOM}-${RANDOM}"
 comparator_cli="$repo_root/services/m4-file-snapshot-manifest-relay/dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js"
 full_payload_reader_module="$repo_root/services/m4-file-snapshot-manifest-relay/dist/store.js"
+full_payload_rehearsal_cli="$repo_root/services/m4-file-snapshot-manifest-relay/dist/player-snapshot-v1-full-payload-rehearsal-cli.js"
+full_payload_rehearsal_verifier="$repo_root/rust/target/release/player_snapshot_v1_replay_verify"
 fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex"
 fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
 [[ "$fixture_hex" =~ ^[0-9a-f]+$ && "${#fixture_hex}" -eq 3556 ]] || {
@@ -25,13 +27,22 @@ fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
 [[ -f "$full_payload_reader_module" ]] || {
   echo "M5e replay reader integration requires the compiled full payload reader dist" >&2; exit 2;
 }
+[[ -f "$full_payload_rehearsal_cli" ]] || {
+  echo "M5e replay reader integration requires the compiled full payload rehearsal CLI" >&2; exit 2;
+}
+[[ -x "$full_payload_rehearsal_verifier" ]] || {
+  echo "M5e replay reader integration requires the compiled full payload rehearsal verifier" >&2; exit 2;
+}
 
 umask 077
 journal_root="$(mktemp -d "${TMPDIR:-/tmp}/m5e-v2-level-shadow.XXXXXX")"
 chmod 0700 "$journal_root"
+full_payload_rehearsal_outbox="$(mktemp -d "${TMPDIR:-/tmp}/m5e-full-payload-rehearsal.XXXXXX")"
+chmod 0700 "$full_payload_rehearsal_outbox"
 
 cleanup() {
   rm -rf -- "$journal_root"
+  rm -rf -- "$full_payload_rehearsal_outbox"
   docker rm --force "$container" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -206,6 +217,10 @@ artifact_ownership_after_replay="$(run_super --tuples-only --no-align --command=
 [[ "$artifact_ownership_before_first_m5e" == "$artifact_ownership_after_replay" ]] || { echo "reader migration replay changed artifact ownership" >&2; exit 1; }
 
 run_super --file=/workspace/supabase/tests/player_snapshot_v1_replay_reader_contract.sql
+if [[ "$(run_super --tuples-only --no-align --command="select exists (select 1 from pg_roles where rolname = 'mud_full_payload_rehearsal_reader_login')")" == true ]]; then
+  echo "RED unexpectedly found full payload rehearsal reader before migration 040" >&2; exit 1
+fi
+echo "RED PostgreSQL 17: full payload rehearsal reader is absent before migration 040"
 run_super --file=/workspace/supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
 run_super --file=/workspace/supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
 run_super --file=/workspace/supabase/tests/player_snapshot_v1_full_payload_rehearsal_reader_contract.sql
@@ -226,6 +241,63 @@ run_super --command="set session_replication_role = replica; insert into private
 run_super --command="set session_replication_role = replica; insert into private.game_character_player_snapshot_v1_level_projections (character_id, command_id, receipt_request_sha256, writer_instance_id, writer_epoch, writer_revision, source_post_sha256, source_octets, snapshot_sha256, snapshot_octets, raw_level_u8) values ('a9500000-0000-0000-0000-000000000010', 'c9500000-0000-0000-0000-000000000010', repeat('a', 64), 'b9500000-0000-0000-0000-000000000010', 1, 10, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 0), ('a9500000-0000-0000-0000-000000000011', 'c9500000-0000-0000-0000-000000000011', repeat('a', 64), 'b9500000-0000-0000-0000-000000000011', 1, 11, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 255), ('a9500000-0000-0000-0000-000000000013', 'c9500000-0000-0000-0000-000000000013', repeat('a', 64), 'b9500000-0000-0000-0000-000000000013', 1, 13, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42), ('a9500000-0000-0000-0000-000000000014', 'c9500000-0000-0000-0000-000000000013', repeat('a', 64), 'b9500000-0000-0000-0000-000000000014', 1, 14, repeat('b', 64), 9, encode(public.digest(decode('$fixture_hex', 'hex'), 'sha256'), 'hex'), octet_length(decode('$fixture_hex', 'hex')), 42); set session_replication_role = origin;"
 before_fingerprint="$(run_super --tuples-only --no-align --command="select count(*)::text || ':' || coalesce(string_agg(character_id::text || command_id::text || snapshot_sha256 || md5(payload), ',' order by character_id, command_id), '') from private.game_character_player_snapshot_v1_artifacts")"
 before_projection_fingerprint="$(run_super --tuples-only --no-align --command="select count(*)::text || ':' || coalesce(string_agg(character_id::text || command_id::text || receipt_request_sha256 || source_post_sha256 || snapshot_sha256 || snapshot_octets::text || raw_level_u8::text, ',' order by character_id, command_id), '') from private.game_character_player_snapshot_v1_level_projections")"
+
+# Run the explicit, default-off CLI only after migration 040 has been replayed,
+# its SQL contract has passed, and both immutable sides of the joined evidence
+# have been seeded.  The artifact is generated from the canonical CDTO fixture;
+# this creates no runtime authority or production wiring.
+FULL_PAYLOAD_REHEARSAL_OUTBOX="$full_payload_rehearsal_outbox" \
+FULL_PAYLOAD_FIXTURE_HEX="$fixture_hex" \
+node <<'NODE'
+const { createHash } = require('node:crypto')
+const { chmodSync, writeFileSync } = require('node:fs')
+const { join } = require('node:path')
+const outbox = process.env.FULL_PAYLOAD_REHEARSAL_OUTBOX
+const payload = Buffer.from(process.env.FULL_PAYLOAD_FIXTURE_HEX, 'hex')
+const characterId = 'a9500000-0000-0000-0000-000000000001'
+const commandId = 'c9500000-0000-0000-0000-000000000001'
+const requestSha256 = 'a'.repeat(64)
+const postSha256 = 'b'.repeat(64)
+const writerInstanceId = 'b9500000-0000-0000-0000-000000000001'
+const canonicalNameHex = '4d3565726561646572'
+const manifest = [
+  'version=1', 'world_id=m5e-reader', `character_id=${characterId}`, `command_id=${commandId}`,
+  `canonical_name_hex=${canonicalNameHex}`, `request_sha256=${requestSha256}`, `post_sha256=${postSha256}`,
+  `writer_instance_id=${writerInstanceId}`, 'snapshot_format=legacy-file-manifest-v1', 'writer_epoch=1',
+  'writer_revision=1', 'storage_format=1', 'snapshot_octets=9', '',
+].join('\n')
+const artifact = Buffer.concat([Buffer.from([
+  'version=1', 'world_id=m5e-reader', `character_id=${characterId}`, `command_id=${commandId}`,
+  `canonical_name_hex=${canonicalNameHex}`, `request_sha256=${requestSha256}`, `source_post_sha256=${postSha256}`,
+  `writer_instance_id=${writerInstanceId}`, 'writer_epoch=1', 'writer_revision=1', 'storage_format=1',
+  'snapshot_format=player-snapshot-v1', 'source_octets=9',
+  `snapshot_sha256=${createHash('sha256').update(payload).digest('hex')}`, `snapshot_octets=${payload.length}`, '', '',
+].join('\n'), 'ascii'), payload])
+writeFileSync(join(outbox, `${commandId}.manifest`), manifest, { mode: 0o600, flag: 'wx' })
+writeFileSync(join(outbox, `${commandId}.player-snapshot-v1`), artifact, { mode: 0o600, flag: 'wx' })
+chmodSync(join(outbox, `${commandId}.manifest`), 0o600)
+chmodSync(join(outbox, `${commandId}.player-snapshot-v1`), 0o600)
+NODE
+full_payload_rehearsal_stdout="$journal_root/full-payload-rehearsal.stdout"
+full_payload_rehearsal_stderr="$journal_root/full-payload-rehearsal.stderr"
+M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_OUTBOX_PATH="$full_payload_rehearsal_outbox" \
+M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_DATABASE_URL="$full_payload_reader_database_url" \
+M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_VERIFIER_PATH="$full_payload_rehearsal_verifier" \
+  node "$full_payload_rehearsal_cli" --once >"$full_payload_rehearsal_stdout" 2>"$full_payload_rehearsal_stderr"
+[[ ! -s "$full_payload_rehearsal_stderr" ]] || { echo "full payload rehearsal emitted stderr" >&2; exit 1; }
+FULL_PAYLOAD_REHEARSAL_OUTPUT="$full_payload_rehearsal_stdout" \
+node <<'NODE'
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const output = fs.readFileSync(process.env.FULL_PAYLOAD_REHEARSAL_OUTPUT, 'utf8')
+assert.equal(output.endsWith('\n'), true)
+assert.equal(output.split('\n').filter(Boolean).length, 1)
+assert.deepEqual(JSON.parse(output), {
+  format: 'player-snapshot-v1-full-payload-rehearsal', version: '1', classification: 'MATCH',
+  commandId: 'c9500000-0000-0000-0000-000000000001',
+  characterId: 'a9500000-0000-0000-0000-000000000001',
+})
+NODE
 
 reader_contract="$(run_reader --tuples-only --no-align --command="select (current_user = 'mud_replay_reader_login' and session_user = 'mud_replay_reader_login' and current_user = session_user and current_setting('default_transaction_read_only') = 'on' and current_setting('transaction_read_only') = 'on' and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'insert') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'update') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'delete') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'truncate') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'references') and not has_table_privilege(current_user, 'private.game_character_player_snapshot_v1_artifacts', 'trigger'))::text")"
 [[ "$reader_contract" == true ]] || { echo "reader login/session/read-only or mutation privilege contract failed" >&2; exit 1; }
