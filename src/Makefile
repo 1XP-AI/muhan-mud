@@ -99,6 +99,22 @@ auth: auth.o
 clean: 
 	rm -f $(OBJECTS) $(M3_RUNTIME_OBJECTS) $(OUTFILE)
 
+# Pure, detached trusted-fact boundary; never links into the legacy binary.
+trusted-alias-identity-context-v1-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -I. -c trusted_alias_identity_context_v1.c -o /tmp/muhan-unit/trusted_alias_identity_context_v1_production.o
+	python3 ../tests/unit/trusted_alias_identity_context_v1_static_test.py --object /tmp/muhan-unit/trusted_alias_identity_context_v1_production.o --source trusted_alias_identity_context_v1.c --header trusted_alias_identity_context_v1.h --makefile Makefile
+
+trusted-alias-identity-context-v1-test: trusted-alias-identity-context-v1-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -I. ../tests/unit/trusted_alias_identity_context_v1_test.c trusted_alias_identity_context_v1.c alias_title_snapshot_manifest_v1.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/trusted_alias_identity_context_v1_test
+	/tmp/muhan-unit/trusted_alias_identity_context_v1_test
+
+trusted-alias-identity-context-v1-sanitizer-test: trusted-alias-identity-context-v1-static-test
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -I. ../tests/unit/trusted_alias_identity_context_v1_test.c trusted_alias_identity_context_v1.c alias_title_snapshot_manifest_v1.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/trusted_alias_identity_context_v1_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/trusted_alias_identity_context_v1_sanitizer_test
+
 unit-test:
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/resource_tree_manifest_test.py
