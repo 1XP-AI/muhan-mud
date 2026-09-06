@@ -218,6 +218,7 @@ unit-test:
 	$(MAKE) m3-live-save-all-shadow-binding-test
 	$(MAKE) m3-save-all-ply-receipt-path-test
 	$(MAKE) m3-runtime-idle-hook-static-test
+	$(MAKE) m3-production-shadow-binding-static-test
 	$(MAKE) m3-wake-v1-test
 	$(MAKE) m3-wake-supervisor-test
 	$(MAKE) m3-wake-transport-test
@@ -839,6 +840,13 @@ m3-runtime-idle-hook-static-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) $(CFLAGS) -I. -c io.c -o /tmp/muhan-unit/io_default_p1f.o
 	python3 ../tests/unit/m3_runtime_idle_hook_static_test.py --main-source main.c --io-source io.c --native-source character_save_journal_v2_runtime_native.c --default-io-object /tmp/muhan-unit/io_default_p1f.o
+
+# Production shadow composition contract: source/order checks plus default
+# object inspection only; it never starts the MUD or opens a live dependency.
+m3-production-shadow-binding-static-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -I. -c main.c -o /tmp/muhan-unit/main_default_m3_contract.o
+	python3 ../tests/unit/m3_production_shadow_binding_static_test.py --makefile Makefile --main-source main.c --runtime-source character_save_journal_v2_runtime.c --native-source character_save_journal_v2_runtime_native.c --process-owner-source character_save_journal_v2_process_owner.c --files2-source files2.c --command8-source command8.c --default-object /tmp/muhan-unit/main_default_m3_contract.o
 
 m3-wake-v1-test:
 	mkdir -p /tmp/muhan-unit
