@@ -136,10 +136,10 @@ async function databaseState(client: SqlClient): Promise<DatabaseState> {
         join private.game_character_m4_file_snapshot_manifests m
           on m.character_id = a.character_id and m.command_id = a.command_id
         where a.character_id = $1::uuid and a.command_id = $2::uuid
-          and m.request_sha256 = a.receipt_request_sha256
+          and m.receipt_request_sha256 = a.receipt_request_sha256
           and m.writer_instance_id = a.writer_instance_id
           and m.writer_epoch = a.writer_epoch and m.writer_revision = a.writer_revision
-          and m.post_sha256 = a.source_post_sha256 and m.storage_format = a.storage_format) as paired,
+          and m.file_post_sha256 = a.source_post_sha256 and m.storage_format = a.storage_format) as paired,
       jsonb_build_object(
         'receipts', coalesce((select jsonb_agg(to_jsonb(r) order by r.command_id)
           from private.game_character_shadow_receipts r where r.character_id = $1::uuid), '[]'::jsonb),
