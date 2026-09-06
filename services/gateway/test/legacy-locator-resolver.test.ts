@@ -96,6 +96,36 @@ test('resolver rejects oversized or non-JSON responses without reading unbounded
   await assert.rejects(() => nonJson.resolve({ worldId, canonicalName }), LegacyLocatorResolutionError)
 })
 
+test('resolver does not wait for an oversized response reader cancellation', async () => {
+  const oversized = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('[' + ' '.repeat(65 * 1024)))
+    },
+    cancel() {
+      return new Promise<void>(() => {})
+    },
+  }), { headers: { 'content-type': 'application/json' } })
+  const resolver = new SupabaseLegacyLocatorResolver(config({ AUTH_TIMEOUT_MS: '100' }), async () => oversized)
+  const rejection = resolver.resolve({ worldId, canonicalName })
+  await assert.rejects(
+    () => Promise.race([
+      rejection,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('resolver remained alive')), 250)),
+    ]),
+    LegacyLocatorResolutionError,
+  )
+})
+
+test('resolver preserves C and SQL btrim compatibility for non-ASCII whitespace', async () => {
+  let calls = 0
+  const resolver = new SupabaseLegacyLocatorResolver(config(), async () => {
+    calls++
+    return Response.json([{ character_id: character }])
+  })
+  assert.equal(await resolver.resolve({ worldId, canonicalName: '\u00a0' }), character)
+  assert.equal(calls, 1)
+})
+
 test('resolver aborts a fetch that never resolves', async () => {
   let aborted = false
   const resolver = new SupabaseLegacyLocatorResolver(config({ AUTH_TIMEOUT_MS: '100' }), async (_url, init) => {

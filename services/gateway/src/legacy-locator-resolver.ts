@@ -55,7 +55,9 @@ function validRequest(request: LegacyLocatorRequest): boolean {
   if (typeof request?.worldId !== 'string' || typeof request.canonicalName !== 'string') return false
   if (hasUnpairedSurrogate(request.worldId) || hasUnpairedSurrogate(request.canonicalName)) return false
   if (!SAFE_WORLD_RE.test(request.worldId) || !SAFE_NAME_RE.test(request.canonicalName)) return false
-  if (/^\s+$/u.test(request.canonicalName) || request.canonicalName === '.' || request.canonicalName === '..') return false
+  // SQL btrim(text) removes ASCII spaces by default; C player_name_is_valid permits
+  // other non-control UTF-8 whitespace, so reject only an all-ASCII-space name.
+  if (/^ +$/u.test(request.canonicalName) || request.canonicalName === '.' || request.canonicalName === '..') return false
   if (Buffer.byteLength(request.canonicalName, 'utf8') > MAX_NAME_BYTES) return false
   return canonicalNameKey(request.canonicalName) === request.canonicalName
 }
@@ -103,8 +105,9 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
   } catch {
     throw new LegacyLocatorResolutionError()
   } finally {
-    const cancellation = reader.cancel().catch(() => {})
-    if (!signal.aborted) await cancellation
+    // Cancellation is best effort. A hostile/custom stream can leave cancel()
+    // pending forever, and cleanup must not extend the resolver deadline.
+    void reader.cancel().catch(() => {})
   }
 }
 
