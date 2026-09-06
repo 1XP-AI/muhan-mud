@@ -471,8 +471,8 @@ unsigned char *str;
 	 * line without failing or clearing its exact descriptor capability. */
 	if(Ply[fd].extr->onboarding_activation_pending) return 1;
 	if((Ply[fd].io->fn == onboarding_provision &&
-	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 4 ||
-	     Ply[fd].io->fnparam == 5)) ||
+	    (Ply[fd].io->fnparam == 5 || Ply[fd].io->fnparam == 6 ||
+	     Ply[fd].io->fnparam == 7)) ||
 	   (Ply[fd].io->fn == onboarding_claim &&
 	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 5 ||
 	     Ply[fd].io->fnparam == 6)))
@@ -830,8 +830,8 @@ unsigned char *str;
 		onboarding_claim(fd, 1, 0);
 }
 
-/* Provisioning starts with the same name validation/canonicalization used by
- * login(), but reserves the canonical file name before create_ply starts. */
+/* Provisioning preserves login()'s name -> confirmation -> [enter] sequence
+ * before it reserves the canonical file name and starts create_ply. */
 void onboarding_provision(fd, param, str)
 int fd;
 int param;
@@ -860,6 +860,17 @@ unsigned char *str;
 			return;
 		}
 		strcpy(Ply[fd].extr->tempstr[0], (char *)str);
+		print(fd, "\n%S%j 하시겠습니까(예/아니오)? ", str, "4");
+		RETURN(fd, onboarding_provision, 3);
+	case 3:
+		if(strcmp((char *)str,"예") && str[0]!='y' && str[0]!='Y') {
+			Ply[fd].extr->tempstr[0][0] = 0;
+			print(fd, "당신의 이름은 무엇입니까? ");
+			RETURN(fd, onboarding_provision, 2);
+		}
+		print(fd, "\n[엔터]를 누르십시요.");
+		RETURN(fd, onboarding_provision, 4);
+	case 4:
 		memset(&control, 0, sizeof(control));
 		control.kind = ONBOARDING_CONTROL_RESERVE;
 		if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
@@ -868,8 +879,8 @@ unsigned char *str;
 			onboarding_fail(fd);
 			return;
 		}
-		RETURN(fd, onboarding_provision, 3);
-	case 3:
+		RETURN(fd, onboarding_provision, 5);
+	case 5:
 		if(onboarding_parse_gateway_line(str, &control) != 0 ||
 		   control.kind != ONBOARDING_CONTROL_RESERVED ||
 		   Ply[fd].extr->onboarding_character_id[0] ||
@@ -891,7 +902,7 @@ unsigned char *str;
 		}
 		create_ply(fd, 1, 0);
 		return;
-	case 4:
+	case 6:
 		if(onboarding_parse_gateway_line(str, &control) != 0 ||
 		   control.kind != ONBOARDING_CONTROL_COMMIT ||
 		   onboarding_apply_control(fd, &control, 1) != 0) {
@@ -918,8 +929,8 @@ unsigned char *str;
 			return;
 		}
 		/* COMMIT is a completion prerequisite, not the publication edge. */
-		RETURN(fd, onboarding_provision, 5);
-	case 5:
+		RETURN(fd, onboarding_provision, 7);
+	case 7:
 		if(onboarding_parse_gateway_line(str, &control) != 0 ||
 		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
 		   onboarding_apply_control(fd, &control, 1) != 0 ||
@@ -1374,7 +1385,7 @@ char    *str;
 					/* Before COMMIT this remains a saved file, not a live gameplay
 					 * owner.  disconnect() therefore frees it without a second save. */
 					Ply[fd].ply->fd = -1;
-					RETURN(fd, onboarding_provision, 4);
+					RETURN(fd, onboarding_provision, 6);
 				}
 
 				print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");

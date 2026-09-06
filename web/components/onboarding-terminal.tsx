@@ -14,6 +14,7 @@ import {
   type OnboardingLifecyclePhase,
   type OnboardingMode,
 } from "@/lib/onboarding-contract";
+import { LEGACY_GAME_PASSWORD_DISCLOSURE } from "@/lib/onboarding-disclosure";
 
 interface OnboardingTerminalProps {
   accessToken: string;
@@ -381,6 +382,9 @@ export function OnboardingTerminal({
           ? "기존 MUD 확인 절차는 이 xterm 안에서 끝까지 진행해야 합니다. 확인이 끝나고 활성 목록에 나타난 캐릭터만 플레이할 수 있습니다."
           : "온보딩 절차를 터미널에서 진행합니다. 입력 안내가 나타날 때까지 잠시 기다려 주세요."}
       </p>
+      {mode === "provision" ? (
+        <p className="onboarding-hint">{LEGACY_GAME_PASSWORD_DISCLOSURE}</p>
+      ) : null}
       <div
         aria-label="캐릭터 온보딩 터미널"
         className="terminal-viewport onboarding-viewport"

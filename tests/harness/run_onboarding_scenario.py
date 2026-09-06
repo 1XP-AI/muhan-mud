@@ -336,6 +336,10 @@ def provision(session: Session, name: str, nonce: str, correlation: str, charact
         raise ScenarioFailure("MUD1O OK was not the first onboarding response")
     session.read_until("당신의 이름은 무엇입니까".encode())
     session.send(name.encode() + b"\n")
+    session.read_until("하시겠습니까".encode())
+    session.send("예\n".encode())
+    session.read_until("[엔터]를 누르십시요".encode())
+    session.send(b"\n")
     expected = f"MUD1O RESERVE|{name.encode('utf-8').hex()}\n".encode()
     reserve = read_control(session, b"MUD1O RESERVE|")
     if reserve != expected:
@@ -361,6 +365,9 @@ def provision(session: Session, name: str, nonce: str, correlation: str, charact
     assert_receipt(fixture, "saved", correlation, character, name, sensitive, digest)
     if commit is True:
         session.send_fragmented(b"MUD1O COMMIT\n", 8)
+        session.send_fragmented(
+            f"MUD1O ACTIVATED|{character}\n".encode(), 13,
+        )
         session.read_until("레벨 5".encode())
         session.read_until("도력): ".encode())
         assert_receipt(fixture, "committed", correlation, character, name, sensitive, digest)
@@ -486,6 +493,60 @@ def main() -> int:
         log = fixture / "onboarding-server.log"
         process = start(binary, fixture, port, log, True)
 
+        # Provisioning preserves the ordinary create confirmation before the
+        # private reservation protocol.  Declining a name must leave both the
+        # player store and onboarding receipt store untouched.
+        stage = "provision-confirmation-no"
+        declined = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
+        declined_name = "Declined"
+        declined_correlation = "10101010-1010-4010-8010-101010101010"
+        declined_ticket, declined_mac = mud1o_ticket(
+            "P", "04112233445566778899aabbccddeeff", declined_correlation,
+        )
+        add_sensitive(sensitive, declined_ticket.strip(), declined_mac)
+        expect_no_banner(declined)
+        declined.send(declined_ticket.encode())
+        declined.read_until(b"MUD1O OK\n")
+        declined.read_until("당신의 이름은 무엇입니까".encode())
+        declined.send(declined_name.encode() + b"\n")
+        declined.read_until("하시겠습니까".encode())
+        if b"MUD1O RESERVE" in declined.read_available():
+            raise ScenarioFailure("declined provision emitted RESERVE")
+        declined.send("아니오\n".encode())
+        declined.read_until("당신의 이름은 무엇입니까".encode())
+        if b"MUD1O RESERVE" in declined.read_available() or \
+           expected_player_path(fixture, declined_name).exists() or \
+           receipt_path(fixture, declined_correlation).exists():
+            raise ScenarioFailure("declined provision changed character data")
+        declined.sock.close()
+        result["events"].append({"case": "provision-confirmation-no", "response": "no-RESERVE/no-data"})
+
+        # Even an accepted name is not reservable until the legacy [enter]
+        # gate has been crossed, and the wizard must not start before then.
+        stage = "provision-confirmation-await-enter"
+        awaiting_enter = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
+        awaiting_name = "Awaitenter"
+        awaiting_correlation = "11111111-1111-4111-8111-111111111110"
+        awaiting_ticket, awaiting_mac = mud1o_ticket(
+            "P", "06112233445566778899aabbccddeeff", awaiting_correlation,
+        )
+        add_sensitive(sensitive, awaiting_ticket.strip(), awaiting_mac)
+        expect_no_banner(awaiting_enter)
+        awaiting_enter.send(awaiting_ticket.encode())
+        awaiting_enter.read_until(b"MUD1O OK\n")
+        awaiting_enter.read_until("당신의 이름은 무엇입니까".encode())
+        awaiting_enter.send(awaiting_name.encode() + b"\n")
+        awaiting_enter.read_until("하시겠습니까".encode())
+        awaiting_enter.send("예\n".encode())
+        awaiting_enter.read_until("[엔터]를 누르십시요".encode())
+        waiting_output = awaiting_enter.read_available()
+        if b"MUD1O RESERVE" in waiting_output or "당신은 남자입니까".encode() in waiting_output or \
+           expected_player_path(fixture, awaiting_name).exists() or \
+           receipt_path(fixture, awaiting_correlation).exists():
+            raise ScenarioFailure("accepted provision advanced before [enter]")
+        awaiting_enter.sock.close()
+        result["events"].append({"case": "provision-confirmation-await-enter", "response": "no-RESERVE/no-wizard"})
+
         # The web-assisted creation lane must not turn legacy DM-name
         # conventions into a fresh administrator character.
         stage = "reserved-admin-name"
@@ -585,6 +646,9 @@ def main() -> int:
             raise ScenarioFailure("saved character wrote a login/logout log before COMMIT")
 
         staged.send_fragmented(b"MUD1O COMMIT\n", 8)
+        staged.send_fragmented(
+            "MUD1O ACTIVATED|45454545-4545-4454-8454-454545454545\n".encode(), 13,
+        )
         staged.read_until("레벨 5".encode())
         staged.read_until("도력): ".encode())
         after_commit = good.read_until(b"Staged") + good.read_available()
@@ -634,6 +698,10 @@ def main() -> int:
         failing.read_until(b"MUD1O OK\n")
         failing.read_until("당신의 이름은 무엇입니까".encode())
         failing.send(b"Failed\n")
+        failing.read_until("하시겠습니까".encode())
+        failing.send("예\n".encode())
+        failing.read_until("[엔터]를 누르십시요".encode())
+        failing.send(b"\n")
         read_control(failing, b"MUD1O RESERVE|")
         failing.send(f"MUD1O RESERVED|77777777-7777-4777-8777-777777777777\n".encode())
         failing.read_until("당신은 남자입니까".encode())
@@ -743,10 +811,11 @@ def main() -> int:
         if verified != expected_verified:
             raise ScenarioFailure("claim did not digest the verified on-disk player file")
         claim.send_fragmented(f"MUD1O CLAIMED|{CHARACTER}\n".encode(), 11)
-        if claim.read_close() != b"":
-            raise ScenarioFailure("successful claim emitted player text instead of closing")
+        # Activation belongs to the real Gateway's finalized handoff.  This
+        # local C peer stops after CLAIMED so it does not invent that DB step.
+        claim.sock.shutdown(socket.SHUT_RDWR)
         claim.sock.close()
-        result["events"].append({"case": "claim-success", "response": "VERIFIED/CLAIMED-close"})
+        result["events"].append({"case": "claim-success", "response": "VERIFIED/CLAIMED"})
 
         stage = "claim-wrong-password"
         wrong = Session(connect_first(port, args.timeout, process), redactor, args.timeout)

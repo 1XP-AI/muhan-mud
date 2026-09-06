@@ -9,7 +9,9 @@ Do not use a personal account, an arbitrary character name, or an arbitrary lega
 - A pre-created web account with an empty roster and one approved, globally unique provision character name.
 - A different pre-created web account with an empty roster, plus one imported-and-unclaimed legacy character and its known legacy password.
 
-The C/Gateway provision path is not a one-name check. It reserves the supplied name, accepts the existing wizard's gender, class, stats, weapon, alignment, race, and game-password inputs, waits for C to emit `SAVED`, lets Gateway finalize ownership, and then lets Gateway send C `COMMIT`. The browser test waits for the resulting provisioned control, returns to the active roster, and opens a normal authenticated game session as admission evidence.
+The C/Gateway provision path is not a one-name check. It preserves the legacy name confirmation and `[enter]` gate before reserving the supplied name, accepts the existing wizard's gender, class, stats, weapon, alignment, race, and game-password inputs, waits for C to emit `SAVED`, lets Gateway finalize ownership, and then lets Gateway send C `COMMIT` followed by `ACTIVATED`. The browser test waits for the resulting provisioned control, returns to the active roster, and opens a normal authenticated game session as admission evidence.
+
+The legacy game password is currently stored in the legacy player file and must differ from the web-login password.
 
 The harness requires the following environment variables. `MUHAN_LIVE_ONBOARDING_SMOKE_DURABLE_DATA_APPROVAL` is deliberately separate from the enable flag: a run can create durable provisioning/claim data only after the operator has supplied that approval value in an approved maintenance window.
 
@@ -27,7 +29,7 @@ MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_STATS=<approved-existing-wizard-answer>
 MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_WEAPON=<approved-existing-wizard-answer>
 MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_ALIGNMENT=<approved-existing-wizard-answer>
 MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_RACE=<approved-existing-wizard-answer>
-MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD=<approved-new-game-password>
+MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD=<approved-new-game-password-different-from-web-login-password>
 MUHAN_LIVE_ONBOARDING_SMOKE_CLAIM_EMAIL=<pre-created-empty-roster-account>
 MUHAN_LIVE_ONBOARDING_SMOKE_CLAIM_WEB_PASSWORD=<that-account-password>
 MUHAN_LIVE_ONBOARDING_SMOKE_CLAIM_CHARACTER_NAME=<pre-created-unclaimed-legacy-name>

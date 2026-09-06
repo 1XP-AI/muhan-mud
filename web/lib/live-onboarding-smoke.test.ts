@@ -165,6 +165,23 @@ test('live onboarding smoke rejects provision and claim fixtures that reuse the 
   assert.match(result.skipReason, /different character names/i)
 })
 
+test('live onboarding smoke rejects a provision fixture that reuses the web-login password', () => {
+  const result = readLiveOnboardingSmokeConfig({
+    MUHAN_LIVE_ONBOARDING_SMOKE_ENABLED: 'true',
+    ...approvals,
+    ...fixtures,
+    MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD:
+      fixtures.MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_WEB_PASSWORD,
+  })
+
+  assert.equal(result.config, null)
+  assert.equal(result.shouldRun, false)
+  assert.deepEqual(result.invalid, [
+    'MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD',
+  ])
+  assert.match(result.skipReason, /differ from the web-login password/i)
+})
+
 test('live onboarding smoke rejects placeholder and malformed operator fixture inputs without exposing values', () => {
   const placeholder = readLiveOnboardingSmokeConfig({
     MUHAN_LIVE_ONBOARDING_SMOKE_ENABLED: 'true',

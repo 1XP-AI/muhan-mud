@@ -236,6 +236,19 @@ export function readLiveOnboardingSmokeConfig(
   }
 
   if (
+    environment.MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD ===
+    environment.MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_WEB_PASSWORD
+  ) {
+    return {
+      config: null,
+      invalid: ['MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_GAME_PASSWORD'],
+      missing: [],
+      shouldRun: false,
+      skipReason: 'Live onboarding smoke requires the provision game password to differ from the web-login password.',
+    }
+  }
+
+  if (
     normalizedEmail(environment.MUHAN_LIVE_ONBOARDING_SMOKE_PROVISION_EMAIL!) ===
     normalizedEmail(environment.MUHAN_LIVE_ONBOARDING_SMOKE_CLAIM_EMAIL!)
   ) {

@@ -175,7 +175,7 @@ static void setup(fixture *test, onboarding_activation_binding_mode mode)
         mode == ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION;
     test->io.fn=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ?
         onboarding_claim:onboarding_provision;
-    test->io.fnparam=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ? 6:5;
+    test->io.fnparam=mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM ? 6:7;
     Ply[0].ply=&test->player;
     Ply[0].io=&test->io;
     Ply[0].extr=&test->ext;

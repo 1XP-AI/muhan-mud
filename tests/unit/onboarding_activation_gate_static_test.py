@@ -36,7 +36,7 @@ def case_body(body: str, number: int) -> str:
     end = match.end() + following.start() if following else len(body)
     return body[match.start():end]
 
-provision_activated = case_body(function_body("void onboarding_provision"), 5)
+provision_activated = case_body(function_body("void onboarding_provision"), 7)
 claim_activated = case_body(function_body("void onboarding_claim"), 6)
 
 for label, activated in (("provision", provision_activated),
