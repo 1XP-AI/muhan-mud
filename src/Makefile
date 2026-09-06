@@ -204,6 +204,9 @@ legacy-identity-evidence-sanitizer-test:
 	$(CC) -std=gnu89 -fcommon -DFILE_PLAYER_STORE_TESTING -I. -ffunction-sections -fdata-sections $(UNIT_LEGACY_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/legacy_identity_evidence_test.c legacy_identity_evidence.c legacy_identity_evidence_wire.c file_player_store.c player_path.c resource_path.c $(UNIT_GC_FLAGS) -o /tmp/muhan-unit/legacy_identity_evidence_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/legacy_identity_evidence_sanitizer_test
 
+admission-identity-conformance-test:
+	../scripts/run-admission-identity-conformance.sh
+
 # Closed metadata-only C/Rust boundary.  This source is intentionally absent
 # from OBJECTS, so no live MUD path links or invokes it by default.
 legacy-identity-evidence-wire-test:
