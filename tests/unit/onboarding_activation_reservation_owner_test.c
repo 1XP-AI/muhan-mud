@@ -72,6 +72,7 @@ static void setup(int directory_fd)
     current.adapter_result=ONBOARDING_ACTIVATION_RESERVATION_ADAPTER_READY;
     current.owner.state=CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY;
     current.owner.writer_held=1;
+    current.owner.player_store_installed=1;
     current.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
 }
 
@@ -149,6 +150,14 @@ int main(void)
         ONBOARDING_ACTIVATION_RESERVATION_OWNER_NOT_READY && !current.adapter_calls &&
         !current.owner.operation_active,
         "owner without held writer is denied before adapter use");
+
+    setup(directory_fd); current.owner.player_store_installed=0;
+    memset(&bridge,0,sizeof(bridge));
+    failed+=expect(onboarding_activation_reservation_owner_attempt(&current.owner,
+        directory_fd,&expected,&capability,"Alice",&bridge)==
+        ONBOARDING_ACTIVATION_RESERVATION_OWNER_NOT_READY && !current.adapter_calls &&
+        !current.owner.operation_active && fcntl(directory_fd,F_GETFD)>=0,
+        "owner without an installed V4 PlayerStore is denied before reservation");
 
     setup(directory_fd);
     current.owner.player_store.state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING;

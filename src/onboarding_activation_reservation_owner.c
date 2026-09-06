@@ -33,7 +33,7 @@ onboarding_activation_save_bridge *bridge_out;
        !canonical_name || !bridge_out)
         return ONBOARDING_ACTIVATION_RESERVATION_OWNER_INVALID_ARGUMENT;
     if(owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY ||
-       !owner->writer_held)
+       !owner->writer_held || !owner->player_store_installed)
         return ONBOARDING_ACTIVATION_RESERVATION_OWNER_NOT_READY;
     if(owner->operation_active || owner->player_store.state !=
        CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE)

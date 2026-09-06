@@ -24,10 +24,10 @@ typedef enum onboarding_activation_reservation_owner_result {
 
 /*
  * Attempts the caller-owned adapter exactly once only while `owner` is READY,
- * has its writer held, has an IDLE PlayerStore, and has no other operation in
- * flight.  This API accepts no caller-provided lifecycle flags; it raises
- * owner->operation_active only across that adapter call and does not retain,
- * duplicate, close, or otherwise own any caller resource.
+ * has its writer held, has its V4 PlayerStore installed and IDLE, and has no
+ * other operation in flight.  This API accepts no caller-provided lifecycle
+ * flags; it raises owner->operation_active only across that adapter call and
+ * does not retain, duplicate, close, or otherwise own any caller resource.
  */
 onboarding_activation_reservation_owner_result
 onboarding_activation_reservation_owner_attempt(
