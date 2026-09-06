@@ -4,7 +4,7 @@ import test from 'node:test'
 import { createBatchIdentity } from '../src/batch-identity.js'
 import { bindLegacyPlayerShadowEvidenceV1 } from '../src/legacy-player-shadow-binding.js'
 import { BatchImportError, expectedShard, importBatch, importRecords, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
-import { importerBindingFixture } from './legacy-identity-evidence-fixture.js'
+import { EXPECTED_LEGACY_PLAYER_FILE_SHA256, importerBindingFixture } from './legacy-identity-evidence-fixture.js'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 
@@ -124,6 +124,7 @@ test('fixture-backed evidence binding reaches the exact batch, character, member
   assert.equal(result.ledger, 'committed')
   assert.deepEqual(store.batchInputs, [{ identity: batchIdentity, streamId: 'main', sequence: 0, recordCount: 1 }])
   assert.deepEqual(store.insertInputs, [{ worldId: batchIdentity.worldId, record: fixtureRecord }])
+  assert.equal(store.insertInputs[0]?.record.sha256, EXPECTED_LEGACY_PLAYER_FILE_SHA256)
   assert.equal(store.insertInputs[0]?.record.sha256, evidence.playerFileSha256)
   assert.deepEqual(store.memberInputs, [{
     worldId: batchIdentity.worldId,

@@ -25,6 +25,8 @@ const IMPORTER_BINDING_FIXTURE_FIELDS = [
   'storage_format',
   'wire_hex',
 ]
+export const EXPECTED_LEGACY_PLAYER_FILE_SHA256 =
+  '18f8d2eb4a387bbc1e37ec099a7326805739bc9c99ecf0f14b808a5bcb65bf49' as const
 
 /** Reads the reviewed cross-language fixture; production never parses this test fixture. */
 export function importerBindingFixture(): { evidence: LegacyIdentityEvidenceV1Shape, record: InventoryRecord } {
@@ -39,6 +41,7 @@ export function importerBindingFixture(): { evidence: LegacyIdentityEvidenceV1Sh
   }
   assert.deepEqual([...fields.keys()].sort(), IMPORTER_BINDING_FIXTURE_FIELDS)
   assert.equal(fields.get('contract_version'), '1')
+  assert.equal(fields.get('player_file_sha256'), EXPECTED_LEGACY_PLAYER_FILE_SHA256)
 
   return {
     evidence: {
