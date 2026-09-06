@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/**/*.test.ts",
+    "test": "../../scripts/run-player-snapshot-v1-normalized-projection-bridge.sh",
     "start": "node dist/cli.js",
     "bank-topology-shadow": "node dist/bank-snapshot-v1-topology-shadow-cli.js",
     "bank-root-value-shadow": "node dist/bank-snapshot-v1-root-value-shadow-cli.js",
