@@ -67,6 +67,7 @@ jobs:
           bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
           bash supabase/tests/legacy_locator_resolver_static_contract.sh
           bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_topology_shadow_static_contract.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
@@ -259,6 +260,8 @@ jobs:
               --file=supabase/migrations/20261002000000_legacy_locator_resolver.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261003000000_player_snapshot_v1_inventory_graph_shadow.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261005000000_bank_snapshot_v1_topology_shadow.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_ledger_contract.sql
@@ -273,6 +276,8 @@ jobs:
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pvi_tree_payload=${pvi_tree_payload}" \
             --file=supabase/tests/player_snapshot_v1_inventory_graph_shadow_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/bank_snapshot_v1_topology_shadow_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
