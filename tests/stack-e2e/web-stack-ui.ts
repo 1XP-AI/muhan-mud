@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
 import { chromium, expect, type Page } from "@playwright/test";
 
 export interface WebStackFixture {
@@ -31,26 +30,39 @@ export interface WebStackServer {
 
 type TimerApi = Pick<typeof globalThis, "clearTimeout" | "setTimeout">;
 
+interface WebStackStopOptions {
+  graceTimeoutMs?: number;
+  killTimeoutMs?: number;
+  signalProcessTree?: (child: ChildProcess, signal: NodeJS.Signals) => void;
+  timers?: TimerApi;
+}
+
 export async function waitForWebStackExit(
   child: ChildProcess,
   timeoutMs: number,
   timers: TimerApi = globalThis,
 ): Promise<[number | null, NodeJS.Signals | null]> {
-  const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      exited,
-      new Promise<never>((_, reject) => {
-        timeout = timers.setTimeout(
-          () => reject(new Error(`web server did not exit within ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) timers.clearTimeout(timeout);
-  }
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      child.removeListener("exit", onExit);
+      if (timeout !== undefined) timers.clearTimeout(timeout);
+      complete();
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finish(() => resolve([code, signal]));
+    };
+
+    child.once("exit", onExit);
+    timeout = timers.setTimeout(
+      () => finish(() => reject(new Error(`web server did not exit within ${timeoutMs}ms`))),
+      timeoutMs,
+    );
+  });
 }
 
 export function signalWebStackProcessTree(
@@ -139,23 +151,40 @@ export async function waitForWebStackServer(server: WebStackServer): Promise<voi
   throw lastError instanceof Error ? lastError : new Error("web server did not become ready");
 }
 
-export async function stopWebStackServer(server: WebStackServer): Promise<void> {
+export async function stopWebStackServer(
+  server: WebStackServer,
+  {
+    graceTimeoutMs = 15_000,
+    killTimeoutMs = 5_000,
+    signalProcessTree = signalWebStackProcessTree,
+    timers = globalThis,
+  }: WebStackStopOptions = {},
+): Promise<void> {
   if (server.child.exitCode !== null) {
     assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
     return;
   }
-  signalWebStackProcessTree(server.child, "SIGTERM");
   try {
-    const [code, signal] = await waitForWebStackExit(server.child, 15_000);
+    signalProcessTree(server.child, "SIGTERM");
+    const [code, signal] = await waitForWebStackExit(server.child, graceTimeoutMs, timers);
     assert.ok(signal === "SIGTERM" || code === 0, `web server exited unexpectedly (${code ?? signal})`);
   } catch (termError) {
     // A development server that ignores graceful termination still must not
     // outlive this disposable runner. SIGKILL targets the same pnpm/Next tree.
-    if (server.child.exitCode !== null) throw termError;
+    // The group can exit between the initial exitCode observation and kill().
+    // POSIX reports that as ESRCH, but a normal child exit is successful cleanup.
+    if (server.child.exitCode !== null) {
+      assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
+      return;
+    }
     try {
-      signalWebStackProcessTree(server.child, "SIGKILL");
-      await waitForWebStackExit(server.child, 5_000);
+      signalProcessTree(server.child, "SIGKILL");
+      await waitForWebStackExit(server.child, killTimeoutMs, timers);
     } catch (killError) {
+      if (server.child.exitCode !== null) {
+        assert.equal(server.child.exitCode, 0, "web server exited unsuccessfully");
+        return;
+      }
       throw new AggregateError(
         [termError, killError],
         "web server process tree could not be terminated",

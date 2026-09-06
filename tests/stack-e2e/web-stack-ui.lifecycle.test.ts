@@ -46,6 +46,107 @@ test("web stack exit wait clears its bounded-wait timer after a normal exit", as
   assert.deepEqual(cleared, [timer]);
 });
 
+test("web stack exit wait removes its exit listener when its timeout wins", async () => {
+  const child = fakeChild();
+  let timeoutCallback: (() => void) | undefined;
+  const timer = { id: "web-exit-timeout" } as unknown as ReturnType<typeof setTimeout>;
+  const cleared: Array<ReturnType<typeof setTimeout>> = [];
+  const timers = {
+    setTimeout: (callback: () => void, _timeoutMs: number) => {
+      timeoutCallback = callback;
+      return timer;
+    },
+    clearTimeout: (handle: ReturnType<typeof setTimeout>) => { cleared.push(handle); },
+  };
+
+  const exited = waitForWebStackExit(child, 100, timers);
+  assert.equal(child.listenerCount("exit"), 1);
+  timeoutCallback?.();
+  await assert.rejects(exited, /web server did not exit within 100ms/);
+  assert.equal(child.listenerCount("exit"), 0);
+  assert.deepEqual(cleared, [timer]);
+});
+
+test("web stack cleanup clears timed-out SIGTERM listeners before SIGKILL and after fallback exit", async () => {
+  const child = fakeChild({ pid: 4312, exitCode: null });
+  const callbacks: Array<() => void> = [];
+  const signals: NodeJS.Signals[] = [];
+  const timers = {
+    setTimeout: (callback: () => void, _timeoutMs: number) => {
+      callbacks.push(callback);
+      return { id: callbacks.length } as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: (_handle: ReturnType<typeof setTimeout>) => undefined,
+  };
+  const stopping = stopWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      graceTimeoutMs: 1,
+      killTimeoutMs: 1,
+      timers,
+      signalProcessTree: (_child, signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") assert.equal(child.listenerCount("exit"), 0);
+      },
+    },
+  );
+
+  assert.equal(child.listenerCount("exit"), 1);
+  callbacks.shift()?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(child.listenerCount("exit"), 1);
+  child.emit("exit", 0, "SIGKILL");
+  await stopping;
+  assert.equal(child.listenerCount("exit"), 0);
+});
+
+test("web stack cleanup accepts a normal exit racing process-group SIGTERM", async () => {
+  const child = fakeChild({ pid: 4312, exitCode: null });
+
+  await stopWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      signalProcessTree: () => {
+        Object.assign(child, { exitCode: 0 });
+        const error = Object.assign(new Error("no such process"), { code: "ESRCH" });
+        throw error;
+      },
+    },
+  );
+});
+
+test("web stack cleanup accepts a normal exit racing fallback process-group SIGKILL", async () => {
+  const child = fakeChild({ pid: 4312, exitCode: null });
+  let timeoutCallback: (() => void) | undefined;
+  let signals = 0;
+
+  const stopping = stopWebStackServer(
+    { baseUrl: "http://127.0.0.1:1", child },
+    {
+      graceTimeoutMs: 1,
+      timers: {
+        setTimeout: (callback: () => void, _timeoutMs: number) => {
+          timeoutCallback = callback;
+          return { id: "timeout" } as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimeout: (_handle: ReturnType<typeof setTimeout>) => undefined,
+      },
+      signalProcessTree: () => {
+        signals += 1;
+        if (signals === 2) {
+          Object.assign(child, { exitCode: 0 });
+          throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+        }
+      },
+    },
+  );
+  timeoutCallback?.();
+  await stopping;
+  assert.equal(signals, 2);
+  assert.equal(child.listenerCount("exit"), 0);
+});
+
 test("web stack cleanup reports an already-unsuccessful server exit", async () => {
   await assert.rejects(
     () => stopWebStackServer({ baseUrl: "http://127.0.0.1:1", child: fakeChild({ exitCode: 1 }) }),
@@ -60,8 +161,8 @@ test("runner starts a dedicated process group and does not swallow web cleanup f
   ]);
 
   assert.match(webRunner, /detached: process\.platform !== "win32"/);
-  assert.match(webRunner, /signalWebStackProcessTree\(server\.child, "SIGTERM"\)/);
-  assert.match(webRunner, /signalWebStackProcessTree\(server\.child, "SIGKILL"\)/);
+  assert.match(webRunner, /signalProcessTree\(server\.child, "SIGTERM"\)/);
+  assert.match(webRunner, /signalProcessTree\(server\.child, "SIGKILL"\)/);
   assert.match(stackHarness, /if \(web\) await stopWebStackServer\(web\)/);
   assert.doesNotMatch(stackHarness, /stopWebStackServer\(web\)\.catch\(/);
 });
