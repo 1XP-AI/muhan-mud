@@ -9,7 +9,8 @@
     "test": "tsx --test test/**/*.test.ts",
     "start": "node dist/cli.js",
     "replay-differential": "node dist/player-snapshot-v1-replay-differential-cli.js",
-    "v2-journal-level-shadow-comparator": "node dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js"
+    "v2-journal-level-shadow-comparator": "node dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js",
+    "full-payload-rehearsal": "node dist/player-snapshot-v1-full-payload-rehearsal-cli.js"
   },
   "dependencies": {
     "pg": "^8.16.3"
