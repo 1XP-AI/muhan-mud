@@ -66,6 +66,7 @@ jobs:
           bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
           bash supabase/tests/legacy_locator_resolver_static_contract.sh
+          bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
@@ -203,6 +204,8 @@ jobs:
             --file=supabase/tests/onboarding_snapshot_eligibility_outbox_contract.sql
           pva_fixture_hex="$(tr -d '\r\n' < tests/fixtures/player_snapshot_v1_canonical.hex)"
           pva_payload="decode('${pva_fixture_hex}', 'hex')"
+          pvi_tree_fixture_hex="$(tr -d '\r\n' < tests/fixtures/player_snapshot_v1_tree_inventory.hex)"
+          pvi_tree_payload="decode('${pvi_tree_fixture_hex}', 'hex')"
           if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
@@ -254,6 +257,8 @@ jobs:
               --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261002000000_legacy_locator_resolver.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261003000000_player_snapshot_v1_inventory_graph_shadow.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/imported_unclaimed_batch_ledger_contract.sql
@@ -265,6 +270,9 @@ jobs:
             --file=supabase/tests/imported_unclaimed_batch_member_legacy_locator_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/legacy_locator_resolver_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pvi_tree_payload=${pvi_tree_payload}" \
+            --file=supabase/tests/player_snapshot_v1_inventory_graph_shadow_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
