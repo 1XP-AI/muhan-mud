@@ -112,6 +112,17 @@ test('authorizer fails closed without exposing a PostgREST response', async () =
   }), CharacterAuthorizationError)
 })
 
+test('handoff_pending is never accepted as normal character admission', async () => {
+  const authorizer = new SupabaseCharacterAuthorizer(config(), async () => Response.json(leaseRow({ lifecycle: 'handoff_pending' })), clock)
+
+  await assert.rejects(() => authorizer.beginSession(beginRequest()), CharacterAuthorizationError)
+  await assert.rejects(() => authorizer.renewSession({
+    sessionId: session,
+    gatewayInstanceId: 'gateway-contract',
+    expiresAt: new Date('2026-09-01T00:00:00.000Z')
+  }), CharacterAuthorizationError)
+})
+
 test('authorizer rejects a lease expiry that differs from the requested transaction result', async () => {
   const authorizer = new SupabaseCharacterAuthorizer(config(), async () => Response.json([{
     character_id: character,

@@ -79,6 +79,25 @@ test('handoff activation invokes only the exact service RPC and validates its ac
   await assert.rejects(() => unexpectedColumn.activateHandoff({ actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' }), OnboardingAuthorizationError)
 })
 
+test('handoff activation rejects pending or non-finalized evidence before normal admission can be eligible', async () => {
+  const activation = { actorUserId: actor, correlationId: correlation, characterId: character, mode: 'provision' as const }
+  const exactRow = {
+    character_id: character,
+    actor_user_id: actor,
+    correlation_id: correlation,
+    lifecycle: 'active',
+    onboarding_status: 'finalized',
+  }
+
+  for (const response of [
+    { ...exactRow, lifecycle: 'handoff_pending' },
+    { ...exactRow, onboarding_status: 'provisioning' },
+  ]) {
+    const client = new SupabaseOnboardingAuthorizer(config(), async () => Response.json([response]))
+    await assert.rejects(() => client.activateHandoff(activation), OnboardingAuthorizationError)
+  }
+})
+
 test('snapshot command binding uses the migration RPC contract and accepts only BOUND outcomes', async () => {
   const calls: Array<{ url: URL, init?: RequestInit }> = []
   const request = {
