@@ -68,6 +68,8 @@ jobs:
           bash supabase/tests/legacy_locator_resolver_static_contract.sh
           bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
           bash supabase/tests/bank_snapshot_v1_topology_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_root_value_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_root_value_shadow_disposable_contract_harness.test.sh
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Every additive migration is intentionally applied twice: the first
           # pass proves the upgrade and the second proves safe job/CI replay.
