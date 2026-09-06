@@ -16,6 +16,7 @@ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/muhan-stack-e2e.XXXXXX")"
 work_dir="$(cd "$work_dir" && pwd -P)"
 pg_password="stack-e2e-postgres-password"
 jwt_secret="stack-e2e-jwt-secret-not-for-production"
+m3_writer_password="stack-e2e-m3-writer-password"
 network_created=0
 postgres_created=0
 postgrest_created=0
@@ -174,13 +175,23 @@ if [[ -z "$postgrest_port" ]] || ! curl --max-time 2 -fsS "http://127.0.0.1:${po
   exit 2
 fi
 
+# The stack acceptance runs the real opt-in M3 graph.  This role/password and
+# conninfo are created only in this runner's disposable PostgreSQL instance,
+# never in a developer database or a checked-in fixture.
+docker exec "$postgres_name" psql -U postgres -d stack_e2e -v ON_ERROR_STOP=1 \
+  -c "alter role mud_writer_login password '${m3_writer_password}'" >/dev/null
+m3_conninfo_file="$work_dir/m3-writer.conninfo"
+umask 077
+printf '%s' "postgresql://mud_writer_login:${m3_writer_password}@127.0.0.1:${postgres_port}/stack_e2e?sslmode=disable" >"$m3_conninfo_file"
+chmod 600 "$m3_conninfo_file"
+
 # The test uses a signed service_role JWT solely for PostgREST's role switch.
 # The browser token is a deterministic authenticator fixture inside the test.
 service_role_jwt="$(STACK_E2E_JWT_SECRET="$jwt_secret" node -e 'const c=require("node:crypto"); const b=x=>Buffer.from(JSON.stringify(x)).toString("base64url"); const h=b({alg:"HS256",typ:"JWT"})+"."+b({role:"service_role",aud:"authenticated",exp:4102444800}); process.stdout.write(h+"."+c.createHmac("sha256",process.env.STACK_E2E_JWT_SECRET).update(h).digest("base64url"))')"
 
 echo "stack-e2e: RED (preflight)"
 build_log="$work_dir/build.log"
-if ! make -B -C "$repo_root/src" -j2 OUTFILE="$work_dir/frp.new" >"$build_log" 2>&1; then
+if ! make -B -C "$repo_root/src" -j2 CC=gcc USE_M3_RUNTIME=1 PG_CONFIG=pg_config OUTFILE="$work_dir/frp.new" >"$build_log" 2>&1; then
   echo "stack-e2e: RED (preflight build failed)" >&2
   tail -n 80 "$build_log" >&2
   exit 1
@@ -190,6 +201,10 @@ echo "stack-e2e: GREEN (preflight)"
 test_status=0
 STACK_E2E_PG_CONTAINER="$postgres_name" \
 STACK_E2E_PG_PASSWORD="$pg_password" \
+STACK_E2E_M3_ENABLED=1 \
+STACK_E2E_M3_WRITER_PASSWORD="$m3_writer_password" \
+STACK_E2E_M3_CONNINFO_FILE="$m3_conninfo_file" \
+STACK_E2E_M3_DATABASE_URL="postgresql://mud_writer_login:${m3_writer_password}@127.0.0.1:${postgres_port}/stack_e2e?sslmode=disable" \
 STACK_E2E_ROOT="$repo_root" \
 STACK_E2E_FIXTURE="$work_dir/fixture" \
 STACK_E2E_REST_URL="http://127.0.0.1:${postgrest_port}" \

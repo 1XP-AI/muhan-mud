@@ -70,7 +70,7 @@ function browserJwt(subject: string): string {
 }
 
 function redact(value: string): string {
-  return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, admissionSecret, password, accessToken]
+  return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, process.env.STACK_E2E_M3_WRITER_PASSWORD, process.env.STACK_E2E_M3_DATABASE_URL, admissionSecret, password, accessToken]
     .filter((secret): secret is string => Boolean(secret))
     .reduce((output, secret) => output.split(secret).join('<REDACTED>'), value)
 }
@@ -127,17 +127,29 @@ async function prepareFixture(): Promise<void> {
   await mkdir(join(fixture, 'log', 'auth'), { recursive: true })
 }
 
-function startMud(binary: string, port: number, trustedAdmission = true): ChildProcess {
+function startMud(binary: string, port: number, trustedAdmission = true, m3Enabled = process.env.STACK_E2E_M3_ENABLED === '1'): ChildProcess {
   const {
     MUD_REQUIRE_TRUSTED_ADMISSION: _ignoredTrustedAdmission,
     MUD_ADMISSION_SECRET: _ignoredAdmissionSecret,
+    MUD_M3_MODE: _ignoredM3Mode,
+    MUD_M3_WORLD_ID: _ignoredM3World,
+    MUD_M3_CONNINFO_FILE: _ignoredM3Conninfo,
+    MUD_M3_PLAYER_SNAPSHOT_V1: _ignoredM3Snapshot,
     ...environment
   } = process.env
+  const m3Environment = m3Enabled ? {
+    MUD_M3_MODE: 'shadow',
+    MUD_M3_WORLD_ID: 'muhan',
+    MUD_M3_CONNINFO_FILE: process.env.STACK_E2E_M3_CONNINFO_FILE!,
+    MUD_M3_PLAYER_SNAPSHOT_V1: 'handoff',
+  } : { MUD_M3_MODE: 'off' }
+  if (m3Enabled) assert.ok(process.env.STACK_E2E_M3_CONNINFO_FILE, 'runner must provide an M3 writer conninfo file')
   const child = spawn(binary, ['-r', String(port)], {
     cwd: fixture,
     env: {
       ...environment,
       MUHAN_HOME: fixture,
+      ...m3Environment,
       MUD_ENABLE_ONBOARDING: trustedAdmission ? '1' : '0',
       ...(trustedAdmission ? { MUD_REQUIRE_TRUSTED_ADMISSION: '1', MUD_ADMISSION_SECRET: admissionSecret } : {}),
       LC_ALL: 'C.UTF-8',
@@ -150,6 +162,79 @@ function startMud(binary: string, port: number, trustedAdmission = true): ChildP
   child.stdout?.on('data', capture)
   child.stderr?.on('data', capture)
   return child
+}
+
+type RelaySummary = Record<string, number>
+
+async function runM3ArtifactRelay(entrypoint: 'player-snapshot-v1-manifest-first-cli.ts' | 'player-snapshot-v1-artifact-cli.ts'): Promise<RelaySummary> {
+  const databaseUrl = process.env.STACK_E2E_M3_DATABASE_URL
+  assert.ok(databaseUrl, 'runner must provide the M3 writer database URL')
+  const { stdout } = await run(join(root, 'services/m4-file-snapshot-manifest-relay/node_modules/.bin/tsx'), [
+    join(root, `services/m4-file-snapshot-manifest-relay/src/${entrypoint}`), '--once',
+  ], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      M4_FILE_SNAPSHOT_OUTBOX_DIR: join(fixture, 'character-player-snapshot-v1-outbox'),
+      M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true',
+    },
+  })
+  return JSON.parse(stdout.trim()) as RelaySummary
+}
+
+async function relayM3Artifacts(): Promise<{ artifact: RelaySummary, manifest: RelaySummary }> {
+  const manifest = await runM3ArtifactRelay('player-snapshot-v1-manifest-first-cli.ts')
+  const artifact = await runM3ArtifactRelay('player-snapshot-v1-artifact-cli.ts')
+  return { artifact, manifest }
+}
+
+function assertNoPlaintextSecrets(label: string, value: string | Buffer, secrets: readonly string[]): void {
+  const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value
+  for (const secret of secrets) {
+    assert.equal(bytes.includes(Buffer.from(secret, 'utf8')), false, `${label} must not contain plaintext secret material`)
+  }
+}
+
+async function writerSql(query: string): Promise<string> {
+  const output = await sql(`set session authorization mud_writer_login; set role mud_writer; ${query}`)
+  return output.split('\n').at(-1)!
+}
+
+async function assertM3OnboardingEvidence({
+  actorUserId,
+  correlationId,
+  expectedMode,
+  secrets,
+}: {
+  actorUserId: string
+  correlationId: string
+  expectedMode: 'claim' | 'provision'
+  secrets: readonly string[]
+}): Promise<{ characterId: string, commandId: string }> {
+  const binding = await sql(`select b.character_id || '|' || b.command_id || '|' || b.mode || '|' || o.status || '|' || count(a.command_id)::text || '|' || count(m.command_id)::text || '|' || count(r.command_id)::text || '|' || count(f.correlation_id)::text || '|' || (r.acknowledged_at > b.bound_at)::text || '|' || (f.artifact_command_id = b.command_id)::text from private.game_character_onboarding_snapshot_command_bindings b join private.game_character_onboarding_snapshot_eligibility_outbox o using (correlation_id) left join private.game_character_player_snapshot_v1_artifacts a on a.character_id = b.character_id and a.command_id = b.command_id left join private.game_character_m4_file_snapshot_manifests m on m.character_id = b.character_id and m.command_id = b.command_id left join private.game_character_shadow_receipts r on r.character_id = b.character_id and r.command_id = b.command_id left join private.game_character_onboarding_snapshot_fulfillments f using (correlation_id) where b.correlation_id = '${correlationId}' and b.actor_user_id = '${actorUserId}' group by b.character_id, b.command_id, b.mode, o.status, r.acknowledged_at, b.bound_at, f.artifact_command_id`)
+  const [characterId, commandId, mode, outboxStatus, artifacts, manifests, receipts, fulfillments, acknowledgedAfterBinding, fulfillmentBoundCommand] = binding.split('|')
+  assert.match(characterId!, /^[0-9a-f-]{36}$/)
+  assert.match(commandId!, /^[0-9a-f-]{36}$/)
+  assert.equal(mode, expectedMode)
+  assert.equal(outboxStatus, 'fulfilled')
+  assert.equal(artifacts, '1', 'one immutable PlayerSnapshotV1 artifact must match the bound command')
+  assert.equal(manifests, '1', 'one immutable receipt manifest must match the bound command')
+  assert.equal(receipts, '1', 'one receipt must match the bound command')
+  assert.equal(fulfillments, '1', 'one immutable fulfillment must match the correlation')
+  assert.equal(acknowledgedAfterBinding, 'true', 'the receipt must be acknowledged only after the command binding')
+  assert.equal(fulfillmentBoundCommand, 'true', 'the fulfillment must retain the immutable bound command')
+
+  const outbox = join(fixture, 'character-player-snapshot-v1-outbox')
+  const [artifact, manifest, receipt] = await Promise.all([
+    readFile(join(outbox, `${commandId}.player-snapshot-v1`)),
+    readFile(join(outbox, `${commandId}.manifest`), 'utf8'),
+    readFile(join(fixture, 'onboarding-receipts', `${correlationId}.receipt`), 'utf8'),
+  ])
+  assertNoPlaintextSecrets('PlayerSnapshotV1 artifact', artifact, secrets)
+  assertNoPlaintextSecrets('M3 receipt manifest', manifest, secrets)
+  assertNoPlaintextSecrets('onboarding receipt', receipt, secrets)
+  return { characterId: characterId!, commandId: commandId! }
 }
 
 async function stopMud(child: ChildProcess): Promise<void> {
@@ -409,6 +494,9 @@ async function main(): Promise<void> {
   try {
     assert.ok(process.env.STACK_E2E_BINARY, 'STACK_E2E_BINARY is required')
     assert.ok(process.env.STACK_E2E_SERVICE_ROLE_JWT, 'STACK_E2E_SERVICE_ROLE_JWT is required')
+    assert.equal(process.env.STACK_E2E_M3_ENABLED, '1', 'this acceptance lane requires the M3-enabled disposable binary')
+    assert.ok(process.env.STACK_E2E_M3_CONNINFO_FILE, 'runner must provide a protected M3 writer conninfo file')
+    assert.ok(process.env.STACK_E2E_M3_DATABASE_URL, 'runner must provide the M3 writer database URL')
     const webProvisionJwt = browserJwt(webProvisionActor)
     const webClaimJwt = browserJwt(webClaimActor)
     const authenticatedSubjects = new Map([
@@ -427,7 +515,7 @@ async function main(): Promise<void> {
     // stack starts.  They are never copied from the source tree or relabelled
     // in SQL: the importer below is the only path that admits their DB rows.
     const legacyMudPort = await choosePort()
-    mud = startMud(process.env.STACK_E2E_BINARY, legacyMudPort, false)
+    mud = startMud(process.env.STACK_E2E_BINARY, legacyMudPort, false, false)
     await waitForMud(legacyMudPort, mud)
     await createDisposableLegacyPlayer(legacyMudPort, importedClaimName)
     await createDisposableLegacyPlayer(legacyMudPort, missingMemberName)
@@ -848,7 +936,42 @@ async function main(): Promise<void> {
     assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_name_sha1 || '|' || legacy_shard from private.game_imported_unclaimed_batch_member_legacy_locators where character_id = '${webClaimCharacterId}'`), `${webClaimName}|${createHash('sha1').update(webClaimName).digest('hex')}|${createHash('sha1').update(webClaimName).digest('hex').slice(0, 2)}`)
     assert.equal(createHash('sha256').update(await readFile(webClaimPlayer)).digest('hex'), webClaimDigest)
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
-    evidence.events.push({ case: 'web-ui-provision-and-claim', result: 'real-next-xterm-claim-password-active-roster-provenance-sha-mud1-admission' })
+
+    // The browser has now exercised distinct real provision and claim flows.
+    // Resolve their server-issued correlations from the immutable intent rows,
+    // rather than inventing a client-side identity for either flow.
+    const webProvisionCorrelation = await sql(`select correlation_id from private.game_character_onboarding_intents where actor_user_id = '${webProvisionActor}' and mode = 'provision' order by created_at desc limit 1`)
+    const webClaimCorrelation = await sql(`select correlation_id from private.game_character_onboarding_intents where actor_user_id = '${webClaimActor}' and mode = 'claim' order by created_at desc limit 1`)
+    assert.match(webProvisionCorrelation, /^[0-9a-f-]{36}$/)
+    assert.match(webClaimCorrelation, /^[0-9a-f-]{36}$/)
+
+    // M4 records the immutable manifest/artifact pair before the dedicated
+    // fulfillment pass consumes it. Retrying both passes is intentional: the
+    // exact same command evidence must remain an idempotent replay.
+    const secretValues = [password, accessToken, admissionSecret, webProvisionJwt, webClaimJwt]
+    await eventually(async () => {
+      await relayM3Artifacts()
+      await assertM3OnboardingEvidence({ actorUserId: webProvisionActor, correlationId: webProvisionCorrelation, expectedMode: 'provision', secrets: secretValues })
+      await assertM3OnboardingEvidence({ actorUserId: webClaimActor, correlationId: webClaimCorrelation, expectedMode: 'claim', secrets: secretValues })
+    }, 45_000)
+    const replay = await relayM3Artifacts()
+    assert.ok((replay.manifest.exactRetry ?? 0) >= 2, 'manifest relay must exact-retry the browser provision and claim evidence')
+    assert.ok((replay.artifact.exactRetry ?? 0) >= 2, 'artifact relay must exact-retry the browser provision and claim evidence')
+    assert.ok((replay.artifact.fulfillmentExactRetry ?? 0) >= 2, 'fulfillment relay must exact-retry the browser provision and claim evidence')
+
+    const provisionEvidence = await assertM3OnboardingEvidence({ actorUserId: webProvisionActor, correlationId: webProvisionCorrelation, expectedMode: 'provision', secrets: secretValues })
+    const claimEvidence = await assertM3OnboardingEvidence({ actorUserId: webClaimActor, correlationId: webClaimCorrelation, expectedMode: 'claim', secrets: secretValues })
+    const missingCommand = '00000000-0000-4000-8000-000000000000'
+    assert.equal(await writerSql(`select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility('${provisionEvidence.characterId}', '${missingCommand}')`), 'NOT_ELIGIBLE', 'missing command evidence must not fulfill the outbox')
+    assert.equal(await writerSql(`select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility('${provisionEvidence.characterId}', '${claimEvidence.commandId}')`), 'NOT_ELIGIBLE', 'wrong command evidence must not fulfill another correlation')
+    await assert.rejects(
+      () => sql(`select outcome from public.register_game_character_onboarding_snapshot_command_binding('${webProvisionActor}', '${webProvisionCorrelation}', '${provisionEvidence.characterId}', 'provision', '${missingCommand}')`),
+      'a duplicate correlation cannot substitute a second immutable command binding',
+    )
+    assert.equal(await sql(`select count(*) from private.game_character_onboarding_snapshot_command_bindings where correlation_id in ('${webProvisionCorrelation}', '${webClaimCorrelation}')`), '2', 'each browser correlation must retain exactly one command binding')
+    assert.equal(await writerSql(`select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility('${claimEvidence.characterId}', '${provisionEvidence.commandId}')`), 'NOT_ELIGIBLE', 'artifact substitution across the provision/claim boundary must fail closed')
+    assertNoPlaintextSecrets('redacted stack evidence', JSON.stringify(evidence), secretValues)
+    evidence.events.push({ case: 'web-ui-provision-and-claim-m3', result: 'real-next-xterm-provision-and-legacy-claim-bound-before-receipt-one-artifact-manifest-fulfilled-exact-retry-secret-free' })
     evidence.status = 'passed'
   } catch (error) {
     scenarioFailed = true
