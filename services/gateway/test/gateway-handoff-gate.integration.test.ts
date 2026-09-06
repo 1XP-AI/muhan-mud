@@ -6,7 +6,7 @@ import WebSocket, { type RawData } from 'ws'
 import type { AuthorizedCharacter, BeginCharacterSessionRequest, CharacterAuthorizer, RenewCharacterSessionRequest, RenewedCharacterSession } from '../src/character-authorizer.js'
 import { loadConfig } from '../src/config.js'
 import { createGateway, type EvidenceFinalizer } from '../src/gateway.js'
-import type { ChallengeOnboardingRequest, ChallengeOnboardingResult, ClaimOnboardingRequest, FinalizeOnboardingRequest, OnboardingAuthorizer, ReserveOnboardingRequest } from '../src/onboarding-authorizer.js'
+import { OnboardingAuthorizationError, type ChallengeOnboardingRequest, type ChallengeOnboardingResult, type ClaimOnboardingRequest, type FinalizeOnboardingRequest, type OnboardingAuthorizer, type ReserveOnboardingRequest } from '../src/onboarding-authorizer.js'
 import { formatOnboardingEvidenceControl } from '../src/onboarding-protocol.js'
 import type { FinalizeLegacyIdentityEvidenceRequest } from '../src/evidence-finalizer.js'
 import type { LegacyIdentityEvidenceV1 } from '../src/evidence-codec/legacy-identity-evidence-v1.js'
@@ -134,6 +134,8 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
     private readonly activationFails = false,
     private readonly mode: 'provision' | 'claim' = 'provision',
     private readonly trace?: string[],
+    private activationIndeterminateFailures = 0,
+    private bindIndeterminateFailures = 0,
   ) {}
 
   async begin(): Promise<void> { this.calls.push('begin') }
@@ -157,10 +159,20 @@ class PendingHandoffAuthorizer implements OnboardingAuthorizer, CharacterAuthori
     this.trace?.push('activate')
     assert.deepEqual(request, { actorUserId: actor, correlationId: correlation, characterId: character, mode: this.mode })
     if (this.activationFails) throw new Error('activation refused')
+    if (this.activationIndeterminateFailures > 0) {
+      this.activationIndeterminateFailures -= 1
+      throw new OnboardingAuthorizationError(true)
+    }
     this.active = true
     return { characterId: character }
   }
-  async bindSnapshotCommand(): Promise<void> { this.trace?.push('bind') }
+  async bindSnapshotCommand(): Promise<void> {
+    this.trace?.push('bind')
+    if (this.bindIndeterminateFailures > 0) {
+      this.bindIndeterminateFailures -= 1
+      throw new OnboardingAuthorizationError(true)
+    }
+  }
   async beginSession(request: BeginCharacterSessionRequest): Promise<AuthorizedCharacter> {
     this.beginSessionCalls += 1
     if (!this.active) throw new Error('handoff is still pending')
@@ -315,6 +327,54 @@ test('activation failure after COMMIT never emits browser completion', async (t)
   await closed
   assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
   assert.equal(received.some(({ data, binary }) => !binary && Buffer.from(data).toString().includes('"type":"provisioned"')), false)
+})
+
+test('indeterminate activation and binding responses retry the exact handoff before browser completion', async (t) => {
+  const trace: string[] = []
+  const mud = new HeldEvidenceCompletionMudSocket('provision', cEvidence('Hero', 'a'.repeat(64)), trace)
+  const authorizer = new PendingHandoffAuthorizer(false, 'provision', trace, 1, 1)
+  const finalizer = new RecordingEvidenceFinalizer(trace)
+  let connections = 0
+  const gateway = createGateway(config(true), {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    evidenceFinalizer: finalizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => {
+      connections += 1
+      const socket = connections === 1 ? mud : new AdmissionMudSocket(authorizer.admissionTickets)
+      socket.connect()
+      return socket as unknown as import('node:net').Socket
+    },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const closed = once(ws, 'close')
+  const received = messages(ws)
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'provision', correlationId: correlation }))
+  await eventually(() => assert.ok(hasText(received, '{"type":"onboarding-ready","mode":"provision"}')))
+  ws.send(Buffer.from('Hero\n'))
+  await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === `MUD1O RESERVED|${character}\n`)))
+  ws.send(Buffer.from('m\n'))
+  await eventually(() => assert.ok(mud.writes.some((frame) => frame.toString('ascii') === 'MUD1O COMMIT\n')))
+
+  assert.equal(authorizer.beginSessionCalls, 0)
+  mud.releaseCompletion()
+  await closed
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'activate', 'activate'])
+  assert.deepEqual(trace, ['completion-callback', 'evidence', 'activate', 'activate', 'bind', 'bind'])
+  assert.ok(hasText(received, `{"type":"provisioned","characterId":"${character}"}`))
+
+  const normal = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/ws`, 'muhan.v1', { origin: 'http://localhost:3000' })
+  await once(normal, 'open')
+  const normalClosed = once(normal, 'close')
+  normal.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token', characterId: character }))
+  await eventually(() => assert.equal(authorizer.beginSessionCalls, 1))
+  normal.close()
+  await normalClosed
 })
 
 for (const scenario of [

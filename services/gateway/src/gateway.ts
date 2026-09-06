@@ -852,7 +852,10 @@ class OnboardingSession {
           actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: this.characterId!,
           mode: this.mode!, commandId: this.activationCommandId!,
         }
-        await this.authorizer.bindSnapshotCommand(request)
+        // The binding RPC is immutable and exact-correlation idempotent. A
+        // lost response must not strand an already-active handoff without its
+        // browser completion acknowledgement.
+        await this.retryIndeterminate(() => this.authorizer.bindSnapshotCommand(request))
         if (this.closed) return
         this.controlPhase = 'done'; this.state = 'closed'; this.normalClosing = true
         this.sendText({ type: this.mode === 'provision' ? 'provisioned' : 'claimed', characterId: this.characterId! })
@@ -994,7 +997,11 @@ class OnboardingSession {
     await this.startActivation(trusted.characterId)
   }
   private async startActivation(characterId: string): Promise<void> {
-    const activated = await this.authorizer.activateHandoff({ actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId, mode: this.mode! })
+    const request = { actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId, mode: this.mode! }
+    // Activation is also an exact-correlation idempotent RPC. If its response
+    // is lost after the transaction commits, retrying the same tuple recovers
+    // the active row before issuing the C activation command.
+    const activated = await this.retryIndeterminate(() => this.authorizer.activateHandoff(request))
     if (this.closed || activated.characterId !== characterId) throw new OnboardingProtocolError()
     const commandId = this.randomUuid()
     if (!isStrictLowerUuid(commandId)) throw new OnboardingProtocolError()
@@ -1002,6 +1009,14 @@ class OnboardingSession {
     this.characterId = characterId
     this.controlPhase = 'activation'
     await this.writeControl(`MUD1O ACTIVATED|${commandId}\n`)
+  }
+  private async retryIndeterminate<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!(error instanceof OnboardingAuthorizationError && error.indeterminate) || this.closed) throw error
+      return operation()
+    }
   }
   private writeControl(line: string): Promise<void> {
     if (!this.mud || this.mud.destroyed) {

@@ -35,7 +35,11 @@ export function completeOnboardingHandoff(
   existing: PlayAdmissionHandoff | null = null,
 ): PlayAdmissionHandoff | null {
   if (existing) return existing;
-  if (!isStrictLowerUuid(ownerUserId) || !isStrictLowerUuid(characterId)) {
+  if (
+    !isStrictLowerUuid(ownerUserId) ||
+    !isStrictLowerUuid(characterId) ||
+    (completion !== "claimed" && completion !== "provisioned")
+  ) {
     return null;
   }
   return { ownerUserId, characterId, completion };

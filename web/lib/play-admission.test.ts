@@ -88,3 +88,10 @@ test("a duplicate completion cannot retarget an established association, and a c
   assert.deepEqual(conflict, initial);
   assert.equal(resolvePlayAdmission(otherCharacterId, "ready", activeRoster, initial), null);
 });
+
+test("a malformed completion cannot create a normal admission handoff", () => {
+  assert.equal(
+    completeOnboardingHandoff(accountId, characterId, "unexpected" as never),
+    null,
+  );
+});
