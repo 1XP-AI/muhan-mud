@@ -524,6 +524,56 @@ test('artifact filesystem pairs one immutable PlayerSnapshotV1 file with its can
   }
 })
 
+test('artifact filesystem never emits a cross-root receipt/artifact pair during a scanner-stage root replacement', { skip: process.platform !== 'linux', concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-pair-race-'))
+  const replacement = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-pair-race-replacement-'))
+  const displaced = `${root}.displaced`
+  const receiptA = Buffer.from(body(first, '1'))
+  const artifactA = Buffer.from(playerSnapshotV1Artifact(playerSnapshotV1(), { writer_revision: '1' }))
+  const receiptB = Buffer.from(body(first, '2'))
+  const artifactB = Buffer.from(playerSnapshotV1Artifact(playerSnapshotV1(), { writer_revision: '2' }))
+  const probe = await openFile(join(root, 'probe'), 'w+')
+  const handlePrototype = Object.getPrototypeOf(probe) as {
+    read: (...args: unknown[]) => Promise<{ bytesRead: number }>
+  }
+  const originalRead = handlePrototype.read
+  let replaced = false
+  try {
+    await chmod(root, 0o700)
+    await chmod(replacement, 0o700)
+    await probe.close()
+    await rm(join(root, 'probe'))
+    await writeFile(join(root, `${first}.manifest`), receiptA, { mode: 0o600 })
+    await writeFile(join(root, `${first}.player-snapshot-v1`), artifactA, { mode: 0o600 })
+    await writeFile(join(replacement, `${first}.manifest`), receiptB, { mode: 0o600 })
+    await writeFile(join(replacement, `${first}.player-snapshot-v1`), artifactB, { mode: 0o600 })
+    handlePrototype.read = async function (this: object, ...args: unknown[]) {
+      const result = await originalRead.apply(this, args)
+      // The receipt is lexically first. Swap the pathname before the artifact
+      // stage; a second root scan would be free to read B here.
+      if (!replaced) {
+        replaced = true
+        await rename(root, displaced)
+        await rename(replacement, root)
+      }
+      return result
+    }
+    const files = await new NodePlayerSnapshotV1ArtifactFilesystem().scan(root)
+    assert.equal(replaced, true)
+    assert.deepEqual(files, [{
+      name: `${first}.player-snapshot-v1`, bytes: artifactA, receiptManifestBytes: receiptA,
+    }])
+    assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.manifest`))), receiptB)
+    assert.deepEqual(await import('node:fs/promises').then(({ readFile }) => readFile(join(root, `${first}.player-snapshot-v1`))), artifactB)
+  } finally {
+    handlePrototype.read = originalRead
+    await probe.close().catch(() => undefined)
+    await rm(root, { recursive: true, force: true })
+    await rm(displaced, { recursive: true, force: true })
+    await rm(replacement, { recursive: true, force: true })
+  }
+})
+
 test('artifact filesystem rejects immutable evidence metadata changed while immutable evidence is read', { skip: process.platform !== 'linux', concurrency: false }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'm4-player-snapshot-v1-metadata-race-'))
   const manifest = Buffer.from(body(first))
@@ -884,19 +934,24 @@ test('paired shadow relay preserves malformed and initially missing pair evidenc
   assert.deepEqual(sourceEvidence, originalEvidence)
 })
 
-test('combined entrypoint has no fulfillment or projection capability by default', async () => {
+test('combined entrypoint supplies one manifest-first store in manifest/artifact order without side-effect capabilities', async () => {
   const calls: unknown[][] = []
+  const storeCalls: string[] = []
   const writes: string[] = []
   let closed = 0
   const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
-    recordManifest: async () => 'RECORDED',
-    recordPlayerSnapshotV1Artifact: async () => 'RECORDED',
+    recordManifest: async () => { storeCalls.push('manifest'); return 'RECORDED' },
+    recordPlayerSnapshotV1Artifact: async () => { storeCalls.push('artifact'); return 'RECORDED' },
     close: async () => { closed++ },
   }
   const dependencies = {
     createStore: () => store,
     relay: async (...args: Parameters<typeof relayPlayerSnapshotV1ManifestFirstOnce>) => {
       calls.push(args)
+      await args[1].recordManifest(parseManifest(body(first)))
+      await args[1].recordPlayerSnapshotV1Artifact(parsePlayerSnapshotV1Artifact(
+        `${first}.player-snapshot-v1`, playerSnapshotV1Artifact(), parseManifest(body(first)),
+      ))
       return {
         visited: 0, valid: 0, delivered: 0, recorded: 0, exactRetry: 0, invalid: 0, conflict: 0, retryable: 0, unknown: 0, ioError: 0,
         manifestDelivered: 0, manifestRecorded: 0, manifestExactRetry: 0,
@@ -914,6 +969,8 @@ test('combined entrypoint has no fulfillment or projection capability by default
   assert.equal(await manifestFirstRelayMain(environment, ['--once'], dependencies), 0)
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.length, 2)
+  assert.equal(calls[0]?.[1], store)
+  assert.deepEqual(storeCalls, ['manifest', 'artifact'])
   assert.equal(closed, 1)
   assert.equal(writes.length, 1)
 })

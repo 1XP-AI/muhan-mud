@@ -1,7 +1,7 @@
 import { parseManifest, type Manifest } from './manifest.js'
 import { MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS, PLAYER_SNAPSHOT_V1_SUFFIX, commandFromPlayerSnapshotV1Filename, parsePlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import { MAX_MANIFEST_BYTES, isManifestFilename } from './manifest.js'
-import { scanImmutableOutboxFiles } from './relay.js'
+import { scanImmutableOutboxFilesWithPolicies } from './relay.js'
 import {
   classifyDatabaseError,
   type PlayerSnapshotV1ArtifactFulfillmentOutcome,
@@ -69,10 +69,15 @@ export class NodePlayerSnapshotV1ArtifactFilesystem implements PlayerSnapshotV1A
     receiptManifestBytes?: Uint8Array
     error?: 'invalid' | 'io'
   }>> {
-    const [receipts, artifacts] = await Promise.all([
-      scanImmutableOutboxFiles(path, isManifestFilename, MAX_MANIFEST_BYTES, this.platform),
-      scanImmutableOutboxFiles(path, isPlayerSnapshotV1Filename, MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS + 1, this.platform),
-    ])
+    // Both members of every pair are read through this one root descriptor.
+    // Reopening `path` for receipts and artifacts would allow a root rename to
+    // splice together evidence that was independently verified under two roots.
+    const scanned = await scanImmutableOutboxFilesWithPolicies(path, [
+      { isCandidateFilename: isManifestFilename, maximumBytes: MAX_MANIFEST_BYTES },
+      { isCandidateFilename: isPlayerSnapshotV1Filename, maximumBytes: MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS + 1 },
+    ], this.platform)
+    const receipts = scanned.filter((file) => isManifestFilename(Buffer.from(file.name)))
+    const artifacts = scanned.filter((file) => isPlayerSnapshotV1Filename(Buffer.from(file.name)))
     const byName = new Map(receipts.map((file) => [file.name, file]))
     return artifacts.map((artifact) => {
       const commandId = commandFromPlayerSnapshotV1Filename(artifact.name)

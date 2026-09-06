@@ -23,6 +23,12 @@ export interface ManifestFilesystem {
   scan(path: string): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>>
 }
 
+/** One filename class and its independent immutable-evidence size bound. */
+export interface ImmutableOutboxFilePolicy {
+  isCandidateFilename(name: Uint8Array): boolean
+  maximumBytes: number
+}
+
 class UnsafeOutboxError extends Error {}
 
 function summary(): RelaySummary {
@@ -108,7 +114,20 @@ export async function scanImmutableOutboxFiles(
   maximumBytes: number,
   platform: NodeJS.Platform = process.platform,
 ): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new UnsafeOutboxError()
+  return scanImmutableOutboxFilesWithPolicies(path, [{ isCandidateFilename, maximumBytes }], platform)
+}
+
+/**
+ * Scan several evidence classes from one descriptor-pinned immutable root.
+ * A caller pairing different classes must use this instead of independently
+ * opening the mutable root pathname for each class.
+ */
+export async function scanImmutableOutboxFilesWithPolicies(
+  path: string,
+  policies: readonly ImmutableOutboxFilePolicy[],
+  platform: NodeJS.Platform = process.platform,
+): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
+  if (policies.length === 0 || policies.some(({ maximumBytes }) => !Number.isSafeInteger(maximumBytes) || maximumBytes < 1)) throw new UnsafeOutboxError()
   // Node has no portable openat(2) binding. Rejoining a verified root pathname
   // on macOS leaves a root rename/replacement TOCTOU, so non-Linux is denied.
   if (process.platform !== 'linux' || platform !== 'linux') throw new UnsafeOutboxError()
@@ -122,16 +141,22 @@ export async function scanImmutableOutboxFiles(
     assertDirectory(opened)
     if (identity(before) !== identity(opened)) throw new UnsafeOutboxError()
     const entries = await readdir(descriptorPath(root.fd), { encoding: 'buffer' })
-    const candidates = entries.filter((name) => isCandidateFilename(name)).sort(Buffer.compare)
+    const candidates = entries.map((name) => ({
+      name,
+      policies: policies.filter((policy) => policy.isCandidateFilename(name)),
+    })).filter(({ policies: matches }) => matches.length > 0).sort((left, right) => Buffer.compare(left.name, right.name))
     if (candidates.length > MAX_OUTBOX_ENTRIES) throw new UnsafeOutboxError()
     const uid = opened.uid
     const result: Array<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }> = []
-    for (const rawName of candidates) {
+    for (const { name: rawName, policies: matches } of candidates) {
+      // Overlapping policies would make a pair's maximum size ambiguous. The
+      // safe response is to reject the entire descriptor-pinned scan.
+      if (matches.length !== 1) throw new UnsafeOutboxError()
       const name = Buffer.from(rawName).toString('utf8')
       if (!Buffer.from(name, 'utf8').equals(Buffer.from(rawName)) || name.includes('/') || name.includes('\\')) {
         result.push({ name: '<invalid>', error: 'invalid' }); continue
       }
-      try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid, maximumBytes) }) }
+      try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid, matches[0]!.maximumBytes) }) }
       catch (error) {
         result.push({ name, error: error instanceof UnsafeOutboxError ? 'invalid' : 'io' })
       }
