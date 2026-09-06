@@ -297,6 +297,52 @@ static void test_exact_detached_construction_and_output_clearing(void)
     cdto_v1_free_wire(wire);
 }
 
+static void test_build_preserves_canonical_kind_9_and_rejects_aliases(void)
+{
+    trusted_alias_identity_context_v1_builder builder;
+    alias_title_snapshot_manifest_v1 output, again;
+    cdto_v1_decoded_record record;
+    uint8_t *snapshot_wire, digest[CDTO_V1_DIGEST_LENGTH];
+    uint8_t *manifest_wire, *manifest_again;
+    size_t snapshot_length, manifest_length, manifest_again_length;
+
+    snapshot_wire = NULL; snapshot_length = 0U;
+    manifest_wire = NULL; manifest_length = 0U;
+    manifest_again = NULL; manifest_again_length = 0U;
+    make_snapshot(&snapshot_wire, &snapshot_length, digest);
+    populate(&builder, snapshot_wire, snapshot_length, digest);
+
+    assert(trusted_alias_identity_context_v1_build(&builder, &output) == CDTO_V1_OK);
+    assert(trusted_alias_identity_context_v1_build(&builder, &again) == CDTO_V1_OK);
+    assert(!memcmp(&output, &again, sizeof(output)));
+    assert(output.snapshot_wire_length == snapshot_length);
+    assert(output.snapshot_octets == snapshot_length);
+    assert(!memcmp(output.snapshot_wire, snapshot_wire, snapshot_length));
+    assert(!memcmp(output.snapshot_digest, digest, sizeof(digest)));
+    assert(!memcmp(output.snapshot_digest,
+        output.snapshot_wire + output.snapshot_wire_length -
+        CDTO_V1_DIGEST_LENGTH, CDTO_V1_DIGEST_LENGTH));
+    memset(&record, 0, sizeof(record));
+    assert(cdto_v1_decode(output.snapshot_wire, output.snapshot_wire_length,
+        &record) == CDTO_V1_OK);
+    assert(record.kind == CDTO_V1_KIND_ALIAS_TITLE_SNAPSHOT);
+    cdto_v1_free_decoded(&record);
+    assert(alias_title_snapshot_manifest_v1_encode(&output, &manifest_wire,
+        &manifest_length) == CDTO_V1_OK);
+    assert(alias_title_snapshot_manifest_v1_encode(&again, &manifest_again,
+        &manifest_again_length) == CDTO_V1_OK);
+    assert(manifest_length == manifest_again_length);
+    assert(!memcmp(manifest_wire, manifest_again, manifest_length));
+    cdto_v1_free_wire(manifest_again);
+    cdto_v1_free_wire(manifest_wire);
+
+    populate(&builder, snapshot_wire, snapshot_length, digest);
+    assert(trusted_alias_identity_context_v1_build(&builder,
+        &builder.value) == CDTO_V1_INVALID_ARGUMENT);
+    assert(zeroed(&builder.value, sizeof(builder.value)));
+    cdto_v1_free_wire(snapshot_wire);
+}
+
 int main(void)
 {
     test_text_setters_reject_and_copy();
@@ -304,6 +350,7 @@ int main(void)
     test_snapshot_setter_rejects_and_copies();
     test_build_rejects_every_invalid_supplied_fact();
     test_exact_detached_construction_and_output_clearing();
+    test_build_preserves_canonical_kind_9_and_rejects_aliases();
     puts("trusted_alias_identity_context_v1_test: ok");
     return 0;
 }
