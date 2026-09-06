@@ -261,6 +261,8 @@ jobs:
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261003000000_player_snapshot_v1_inventory_graph_shadow.sql
             psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
               --file=supabase/migrations/20261005000000_bank_snapshot_v1_topology_shadow.sql
           done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
@@ -276,6 +278,8 @@ jobs:
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pvi_tree_payload=${pvi_tree_payload}" \
             --file=supabase/tests/player_snapshot_v1_inventory_graph_shadow_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/player_snapshot_v1_full_payload_rehearsal_reader_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/bank_snapshot_v1_topology_shadow_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
