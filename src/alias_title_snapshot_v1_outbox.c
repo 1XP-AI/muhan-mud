@@ -118,7 +118,9 @@ static int atso_random_uuid(char value[37])
     uint8_t bytes[16]; int fd; size_t used; ssize_t amount; static const char hex[] = "0123456789abcdef"; unsigned int i, at;
     fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC | O_NOFOLLOW); if(fd < 0) return -1;
     used = 0; while(used < sizeof(bytes)) { amount = read(fd, bytes + used, sizeof(bytes) - used); if(amount < 0 && errno == EINTR) continue; if(amount <= 0) { atso_close(fd); return -1; } used += (size_t)amount; }
-    if(atso_close(fd)) return -1; bytes[6] = (uint8_t)((bytes[6] & 15U) | 64U); bytes[8] = (uint8_t)((bytes[8] & 63U) | 128U);
+    /* Entropy acquisition is not part of the event-file durability path.
+     * Keep the CLOSE seam for the close that seals a created event. */
+    if(close(fd)) return -1; bytes[6] = (uint8_t)((bytes[6] & 15U) | 64U); bytes[8] = (uint8_t)((bytes[8] & 63U) | 128U);
     at = 0; for(i = 0; i < 16U; ++i) { if(at == 8U || at == 13U || at == 18U || at == 23U) value[at++] = '-'; value[at++] = hex[bytes[i] >> 4]; value[at++] = hex[bytes[i] & 15U]; } value[36] = 0; return 0;
 }
 
@@ -213,7 +215,9 @@ int alias_title_snapshot_v1_outbox_scan(int directory_fd,
     alias_title_snapshot_v1_outbox_event event; char expected_name[ATSO_NAME_LENGTH];
     if(!visitor || !report) return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_INVALID; memset(report, 0, sizeof(*report));
     root = atso_root(directory_fd); if(root < 0) return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR;
-    copy = fcntl(root, F_DUPFD_CLOEXEC, 3); if(copy < 0) { atso_close(root); return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR; }
+    /* A descriptor duplicate shares the directory stream offset with the
+     * caller.  Reopen trusted "." so every recovery pass starts at entry 0. */
+    copy = openat(root, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC); if(copy < 0) { atso_close(root); return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR; }
     dir = fdopendir(copy); if(!dir) { atso_close(copy); atso_close(root); return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR; }
     count = 0; errno = 0; while((entry = readdir(dir)) != 0) { if(strlen(entry->d_name) != 46U || strncmp(entry->d_name, ATSO_PREFIX, 4U) || strcmp(entry->d_name + 40U, ATSO_SUFFIX)) continue; report->visited++; if(count == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_MAX_EVENTS) { closedir(dir); atso_close(root); return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_LIMIT; } strcpy(candidates[count++].name, entry->d_name); } if(errno || closedir(dir)) { atso_close(root); return ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR; }
     qsort(candidates, count, sizeof(candidates[0]), atso_compare); result = ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_OK;

@@ -68,14 +68,27 @@ static int write_noncanonical_entry(int directory_fd,
     return 0;
 }
 
+static int event_stat(int directory_fd,
+    const alias_title_snapshot_v1_outbox_event *event, struct stat *st)
+{
+    char name[48];
+
+    if(snprintf(name, sizeof(name), "ats-%s.event", event->event_uuid) != 46)
+        return -1;
+    return fstatat(directory_fd, name, st, AT_SYMLINK_NOFOLLOW);
+}
+
 int main(void)
 {
     char directory[] = "/tmp/muhan-alias-title-outbox-XXXXXX";
-    alias_title_snapshot_v1_outbox_event created, loaded;
+    char limit_directory[] = "/tmp/muhan-alias-title-outbox-limit-XXXXXX";
+    alias_title_snapshot_v1_outbox_event created, loaded, partial, closed;
     alias_title_snapshot_v1_outbox_report report;
     uint8_t *wire, *changed;
     size_t wire_length, changed_length;
-    int directory_fd;
+    int directory_fd, limit_fd, scan_status;
+    unsigned int i;
+    struct stat partial_stat;
 
     if(!mkdtemp(directory) || chmod(directory, 0700)) return 2;
     directory_fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -114,6 +127,47 @@ int main(void)
         "bounded recovery must deliver valid entries and freeze noncanonical ones");
 
     alias_title_snapshot_v1_outbox_test_fail_next(
+        ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_TEST_FAULT_WRITE);
+    failed |= expect(alias_title_snapshot_v1_outbox_create(directory_fd, wire,
+        wire_length, &partial) == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR &&
+        event_stat(directory_fd, &partial, &partial_stat) == 0 &&
+        partial_stat.st_size == 0,
+        "write fault must report I/O failure and leave its partial event file");
+    failed |= expect(alias_title_snapshot_v1_outbox_retry(directory_fd,
+        partial.event_uuid, wire, wire_length, &loaded) ==
+        ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_CORRUPT,
+        "a partial write event must have an explicit corrupt retry outcome");
+    visits = 0;
+    scan_status = alias_title_snapshot_v1_outbox_scan(directory_fd, seen, 0,
+        &report);
+    failed |= expect(scan_status == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_CORRUPT,
+        "partial-event recovery must report corruption");
+    failed |= expect(report.visited == 3U && report.valid == 1U &&
+        report.corrupt == 2U && report.frozen == 2U && visits == 1U,
+        "partial-event recovery must freeze and skip only corrupt entries");
+    failed |= expect(event_stat(directory_fd, &partial, &partial_stat) == 0 &&
+        partial_stat.st_size == 0,
+        "partial-event recovery must retain the partial file in place");
+
+    alias_title_snapshot_v1_outbox_test_fail_next(
+        ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_TEST_FAULT_CLOSE);
+    failed |= expect(alias_title_snapshot_v1_outbox_create(directory_fd, wire,
+        wire_length, &closed) == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR,
+        "event-file close fault must be reported as I/O failure");
+    failed |= expect(alias_title_snapshot_v1_outbox_retry(directory_fd,
+        closed.event_uuid, wire, wire_length, &loaded) ==
+        ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_EXACT_RETRY,
+        "closed event file must retain its exact canonical retry identity");
+    visits = 0;
+    scan_status = alias_title_snapshot_v1_outbox_scan(directory_fd, seen, 0,
+        &report);
+    failed |= expect(scan_status == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_CORRUPT,
+        "close-event recovery must still report earlier corruption");
+    failed |= expect(report.visited == 4U && report.valid == 2U &&
+        report.corrupt == 2U && report.frozen == 2U && visits == 2U,
+        "recovery must deliver the complete close-fault event independently");
+
+    alias_title_snapshot_v1_outbox_test_fail_next(
         ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_TEST_FAULT_FILE_FSYNC);
     failed |= expect(alias_title_snapshot_v1_outbox_create(directory_fd, wire,
         wire_length, &loaded) == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_IO_ERROR,
@@ -125,8 +179,23 @@ int main(void)
         "directory fsync failure must be reported as I/O failure");
     alias_title_snapshot_v1_outbox_test_reset_faults();
 
+    if(!mkdtemp(limit_directory) || chmod(limit_directory, 0700)) return 2;
+    limit_fd = open(limit_directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if(limit_fd < 0) return 2;
+    for(i = 0; i < ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_MAX_EVENTS + 1U; ++i)
+        if(alias_title_snapshot_v1_outbox_create(limit_fd, wire, wire_length,
+            &loaded) != ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_OK) return 2;
+    visits = 0;
+    failed |= expect(alias_title_snapshot_v1_outbox_scan(limit_fd, seen, 0,
+        &report) == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_LIMIT &&
+        report.visited == ALIAS_TITLE_SNAPSHOT_V1_OUTBOX_MAX_EVENTS + 1U &&
+        report.valid == 0U && report.corrupt == 0U && report.frozen == 0U &&
+        visits == 0U,
+        "a deterministic 129th event must stop recovery before delivery");
+
     cdto_v1_free_wire(wire);
     cdto_v1_free_wire(changed);
+    close(limit_fd);
     close(directory_fd);
     if(!failed) puts("alias_title_snapshot_v1_outbox_test: ok");
     return failed ? 1 : 0;
