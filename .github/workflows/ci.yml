@@ -287,6 +287,10 @@ jobs:
           # is still absent; install it permanently only after the assertions.
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261010000000_pending_onboarding_snapshot_eligibility_fulfillment.sql
+          done
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --file=supabase/tests/legacy_locator_resolver_contract.sql
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
@@ -299,6 +303,8 @@ jobs:
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
             --set="pva_payload=${pva_payload}" \
             --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/pending_onboarding_snapshot_eligibility_fulfillment_contract.sql
 
       - name: Run M4 file snapshot manifest PostgreSQL 17 contract
         if: runner.os == 'Linux'

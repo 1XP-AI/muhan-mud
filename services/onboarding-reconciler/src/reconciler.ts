@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import { lstat, open, readdir } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 
 // The C receipt reader has a 640-byte text buffer and refuses an extra byte.
@@ -15,6 +16,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/
 const HEX_RE = /^[0-9a-f]+$/
 const RECEIPT_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.receipt$/
 const JSON_CONTENT_TYPE_RE = /^application\/json(?:\s*;|$)/i
+const require = createRequire(import.meta.url)
 const FIELDS = [
   'version', 'state', 'actor_uuid', 'correlation_uuid', 'character_uuid',
   'canonical_name_hex', 'storage_format', 'saved_file_sha256',
@@ -721,6 +723,221 @@ export class OnboardingReconciler {
       'content-type': 'application/json',
     }
   }
+}
+
+/** One service-listed, immutable command binding for a still-pending onboarding eligibility. */
+export interface PendingOnboardingSnapshotEligibility {
+  correlationId: string
+  actorUserId: string
+  characterId: string
+  mode: HandoffMode
+  commandId: string
+}
+
+/** The list adapter must use the service-only pending-eligibility list RPC. */
+export interface PendingOnboardingSnapshotEligibilitySource {
+  listPendingOnboardingSnapshotEligibility(limit: number): Promise<ReadonlyArray<PendingOnboardingSnapshotEligibility>>
+}
+
+/** This intentionally exposes only the existing two-argument writer fulfillment RPC. */
+export interface OnboardingSnapshotEligibilityFulfillmentRpc {
+  fulfillGameCharacterOnboardingSnapshotEligibility(
+    characterId: string,
+    artifactCommandId: string,
+  ): Promise<'FULFILLED' | 'EXACT_RETRY' | 'NOT_ELIGIBLE'>
+}
+
+export interface PendingOnboardingSnapshotEligibilityFulfillmentOptions {
+  limit?: number
+  attempts?: number
+  retryDelayMs?: number
+  clock?: Clock
+}
+
+export interface PendingOnboardingSnapshotEligibilityFulfillmentSummary {
+  listed: number
+  fulfilled: number
+  exactRetry: number
+  notEligible: number
+  rejected: number
+  retryExhausted: number
+}
+
+interface PendingEligibilityQueryResult<Row> { rows: Row[] }
+export interface PendingEligibilityPgClient {
+  query<Row = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<PendingEligibilityQueryResult<Row>>
+  release(): void
+}
+export interface PendingEligibilityPgPool { connect(): Promise<PendingEligibilityPgClient>; end(): Promise<void> }
+interface PendingEligibilityPgModule { Pool: new (options: { connectionString: string, max: number }) => PendingEligibilityPgPool }
+
+function databaseUrlForRole(value: string, role: 'service_role' | 'mud_writer_login'): string {
+  let parsed: URL
+  try { parsed = new URL(value) } catch { throw new Error('reconciler configuration rejected') }
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || parsed.username !== role || !parsed.hostname || parsed.search || parsed.hash) {
+    throw new Error('reconciler configuration rejected')
+  }
+  return value
+}
+
+interface PendingEligibilityDatabaseRow {
+  correlation_id: string
+  actor_user_id: string
+  character_id: string
+  mode: string
+  command_id: string
+}
+
+function isExactPendingEligibilityDatabaseRow(value: unknown): value is PendingEligibilityDatabaseRow {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false
+  const row = value as Record<string, unknown>
+  const keys = ['correlation_id', 'actor_user_id', 'character_id', 'mode', 'command_id']
+  return Reflect.ownKeys(row).length === keys.length
+    && Reflect.ownKeys(row).every((key) => typeof key === 'string' && keys.includes(key))
+    && Object.values(Object.getOwnPropertyDescriptors(row)).every((descriptor) => 'value' in descriptor)
+    && typeof row.correlation_id === 'string' && typeof row.actor_user_id === 'string'
+    && typeof row.character_id === 'string' && typeof row.mode === 'string' && typeof row.command_id === 'string'
+}
+
+/** Direct service-role adapter for the private bounded pending-list RPC. */
+export class PostgresPendingOnboardingSnapshotEligibilitySource implements PendingOnboardingSnapshotEligibilitySource {
+  private readonly pool: PendingEligibilityPgPool
+
+  constructor(databaseUrl: string, pool?: PendingEligibilityPgPool) {
+    const validatedUrl = databaseUrlForRole(databaseUrl, 'service_role')
+    this.pool = pool ?? new (require('pg') as PendingEligibilityPgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async listPendingOnboardingSnapshotEligibility(limit: number): Promise<ReadonlyArray<PendingOnboardingSnapshotEligibility>> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role service_role')
+      const result = await client.query<PendingEligibilityDatabaseRow>(
+        'select correlation_id, actor_user_id, character_id, mode, command_id from private.list_pending_game_character_onboarding_snapshot_eligibility($1::integer)',
+        [limit],
+      )
+      if (result.rows.some((row) => !isExactPendingEligibilityDatabaseRow(row))) throw new Error('pending eligibility list response rejected')
+      return result.rows.map((row) => ({
+        correlationId: row.correlation_id,
+        actorUserId: row.actor_user_id,
+        characterId: row.character_id,
+        mode: row.mode as HandoffMode,
+        commandId: row.command_id,
+      }))
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+/** Direct mud-writer adapter that invokes no new mutation path. */
+export class PostgresOnboardingSnapshotEligibilityFulfillmentRpc implements OnboardingSnapshotEligibilityFulfillmentRpc {
+  private readonly pool: PendingEligibilityPgPool
+
+  constructor(databaseUrl: string, pool?: PendingEligibilityPgPool) {
+    const validatedUrl = databaseUrlForRole(databaseUrl, 'mud_writer_login')
+    this.pool = pool ?? new (require('pg') as PendingEligibilityPgModule).Pool({ connectionString: validatedUrl, max: 1 })
+  }
+
+  async fulfillGameCharacterOnboardingSnapshotEligibility(characterId: string, artifactCommandId: string): Promise<'FULFILLED' | 'EXACT_RETRY' | 'NOT_ELIGIBLE'> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: unknown }>(
+        'select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility($1::uuid, $2::uuid)',
+        [characterId, artifactCommandId],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (result.rows.length !== 1 || (outcome !== 'FULFILLED' && outcome !== 'EXACT_RETRY' && outcome !== 'NOT_ELIGIBLE')) {
+        throw new Error('unexpected onboarding snapshot fulfillment outcome')
+      }
+      return outcome
+    } finally { client.release() }
+  }
+
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+function emptyPendingOnboardingSnapshotEligibilityFulfillmentSummary(): PendingOnboardingSnapshotEligibilityFulfillmentSummary {
+  return { listed: 0, fulfilled: 0, exactRetry: 0, notEligible: 0, rejected: 0, retryExhausted: 0 }
+}
+
+function isExactPendingOnboardingSnapshotEligibility(value: unknown): value is PendingOnboardingSnapshotEligibility {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false
+  const row = value as Record<string, unknown>
+  const keys = ['correlationId', 'actorUserId', 'characterId', 'mode', 'commandId']
+  if (Reflect.ownKeys(row).length !== keys.length || Reflect.ownKeys(row).some((key) => typeof key !== 'string' || !keys.includes(key)) ||
+      Object.values(Object.getOwnPropertyDescriptors(row)).some((descriptor) => !('value' in descriptor))) return false
+  return typeof row.correlationId === 'string' && UUID_RE.test(row.correlationId)
+    && typeof row.actorUserId === 'string' && UUID_RE.test(row.actorUserId)
+    && typeof row.characterId === 'string' && UUID_RE.test(row.characterId)
+    && (row.mode === 'provision' || row.mode === 'claim')
+    && typeof row.commandId === 'string' && UUID_RE.test(row.commandId)
+}
+
+/**
+ * Finite and fail-closed pending fulfillment driver. It never discovers a
+ * command from artifact data: every invocation receives only the exact
+ * character/command pair returned by the immutable pre-bound list relation.
+ */
+export async function fulfillPendingOnboardingSnapshotEligibilityOnce(
+  source: PendingOnboardingSnapshotEligibilitySource,
+  fulfillment: OnboardingSnapshotEligibilityFulfillmentRpc,
+  options: PendingOnboardingSnapshotEligibilityFulfillmentOptions = {},
+): Promise<PendingOnboardingSnapshotEligibilityFulfillmentSummary> {
+  const limit = requireBoundedInteger(options.limit, 100, 1, 1_000)
+  const attempts = requireBoundedInteger(options.attempts, 3, 1, 10)
+  const retryDelayMs = requireBoundedInteger(options.retryDelayMs, 250, 0, 60_000)
+  const clock = options.clock ?? systemClock
+  const summary = emptyPendingOnboardingSnapshotEligibilityFulfillmentSummary()
+  let rows: ReadonlyArray<PendingOnboardingSnapshotEligibility>
+  try {
+    rows = await source.listPendingOnboardingSnapshotEligibility(limit)
+  } catch {
+    // Do not guess or synthesize a tuple when the service-only list is unavailable.
+    summary.rejected = 1
+    return summary
+  }
+  summary.listed = rows.length
+  const correlations = new Set<string>()
+  const commandPairs = new Set<string>()
+  if (rows.length > limit || rows.some((row) => {
+    if (!isExactPendingOnboardingSnapshotEligibility(row)) return true
+    const pair = `${row.characterId}:${row.commandId}`
+    if (correlations.has(row.correlationId) || commandPairs.has(pair)) return true
+    correlations.add(row.correlationId)
+    commandPairs.add(pair)
+    return false
+  })) {
+    // A malformed, duplicated, or unbounded list is an authority mismatch;
+    // reject the complete batch before any potentially substituted RPC call.
+    summary.rejected = rows.length
+    return summary
+  }
+  for (const row of rows) {
+    let completed = false
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const outcome = await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(row.characterId, row.commandId)
+        if (outcome === 'FULFILLED') summary.fulfilled++
+        else if (outcome === 'EXACT_RETRY') summary.exactRetry++
+        else if (outcome === 'NOT_ELIGIBLE') summary.notEligible++
+        else summary.rejected++
+        completed = true
+        break
+      } catch {
+        if (attempt < attempts) {
+          await clock.sleep(retryDelayMs)
+          continue
+        }
+        summary.retryExhausted++
+      }
+    }
+    // The flag documents that neither a malformed outcome nor an exhausted
+    // retry is retried by another control path in this finite run.
+    if (!completed) continue
+  }
+  return summary
 }
 
 export interface PollOptions {

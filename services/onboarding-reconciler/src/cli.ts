@@ -1,4 +1,11 @@
-import { OnboardingReconciler, runPolling, type Clock } from './reconciler.js'
+import {
+  OnboardingReconciler,
+  PostgresOnboardingSnapshotEligibilityFulfillmentRpc,
+  PostgresPendingOnboardingSnapshotEligibilitySource,
+  fulfillPendingOnboardingSnapshotEligibilityOnce,
+  runPolling,
+  type Clock,
+} from './reconciler.js'
 
 function positiveInteger(value: string | undefined, fallback: number, maximum: number): number {
   if (value === undefined || value === '') return fallback
@@ -23,7 +30,25 @@ function environment(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2), clock?: Clock): Promise<number> {
-  if (args.some((argument) => argument !== '--once')) throw new Error('configuration rejected')
+  const fulfillmentRun = args.includes('--fulfill-pending-snapshot-eligibility')
+  if (args.some((argument) => argument !== '--once' && argument !== '--fulfill-pending-snapshot-eligibility') ||
+      (fulfillmentRun && args.length !== 1)) throw new Error('configuration rejected')
+  if (fulfillmentRun) {
+    const source = new PostgresPendingOnboardingSnapshotEligibilitySource(environment(env, 'SUPABASE_SERVICE_DATABASE_URL'))
+    const fulfillment = new PostgresOnboardingSnapshotEligibilityFulfillmentRpc(environment(env, 'MUD_WRITER_DATABASE_URL'))
+    try {
+      const result = await fulfillPendingOnboardingSnapshotEligibilityOnce(source, fulfillment, {
+        limit: positiveInteger(env.ONBOARDING_SNAPSHOT_ELIGIBILITY_LIMIT, 100, 1_000),
+        attempts: positiveInteger(env.ONBOARDING_RECONCILER_RPC_ATTEMPTS, 3, 10),
+        retryDelayMs: nonNegativeInteger(env.ONBOARDING_RECONCILER_RETRY_DELAY_MS, 250, 60_000),
+        clock,
+      })
+      process.stdout.write(`${JSON.stringify(result)}\n`)
+      return result.rejected > 0 || result.retryExhausted > 0 ? 1 : 0
+    } finally {
+      await Promise.all([source.close(), fulfillment.close()])
+    }
+  }
   const runs = args.includes('--once') ? 1 : positiveInteger(env.ONBOARDING_RECONCILER_POLLS, 1, 10_000)
   const pollingClock = clock ?? { now: Date.now, sleep: async (ms: number) => new Promise<void>((done) => setTimeout(done, ms)) }
   const reconciler = new OnboardingReconciler({

@@ -6,9 +6,14 @@ import test from 'node:test'
 import {
   OnboardingReconciler,
   NodeReconcilerFilesystem,
+  PostgresOnboardingSnapshotEligibilityFulfillmentRpc,
+  PostgresPendingOnboardingSnapshotEligibilitySource,
   type Clock,
+  type PendingEligibilityPgClient,
+  type PendingEligibilityPgPool,
   type ReconcilerFilesystem,
   type RunSummary,
+  fulfillPendingOnboardingSnapshotEligibilityOnce,
   runPolling,
 } from '../src/reconciler.js'
 import { main } from '../src/cli.js'
@@ -114,6 +119,109 @@ function reconciler(home: string, fetchImpl: typeof fetch, options: Partial<Cons
 }
 
 function statuses(summary: RunSummary): string[] { return summary.observations.map(({ outcome }) => outcome) }
+
+test('pending snapshot-eligibility fulfillment passes only each exact pre-bound character and command tuple to the existing RPC', async () => {
+  const calls: Array<readonly [string, string]> = []
+  const result = await fulfillPendingOnboardingSnapshotEligibilityOnce({
+    listPendingOnboardingSnapshotEligibility: async (limit) => {
+      assert.equal(limit, 2)
+      return [
+        { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003' },
+        { correlationId: '123e4567-e89b-12d3-a456-426614174004', actorUserId: actor, characterId: '123e4567-e89b-12d3-a456-426614174005', mode: 'provision', commandId: '123e4567-e89b-12d3-a456-426614174006' },
+      ]
+    },
+  }, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async (characterId, commandId) => {
+      calls.push([characterId, commandId])
+      return commandId.endsWith('003') ? 'FULFILLED' : 'EXACT_RETRY'
+    },
+  }, { limit: 2, attempts: 1 })
+  assert.deepEqual(calls, [
+    [character, '123e4567-e89b-12d3-a456-426614174003'],
+    ['123e4567-e89b-12d3-a456-426614174005', '123e4567-e89b-12d3-a456-426614174006'],
+  ])
+  assert.deepEqual(result, { listed: 2, fulfilled: 1, exactRetry: 1, notEligible: 0, rejected: 0, retryExhausted: 0 })
+})
+
+test('pending snapshot-eligibility fulfillment preserves exact retry idempotency', async () => {
+  const result = await fulfillPendingOnboardingSnapshotEligibilityOnce({
+    listPendingOnboardingSnapshotEligibility: async () => [
+      { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003' },
+    ],
+  }, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => 'EXACT_RETRY',
+  }, { limit: 1, attempts: 1 })
+  assert.deepEqual(result, { listed: 1, fulfilled: 0, exactRetry: 1, notEligible: 0, rejected: 0, retryExhausted: 0 })
+})
+
+test('pending snapshot-eligibility fulfillment fails closed before invoking fulfillment for a malformed or duplicate pre-bound tuple', async () => {
+  const calls: string[] = []
+  const result = await fulfillPendingOnboardingSnapshotEligibilityOnce({
+    listPendingOnboardingSnapshotEligibility: async () => [
+      { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003' },
+      { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174004' },
+      { correlationId: '123e4567-e89b-12d3-a456-426614174005', actorUserId: actor, characterId: character, mode: 'unexpected', commandId: '123e4567-e89b-12d3-a456-426614174006' },
+    ],
+  }, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async () => { calls.push('called'); return 'FULFILLED' },
+  }, { limit: 3, attempts: 1 })
+  assert.deepEqual(calls, [])
+  assert.deepEqual(result, { listed: 3, fulfilled: 0, exactRetry: 0, notEligible: 0, rejected: 3, retryExhausted: 0 })
+})
+
+test('pending snapshot-eligibility fulfillment retries only bounded transient failures with the unchanged exact tuple', async () => {
+  const calls: Array<readonly [string, string]> = []
+  const delays: number[] = []
+  const clock: Clock = { now: () => 0, sleep: async (milliseconds) => { delays.push(milliseconds) } }
+  const result = await fulfillPendingOnboardingSnapshotEligibilityOnce({
+    listPendingOnboardingSnapshotEligibility: async () => [
+      { correlationId: correlation, actorUserId: actor, characterId: character, mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003' },
+    ],
+  }, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async (characterId, commandId) => {
+      calls.push([characterId, commandId])
+      if (calls.length < 3) throw new Error('temporary database transport failure')
+      return 'FULFILLED'
+    },
+  }, { limit: 1, attempts: 3, retryDelayMs: 7, clock })
+  assert.deepEqual(calls, [
+    [character, '123e4567-e89b-12d3-a456-426614174003'],
+    [character, '123e4567-e89b-12d3-a456-426614174003'],
+    [character, '123e4567-e89b-12d3-a456-426614174003'],
+  ])
+  assert.deepEqual(delays, [7, 7])
+  assert.deepEqual(result, { listed: 1, fulfilled: 1, exactRetry: 0, notEligible: 0, rejected: 0, retryExhausted: 0 })
+})
+
+test('pending snapshot-eligibility adapters call only the bounded service list and existing exact writer fulfillment RPC', async () => {
+  const queries: Array<{ sql: string, values?: readonly unknown[] }> = []
+  const client: PendingEligibilityPgClient = {
+    query: async <Row>(sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values })
+      if (sql.startsWith('select correlation_id')) return { rows: [{
+        correlation_id: correlation, actor_user_id: actor, character_id: character,
+        mode: 'claim', command_id: '123e4567-e89b-12d3-a456-426614174003',
+      }] as Row[] }
+      if (sql.startsWith('select outcome')) return { rows: [{ outcome: 'FULFILLED' }] as Row[] }
+      return { rows: [] }
+    },
+    release: () => undefined,
+  }
+  const pool: PendingEligibilityPgPool = { connect: async () => client, end: async () => undefined }
+  const source = new PostgresPendingOnboardingSnapshotEligibilitySource('postgresql://service_role@localhost/postgres', pool)
+  const fulfillment = new PostgresOnboardingSnapshotEligibilityFulfillmentRpc('postgresql://mud_writer_login@localhost/postgres', pool)
+  assert.deepEqual(await source.listPendingOnboardingSnapshotEligibility(4), [{
+    correlationId: correlation, actorUserId: actor, characterId: character,
+    mode: 'claim', commandId: '123e4567-e89b-12d3-a456-426614174003',
+  }])
+  assert.equal(await fulfillment.fulfillGameCharacterOnboardingSnapshotEligibility(character, '123e4567-e89b-12d3-a456-426614174003'), 'FULFILLED')
+  assert.deepEqual(queries, [
+    { sql: 'set role service_role', values: undefined },
+    { sql: 'select correlation_id, actor_user_id, character_id, mode, command_id from private.list_pending_game_character_onboarding_snapshot_eligibility($1::integer)', values: [4] },
+    { sql: 'set role mud_writer', values: undefined },
+    { sql: 'select outcome from private.fulfill_game_character_onboarding_snapshot_eligibility($1::uuid, $2::uuid)', values: [character, '123e4567-e89b-12d3-a456-426614174003'] },
+  ])
+})
 
 test('pending is observed without a database mutation', async (t) => {
   const data = await fixture(receipt('pending'))
