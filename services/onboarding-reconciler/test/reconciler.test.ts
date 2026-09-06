@@ -39,7 +39,7 @@ function rpcResponse(overrides: Record<string, unknown> = {}): Response {
   return Response.json([{
     character_id: character,
     actor_user_id: actor,
-    lifecycle: 'active',
+    lifecycle: 'handoff_pending',
     status: 'finalized',
     saved_file_sha256: fileHash,
     storage_format: 1,
@@ -255,14 +255,18 @@ test('opt-in recovery fails closed on evidence or activation binding mismatches,
   const off = await fixture()
   t.after(off.cleanup)
   const offPaths: string[] = []
+  let offActivationCalls = 0
   assert.deepEqual(statuses(await reconciler(off.home, async (url) => {
-    offPaths.push(new URL(url).pathname)
+    const path = new URL(url).pathname
+    offPaths.push(path)
+    if (path === '/rpc/activate_game_character_onboarding_handoff') offActivationCalls++
     return rpcResponse()
   }).runOnce()), ['reconciled'])
   assert.deepEqual(offPaths, ['/rpc/reconcile_game_character_provisioning'])
+  assert.equal(offActivationCalls, 0)
 })
 
-test('legacy saved-receipt reconciliation accepts only the exact finalized active lifecycle tuple', async (t) => {
+test('legacy saved-receipt reconciliation accepts the exact finalized handoff-pending lifecycle tuple', async (t) => {
   const data = await fixture()
   t.after(data.cleanup)
   let calls = 0
@@ -274,19 +278,19 @@ test('legacy saved-receipt reconciliation accepts only the exact finalized activ
   assert.equal(calls, 1)
 })
 
-test('legacy saved-receipt reconciliation rejects a finalized handoff-pending lifecycle tuple', async (t) => {
+test('legacy saved-receipt reconciliation rejects a finalized active lifecycle tuple', async (t) => {
   const data = await fixture()
   t.after(data.cleanup)
   let calls = 0
   const result = await reconciler(data.home, async () => {
     calls++
-    return rpcResponse({ lifecycle: 'handoff_pending' })
+    return rpcResponse({ lifecycle: 'active' })
   }).runOnce()
   assert.deepEqual(result.observations, [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }])
   assert.equal(calls, 1)
 })
 
-test('the injected reconciliation response matcher permits only the exact active playable contract', async () => {
+test('the injected reconciliation response matcher permits only the exact post-save handoff-pending contract', async () => {
   const fs: ReconcilerFilesystem = {
     assertSafeDirectory: async () => {},
     listReceiptEntries: async () => [{ name: `${correlation}.receipt`, kind: 'file' }],
@@ -297,8 +301,8 @@ test('the injected reconciliation response matcher permits only the exact active
     sha256RegularFile: async () => ({ sha256: fileHash, byteLength: fileBody.length, device: 2, inode: 2, modifiedAtMs: 1, changedAtMs: 1 }),
   }
   const responseCases: Array<{ label: string, response: Response, expected: RunSummary['observations'] }> = [
-    { label: 'the exact active contract', response: rpcResponse({ lifecycle: 'active' }), expected: [{ outcome: 'reconciled', attempts: 1 }] },
-    { label: 'a handoff-pending response', response: rpcResponse({ lifecycle: 'handoff_pending' }), expected: [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }] },
+    { label: 'the exact post-save contract', response: rpcResponse({ lifecycle: 'handoff_pending' }), expected: [{ outcome: 'reconciled', attempts: 1 }] },
+    { label: 'an active playable response', response: rpcResponse({ lifecycle: 'active' }), expected: [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }] },
     { label: 'a provisioning response', response: rpcResponse({ lifecycle: 'handoff_pending', status: 'provisioning' }), expected: [{ outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: 1 }] },
   ]
   for (const { label, response, expected } of responseCases) {

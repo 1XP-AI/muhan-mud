@@ -417,13 +417,17 @@ function oneExactObject(value: unknown, keys: readonly string[]): Record<string,
   return row
 }
 
-function matchesRpcResponse(value: unknown, receipt: Receipt): boolean {
+/**
+ * The legacy reconcile RPC finalizes persisted provisioning evidence but does
+ * not admit the character. Its successful result is therefore handoff_pending.
+ */
+function matchesPostSaveReconciliationResponse(value: unknown, receipt: Receipt): boolean {
   const requiredColumns = ['actor_user_id', 'character_id', 'lifecycle', 'saved_file_sha256', 'status', 'storage_format']
   const row = oneExactObject(value, requiredColumns)
   if (!row) return false
   return row.character_id === receipt.characterUuid
     && row.actor_user_id === receipt.actorUuid
-    && row.lifecycle === 'active'
+    && row.lifecycle === 'handoff_pending'
     && row.status === 'finalized'
     && row.saved_file_sha256 === receipt.savedFileSha256
     && row.storage_format === 1
@@ -443,7 +447,8 @@ function matchesEvidenceFinalizerResponse(value: unknown, receipt: Receipt, name
   return { mode: row.mode, lifecycle: row.lifecycle }
 }
 
-function matchesHandoffActivationResponse(value: unknown, receipt: Receipt): boolean {
+/** The separate activation RPC is the only path whose successful result is playable. */
+function matchesActiveHandoffActivationResponse(value: unknown, receipt: Receipt): boolean {
   const requiredColumns = ['character_id', 'actor_user_id', 'correlation_id', 'lifecycle', 'onboarding_status']
   const row = oneExactObject(value, requiredColumns)
   return !!row && row.character_id === receipt.characterUuid && row.actor_user_id === receipt.actorUuid &&
@@ -627,7 +632,7 @@ export class OnboardingReconciler {
           return { outcome: 'rejected', reason: 'rpc_failure', attempts: attempt }
         }
         const body = await parseRpcResponse(response)
-        if (!matchesRpcResponse(body, receipt)) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
+        if (!matchesPostSaveReconciliationResponse(body, receipt)) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
         return { outcome: 'reconciled', attempts: attempt }
       } catch (error) {
         if (error instanceof InvalidRpcResponseError) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
@@ -695,7 +700,7 @@ export class OnboardingReconciler {
           }
           return { outcome: 'rejected', reason: 'rpc_failure', attempts: attempt }
         }
-        if (!matchesHandoffActivationResponse(await parseRpcResponse(activationResponse), receipt)) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
+        if (!matchesActiveHandoffActivationResponse(await parseRpcResponse(activationResponse), receipt)) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
         return { outcome: 'reconciled', attempts: attempt }
       } catch (error) {
         if (error instanceof InvalidRpcResponseError) return { outcome: 'rejected', reason: 'rpc_response_mismatch', attempts: attempt }
