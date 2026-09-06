@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createBatchIdentity } from '../src/batch-identity.js'
+import { bindLegacyPlayerShadowEvidenceV1 } from '../src/legacy-player-shadow-binding.js'
 import { BatchImportError, expectedShard, importBatch, importRecords, type ExistingCharacter, type ImportStore, type ImportTransaction, type InventoryRecord } from '../src/inventory.js'
+import { importerBindingFixture } from './legacy-identity-evidence-fixture.js'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 
@@ -33,6 +35,9 @@ class BatchMemoryStore implements ImportStore {
   writes = 0
   memberWrites = 0
   locatorWrites = 0
+  batchInputs: Array<{ identity: ReturnType<typeof createBatchIdentity>, streamId: string, sequence: number, recordCount: number }> = []
+  insertInputs: Array<{ worldId: string, record: InventoryRecord }> = []
+  memberInputs: Array<{ worldId: string, streamId: string, sequence: number, characterId: string, legacyLocator?: { canonicalName: string, legacyNameSha1: string, legacyShard: string } }> = []
   events: string[] = []
   failInsert = false
   failMember = false
@@ -53,6 +58,9 @@ class BatchMemoryStore implements ImportStore {
     let writes = 0
     let memberWrites = 0
     let locatorWrites = 0
+    const batchInputs: typeof this.batchInputs = []
+    const insertInputs: typeof this.insertInputs = []
+    const memberInputs: typeof this.memberInputs = []
     const events: string[] = []
     try {
       const result = await work({
@@ -60,6 +68,7 @@ class BatchMemoryStore implements ImportStore {
         findCharacter: async (world, name) => rows.get(`${world}|${name}`),
         insertImportedUnclaimed: async ({ worldId, record: row }) => {
           if (this.failInsert) throw new Error('injected insert failure')
+          insertInputs.push({ worldId, record: { ...row } })
           rows.set(`${worldId}|${row.canonicalNameKey}`, existing(row)); writes++; events.push('character')
           return `character:${worldId}:${row.canonicalNameKey}`
         },
@@ -67,6 +76,7 @@ class BatchMemoryStore implements ImportStore {
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
         findBatchByIdentity: async (world, stream, stableKey) => identities.get(`${world}|${stream}|${stableKey}`),
         createBatch: async ({ identity: value, streamId, sequence, recordCount }) => {
+          batchInputs.push({ identity: { ...value }, streamId, sequence, recordCount })
           const batch = { stableKey: value.stableKey, sequence, recordCount }
           batches.set(`${value.worldId}|${streamId}|${sequence}`, batch)
           identities.set(`${value.worldId}|${streamId}|${value.stableKey}`, batch)
@@ -74,6 +84,7 @@ class BatchMemoryStore implements ImportStore {
         },
         recordBatchMember: async ({ worldId, streamId, sequence, characterId, legacyLocator }) => {
           if (this.failMember) throw new Error('injected member failure')
+          memberInputs.push({ worldId, streamId, sequence, characterId, legacyLocator: legacyLocator && { ...legacyLocator } })
           const previousMember = members.get(characterId)
           if (previousMember) {
             if (previousMember.worldId !== worldId || previousMember.streamId !== streamId || previousMember.sequence !== sequence) throw new Error('batch member conflict')
@@ -95,11 +106,37 @@ class BatchMemoryStore implements ImportStore {
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
         advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence); events.push('watermark') },
       })
-      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.locators = locators; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.locatorWrites += locatorWrites; this.events = events
+      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.locators = locators; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.locatorWrites += locatorWrites; this.batchInputs.push(...batchInputs); this.insertInputs.push(...insertInputs); this.memberInputs.push(...memberInputs); this.events = events
       return result
     } finally { release?.() }
   }
 }
+
+test('fixture-backed evidence binding reaches the exact batch, character, member, and locator write inputs', async () => {
+  const { evidence, record: fixtureRecord } = importerBindingFixture()
+  const binding = bindLegacyPlayerShadowEvidenceV1(fixtureRecord, evidence)
+  assert.ok(binding)
+  const store = new BatchMemoryStore()
+  const batchIdentity = identity('fixture-evidence')
+
+  const result = await importBatch(store, [fixtureRecord], { identity: batchIdentity, streamId: 'main', sequence: 0, apply: true })
+
+  assert.equal(result.ledger, 'committed')
+  assert.deepEqual(store.batchInputs, [{ identity: batchIdentity, streamId: 'main', sequence: 0, recordCount: 1 }])
+  assert.deepEqual(store.insertInputs, [{ worldId: batchIdentity.worldId, record: fixtureRecord }])
+  assert.equal(store.insertInputs[0]?.record.sha256, evidence.playerFileSha256)
+  assert.deepEqual(store.memberInputs, [{
+    worldId: batchIdentity.worldId,
+    streamId: 'main',
+    sequence: 0,
+    characterId: `character:${batchIdentity.worldId}:${fixtureRecord.canonicalNameKey}`,
+    legacyLocator: {
+      canonicalName: binding.canonicalName,
+      legacyNameSha1: binding.nameSha1,
+      legacyShard: binding.shard,
+    },
+  }])
+})
 
 test('batch import commits every new character as an immutable member of its exact ledger batch before the watermark', async () => {
   const store = new BatchMemoryStore()
