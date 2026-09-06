@@ -29,6 +29,9 @@
 /* Offline, detached characterization of the legacy alias/title sidecar.
  * This has no runtime save/load route. */
 #define CDTO_V1_KIND_ALIAS_TITLE_SNAPSHOT 9
+/* Detached metadata boundary for an AliasTitleSnapshotV1 shadow handoff.
+ * It owns no directory, outbox, intake, database, or runtime capability. */
+#define CDTO_V1_KIND_ALIAS_TITLE_SNAPSHOT_MANIFEST 10
 
 #define CDTO_V1_TYPE_U8 1
 #define CDTO_V1_TYPE_U16 2
@@ -53,6 +56,8 @@
 /* The bounded legacy sidecar grammar permits at most 50 entries of
  * 13-byte alias + 253-byte command plus a 78-byte title. */
 #define CDTO_V1_ALIAS_TITLE_SNAPSHOT_PAYLOAD_LIMIT (64U * 1024U)
+/* The embedded bounded snapshot plus closed, independently supplied metadata. */
+#define CDTO_V1_ALIAS_TITLE_SNAPSHOT_MANIFEST_PAYLOAD_LIMIT (128U * 1024U)
 #define CDTO_V1_MAX_ENVELOPE_SIZE \
     (CDTO_V1_ROOM_PAYLOAD_LIMIT + CDTO_V1_PREFIX_LENGTH + CDTO_V1_DIGEST_LENGTH)
 #define CDTO_V1_MAX_FIELDS 65536U

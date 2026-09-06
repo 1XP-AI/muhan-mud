@@ -29,6 +29,7 @@ pub enum Kind {
     PlayerSnapshot = 7,
     BankSnapshot = 8,
     AliasTitleSnapshot = 9,
+    AliasTitleSnapshotManifest = 10,
 }
 
 impl Kind {
@@ -43,6 +44,7 @@ impl Kind {
             Self::PlayerSnapshot => 4 * 1024 * 1024,
             Self::BankSnapshot => 4 * 1024 * 1024,
             Self::AliasTitleSnapshot => 64 * 1024,
+            Self::AliasTitleSnapshotManifest => 128 * 1024,
         }
     }
 
@@ -61,6 +63,7 @@ impl Kind {
             7 => Ok(Self::PlayerSnapshot),
             8 => Ok(Self::BankSnapshot),
             9 => Ok(Self::AliasTitleSnapshot),
+            10 => Ok(Self::AliasTitleSnapshotManifest),
             _ => Err(Error::UnknownKind { kind: value }),
         }
     }
@@ -69,6 +72,7 @@ impl Kind {
 /// The largest legal whole envelope: a Room payload plus prefix and digest.
 pub const MAX_ENVELOPE_SIZE: usize = Kind::Room.payload_limit() + PREFIX_LENGTH + DIGEST_LENGTH;
 
+pub mod alias_title_snapshot_manifest_v1;
 pub mod alias_title_snapshot_v1;
 pub mod legacy_identity_evidence_v1;
 pub mod player_snapshot_normalized_v1;

@@ -132,6 +132,7 @@ unit-test:
 	/tmp/muhan-unit/onboarding_recovery_test
 	$(MAKE) onboarding-evidence-emission-test
 	$(MAKE) cdto-v1-test
+	$(MAKE) alias-title-snapshot-manifest-v1-test
 	$(MAKE) alias-title-snapshot-v1-outbox-test
 	$(MAKE) object-v1-test
 	$(MAKE) object-graph-v1-test
@@ -1081,6 +1082,18 @@ cdto-v1-sanitizer-test:
 	mkdir -p /tmp/muhan-unit
 	$(CC) -std=gnu89 -fcommon -I. $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/cdto_v1_test.c cdto_v1.c -o /tmp/muhan-unit/cdto_v1_sanitizer_test
 	/tmp/muhan-unit/cdto_v1_sanitizer_test
+
+# Closed metadata codec: intentionally absent from OBJECTS and all live/M3
+# composition lists. The fixture is shared verbatim with the Rust decoder.
+alias-title-snapshot-manifest-v1-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -I. ../tests/unit/alias_title_snapshot_manifest_v1_test.c alias_title_snapshot_manifest_v1.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/alias_title_snapshot_manifest_v1_test
+	/tmp/muhan-unit/alias_title_snapshot_manifest_v1_test
+
+alias-title-snapshot-manifest-v1-sanitizer-test:
+	mkdir -p /tmp/muhan-unit
+	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -I. ../tests/unit/alias_title_snapshot_manifest_v1_test.c alias_title_snapshot_manifest_v1.c alias_title_snapshot_v1.c cdto_v1.c -o /tmp/muhan-unit/alias_title_snapshot_manifest_v1_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/alias_title_snapshot_manifest_v1_sanitizer_test
 
 alias-title-snapshot-v1-observer-test:
 	mkdir -p /tmp/muhan-unit
