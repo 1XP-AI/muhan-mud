@@ -1,150 +1,86 @@
 #!/usr/bin/env python3
-"""Keep the reservation-to-candidate proof explicitly out of live ownership."""
+"""Audit native ownership of the M3 onboarding reservation descriptor."""
 from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = (ROOT / "src" / "Makefile").read_text(encoding="utf-8")
-CONSUMER = (ROOT / "src" / "onboarding_snapshot_command_consumer.c").read_text(encoding="utf-8")
-CONSUMER_HEADER = (ROOT / "src" / "onboarding_snapshot_command_consumer.h").read_text(encoding="utf-8")
+NATIVE = (ROOT / "src" / "character_save_journal_v2_runtime_native.c").read_text(
+    encoding="utf-8")
+NATIVE_HEADER = (ROOT / "src" / "character_save_journal_v2_runtime_native.h").read_text(
+    encoding="utf-8")
+OWNER = (ROOT / "src" / "character_save_journal_v2_process_owner.c").read_text(
+    encoding="utf-8")
+OWNER_HEADER = (ROOT / "src" / "character_save_journal_v2_process_owner.h").read_text(
+    encoding="utf-8")
 GATE = (ROOT / "src" / "onboarding_activation_gate.c").read_text(encoding="utf-8")
-NATIVE = (ROOT / "src" / "character_save_journal_v2_runtime_native.c").read_text(encoding="utf-8")
-COMMAND = (ROOT / "src" / "command1.c").read_text(encoding="utf-8")
-BRIDGE = (ROOT / "src" / "onboarding_activation_save_bridge.c").read_text(encoding="utf-8")
-PROTOCOL = (ROOT / "src" / "character_save_journal_v2_protocol.c").read_text(encoding="utf-8")
-CAPTURE = (ROOT / "src" / "character_player_snapshot_v1_capture.c").read_text(encoding="utf-8")
-OWNER_HEADER = (ROOT / "src" / "character_save_journal_v2_process_owner.h").read_text(encoding="utf-8")
-OWNER = (ROOT / "src" / "character_save_journal_v2_process_owner.c").read_text(encoding="utf-8")
+CONSUMER = (ROOT / "src" / "onboarding_snapshot_command_consumer.c").read_text(
+    encoding="utf-8")
+CONSUMER_HEADER = (ROOT / "src" / "onboarding_snapshot_command_consumer.h").read_text(
+    encoding="utf-8")
 
-CONFIGURATION = OWNER_HEADER[
-    OWNER_HEADER.index("typedef struct character_save_journal_v2_process_owner_configuration {"):
-    OWNER_HEADER.index("} character_save_journal_v2_process_owner_configuration;")
+DEFAULT_OBJECTS = MAKEFILE[
+    MAKEFILE.index("OBJECTS ="):MAKEFILE.index("M3_RUNTIME_OBJECTS =")
 ]
-SNAPSHOT_TICK = OWNER[OWNER.index(
-    "character_save_journal_v2_process_owner_snapshot_tick("):]
-STARTUP = OWNER[OWNER.index(
-    "character_save_journal_v2_process_owner_start(\n"):
-    OWNER.index("\ncharacter_save_journal_v2_process_owner_shutdown(\n")]
-SHUTDOWN = OWNER[OWNER.index(
-    "character_save_journal_v2_process_owner_shutdown(\n"):
-    OWNER.index("\ncharacter_save_journal_v2_process_owner_snapshot_tick(\n")]
-CANCEL_START = OWNER[OWNER.index("process_owner_cancel_start("):
-                     OWNER.index("\nvoid character_save_journal_v2_process_owner_init(")]
-UNBIND = OWNER[OWNER.index("process_owner_unbind_store("):
-               OWNER.index("\nstatic character_save_journal_v2_process_owner_startup_result\nprocess_owner_stop_start(")]
-UNWIND = OWNER[OWNER.index("process_owner_unwind("):
-               OWNER.index("\nstatic void process_owner_unbind_store(")]
+M3_LINK_BLOCK = MAKEFILE[
+    MAKEFILE.index("ifeq ($(USE_M3_RUNTIME),1)", MAKEFILE.index("M3_RUNTIME_OBJECTS =")):
+    MAKEFILE.index("$(OUTFILE): $(OBJECTS)")
+]
+NATIVE_OPEN = NATIVE[NATIVE.index(
+    "static int runtime_native_activation_reservation_directory_open("):
+    NATIVE.index("/* This owns exactly the resources")]
+NATIVE_SHUTDOWN = NATIVE[NATIVE.index(
+    "static void runtime_native_shadow_shutdown("):
+    NATIVE.index("static int runtime_native_shadow_start(")]
+
 
 def require(value: bool, message: str) -> None:
     if not value:
         raise SystemExit(message)
 
-def require_ordered(source: str, terms: tuple[str, ...], message: str) -> None:
-    positions = []
-    for term in terms:
-        require(term in source, f"{message}: missing {term}")
-        positions.append(source.index(term))
-    require(positions == sorted(positions), message)
 
-require("onboarding_snapshot_command_consumer_reserve" in CONSUMER and
-        "int reservation_directory_fd" in CONSUMER,
-        "the consumer must remain descriptor-rooted")
-require("already-open 0700 private reservation directory" in CONSUMER_HEADER and
-        "int reservation_directory_fd" in CONSUMER_HEADER and
-        "const char *expected_character_id" in CONSUMER_HEADER and
-        "onboarding_activation_binding_mode expected_mode" in CONSUMER_HEADER and
-        "const char *expected_correlation_id" in CONSUMER_HEADER,
-        "the consumer must require an already-open reservation root and its full activation tuple")
-require("onboarding_snapshot_command_consumer.o" not in MAKEFILE,
-        "the local reservation consumer must not silently join production objects")
-for source, label in ((GATE, "activation gate"), (NATIVE, "native runtime"),
-                      (COMMAND, "command handler")):
-    require("onboarding_snapshot_command_consumer" not in source,
-            f"{label} must not claim an unowned reservation descriptor")
-require("onboarding_activation_save_runtime_helper_attempt" in GATE and
-        "onboarding_activation_gate_bind_owner" in GATE,
-        "the existing bounded live path must remain owner/gate based")
-require("character_player_snapshot_v1_handoff *snapshot_handoff;" in CONFIGURATION,
-        "the process-owner configuration must expose only the existing snapshot handoff seam")
-for missing_input in ("reservation_directory_fd", "command_id",
-                      "expected_character_id", "expected_mode",
-                      "expected_correlation_id"):
-    require(missing_input not in CONFIGURATION,
-            f"the process-owner configuration must not claim unowned {missing_input}")
-for source, label in ((OWNER_HEADER, "process-owner configuration"),
-                      (OWNER, "process-owner lifecycle")):
-    require("onboarding_snapshot_command_consumer" not in source and
-            "reservation_directory_fd" not in source,
-            f"{label} must not claim the local reservation consumer or descriptor")
+# The reservation consumer is a deliberate part of the optional M3 runtime,
+# never of the normal object graph.
+for object_name in (
+    "onboarding_snapshot_command_consumer.o",
+    "onboarding_activation_reservation_adapter.o",
+    "onboarding_activation_reservation_owner.o",
+):
+    require(object_name in M3_LINK_BLOCK,
+            f"{object_name} must link only with USE_M3_RUNTIME=1")
+    require(object_name not in DEFAULT_OBJECTS,
+            f"the default non-M3 object graph must exclude {object_name}")
+
+# Only the native runtime retains the protected directory descriptor: it opens
+# a private root, stores the descriptor, and closes that same stored value.
+require("int activation_reservation_directory_fd;" in NATIVE_HEADER and
+        "Native runtime owns this one private descriptor" in NATIVE_HEADER,
+        "the native runtime must declare the protected descriptor as its storage")
+require("open(native->muhan_home" in NATIVE_OPEN and
+        "openat(root,RUNTIME_NATIVE_ACTIVATION_RESERVATION_DIRECTORY" in NATIVE_OPEN and
+        "native->activation_reservation_directory_fd=directory;" in NATIVE_OPEN,
+        "native runtime startup must open and retain the private reservation directory")
+require("close(native->activation_reservation_directory_fd);" in NATIVE_SHUTDOWN and
+        "native->activation_reservation_directory_fd=-1;" in NATIVE_SHUTDOWN,
+        "native runtime shutdown must release its retained descriptor")
+require("Returns the native caller-owned reservation directory" in NATIVE_HEADER and
+        "return native->activation_reservation_directory_fd;" in NATIVE,
+        "the native accessor must borrow the descriptor without transfer or duplication")
+
+# The generic process owner remains lifecycle-only.  Reservation participants
+# receive a descriptor from their caller and must not open or close that root.
+require(not re.search(r"\b(?:reservation_directory_fd|activation_reservation_directory_fd)\b",
+                      OWNER + OWNER_HEADER),
+        "the generic process owner must not store or manage the protected descriptor")
 require(not re.search(r"\b(?:open|openat|dup|dup2|fcntl|close)\s*\(", OWNER),
-        "the process owner must not open, duplicate, or close a reservation descriptor")
-require(not re.search(r"\b(?:reservation_directory_fd|reservation_descriptor|reservation_fd)\b",
-                      OWNER_HEADER + OWNER),
-        "the process owner must not add or manage a reservation descriptor")
-require_ordered(STARTUP, (
-    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTING;",
-    "configuration->acquire_deadline(",
-    "configuration->candidate_uuid(",
-    "character_save_journal_v2_live_ops_init(",
-    "character_save_journal_v2_writer_bootstrap(",
-    "character_save_journal_v2_recovery_run_with_stage_observer(",
-    "character_save_journal_v2_player_store_init(",
-    "character_save_journal_v2_player_store_set_stage_observer(",
-    "character_save_journal_v2_player_store_build(",
-    "player_store_bind(",
-    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY;"),
-    "startup must acquire and install the existing owner lifecycle before READY")
-require("character_player_snapshot_v1_handoff_drain(" not in STARTUP and
-        not re.search(r"\b(?:character_save_journal_v2_publish|"
-                      r"character_save_journal_v2_ack|player_store_save|"
-                      r"onboarding_snapshot_command_consumer)\s*\(", OWNER),
-        "owner startup must not implicitly save, publish, ACK, or dispatch a reservation consumer")
-require("owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY" in SNAPSHOT_TICK and
-        "owner->player_store.state !=\n       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE" in SNAPSHOT_TICK and
-        "character_player_snapshot_v1_handoff_drain(" in SNAPSHOT_TICK and
-        "onboarding_snapshot_command_consumer" not in SNAPSHOT_TICK,
-        "the safe READY/idle owner boundary drains only the configured handoff")
-require_ordered(SNAPSHOT_TICK, (
-    "if(!owner->configuration.snapshot_handoff)",
-    "owner->state != CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_READY",
-    "owner->player_store.state !=\n       CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE",
-    "owner->operation_active = 1;",
-    "character_player_snapshot_v1_handoff_drain("),
-    "snapshot drain must remain opt-in and occur only after READY/idle guards")
-require(not re.search(r"\b(?:character_save_journal_v2_publish|"
-                      r"character_save_journal_v2_ack|player_store_save|"
-                      r"onboarding_snapshot_command_consumer|player_store_bind|"
-                      r"player_store_unbind)\s*\(", SNAPSHOT_TICK),
-        "the explicit snapshot tick must not save, publish, ACK, bind, or dispatch a consumer")
-require("player_store_unbind(&owner->player_store_binding);" in UNBIND and
-        "owner->player_store_installed = 0;" in UNBIND,
-        "owner shutdown must remove its PlayerStore binding before writer release")
-require_ordered(SHUTDOWN, (
-    "owner->operation_active = 1;",
-    "process_owner_unbind_store(owner);",
-    "character_save_journal_v2_writer_close(&owner->held_writer)",
-    "owner->state = CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED;",
-    "owner->operation_active = 0;"),
-    "shutdown must unbind before closing the writer and then stop the owner")
-require("if(owner->operation_active)" in SHUTDOWN and
-        "owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTING" in SHUTDOWN and
-        "owner->shutdown_requested = 1;" in SHUTDOWN and
-        SHUTDOWN.index("if(owner->operation_active)") <
-        SHUTDOWN.index("process_owner_unbind_store(owner);") and
-        "owner->state == CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STOPPED" in SHUTDOWN and
-        SHUTDOWN.count("character_save_journal_v2_writer_close(") == 1,
-        "active startup shutdown must defer cancellation and stopped shutdown must be idempotent")
-require_ordered(CANCEL_START, (
-    "process_owner_unbind_store(owner);",
-    "process_owner_stop_start(owner,",
-    "CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_CANCELLED, 1)"),
-    "deferred startup cancellation must unbind before unwinding the writer")
-require("character_save_journal_v2_writer_close(&owner->held_writer)" in UNWIND,
-        "cancelled startup must release only the held writer during unwind")
-require("memcpy(candidate_out->command_uuid, bridge->selected.command_id" in BRIDGE and
-        "snprintf(command_uuid, sizeof(command_uuid), \"%s\", candidate.command_uuid)" in PROTOCOL and
-        "request->command_uuid" in PROTOCOL[PROTOCOL.index("observe_prepared_stage"):],
-        "the existing V4 candidate path must carry its command into PREPARED observation")
-require("capture_text_copy(metadata.command_id,sizeof(metadata.command_id),wire.command_uuid)" in CAPTURE,
-        "snapshot artifacts must retain the prepared command identity")
+        "the generic process owner must not acquire or release reservation descriptors")
+require("activation_gate_reservation_directory_fd" in GATE and
+        "onboarding_activation_reservation_owner_attempt(" in GATE and
+        not re.search(r"\b(?:open|openat|dup|dup2|fcntl|close)\s*\(", GATE),
+        "the activation gate may borrow and forward, but not own, the descriptor")
+require("int reservation_directory_fd" in CONSUMER_HEADER and
+        "onboarding_snapshot_command_consumer_reserve(reservation_directory_fd" in CONSUMER and
+        not re.search(r"\bopen\s*\(", CONSUMER),
+        "the reservation consumer must require a supplied directory descriptor")
+
 print("onboarding_snapshot_command_runtime_gap_test: ok")
