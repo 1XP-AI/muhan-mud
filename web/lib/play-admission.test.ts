@@ -95,3 +95,16 @@ test("a malformed completion cannot create a normal admission handoff", () => {
     null,
   );
 });
+
+test("a malformed replay cannot surface a usable session even when its character is active", () => {
+  const malformedReplay = {
+    ownerUserId: accountId,
+    characterId,
+    completion: "replayed",
+  } as never;
+
+  assert.equal(
+    resolvePlayAdmission(accountId, "ready", activeRoster, malformedReplay),
+    null,
+  );
+});

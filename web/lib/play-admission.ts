@@ -24,6 +24,22 @@ function isStrictLowerUuid(value: unknown): value is string {
   return typeof value === "string" && strictLowerUuid.test(value);
 }
 
+function isOnboardingCompletion(value: unknown): value is OnboardingCompletion {
+  return value === "claimed" || value === "provisioned";
+}
+
+function isValidHandoff(value: unknown): value is PlayAdmissionHandoff {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const handoff = value as Record<string, unknown>;
+  return (
+    isStrictLowerUuid(handoff.ownerUserId) &&
+    isStrictLowerUuid(handoff.characterId) &&
+    isOnboardingCompletion(handoff.completion)
+  );
+}
+
 /**
  * An exact completion may be replayed after a dropped control frame. Once a
  * target is recorded, never replace it from a later or conflicting frame.
@@ -34,11 +50,11 @@ export function completeOnboardingHandoff(
   completion: OnboardingCompletion,
   existing: PlayAdmissionHandoff | null = null,
 ): PlayAdmissionHandoff | null {
-  if (existing) return existing;
+  if (existing) return isValidHandoff(existing) ? existing : null;
   if (
     !isStrictLowerUuid(ownerUserId) ||
     !isStrictLowerUuid(characterId) ||
-    (completion !== "claimed" && completion !== "provisioned")
+    !isOnboardingCompletion(completion)
   ) {
     return null;
   }
@@ -57,7 +73,7 @@ export function resolvePlayAdmission(
   handoff: PlayAdmissionHandoff | null,
 ): PlayAdmissionHandoff | null {
   if (
-    !handoff ||
+    !isValidHandoff(handoff) ||
     rosterStatus !== "ready" ||
     viewerUserId !== handoff.ownerUserId ||
     !characters.some(
