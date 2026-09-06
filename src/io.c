@@ -1172,6 +1172,27 @@ extern int  alias_buf_num[PMAX];
 int Write_CMD = 0;
 static long last_recovery_retry;
 
+/* Claim input can include a password, but a later Gateway control may already
+ * share the ring.  Wipe only the line copied into handle_commands' stack so
+ * credential bytes do not survive while an unread control remains intact. */
+static void onboarding_zero_claim_consumed_input(fd, start, length)
+int fd;
+int start;
+int length;
+{
+	int first;
+
+	if(fd < 0 || fd >= PMAX || !Ply[fd].io || start < 0 ||
+	   start >= IBUFSIZE || length <= 0 || length > IBUFSIZE) return;
+	first = IBUFSIZE - start;
+	if(first > length) first = length;
+	onboarding_session_zeroize_claim_memory(0, 0,
+		Ply[fd].io->input + start, (unsigned long)first);
+	if(length > first)
+		onboarding_session_zeroize_claim_memory(0, 0, Ply[fd].io->input,
+			(unsigned long)(length - first));
+}
+
 void handle_commands()
 {
     cmd cmnd;
@@ -1179,7 +1200,7 @@ void handle_commands()
     creature *ply_ptr;
 
 	int	i, j, claim_input;
-	int	itail, ihead;
+	int	itail, ihead, input_start, input_count;
 	char	buf[IBUFSIZE+1];
 	long	t;
 
@@ -1212,6 +1233,8 @@ void handle_commands()
 			itail = Ply[i].io->itail;
 			ihead = Ply[i].io->ihead;
 			if(itail == ihead) continue;
+			input_start = itail;
+			input_count = 0;
 			for(j=0; j<IBUFSIZE; j++) {
 				if(itail == ihead) {
 					buf[j] = 0;
@@ -1220,11 +1243,13 @@ void handle_commands()
 				if(Ply[i].io->input[itail] == 13 ||
 				   Ply[i].io->input[itail] == 10) {
 					itail = (itail + 1) % IBUFSIZE;
+					input_count++;
 					buf[j] = 0;
 					break;
 				}
 				buf[j] = Ply[i].io->input[itail];
 				itail = (itail + 1) % IBUFSIZE;
+				input_count++;
 			}
 			Ply[i].io->itail = itail;
 			Ply[i].io->commands--;
@@ -1233,6 +1258,8 @@ void handle_commands()
 			 * free extr; the callback's password argument must be wiped here too. */
 			claim_input = Ply[i].extr &&
 				Ply[i].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM;
+			if(claim_input)
+				onboarding_zero_claim_consumed_input(i, input_start, input_count);
 			/* Admission tickets and onboarding passwords carry credentials.  Do
 			 * not mirror or command-log them, and do not dereference ply before
 			 * either ticket path has admitted the connection. */

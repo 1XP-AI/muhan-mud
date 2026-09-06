@@ -29,9 +29,22 @@ def test_claim_password_is_wiped_before_each_free_path() -> None:
         and "onboarding_zero_claim_credentials(fd, str);" in COMMAND1,
         "claim must wipe password and transient input immediately after compare",
     )
+    complete_claim = COMMAND1.index(
+        "if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM)",
+        COMMAND1.index("static int onboarding_activation_complete"),
+    )
     expect(
-        "onboarding_zero_claim_credentials(fd, 0);\n\t\tdisconnect(fd);" in COMMAND1,
+        COMMAND1.index("onboarding_zero_claim_credentials(fd, 0);", complete_claim)
+        < COMMAND1.index("disconnect(fd);", complete_claim),
         "successful MUD1O claim must wipe before disconnect",
+    )
+    credential_wipe = COMMAND1[
+        COMMAND1.index("static void onboarding_zero_claim_credentials"):
+        COMMAND1.index("static void ticket_reject")
+    ]
+    expect(
+        "Ply[fd].io->input" not in credential_wipe,
+        "claim callback wipe must not erase unread Gateway controls",
     )
 
 
@@ -48,6 +61,12 @@ def test_disconnect_has_claim_fail_safe_before_releasing_memory() -> None:
     expect(
         "claim_input" in IO and "buf, sizeof(buf)" in IO,
         "handle_commands must wipe its local stack command buffer after callback",
+    )
+    consumed_wipe = "onboarding_zero_claim_consumed_input(i, input_start, input_count);"
+    callback = "(*Ply[i].io->fn)"
+    expect(
+        consumed_wipe in IO and IO.index(consumed_wipe) < IO.index(callback),
+        "claim must wipe only its consumed ring line before its callback",
     )
 
 

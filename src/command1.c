@@ -66,8 +66,8 @@ int fd;
 }
 
 /* MUD1O claim is the only path that holds a loaded legacy password solely to
- * compare it once.  Wipe both the persisted-password field in the temporary
- * creature and the complete socket input buffer before free/disconnect. */
+ * compare it once.  handle_commands has already wiped the consumed ring line
+ * before entering this callback; do not erase unread Gateway controls. */
 static void onboarding_zero_claim_credentials(fd, transient)
 int fd;
 unsigned char *transient;
@@ -76,9 +76,6 @@ unsigned char *transient;
 	if(Ply[fd].ply)
 		onboarding_session_zeroize_claim_memory(
 			Ply[fd].ply->password, sizeof(Ply[fd].ply->password), 0, 0);
-	if(Ply[fd].io)
-		onboarding_session_zeroize_claim_memory(
-			0, 0, Ply[fd].io->input, sizeof(Ply[fd].io->input));
 	if(transient)
 		onboarding_session_zeroize_claim_memory(
 			0, 0, transient, strlen((char *)transient) + 1);
@@ -301,6 +298,7 @@ int fd;
 			Ply[fd].extr->onboarding_activation_command_id) != 0) {
 			return -1;
 		}
+		onboarding_zero_claim_credentials(fd, 0);
 		onboarding_finish_activation(fd); disconnect(fd); return 0;
 	}
 	return -1;

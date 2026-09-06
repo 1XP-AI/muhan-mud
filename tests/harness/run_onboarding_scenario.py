@@ -811,23 +811,54 @@ def main() -> int:
         expected_verified = f"MUD1O VERIFIED|416c696365|{current_digest}\n".encode()
         if verified != expected_verified:
             raise ScenarioFailure("claim did not digest the verified on-disk player file")
-        claim.send_fragmented(f"MUD1O CLAIMED|{CHARACTER}\n".encode(), 11)
-        # The private control peer models the real Gateway only after its
-        # finalized ownership handoff. Use a distinct command ID: the earlier
-        # provision activation has already bound CHARACTER on disk.
-        claim.send_fragmented(
-            f"MUD1O ACTIVATED|{CLAIM_ACTIVATION_COMMAND}\n".encode(), 13,
-        )
+        # The Gateway can write its finalized controls in one TCP payload.
+        # MUD1 must preserve the queued ACTIVATED record while zeroizing the
+        # preceding claim credential, emit exactly one ACTIVE, then close.
+        claim.send((
+            f"MUD1O CLAIMED|{CHARACTER}\n"
+            f"MUD1O ACTIVATED|{CLAIM_ACTIVATION_COMMAND}\n").encode())
         active = read_control(claim, b"MUD1O ACTIVE|")
-        expected_active = f"MUD1O ACTIVE|{CLAIM_ACTIVATION_COMMAND}\n".encode()
-        if active != expected_active:
-            raise ScenarioFailure("claim did not acknowledge its finalized activation command")
+        if active != f"MUD1O ACTIVE|{CLAIM_ACTIVATION_COMMAND}\n".encode():
+            raise ScenarioFailure("coalesced claim activation did not emit the exact ACTIVE")
         if claim.read_close() != b"":
-            raise ScenarioFailure("successful claim emitted player text instead of closing")
+            raise ScenarioFailure("coalesced claim activation emitted data after ACTIVE")
         claim.sock.close()
         result["events"].append({
             "case": "claim-success",
             "response": "VERIFIED/CLAIMED/ACTIVATED/ACTIVE-close",
+        })
+
+        # Fragment the same ordered pair inside CLAIMED.  Depending on the
+        # host read boundary this either queues the completed pair together or
+        # delivers ACTIVATED after CLAIMED, and both are valid Gateway order.
+        stage = "claim-fragmented-activation"
+        fragmented = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
+        fragmented_ticket, fragmented_mac = mud1o_ticket(
+            "C", "51112233445566778899aabbccddeeff",
+            "89898989-8989-4898-8898-898989898989")
+        add_sensitive(sensitive, fragmented_ticket.strip(), fragmented_mac)
+        expect_no_banner(fragmented)
+        fragmented.send(fragmented_ticket.encode())
+        fragmented.read_until(b"MUD1O OK\n")
+        fragmented.read_until("당신의 이름은 무엇입니까".encode())
+        fragmented.send(b"Alice\n")
+        expect_claim_challenge(fragmented, "Alice", current_digest)
+        allow_claim_password(fragmented, fragmented=True)
+        fragmented.send(PASSWORD.encode() + b"\n")
+        read_control(fragmented, b"MUD1O VERIFIED|")
+        fragmented_command = "efefefef-efef-4fef-8fef-efefefefefef"
+        fragmented.send_fragmented((
+            f"MUD1O CLAIMED|{CHARACTER}\n"
+            f"MUD1O ACTIVATED|{fragmented_command}\n").encode(), 11)
+        active = read_control(fragmented, b"MUD1O ACTIVE|")
+        if active != f"MUD1O ACTIVE|{fragmented_command}\n".encode():
+            raise ScenarioFailure("fragmented claim activation did not emit the exact ACTIVE")
+        if b"MUD1O ACTIVE|" in fragmented.read_close():
+            raise ScenarioFailure("fragmented claim activation emitted ACTIVE more than once")
+        fragmented.sock.close()
+        result["events"].append({
+            "case": "claim-fragmented-activation",
+            "response": "VERIFIED/CLAIMED/ACTIVE",
         })
 
         stage = "claim-wrong-password"
