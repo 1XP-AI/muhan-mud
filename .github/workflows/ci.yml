@@ -65,6 +65,7 @@ jobs:
           bash supabase/tests/imported_unclaimed_batch_character_provenance_static_contract.sh
           bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
           bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
+          bash supabase/tests/imported_unclaimed_batch_member_identity_static_contract.sh
           bash supabase/tests/legacy_locator_resolver_static_contract.sh
           bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
           bash supabase/tests/bank_snapshot_v1_topology_shadow_static_contract.sh

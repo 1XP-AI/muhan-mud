@@ -195,13 +195,10 @@ class PostgresImportTransaction implements ImportTransaction {
 
   async findBatchMemberIdentities(worldId: string, streamId: string, sequence: number): Promise<readonly BatchMemberIdentity[]> {
     const result = await this.client.query<BatchMemberIdentityRow>(
-      `select character.legacy_name_key as canonical_name,
-              character.legacy_shard,
-              character.imported_file_sha256,
-              character.storage_format
-         from private.game_imported_unclaimed_batch_members as member
-         join public.game_characters as character on character.id = member.character_id
-        where member.world_id = $1 and member.stream_id = $2 and member.batch_sequence = $3`,
+      `select canonical_legacy_name as canonical_name, legacy_shard,
+              imported_file_sha256, storage_format
+         from private.game_imported_unclaimed_batch_member_identities
+        where world_id = $1 and stream_id = $2 and batch_sequence = $3`,
       [worldId, streamId, sequence],
     )
     return result.rows.map((row) => ({
@@ -225,6 +222,39 @@ class PostgresImportTransaction implements ImportTransaction {
         identity.parserVersion, identity.abi, identity.startMarker, identity.endMarker,
         input.recordCount],
     )
+  }
+
+  async recordBatchMemberIdentity(input: {
+    worldId: string, streamId: string, sequence: number, identity: BatchMemberIdentity
+  }): Promise<void> {
+    const inserted = await this.client.query<BatchMemberIdentityRow>(
+      `insert into private.game_imported_unclaimed_batch_member_identities (
+        world_id, stream_id, batch_sequence, canonical_legacy_name,
+        legacy_shard, imported_file_sha256, storage_format
+      ) values ($1, $2, $3, $4, $5, $6, $7)
+      on conflict (world_id, stream_id, batch_sequence, canonical_legacy_name) do nothing
+      returning canonical_legacy_name as canonical_name, legacy_shard,
+        imported_file_sha256, storage_format`,
+      [input.worldId, input.streamId, input.sequence, input.identity.canonicalName,
+        input.identity.shard, input.identity.sha256, input.identity.storageFormat],
+    )
+    if (inserted.rows.length === 1) return
+
+    const existing = await this.client.query<BatchMemberIdentityRow>(
+      `select canonical_legacy_name as canonical_name, legacy_shard,
+              imported_file_sha256, storage_format
+         from private.game_imported_unclaimed_batch_member_identities
+        where world_id = $1 and stream_id = $2 and batch_sequence = $3
+          and canonical_legacy_name = $4`,
+      [input.worldId, input.streamId, input.sequence, input.identity.canonicalName],
+    )
+    const row = existing.rows[0]
+    if (!row || row.canonical_name !== input.identity.canonicalName
+      || row.legacy_shard !== input.identity.shard
+      || row.imported_file_sha256 !== input.identity.sha256
+      || row.storage_format !== input.identity.storageFormat) {
+      throw new Error('batch member identity conflict')
+    }
   }
 
   async recordBatchMember(input: {

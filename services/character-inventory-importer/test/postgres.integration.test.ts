@@ -69,6 +69,11 @@ async function countBatchMembers(pool: DisposablePool, world: string): Promise<n
   return Number(result.rows[0]?.count ?? 0)
 }
 
+async function countBatchMemberIdentities(pool: DisposablePool, world: string): Promise<number> {
+  const result = await pool.query<{ count: string }>('select count(*)::text as count from private.game_imported_unclaimed_batch_member_identities where world_id = $1', [world])
+  return Number(result.rows[0]?.count ?? 0)
+}
+
 async function countBatchMemberLocators(pool: DisposablePool, world: string): Promise<number> {
   const result = await pool.query<{ count: string }>(
     `select count(*)::text as count
@@ -168,6 +173,7 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   assert.equal(batchApplied.inserted, 2)
   assert.equal(await countWorld(pool, world), 6)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberIdentities(pool, world), 2)
   assert.equal(await countBatchMemberLocators(pool, world), 2)
   const locators = await pool.query<{ canonical_legacy_name: string, legacy_name_sha1: string, legacy_shard: string }>(
     `select locator.canonical_legacy_name, locator.legacy_name_sha1, locator.legacy_shard
@@ -186,6 +192,7 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   assert.equal(batchRetry.ledger, 'idempotent')
   assert.equal(await countWorld(pool, world), 6)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberIdentities(pool, world), 2)
   assert.equal(await countBatchMemberLocators(pool, world), 2)
   const secondBatch = await importBatch(importer, [ledgerRecords[0]!], {
     identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
@@ -193,7 +200,14 @@ test('disposable Linux/Postgres importer contract is atomic and serializes retri
   })
   assert.equal(secondBatch.idempotent, 1)
   assert.equal(await countBatchMembers(pool, world), 2)
+  assert.equal(await countBatchMemberIdentities(pool, world), 3)
   assert.equal(await countBatchMemberLocators(pool, world), 2)
+  const secondBatchRetry = await importBatch(importer, [ledgerRecords[0]!], {
+    identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),
+    streamId: 'main', sequence: 1, apply: true,
+  })
+  assert.equal(secondBatchRetry.ledger, 'idempotent')
+  assert.equal(await countBatchMemberIdentities(pool, world), 3)
   await assert.rejects(
     () => importBatch(importer, [record('LedgerThree')], {
       identity: createBatchIdentity({ worldId: world, sourceManifestId: 'integration-manifest-1', sourceSha256: digest('integration-source-1'), sourceByteSize: 20, parserVersion: '1.2.3', abi: 1, startMarker: 'range-start-1', endMarker: 'range-end-1' }),

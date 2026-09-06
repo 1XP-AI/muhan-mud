@@ -47,9 +47,14 @@ export interface ImportTransaction {
   insertImportedUnclaimed(input: { worldId: string, record: InventoryRecord }): Promise<string>
   lockBatchStream(worldId: string, streamId: string): Promise<void>
   findBatchBySequence(worldId: string, streamId: string, sequence: number): Promise<LedgerBatch | undefined>
+  /** Reads immutable batch-time tuple evidence, never mutable character state. */
   findBatchMemberIdentities(worldId: string, streamId: string, sequence: number): Promise<readonly BatchMemberIdentity[]>
   findBatchByIdentity(worldId: string, streamId: string, stableKey: string): Promise<LedgerBatch | undefined>
   createBatch(input: { identity: BatchIdentity, streamId: string, sequence: number, recordCount: number }): Promise<void>
+  /** Appends one immutable tuple for every admitted input record, including existing rows. */
+  recordBatchMemberIdentity(input: {
+    worldId: string, streamId: string, sequence: number, identity: BatchMemberIdentity
+  }): Promise<void>
   /** Appends a permanent, private link from a new character to its creating batch. */
   recordBatchMember(input: {
     worldId: string, streamId: string, sequence: number, characterId: string
@@ -247,6 +252,20 @@ export function sameBatchMemberIdentity(record: InventoryRecord, member: BatchMe
     && member.storageFormat === 1
 }
 
+function hasExactBatchMemberIdentities(records: readonly InventoryRecord[], members: readonly BatchMemberIdentity[]): boolean {
+  if (records.length !== members.length) return false
+  const membersByCanonicalName = new Map<string, BatchMemberIdentity>()
+  for (const member of members) {
+    if (membersByCanonicalName.has(member.canonicalName)) return false
+    membersByCanonicalName.set(member.canonicalName, member)
+  }
+  return membersByCanonicalName.size === records.length
+    && records.every((record) => {
+      const member = membersByCanonicalName.get(record.canonicalNameKey)
+      return member !== undefined && sameBatchMemberIdentity(record, member)
+    })
+}
+
 function legacyNameSha1(canonicalName: string): string {
   return createHash('sha1').update(canonicalName, 'utf8').digest('hex')
 }
@@ -380,8 +399,7 @@ export async function importBatch(store: ImportStore, records: readonly Inventor
       if (atSequence.stableKey !== validated.identity.stableKey
         || atSequence.recordCount !== admitted.ordered.length) throw new BatchImportError('batch_sequence_identity_conflict')
       const members = await transaction.findBatchMemberIdentities(validated.identity.worldId, validated.streamId, validated.sequence)
-      if (members.length !== admitted.ordered.length
-        || admitted.ordered.some((record) => !members.some((member) => sameBatchMemberIdentity(record, member)))) {
+      if (!hasExactBatchMemberIdentities(admitted.ordered, members)) {
         throw new BatchImportError('batch_sequence_identity_conflict')
       }
       return { ...base(), idempotent: atSequence.recordCount, ledger: 'idempotent' }
@@ -398,6 +416,19 @@ export async function importBatch(store: ImportStore, records: readonly Inventor
     if (!validated.apply) return { ...base(), ...inspected.summary, wouldInsert: inspected.absent.length }
 
     await transaction.createBatch({ identity: validated.identity, streamId: validated.streamId, sequence: validated.sequence, recordCount: admitted.ordered.length })
+    for (const record of admitted.ordered) {
+      await transaction.recordBatchMemberIdentity({
+        worldId: validated.identity.worldId,
+        streamId: validated.streamId,
+        sequence: validated.sequence,
+        identity: {
+          canonicalName: record.canonicalNameKey,
+          shard: record.expectedShard,
+          sha256: record.sha256,
+          storageFormat: 1,
+        },
+      })
+    }
     for (const record of inspected.absent) {
       const characterId = await transaction.insertImportedUnclaimed({ worldId: validated.identity.worldId, record })
       await transaction.recordBatchMember({

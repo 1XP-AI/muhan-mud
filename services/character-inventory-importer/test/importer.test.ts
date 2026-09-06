@@ -94,6 +94,7 @@ class MemoryStore implements ImportStore {
           batches.set(`${identity.worldId}|${streamId}|${sequence}`, batch)
           batchIdentities.set(`${identity.worldId}|${streamId}|${identity.stableKey}`, batch)
         },
+        recordBatchMemberIdentity: async () => undefined,
         recordBatchMember: async () => undefined,
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
         advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence) },
