@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import fixture from '../../../tests/fixtures/admission_identity_conformance_v1.json' with { type: 'json' }
 import { createAdmissionTicket } from '../src/admission-ticket.js'
@@ -44,6 +45,18 @@ function row(evidence: LegacyIdentityEvidenceV1, extra: Record<string, unknown> 
     ...extra,
   }]
 }
+
+test('CI invokes admission identity conformance through the C-oracle harness', async () => {
+  const [workflow, harness] = await Promise.all([
+    readFile(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+    readFile(new URL('../../../scripts/run-admission-identity-conformance.sh', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(workflow,
+    /- name: Admission identity C\/Gateway conformance[\s\S]*?\.\/scripts\/run-admission-identity-conformance\.sh/)
+  assert.match(harness,
+    /ADMISSION_IDENTITY_CONFORMANCE_C_ORACLE="\$tmp\/oracle"\s*\\\n\s*pnpm --dir "\$root" --filter @muhan\/gateway exec tsx --test\s*\\\n\s*test\/admission-identity-conformance\.test\.ts/)
+})
 
 test('C trusted admission and Gateway evidence finalization conform to the shared identity fixture', {
   skip: oracle ? false : 'run scripts/run-admission-identity-conformance.sh to build the C oracle',

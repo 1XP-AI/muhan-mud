@@ -709,6 +709,13 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm check
 
+      - name: Admission identity C/Gateway conformance
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-admission-identity-conformance.sh
+
       - name: Browser xterm onboarding contract
         if: matrix.runner == 'ubuntu-latest'
         shell: bash
