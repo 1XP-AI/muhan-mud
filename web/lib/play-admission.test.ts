@@ -5,6 +5,10 @@ import {
   completeOnboardingHandoff,
   resolvePlayAdmission,
 } from "./play-admission.ts";
+import {
+  shouldOpenGatewaySocket,
+} from "./gateway-contract.ts";
+import { createOnboardingSocketContract } from "./onboarding-contract.ts";
 
 const accountId = "00000000-0000-4000-8000-000000000001";
 const characterId = "00000000-0000-4000-8000-000000000002";
@@ -16,6 +20,41 @@ const activeRoster = [{
   legacy_name: "Contracthero",
   lifecycle: "active" as const,
 }];
+
+test("authenticated empty roster stays isolated until one exact active completion is visible", () => {
+  assert.deepEqual(createOnboardingSocketContract("empty", "provision"), {
+    kind: "onboarding",
+    path: "/onboarding",
+    subprotocol: "muhan.onboarding.v1",
+    mode: "provision",
+  });
+  assert.equal(shouldOpenGatewaySocket("empty", null, []), false);
+
+  const first = completeOnboardingHandoff(accountId, characterId, "provisioned");
+  assert.ok(first);
+  assert.deepEqual(
+    completeOnboardingHandoff(accountId, characterId, "provisioned", first),
+    first,
+  );
+  assert.deepEqual(
+    completeOnboardingHandoff(accountId, otherCharacterId, "claimed", first),
+    first,
+  );
+
+  // The owner-filtered roster is the post-activation observation: exactly one
+  // active row for the id returned by the completion boundary.
+  const activeCharacters = activeRoster;
+  assert.equal(activeCharacters.length, 1);
+  assert.equal(activeCharacters[0]?.id, characterId);
+  assert.equal(
+    shouldOpenGatewaySocket("ready", characterId, activeCharacters.map(({ id }) => id)),
+    true,
+  );
+  assert.equal(
+    shouldOpenGatewaySocket("ready", otherCharacterId, activeCharacters.map(({ id }) => id)),
+    false,
+  );
+});
 
 test("an account with no owned active roster entry cannot start normal game admission", () => {
   const handoff = completeOnboardingHandoff(accountId, characterId, "claimed");
