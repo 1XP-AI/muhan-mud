@@ -126,6 +126,8 @@ select pg_temp.assert_true(
 reset role;
 reset session authorization;
 
+set local session authorization mud_writer_login;
+set local role mud_writer;
 select pg_temp.assert_true(
   (select count(*) = 1 and min(shadow_state) = 'MISSING' and max(shadow_state) = 'MISSING'
      from private.list_player_snapshot_v1_inventory_graph_shadow_reconciliation('pvi-shadow', 10)
@@ -139,6 +141,8 @@ select pg_temp.assert_true(
   ),
   'a valid receipt -> M4 manifest -> PlayerSnapshotV1 artifact chain with no graph shadow row is returned exactly as MISSING'
 );
+reset role;
+reset session authorization;
 
 -- Start each negative case with the production-valid immutable chain, then
 -- emulate an owner-side repair defect without permanently changing its setup.
