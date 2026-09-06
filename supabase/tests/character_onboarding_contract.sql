@@ -237,6 +237,7 @@ select pg_temp.assert_true(
   and not has_function_privilege('anon', 'public.begin_game_character_provisioning(uuid,uuid,text,text)', 'execute')
   and not has_function_privilege('anon', 'public.finalize_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
   and not has_function_privilege('anon', 'public.reconcile_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
+  and not has_function_privilege('anon', 'public.activate_game_character_onboarding_handoff(uuid,uuid,uuid,text)', 'execute')
   and not has_function_privilege('anon', 'public.challenge_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
   and not has_function_privilege('anon', 'public.claim_legacy_game_character_onboarding(text,text,uuid,uuid)', 'execute')
   and not has_function_privilege('anon', 'public.claim_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
@@ -245,6 +246,7 @@ select pg_temp.assert_true(
   and not has_function_privilege('authenticated', 'public.begin_game_character_provisioning(uuid,uuid,text,text)', 'execute')
   and not has_function_privilege('authenticated', 'public.finalize_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
   and not has_function_privilege('authenticated', 'public.reconcile_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
+  and not has_function_privilege('authenticated', 'public.activate_game_character_onboarding_handoff(uuid,uuid,uuid,text)', 'execute')
   and not has_function_privilege('authenticated', 'public.challenge_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
   and not has_function_privilege('authenticated', 'public.claim_legacy_game_character_onboarding(text,text,uuid,uuid)', 'execute')
   and not has_function_privilege('authenticated', 'public.claim_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
@@ -253,6 +255,7 @@ select pg_temp.assert_true(
   and has_function_privilege('service_role', 'public.begin_game_character_provisioning(uuid,uuid,text,text)', 'execute')
   and has_function_privilege('service_role', 'public.finalize_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
   and has_function_privilege('service_role', 'public.reconcile_game_character_provisioning(uuid,uuid,text,smallint)', 'execute')
+  and has_function_privilege('service_role', 'public.activate_game_character_onboarding_handoff(uuid,uuid,uuid,text)', 'execute')
   and has_function_privilege('service_role', 'public.challenge_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
   and has_function_privilege('service_role', 'public.claim_legacy_game_character_onboarding(text,text,text,uuid,uuid)', 'execute')
   and to_regprocedure('public.claim_legacy_game_character_onboarding(text,text,uuid,uuid)') is not null
@@ -485,7 +488,7 @@ select pg_temp.expect_finalize_rejection(
 );
 
 select pg_temp.assert_true(
-  (select lifecycle = 'active'
+  (select lifecycle = 'handoff_pending'
           and status = 'finalized'
           and saved_file_sha256 = repeat('a', 64)
           and storage_format = 1
@@ -494,20 +497,50 @@ select pg_temp.assert_true(
      '52000000-0000-0000-0000-000000000001',
      repeat('a', 64), 1::smallint
    )),
-  'finalize after C save evidence must monotonically activate the reservation'
+  'finalize after C save evidence must leave the reservation pending exact handoff activation'
 );
 select pg_temp.assert_true(
-  (select count(*) from public.finalize_game_character_provisioning(
+  (select lifecycle = 'handoff_pending'
+          and status = 'finalized'
+   from public.finalize_game_character_provisioning(
     '51000000-0000-0000-0000-000000000001',
     '52000000-0000-0000-0000-000000000001',
     repeat('a', 64), 1::smallint
-  )) = 1,
-  'same finalize correlation and save payload must be idempotent'
+  )),
+  'same finalize correlation and save payload must retain the pending handoff'
 );
 select pg_temp.expect_finalize_rejection(
   '51000000-0000-0000-0000-000000000001',
   '52000000-0000-0000-0000-000000000001',
   repeat('b', 64), 1::smallint
+);
+select pg_temp.assert_true(
+  (select character_id = (select id from public.game_characters
+                            where world_id = 'onboarding-contract-world'
+                              and legacy_name_key = 'Newhero')
+          and actor_user_id = '51000000-0000-0000-0000-000000000001'::uuid
+          and correlation_id = '52000000-0000-0000-0000-000000000001'::uuid
+          and lifecycle = 'active'
+          and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000001',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Newhero'),
+     'provision'
+   )),
+  'only the exact provision handoff activation may transition the finalized reservation to active'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000001',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Newhero'),
+     'provision'
+   )),
+  'an exact activated provision handoff retry must be idempotent'
 );
 
 -- A save/finalize crash window has no DB finalize receipt.  Reconcile accepts
@@ -531,7 +564,7 @@ select pg_temp.assert_true(
   'second provisioning reservation starts before C save/finalize crash'
 );
 select pg_temp.assert_true(
-  (select lifecycle = 'active'
+  (select lifecycle = 'handoff_pending'
           and status = 'finalized'
           and saved_file_sha256 = repeat('c', 64)
    from public.reconcile_game_character_provisioning(
@@ -539,15 +572,45 @@ select pg_temp.assert_true(
      '52000000-0000-0000-0000-000000000002',
      repeat('c', 64), 1::smallint
    )),
-  'reconcile must finalize a reserved request after a matching C save fingerprint'
+  'reconcile must finalize a reserved request into a pending handoff after a matching C save fingerprint'
 );
 select pg_temp.assert_true(
-  (select count(*) from public.reconcile_game_character_provisioning(
+  (select lifecycle = 'handoff_pending'
+          and status = 'finalized'
+   from public.reconcile_game_character_provisioning(
     '51000000-0000-0000-0000-000000000001',
     '52000000-0000-0000-0000-000000000002',
     repeat('c', 64), 1::smallint
-  )) = 1,
-  'same reconcile correlation and save payload must be idempotent'
+  )),
+  'same reconcile correlation and save payload must retain the pending handoff'
+);
+select pg_temp.assert_true(
+  (select character_id = (select id from public.game_characters
+                            where world_id = 'onboarding-contract-world'
+                              and legacy_name_key = 'Crashhero')
+          and actor_user_id = '51000000-0000-0000-0000-000000000001'::uuid
+          and correlation_id = '52000000-0000-0000-0000-000000000002'::uuid
+          and lifecycle = 'active'
+          and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000002',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Crashhero'),
+     'provision'
+   )),
+  'only the exact reconciled provision handoff activation may transition the reservation to active'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000002',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Crashhero'),
+     'provision'
+   )),
+  'an exact activated reconciled provision handoff retry must be idempotent'
 );
 
 reset role;
@@ -623,7 +686,7 @@ select pg_temp.assert_true(
 );
 set local role service_role;
 select pg_temp.assert_true(
-  (select lifecycle = 'active'
+  (select lifecycle = 'handoff_pending'
           and owner_user_id = '51000000-0000-0000-0000-000000000001'::uuid
           and onboarding_status = 'finalized'
           and imported_file_sha256 = repeat('e', 64)
@@ -632,16 +695,16 @@ select pg_temp.assert_true(
      '51000000-0000-0000-0000-000000000001',
      '52000000-0000-0000-0000-000000000004'
    )),
-  'C-verified claim must atomically claim the character and finalize its onboarding intent'
+  'C-verified claim must atomically claim the character and finalize into a pending handoff'
 );
 select pg_temp.assert_true(
-  (select count(*) = 1
+  (select lifecycle = 'handoff_pending' and onboarding_status = 'finalized'
    from public.claim_legacy_game_character_onboarding(
      'onboarding-contract-world', 'Legacyhero', repeat('e', 64),
      '51000000-0000-0000-0000-000000000001',
      '52000000-0000-0000-0000-000000000004'
    )),
-  'same finalized onboarding claim must be idempotent'
+  'same finalized onboarding claim must retain the pending handoff'
 );
 select pg_temp.expect_claim_onboarding_rejection(
   'onboarding-contract-world', 'Legacyhero', repeat('e', 64),
@@ -675,13 +738,50 @@ update private.game_character_claim_attempts
   where correlation_id = '52000000-0000-0000-0000-000000000004';
 set local role service_role;
 select pg_temp.assert_true(
+  (select lifecycle = 'handoff_pending' and onboarding_status = 'finalized'
+   from public.claim_legacy_game_character_onboarding(
+     'onboarding-contract-world', 'Legacyhero', repeat('e', 64),
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000004'
+   )),
+  'an already committed exact final retry remains pending and idempotent after challenge expiry'
+);
+select pg_temp.assert_true(
+  (select character_id = (select id from public.game_characters
+                            where world_id = 'onboarding-contract-world'
+                              and legacy_name_key = 'Legacyhero')
+          and actor_user_id = '51000000-0000-0000-0000-000000000001'::uuid
+          and correlation_id = '52000000-0000-0000-0000-000000000004'::uuid
+          and lifecycle = 'active'
+          and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000004',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Legacyhero'),
+     'claim'
+   )),
+  'only the exact claim handoff activation may transition the finalized claim to active'
+);
+select pg_temp.assert_true(
+  (select lifecycle = 'active' and onboarding_status = 'finalized'
+   from public.activate_game_character_onboarding_handoff(
+     '51000000-0000-0000-0000-000000000001',
+     '52000000-0000-0000-0000-000000000004',
+     (select id from public.game_characters
+       where world_id = 'onboarding-contract-world' and legacy_name_key = 'Legacyhero'),
+     'claim'
+   )),
+  'an exact activated claim handoff retry must be idempotent'
+);
+select pg_temp.assert_true(
   (select lifecycle = 'active' and onboarding_status = 'finalized'
    from public.claim_legacy_game_character_onboarding(
      'onboarding-contract-world', 'Legacyhero', repeat('e', 64),
      '51000000-0000-0000-0000-000000000001',
      '52000000-0000-0000-0000-000000000004'
    )),
-  'an already committed exact final retry remains idempotent after challenge expiry'
+  'the finalized claim retry must report active only after the exact handoff activation'
 );
 reset role;
 
