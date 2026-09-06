@@ -29,12 +29,6 @@ export interface ImmutableOutboxFilePolicy {
   maximumBytes: number
 }
 
-/** Test-only synchronization points for deterministic immutable-outbox race tests. */
-export interface ImmutableOutboxScanHooks {
-  beforeRootOpen?: () => void | Promise<void>
-  afterFileRead?: (name: string) => void | Promise<void>
-}
-
 class UnsafeOutboxError extends Error {}
 
 function summary(): RelaySummary {
@@ -119,9 +113,8 @@ export async function scanImmutableOutboxFiles(
   isCandidateFilename: (name: Uint8Array) => boolean,
   maximumBytes: number,
   platform: NodeJS.Platform = process.platform,
-  hooks?: ImmutableOutboxScanHooks,
 ): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
-  return scanImmutableOutboxFilesWithPolicies(path, [{ isCandidateFilename, maximumBytes }], platform, hooks)
+  return scanImmutableOutboxFilesWithPolicies(path, [{ isCandidateFilename, maximumBytes }], platform)
 }
 
 /**
@@ -133,14 +126,12 @@ export async function scanImmutableOutboxFilesWithPolicies(
   path: string,
   policies: readonly ImmutableOutboxFilePolicy[],
   platform: NodeJS.Platform = process.platform,
-  hooks?: ImmutableOutboxScanHooks,
 ): Promise<ReadonlyArray<{ name: string, bytes?: Uint8Array, error?: 'invalid' | 'io' }>> {
   if (policies.length === 0 || policies.some(({ maximumBytes }) => !Number.isSafeInteger(maximumBytes) || maximumBytes < 1)) throw new UnsafeOutboxError()
   // Node has no portable openat(2) binding. Rejoining a verified root pathname
   // on macOS leaves a root rename/replacement TOCTOU, so non-Linux is denied.
   if (process.platform !== 'linux' || platform !== 'linux') throw new UnsafeOutboxError()
   if (!isAbsolute(path) || path.includes('\0')) throw new UnsafeOutboxError()
-  await hooks?.beforeRootOpen?.()
   const rootPath = resolve(path)
   const before = await lstat(rootPath, { bigint: true })
   assertDirectory(before)
@@ -168,9 +159,7 @@ export async function scanImmutableOutboxFilesWithPolicies(
       try { result.push({ name, bytes: await readStableFile(`${descriptorPath(root.fd)}/${name}`, uid, matches[0]!.maximumBytes) }) }
       catch (error) {
         result.push({ name, error: error instanceof UnsafeOutboxError ? 'invalid' : 'io' })
-        continue
       }
-      await hooks?.afterFileRead?.(name)
     }
     return result
   } finally { await root.close() }
