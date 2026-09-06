@@ -39,11 +39,14 @@ class BatchMemoryStore implements ImportStore {
   batchInputs: Array<{ identity: ReturnType<typeof createBatchIdentity>, streamId: string, sequence: number, recordCount: number }> = []
   insertInputs: Array<{ worldId: string, record: InventoryRecord }> = []
   memberInputs: Array<{ worldId: string, streamId: string, sequence: number, characterId: string, legacyLocator?: { canonicalName: string, legacyNameSha1: string, legacyShard: string } }> = []
+  locatorInputs: Array<{ characterId: string, canonicalName: string, legacyNameSha1: string, legacyShard: string }> = []
   events: string[] = []
   failInsert = false
   failMember = false
   failLocator = false
   private tail = Promise.resolve()
+
+  constructor(private readonly insertedCharacterId = (worldId: string, row: InventoryRecord) => `character:${worldId}:${row.canonicalNameKey}`) {}
 
   async transaction<T>(work: (transaction: ImportTransaction) => Promise<T>): Promise<T> {
     let release: (() => void) | undefined
@@ -62,6 +65,7 @@ class BatchMemoryStore implements ImportStore {
     const batchInputs: typeof this.batchInputs = []
     const insertInputs: typeof this.insertInputs = []
     const memberInputs: typeof this.memberInputs = []
+    const locatorInputs: typeof this.locatorInputs = []
     const events: string[] = []
     try {
       const result = await work({
@@ -71,7 +75,7 @@ class BatchMemoryStore implements ImportStore {
           if (this.failInsert) throw new Error('injected insert failure')
           insertInputs.push({ worldId, record: { ...row } })
           rows.set(`${worldId}|${row.canonicalNameKey}`, existing(row)); writes++; events.push('character')
-          return `character:${worldId}:${row.canonicalNameKey}`
+          return this.insertedCharacterId(worldId, row)
         },
         lockBatchStream: async () => undefined,
         findBatchBySequence: async (world, stream, sequence) => batches.get(`${world}|${stream}|${sequence}`),
@@ -94,6 +98,7 @@ class BatchMemoryStore implements ImportStore {
           }
           if (legacyLocator) {
             if (this.failLocator) throw new Error('injected locator failure')
+            locatorInputs.push({ characterId, ...legacyLocator })
             const previous = locators.get(characterId)
             if (previous) {
               if (previous.canonicalName !== legacyLocator.canonicalName || previous.legacyNameSha1 !== legacyLocator.legacyNameSha1 || previous.legacyShard !== legacyLocator.legacyShard) {
@@ -107,7 +112,7 @@ class BatchMemoryStore implements ImportStore {
         readWatermark: async (world, stream) => watermarks.get(`${world}|${stream}`),
         advanceWatermark: async (world, stream, sequence) => { watermarks.set(`${world}|${stream}`, sequence); events.push('watermark') },
       })
-      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.locators = locators; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.locatorWrites += locatorWrites; this.batchInputs.push(...batchInputs); this.insertInputs.push(...insertInputs); this.memberInputs.push(...memberInputs); this.events = events
+      this.rows = rows; this.batches = batches; this.identities = identities; this.members = members; this.locators = locators; this.watermarks = watermarks; this.writes += writes; this.memberWrites += memberWrites; this.locatorWrites += locatorWrites; this.batchInputs.push(...batchInputs); this.insertInputs.push(...insertInputs); this.memberInputs.push(...memberInputs); this.locatorInputs.push(...locatorInputs); this.events = events
       return result
     } finally { release?.() }
   }
@@ -144,15 +149,21 @@ test('fixture-derived reviewed manifest commits an exact resolver-compatible leg
   const { evidence, record: fixtureRecord } = importerBindingFixture()
   const worldId = 'legacy-evidence-world'
   const streamId = 'legacy-evidence'
+  const reviewedCandidate = {
+    legacyNameKey: 'Alice',
+    legacyShard: '35',
+    sourceSha256: EXPECTED_LEGACY_PLAYER_FILE_SHA256,
+    sourceSize: 1,
+  }
   const reviewedManifest = Buffer.from(JSON.stringify({
     format: 'muhan.imported_unclaimed_manifest',
     format_version: 1,
     dry_run: true,
     candidates: [{
-      legacy_name_key: fixtureRecord.canonicalNameKey,
-      legacy_shard: fixtureRecord.expectedShard,
-      source_sha256: fixtureRecord.sha256,
-      source_size: fixtureRecord.byteSize,
+      legacy_name_key: reviewedCandidate.legacyNameKey,
+      legacy_shard: reviewedCandidate.legacyShard,
+      source_sha256: reviewedCandidate.sourceSha256,
+      source_size: reviewedCandidate.sourceSize,
     }],
     rejections: [],
   }))
@@ -168,20 +179,22 @@ test('fixture-derived reviewed manifest commits an exact resolver-compatible leg
     endMarker: 'legacy:alice:1',
   }
   const batchIdentity = createBatchIdentity(reviewedBatchIdentity)
-  const store = new BatchMemoryStore()
+  const importedCharacterId = '7e4316c8-0742-4f22-8a6b-cd9e877a0b7f'
+  const store = new BatchMemoryStore(() => importedCharacterId)
 
   const result = await importBatch(store, [fixtureRecord], { identity: batchIdentity, streamId, sequence: 0, apply: true })
 
   assert.equal(result.ledger, 'committed')
   assert.deepEqual(manifest, {
     sourceManifestSha256: digest(reviewedManifest.toString('utf8')),
-    candidates: [{
-      legacyNameKey: 'Alice',
-      legacyShard: '35',
-      sourceSha256: EXPECTED_LEGACY_PLAYER_FILE_SHA256,
-      sourceSize: 1,
-    }],
+    candidates: [reviewedCandidate],
   })
+  assert.deepEqual(manifest.candidates, [{
+    legacyNameKey: fixtureRecord.canonicalNameKey,
+    legacyShard: fixtureRecord.expectedShard,
+    sourceSha256: fixtureRecord.sha256,
+    sourceSize: fixtureRecord.byteSize,
+  }])
   assert.deepEqual(store.batchInputs, [{
     identity: {
       ...reviewedBatchIdentity,
@@ -206,18 +219,35 @@ test('fixture-derived reviewed manifest commits an exact resolver-compatible leg
     },
   ]]))
   assert.deepEqual(store.members, new Map([[
-    `character:${worldId}:Alice`,
-    { worldId, streamId, sequence: 0, characterId: `character:${worldId}:Alice` },
+    importedCharacterId,
+    { worldId, streamId, sequence: 0, characterId: importedCharacterId },
   ]]))
   assert.deepEqual(store.locators, new Map([[
-    `character:${worldId}:Alice`,
+    importedCharacterId,
     {
-      characterId: `character:${worldId}:Alice`,
+      characterId: importedCharacterId,
       canonicalName: 'Alice',
       legacyNameSha1: createHash('sha1').update('Alice', 'utf8').digest('hex'),
       legacyShard: '35',
     },
   ]]))
+  assert.deepEqual(store.memberInputs, [{
+    worldId,
+    streamId,
+    sequence: 0,
+    characterId: importedCharacterId,
+    legacyLocator: {
+      canonicalName: reviewedCandidate.legacyNameKey,
+      legacyNameSha1: createHash('sha1').update(reviewedCandidate.legacyNameKey, 'utf8').digest('hex'),
+      legacyShard: reviewedCandidate.legacyShard,
+    },
+  }])
+  assert.deepEqual(store.locatorInputs, [{
+    characterId: importedCharacterId,
+    canonicalName: reviewedCandidate.legacyNameKey,
+    legacyNameSha1: createHash('sha1').update(reviewedCandidate.legacyNameKey, 'utf8').digest('hex'),
+    legacyShard: reviewedCandidate.legacyShard,
+  }])
 
   const character = store.rows.get(`${worldId}|Alice`)!
   assert.deepEqual(
