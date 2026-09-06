@@ -150,6 +150,36 @@ test('one-shot full-payload CLI closes successful reader results and exits one f
   }
 })
 
+test('one-shot full-payload CLI rejects incomplete verifier records without emitting MATCH', async () => {
+  for (const malformed of [
+    undefined,
+    { format: 'player-snapshot-v1-replay-verification', version: '1' },
+    { ...verification(payload), canonicalOctets: payload.length - 1 },
+  ]) {
+    const calls: string[] = []; const output: string[] = []; const deps = dependencies([evidence], calls, output)
+    deps.verify = async (value, options) => {
+      calls.push(`verify:${options.runnerPath}`)
+      return malformed as never
+    }
+    assert.equal(await rehearsalMain(baseEnv(), ['--once'], deps), 1)
+    assert.equal(calls.filter((call) => call.startsWith('verify:')).length, 2)
+    const result = diagnostic(output)
+    assert.equal(result.classification, 'DECODE_MISMATCH')
+    assert.notEqual(result.classification, 'MATCH')
+  }
+})
+
+test('one-shot full-payload CLI reports reader construction failure as one closed DB_READ_ERROR record', async () => {
+  const output: string[] = []
+  const deps = dependencies([evidence], [], output)
+  deps.createReader = () => { throw new Error('raw connection details must not escape') }
+  assert.equal(await rehearsalMain(baseEnv(), ['--once'], deps), 1)
+  assert.deepEqual(diagnostic(output), {
+    format: 'player-snapshot-v1-full-payload-rehearsal', version: '1', classification: 'DB_READ_ERROR', commandId, characterId,
+  })
+  assert.equal(JSON.stringify(output).includes('raw connection details must not escape'), false)
+})
+
 test('local loader failures close as INVALID_INPUT before reader creation, while close failure leaves stdout empty', async () => {
   const output: string[] = []; let readerCreated = false
   const invalidLoader = dependencies([evidence], [], output)

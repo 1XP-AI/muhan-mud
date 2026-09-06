@@ -15,6 +15,7 @@ const DATABASE_ENV = 'M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_DATABASE_URL'
 const VERIFIER_ENV = 'M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_VERIFIER_PATH'
 const DIAGNOSTIC_FORMAT = 'player-snapshot-v1-full-payload-rehearsal' as const
 const DIAGNOSTIC_VERSION = '1' as const
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 interface ClosableFullPayloadReader extends ImmutablePlayerSnapshotV1FullPayloadReader {
   close?: () => Promise<void>
@@ -45,9 +46,11 @@ function diagnostic(
   classification: PlayerSnapshotV1FullPayloadRehearsal,
   artifact?: Pick<PlayerSnapshotV1Artifact, 'commandId' | 'characterId'>,
 ): string {
+  const commandId = typeof artifact?.commandId === 'string' && UUID_RE.test(artifact.commandId) ? artifact.commandId : null
+  const characterId = typeof artifact?.characterId === 'string' && UUID_RE.test(artifact.characterId) ? artifact.characterId : null
   return `${JSON.stringify({
     format: DIAGNOSTIC_FORMAT, version: DIAGNOSTIC_VERSION, classification,
-    commandId: artifact?.commandId ?? null, characterId: artifact?.characterId ?? null,
+    commandId, characterId,
   })}\n`
 }
 
@@ -92,7 +95,12 @@ export async function main(
     return 1
   }
 
-  const reader = dependencies.createReader(databaseUrl)
+  let reader: ClosableFullPayloadReader
+  try { reader = dependencies.createReader(databaseUrl) }
+  catch {
+    dependencies.writeStdout(diagnostic('DB_READ_ERROR', artifact))
+    return 1
+  }
   let classification: PlayerSnapshotV1FullPayloadRehearsal
   try {
     classification = await rehearsePlayerSnapshotV1FullPayload(
