@@ -91,3 +91,13 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 입력은 기존 읽기 전용 filesystem scanner를 이용한 정확히 한 artifact/receipt 쌍이다. receipt-bound parser → 실제 Rust projector → normalized comparator → 전용 session reader를 기본 의존성으로 연결했다. stdout은 format/version/classification만 포함하는 JSON 한 줄이며 MATCH만 exit 0이다. reader 생성 실패·비교 예외·연결 종료 실패는 각각 실패로 출력하고 원시 에러는 출력하지 않는다. 종료 실패 후 MATCH로 보고하지 않는다.
 
 CLI 테스트를 먼저 작성해 모듈 부재 실패 후 구현했다. 설정 누락과 --once 검사, 실행·정리 순서, close 실패, 비교 예외, 잘못된 입력 전 DB 생성 방지 및 실제 tree fixture의 receipt pairing을 검증했다. build와 C→Rust→Node bridge는 160 tests, 155 pass, 0 fail, 5 기존 skip이다. **이번 CLI 프로세스 전체를 실제 filesystem outbox와 PostgreSQL에 동시에 연결한 E2E는 아직 미실행이다.** 앞 절의 PostgreSQL 검증은 조회 adapter/session의 증거이지 새 CLI 전체의 증거가 아니다. 독립 리뷰, 실제 CLI E2E, 배포 job/chart 연결이 다음 단계다.
+
+## Linux CLI E2E 준비 및 저장 공간 차단
+
+integration 실행기에 실제 mode 0700 outbox와 mode 0600 artifact/receipt 파일을 생성하고 CLI 자식 프로세스를 실행하는 MATCH/INVALID_INPUT/MISSING_RECORD 사례를 추가했다. stdout·exit code와 입력 파일이 변경되지 않았는지도 검사한다. 임시 파일은 finally에서 제거한다. 이미지 안의 `/app` 빌드 산출물로 실행할 때 `NORMALIZED_READER_TEST_RELAY_ROOT=/app`을 지정할 수 있다.
+
+macOS 실행에서는 CLI MATCH가 INVALID_INPUT으로 실패했다. 기존 filesystem scanner는 실제 Linux에서만 동작하도록 설계되어 있고, 테스트 생성 receipt의 필드 순서도 canonical 형식과 달랐다. 순서는 수정했고 Linux-only 조건은 유지했다. 실제 파일 E2E는 Linux 이미지에서 다시 실행해야 한다. reader/session 단독 경로의 앞선 통과 결과와 구분한다.
+
+relay Dockerfile이 기존 replay verifier만 포함하고 normalized projector를 포함하지 않는 것도 확인했다. 같은 Rust build에 `player_snapshot_v1_normalized_project`를 추가하고 최종 이미지의 `/usr/local/libexec/muhan/`으로 복사하도록 수정했다. 로컬 이미지 `muhan-normalized-e2e:local` 빌드를 시도했으나 Rust base image unpack 단계에서 `no space left on device`로 실패했다. 이미지 빌드/CLI E2E 통과나 배포 완료로 계산하지 않는다.
+
+Docker 사용량은 이미지 21.01GB(회수 가능 10.84GB), build cache 12.17GB(회수 가능 630.9MB)로 보고됐다. 다른 프로젝트 리소스와 캐시는 삭제하지 않았다. 이번 임시 DB `muhan-normalized-cli-392a41`만 라벨/ID 확인 후 종료·auto-remove·목록 부재를 확인했다. 최신 문법 검사와 guard tests 2개는 통과했다. Linux E2E 재시도에는 Docker 공간 확보가 필요하다.
