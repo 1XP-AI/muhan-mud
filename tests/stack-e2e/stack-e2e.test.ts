@@ -1090,7 +1090,17 @@ async function main(): Promise<void> {
     assert.equal(webClaimState, `active|${webClaimActor}|${webClaimName}`)
     assert.equal(await sql(`select count(*) from private.game_imported_unclaimed_batch_members where character_id = '${webClaimCharacterId}'`), '1')
     assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_name_sha1 || '|' || legacy_shard from private.game_imported_unclaimed_batch_member_legacy_locators where character_id = '${webClaimCharacterId}'`), `${webClaimName}|${createHash('sha1').update(webClaimName).digest('hex')}|${createHash('sha1').update(webClaimName).digest('hex').slice(0, 2)}`)
-    assert.equal(createHash('sha256').update(await readFile(webClaimPlayer)).digest('hex'), webClaimDigest)
+    const postGameClaimBytes = await readFile(webClaimPlayer)
+    if (!postGameClaimBytes.equals(webClaimBytes)) {
+      const layoutBinary = join(await mkdtemp(join(tmpdir(), 'muhan-post-game-layout-')), 'layout')
+      await run('cc', ['-I', join(root, 'src'), join(root, 'tests/stack-e2e/player-record-layout.c'), '-o', layoutBinary])
+      const { stdout } = await run(layoutBinary)
+      const layout = JSON.parse(stdout) as { fields: Array<{ name: string; offset: number; length: number }> }
+      const changed = layout.fields.filter(field => !webClaimBytes.subarray(field.offset, field.offset + field.length).equals(postGameClaimBytes.subarray(field.offset, field.offset + field.length))).map(field => field.name)
+      // Names/booleans only: no player field values, credential bytes or hashes.
+      process.stderr.write(`stack-e2e: post-game-claim size-equal=${webClaimBytes.length === postGameClaimBytes.length} changed-fields=${JSON.stringify(changed)}\n`)
+    }
+    assert.equal(createHash('sha256').update(postGameClaimBytes).digest('hex'), webClaimDigest)
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
 
     // The browser has now exercised distinct real provision and claim flows.
