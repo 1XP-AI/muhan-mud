@@ -255,3 +255,13 @@ CI run https://github.com/1XP-Inc/muhan-mud/actions/runs/34083005207 는 모든 
 Orca Luna/max task `task_5280985b24eb`, dispatch `ctx_0d3f5ee5744d`의 읽기 전용 CI audit를 완료했다. CI는 push-only/all refs이며 build-and-smoke의 ubuntu-latest lane만 실제 C/Gateway/Next dev/Chromium 가입·기존 계정 claim을 실행한다. Auth endpoint는 fixture 대역이며 production Next와 실제 Supabase Auth는 이 lane의 증거가 아니다. worker 결과를 회수하고 `worker-release`의 released/closed_agent_terminal/captured 확인 후 delivery_f4c64309f4e2를 ack했다. 완료 세션은 남기지 않았다. Astra CLI는 여전히 0.149.0이라 기존 비호환 시도를 반복하지 않았다.
 
 Coordinator와 Luna가 stack runner의 migration 누락을 확인했다. 20261002~07 및 10~14 총 11개가 빠져 있었다. 새 source-bound coverage test가 먼저 실패한 후 explicit apply_sql 목록에 순서대로 추가했고, 현재 44개 game migration의 정확한 순서/중복 없음과 기존 CI-only gate 유지 검사가 통과했다. bash 구문 검사도 통과했고 unit-test에 coverage 검사를 연결했다. SQL 자체는 이전 통합 이미지 DB E2E에서 같은 44개를 적용했지만, 변경된 실제 C/browser stack 전체는 이번에 실행하지 못했다. 이 후속 코드와 기록은 아직 로컬 커밋이며 게시된 a45ec8e에는 포함되지 않는다. 원격 소스 경로 검토 gate, 전체 stack 실행 및 실제 Auth/배포 검증은 계속 남는다.
+
+## 통합 이미지의 실제 C 가입·기존 캐릭터 연결 20개 시나리오 통과
+
+CI-only stack과 별개로 로컬 실행을 지원하는 기존 `scripts/run-onboarding-scenario.sh` 및 `tests/harness/run_onboarding_scenario.py`를 확인했다. 외부 binary 실행은 기존의 AI_SCENARIO_ALLOW_EXTERNAL_BINARY=1 명시적 계약을 사용하며, C 프로세스와 폐기 가능한 MUHAN_HOME fixture를 만들고 Gateway의 private control peer만 모의한다. 소스 재빌드나 사용자 player 파일 변경 없이 검증할 수 있다.
+
+통합 이미지 `4b8d40d2...`에서 파생해 Python 3 테스트 도구만 추가한 로컬 `muhan-onboarding-evidence:local` 이미지(`sha256:db297431df4ee0d99b3319260871809fd739f6841acc25daae19a8d6b70be4c4`)를 만들었다. 게임 binary는 /opt/muhan-seed/bin/frp 그대로다. --network none, --read-only, tmpfs /tmp, 기본 muhan UID 및 고정 source archive /repo read-only mount로 실행했다. 운영 이미지/registry/k8s에는 변경이 없다. harness 두 파일은 archive 기준 03c677f와 현재 HEAD 사이에 변경이 없음을 확인했다.
+
+session `62926` exit 0, onboarding-real-c passed, 18.251초. 20개 case: flag-off, startup-malformed-receipt, provision-confirmation-no, provision-confirmation-await-enter, reserved-admin-name, pending-rename-crash-window, pending-rename-crash-relogin-mud1, pre-commit-world-invisibility, provision-fragmented-controls, out-of-order-control, save-failure, restart-relogin-mud1, claim-peer-eof-await-allow, claim-peer-eof-await-password, claim-success, claim-fragmented-activation, claim-wrong-password, claim-password-before-allow, claim-file-mutation, replay.
+
+결과에서는 상태/이벤트 이름만 출력하고 TCP transcript·게임 비밀번호를 내보내지 않았다. fixture와 로그는 runner finally 및 --rm 컨테이너 수명으로 정리했고 muhan-c-onboarding-0907a의 목록 부재를 확인했다. 로컬 테스트 이미지는 보존했다. 이 결과는 실제 C wizard/save/재접속 및 Gateway control 프로토콜의 증거지만, 실제 Gateway/Supabase Auth/웹 UI/DB 연결을 한 번에 실행한 증거는 아니다. 게임 binary의 소스는 03c677f라 후속 info 문자열 수정은 이 실행에 포함되지 않는다. 실제 C가 생성한 receipt/artifact를 normalized DB 저장·비교에 연결하는 통합 검증이 다음 남은 경로다.
