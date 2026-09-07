@@ -539,6 +539,8 @@ run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_
 echo 'GREEN paired snapshot transaction rollback and retry contract'
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/paired-snapshot-concurrency-local-pg.mjs"
+CARGO_TARGET_DIR="$repo_root/rust/target" cargo test --locked --offline --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto --bin bank_money_transfer_plan
+CARGO_TARGET_DIR="$repo_root/rust/target" cargo build --locked --offline --release --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto --bin bank_money_transfer_plan
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"
