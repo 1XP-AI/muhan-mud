@@ -18,6 +18,7 @@ select private.record_legacy_published_receipt('backup-contract', 'Pvahero',
   'a9500000-0000-0000-0000-000000000001'::uuid, 'c9500000-0000-0000-0000-000000000001'::uuid,
   'b9500000-0000-0000-0000-000000000001'::uuid, :'request',
   1::bigint, 1::bigint, 'absent', null::text, repeat('a',64), 1::smallint);
+set session authorization mud_writer_login;
 set local role mud_writer;
 select * from private.record_m4_file_snapshot_manifest_for_receipt(
   'a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001',
