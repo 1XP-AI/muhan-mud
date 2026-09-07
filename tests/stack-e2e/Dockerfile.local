@@ -6,6 +6,7 @@ ENV PATH=/usr/local/cargo/bin:$PATH RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/us
 RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpq-dev postgresql-client python3 && rm -rf /var/lib/apt/lists/*
 RUN npm install -g pnpm@10.15.1
 WORKDIR /repo
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 # Build context must be a frozen Git archive, never the developer checkout.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json ./web/package.json
@@ -18,4 +19,7 @@ COPY . .
 RUN make -B -C src -j2 CC=gcc USE_M3_RUNTIME=1 PG_CONFIG=pg_config OUTFILE=/usr/local/bin/muhan-stack-frp > /tmp/c-build.log 2>&1 || (tail -80 /tmp/c-build.log && exit 1)
 RUN cargo build --locked --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_normalized_project
 ENV NEXT_TELEMETRY_DISABLED=1
+RUN useradd --uid 10001 --create-home muhan-test && chown -R 10001:10001 /repo/web
+USER 10001:10001
+ENV HOME=/home/muhan-test
 ENTRYPOINT ["bash", "/repo/tests/stack-e2e/run-local-container.sh"]

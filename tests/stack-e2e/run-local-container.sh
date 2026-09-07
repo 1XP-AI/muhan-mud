@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [[ "${STACK_E2E_LOCAL_DISPOSABLE:-}" == 1 ]] || exit 2
+[[ "$(id -u)" == 10001 ]] || { echo 'local-stack: production-equivalent UID 10001 required' >&2; exit 2; }
 [[ ! -S /var/run/docker.sock ]] || exit 2
 export STACK_E2E_ROOT=/repo STACK_E2E_FIXTURE=/tmp/stack-fixture
 export STACK_E2E_PG_PASSWORD=stack-e2e-postgres-password
