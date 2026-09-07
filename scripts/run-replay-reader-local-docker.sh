@@ -82,6 +82,10 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       -fsanitize=address,undefined -fno-omit-frame-pointer \
       tests/unit/player_disconnect_persist_test.c src/io.c -Wl,--gc-sections -o /tmp/player-disconnect-persist-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/player-disconnect-persist-test
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
+      -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/player_uninit_real_test.c src/player.c src/update.c -Wl,--gc-sections -o /tmp/player-uninit-real-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/player-uninit-real-test
     # Characterization only: explicitly exposes the legacy cross-file failure gap.
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       tests/unit/bank_transfer_legacy_characterization.c src/bank.c \

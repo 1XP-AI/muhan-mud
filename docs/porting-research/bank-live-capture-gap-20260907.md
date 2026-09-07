@@ -1,5 +1,26 @@
 # Live bank capture and transaction gap
 
+## Actual uninit and nested periodic save — 2026-09-08
+
+The new player_uninit_real_test links actual uninit_ply, update_ply,
+add_obj_crt and clear_enm_crt. A fixed clock proves equipment is moved to
+inventory before elapsed time advances from 7 to 17 seconds. Unused room,
+network and combat collaborators abort if invoked; the storage callback is
+observed, not a real DB write. Empty room/follower/enemy state bounds coverage.
+
+The first run reached a deliberately rejecting savegame callback. Root-cause
+investigation confirmed that update_ply performs periodic savegame when
+LT_PSAVE is due, inside uninit and before disconnect's final save_ply. The
+test now asserts this callback sees unequipped gear and updated elapsed time;
+a repeated call at the same time must not duplicate gear or periodic save.
+Standalone Linux ARM64 ASan/UBSan execution passed with exit 0. Production
+behavior was not changed. Runtime integration must handle this nested save,
+not just the two explicit requests covered by the preceding DB fixture.
+
+Host disk exhaustion prevented the initial commit/full-run attempt; there
+was no new full-run log or live process. On recheck space recovered to 2.4GiB,
+but the Docker daemon socket was absent. No unrelated data was deleted.
+
 ## Persist newer equipped state after finishing the old request — 2026-09-08
 
 RED source `e966f11` strengthens the independent Node DB checks to require
