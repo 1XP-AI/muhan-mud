@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const ACCESS_TOKEN = "test-access-token-placeholder";
 const CORRELATION_ID = "22222222-2222-4222-8222-222222222222";
+const NORMAL_GATEWAY_QUIET_INTERVAL_MS = 1_000;
 
 type FakeSocketHandle = {
   close: (code?: number, reason?: string) => void;
@@ -266,7 +267,8 @@ async function expectOnboardingTerminalText(page: Page, expected: string): Promi
   ) ?? "").toContain(expected);
 }
 
-async function normalGatewayTraffic(page: Page): Promise<{
+async function normalGatewayActivity(page: Page): Promise<{
+  socketCount: number;
   messages: string[];
   sentBytes: number[][];
 }> {
@@ -274,8 +276,30 @@ async function normalGatewayTraffic(page: Page): Promise<{
     const sockets = window.__muhanFakeSockets?.filter(
       (entry) => entry.url.includes("gateway.local") && !entry.url.includes("/onboarding"),
     ) ?? [];
-    const socket = sockets[sockets.length - 1];
-    return { messages: socket?.messages ?? [], sentBytes: socket?.sentBytes ?? [] };
+    return {
+      socketCount: sockets.length,
+      messages: sockets.flatMap((socket) => socket.messages),
+      sentBytes: sockets.flatMap((socket) => socket.sentBytes),
+    };
+  });
+}
+
+async function assertNoNormalGatewayActivityDuringQuietInterval(page: Page): Promise<void> {
+  const quietIntervalEndsAt = Date.now() + NORMAL_GATEWAY_QUIET_INTERVAL_MS;
+
+  // The fake-socket registry is append-only, so every poll observes any
+  // normal /ws construction or traffic that occurred during the full window.
+  await expect.poll(async () => ({
+    ...(await normalGatewayActivity(page)),
+    quietIntervalComplete: Date.now() >= quietIntervalEndsAt,
+  }), {
+    intervals: [50, 100, 200],
+    timeout: NORMAL_GATEWAY_QUIET_INTERVAL_MS + 1_000,
+  }).toEqual({
+    socketCount: 0,
+    messages: [],
+    sentBytes: [],
+    quietIntervalComplete: true,
   });
 }
 
@@ -312,7 +336,7 @@ async function completeOnboardingToActiveRoster(
   await expect.poll(() => state.rosterRequests).toBeGreaterThan(requestsBeforeCompletion);
   await expect.poll(() => state.heldRosterResponses.length).toBeGreaterThan(0);
   expect(state.rosterFulfillments).toBe(fulfillmentsBeforeCompletion);
-  expect(await normalGatewayTraffic(page)).toEqual({ messages: [], sentBytes: [] });
+  expect(await normalGatewayActivity(page)).toEqual({ socketCount: 0, messages: [], sentBytes: [] });
 
   releaseHeldRosterResponses(page);
   await expect.poll(() => state.rosterFulfillments).toBeGreaterThan(fulfillmentsBeforeCompletion);
@@ -599,8 +623,7 @@ test("legacy claim failure returns through MudPortal with Korean recovery guidan
   expect(await page.locator("body").textContent()).not.toContain("password=not-for-display");
   await expect(page.locator(".onboarding-viewport")).toHaveCount(0);
   await expect(page.locator(".terminal-content")).toHaveCount(0);
-  expect(await normalGatewaySocketCount(page)).toBe(0);
-  expect(await normalGatewayTraffic(page)).toEqual({ messages: [], sentBytes: [] });
+  await assertNoNormalGatewayActivityDuringQuietInterval(page);
 });
 
 test("claim clears an unsent password before echo becomes visible again", async ({ page }) => {
