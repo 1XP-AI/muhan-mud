@@ -3,7 +3,8 @@
 `../../scripts/run-stack-e2e.sh` creates a uniquely named, internal-only
 Docker network, disposable PostgreSQL 17 container, and PostgREST container.
 It applies `bootstrap_contract.sql` and the identity, handoff, snapshot-eligibility,
-fulfillment, command-binding, and importer migrations through 2026-10-09, then runs the
+fulfillment, command-binding, importer, and normalized projection migrations through
+2026-10-14, then runs the
 real C binary and Gateway against that PostgREST instance. Before the broader
 onboarding scenario, a separately gated PostgreSQL 17 contract sends the shared
 admission identity fixture through the real Gateway finalizer HTTP transport and
@@ -56,3 +57,9 @@ directory. A Docker VM with enough free space for `postgres:17-alpine` is
 required; if it cannot initialize, the runner prints read-only Docker space
 diagnostics, reports `BLOCKED`, and never runs prune or deletes existing user
 resources.
+
+The local, non-mutating `python3 tests/unit/stack_e2e_migration_coverage_test.py`
+checks that the explicit application list contains every game migration exactly
+once in chronological order. Only the Realtime lobby migration is excluded.
+This guards schema coverage; it does not prove that a stack run has passed or
+that normalized persistence is enabled in the game scenario.

@@ -157,6 +157,7 @@ info-alignment-utf8-test:
 
 unit-test: info-alignment-utf8-test
 	mkdir -p /tmp/muhan-unit
+	python3 ../tests/unit/stack_e2e_migration_coverage_test.py
 	python3 ../tests/unit/resource_tree_manifest_test.py
 	$(MAKE) bank-store-test
 	$(MAKE) bank-evidence-test
