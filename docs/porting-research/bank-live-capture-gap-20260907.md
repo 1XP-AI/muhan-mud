@@ -1,5 +1,34 @@
 # Live bank capture and transaction gap
 
+## Native command callback through live wallet dispatcher — 2026-09-07
+
+Source `e1982b5` adds a production-source transfer callback accepting actual C
+`cmd` arguments and a single-command context. Direction comes from the command
+entry; amount comes from its bounded second token, not separately supplied
+request text. Revision parsing is canonical/overflow checked. The callback
+calls descriptor-bound read/plan/prepare/commit, then verified result conversion.
+It returns a command acknowledgement only for a new confirmed current-state
+result. A context is consumed on its first attempt, including validation failure;
+it cannot issue a second command by accidental reuse.
+
+Real PostgreSQL coordinate-mode tests now install this callback in the existing
+bank dispatcher and assert live wallet changes only on confirmed success.
+Follow-up `4d26150` requires DB confirmation and dispatcher application results
+to agree, preventing a false green from merely checking the DB status. Native
+mock tests cover command token/direction mapping, consumed-context refusal,
+negative revision and nonterminated token. Test-first link failed before the
+implementation. macOS and Linux ASan/UBSan pass.
+
+Full frozen ARM64 suite at `4d26150` exited 0, including PG withdrawal/all-money,
+state drift refusal, exact retry/recovery, real C onboarding and two restore
+profiles: `/tmp/muhan-bank-command-route-final.log`. No Actions/deployment.
+
+Only the disposable harness installs a policy; the running game does not yet
+install this callback. The context is not a durable cross-command/restart fence.
+Runtime must own connection lifecycle, immutable command IDs, source revisions,
+per-character pending fences and every other save path before enabling authority.
+The real network command-to-DB loop remains a separate acceptance requirement.
+
 ## Confirmed result to command acknowledgement — 2026-09-07
 
 Source `0d55a25` adds `bank_money_result_native`: only a fresh CONFIRMED result
