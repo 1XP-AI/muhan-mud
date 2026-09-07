@@ -33,6 +33,8 @@ const id=qualified?'a9210000-0000-0000-0000-000000000001':'a9190000-0000-0000-00
 const world=qualified?'qualified-rust-pair':'rust-pair'
 const actor='e9210000-0000-0000-0000-000000000001',session='f9210000-0000-0000-0000-000000000001',writer='b9210000-0000-0000-0000-000000000001'
 const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea)'
+const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
+const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
 let login
 const read=async()=> (await db.query("select revision::text,player_payload,bank_payload,encode(public.digest(player_payload,'sha256'),'hex') player_hash,encode(public.digest(bank_payload,'sha256'),'hex') bank_hash from private.game_character_paired_snapshot_states where character_id=$1",[id])).rows[0]
 try {
@@ -64,19 +66,26 @@ try {
   const authority=[world,actor,session,'test-gateway',writer,1]
   if(qualified) {
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
     await db.query('insert into auth.users(id) values($1)',[actor])
     await db.query("update public.game_characters set owner_user_id=$2,lifecycle='active',claimed_at=clock_timestamp() where id=$1",[id,actor])
     await db.query("insert into private.game_character_sessions(character_id,session_id,actor_user_id,gateway_instance_id,expires_at) values($1,$2,$3,'test-gateway',clock_timestamp()+interval '3 minutes')",[id,session,actor])
     await db.query("select * from private.acquire_game_world_writer_epoch($1,$2,clock_timestamp()+interval '3 minutes')",[world,writer])
     // Disposable integration grant only; explicitly revoked in finally.
     await db.query(`grant execute on function ${signature} to mud_writer`)
+    await db.query(`grant execute on function ${readSignature} to mud_writer`)
     login=new Client({connectionString:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`})
     await login.connect(); await login.query('set role mud_writer')
+    await assert.rejects(login.query('select * from private.game_character_paired_snapshot_states'),e=>e.code==='42501')
+    await assert.rejects(db.query(readSql,[id,...authority]),e=>e.code==='P0001')
+    const wrong=[id,...authority]; wrong[2]='e9210000-0000-0000-0000-000000000099'
+    await assert.rejects(login.query(readSql,wrong),e=>e.code==='P0001')
   }
   const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
   assert.equal((await db.query("select has_function_privilege('mud_writer','private.commit_money_transfer_candidate(uuid,uuid,bigint,text,bigint,bytea,bytea)','EXECUTE') allowed")).rows[0].allowed,false)
   for(const [index,direction] of ['deposit','withdraw'].entries()) {
-    const before=await read()
+    const before=qualified?(await login.query(readSql,[id,...authority])).rows[0]:await read()
+    assert.deepEqual(before,await read(),'qualified writer reads the exact same pair and digests without table SELECT')
     for(const negative of [planned(before,direction,25,true),planned(before,direction,999999)]) {
       assert.equal(negative.status,1); assert.equal(negative.stdout.length,0)
     }
@@ -197,14 +206,16 @@ try {
     const rows=(await db.query('select actor_user_id,session_id,writer_instance_id,writer_epoch::text from private.game_character_money_transfer_authorities where character_id=$1',[id])).rows
     assert.equal(rows.length,2)
     for(const row of rows) assert.deepEqual(row,{actor_user_id:actor,session_id:session,writer_instance_id:writer,writer_epoch:'1'})
-    console.log('GREEN qualified writer login: authority, Rust result, atomic commit and immutable command binding')
+    console.log('GREEN qualified writer login: gated pair read -> Rust result -> atomic commit and immutable command binding')
   }
   console.log('GREEN DB snapshots -> digest-bound Rust deposit/withdraw -> atomic DB pair and exact retry; full-byte roundtrip preserved')
 } finally {
   if(login) await login.end()
   if(qualified) {
     await db.query(`revoke execute on function ${signature} from mud_writer`)
+    await db.query(`revoke execute on function ${readSignature} from mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
   }
   await db.end()
 }

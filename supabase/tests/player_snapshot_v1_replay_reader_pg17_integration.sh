@@ -572,6 +572,13 @@ echo 'GREEN money transfer owner session and writer authority contract'
 for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261020000000_qualified_money_transfer.sql
 done
+if run_super --command="select 'private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'::regprocedure"; then
+  echo 'RED unexpectedly found qualified read before migration' >&2
+  exit 1
+fi
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261022000000_qualified_money_transfer_read.sql
+done
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" BANK_TRANSFER_QUALIFIED=1 \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"
