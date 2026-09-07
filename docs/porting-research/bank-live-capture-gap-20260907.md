@@ -1,5 +1,39 @@
 # Live bank capture and transaction gap
 
+## Selected-authority legacy bank fence — 2026-09-07
+
+Source `bc6db47` closes the remaining file-bank entry points when the existing
+compile-gated routing policy selects DB authority or reports a selection error.
+`bank_inv` (including its implicit missing-file initialization), `bank`,
+`input_bank`, `output_bank`, `drop_all_bank` and `get_all_bank` now return before
+legacy storage or inventory handling. They explicitly report that DB-backed
+inventory/query support is not ready, rather than reading a stale file mirror.
+No installed policy, or an explicit legacy selection, preserves legacy mode.
+
+The actual bank.c characterization test reproduced the bypass (exit 134 at a
+forbidden inventory helper) before the fix. After the fix, native ASan/UBSan
+tests pass for selected/error policies and six entry points; file load/save and
+player-save counters remain zero. Full frozen-source local Linux ARM64 runner
+exited 0: `/tmp/muhan-bank-legacy-fence.log`, including paired money transactions,
+recovery and both restore profiles. This is a cutover prerequisite, not completed
+DB item transfer functionality. The production compile gate remains off.
+
+### Confirmed session-binding prerequisite
+
+`services/gateway/src/gateway.ts` creates `sessionId` and obtains the DB lease,
+but `createAdmissionTicket` currently signs only expiry, nonce, actor, character
+and legacy-name bytes. `src/trusted_admission.h` and `src/mstruct.h` retain no
+DB session ID or gateway instance ID. Both ordinary admission and onboarding
+activation populate actor/character identity, not that qualified DB tuple.
+Never substitute `admission_nonce` or a newly invented ID for the DB session.
+
+Next connection work requires a versioned, authenticated session-binding handoff
+and transient C session storage, covering both existing-character admission and
+post-onboarding activation, including disconnect cleanup. Wire-size limits and
+the socket command buffer must be checked together before expanding the current
+256-byte admission protocol. This turn does not change the protocol or install
+a live bank selector. Other player-file writers still require separate fences.
+
 ## Native fresh-command coordinator — 2026-09-07
 
 Source `9997fd4` composes qualified native read, Rust subprocess planning,
