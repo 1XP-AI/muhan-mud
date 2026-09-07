@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash, createHmac } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { chmod, cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { once } from 'node:events'
 import test from 'node:test'
 import { createRequire } from 'node:module'
@@ -1002,7 +1003,7 @@ async function main(): Promise<void> {
     if (!claimedPlayerBytes.equals(importedClaimBytes)) {
       // Derive offsets from the same native ABI as C, not guessed x64 offsets.
       // Emit only booleans; never expose credential bytes or their digests.
-      const layoutBinary = join(root, `player-layout-${process.pid}`)
+      const layoutBinary = join(await mkdtemp(join(tmpdir(), 'muhan-player-layout-')), 'layout')
       await run('cc', ['-I', join(root, 'src'), join(root, 'tests/stack-e2e/player-record-layout.c'), '-o', layoutBinary])
       const { stdout } = await run(layoutBinary)
       const layout = JSON.parse(stdout) as { passwordOffset: number; passwordLength: number }
