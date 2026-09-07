@@ -33,7 +33,7 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     ln -s /repo/node_modules /work/node_modules
     ln -s /repo/services/m4-file-snapshot-manifest-relay/node_modules /work/services/m4-file-snapshot-manifest-relay/node_modules
     cd /work
-    /repo/node_modules/.bin/tsc -p services/m4-file-snapshot-manifest-relay/tsconfig.json
+    /repo/services/m4-file-snapshot-manifest-relay/node_modules/.bin/tsc -p services/m4-file-snapshot-manifest-relay/tsconfig.json
     CARGO_TARGET_DIR=/work/rust/target cargo build --locked --offline --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_replay_verify
     PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 PLAYER_SNAPSHOT_V1_REPLAY_READER_CONTAINERLESS=1 bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
   ')"
