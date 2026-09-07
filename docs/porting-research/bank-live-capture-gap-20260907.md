@@ -132,6 +132,32 @@ The client-close case is not a database-host crash test. These checks exercise
 the unexposed internal kernel as a disposable administrator, not production
 actor/writer permissions. All earlier relay, C/Rust comparison and bank/player
 restore gates also passed. Runtime grants and authority remain unchanged.
+
+## DB / Rust / atomic pair integration
+
+Source `ea0d5aa`, full local Linux runner exit 0:
+`/tmp/muhan-rust-bank-db-final.log`.
+The bounded `bank_money_transfer_plan` executable reads a length-framed pair
+on stdin plus explicit direction/positive amount and both expected SHA-256
+values. It validates canonical input bytes and digests, calls the pure Rust
+planner, and emits a complete length-framed canonical result pair. It has no
+database or live-runtime access; rejected requests emit no payload.
+
+The real PG integration reads pair bytes, their hashes and revision together,
+invokes the actual Rust binary, compares outputs against independently patched
+expected bytes, then commits with that exact revision. Starting at wallet 100
+and bank 50, deposit 25 produces 75/75, withdrawal 25 returns both entire byte
+arrays to their original values. Other player fields and nested bank objects
+are preserved. Exact command retry, bad input digest, insufficient funds and
+stale revision are checked against unchanged database state. The planner's
+malformed-argument/framing unit tests are also run by the PG harness.
+
+Still unexposed: the database kernel does not itself enforce that a caller used
+this planner. A future gameplay entrypoint must bind actor/character/world,
+writer epoch, command intent (direction/amount), exact baseline digests and
+revision, and enforce transfer-only changes before obtaining runtime grants.
+This integration is an administrator-only test of the calculation/persistence
+path, not production authorization or authority cutover.
 Live command integration and C/Rust command-level differential tests remain.
 
 ## Actual C / Rust command differential verified
