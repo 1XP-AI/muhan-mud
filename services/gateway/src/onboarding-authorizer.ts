@@ -13,6 +13,12 @@ export class OnboardingAuthorizationError extends Error {
   constructor(public readonly indeterminate = false) { super('onboarding authorization was refused'); this.name = 'OnboardingAuthorizationError' }
 }
 
+/** The claim transaction returned a canonical PostgreSQL rejection, proving
+ * rollback of this attempt. Transport failures never grant this distinction. */
+export class OnboardingClaimRejectedError extends OnboardingAuthorizationError {
+  constructor() { super(false); this.name = 'OnboardingClaimRejectedError' }
+}
+
 export interface BeginOnboardingRequest { actorUserId: string; correlationId: string; mode: OnboardingMode; expiresAt: Date }
 export interface CancelUnreservedOnboardingRequest { actorUserId: string; correlationId: string }
 export interface ReserveOnboardingRequest { actorUserId: string; correlationId: string; worldId: string; legacyName: string }
@@ -159,7 +165,20 @@ export class SupabaseOnboardingAuthorizer implements OnboardingAuthorizer {
         // perform the one exact-correlation retry allowed for final claims.
         throw new OnboardingAuthorizationError(true)
       }
-      if (!response.ok) throw new OnboardingAuthorizationError()
+      if (!response.ok) {
+        if (name === 'claim_legacy_game_character_onboarding' && response.status === 400) {
+          const errorBody = await jsonResponse(response)
+          if (errorBody && typeof errorBody === 'object' && !Array.isArray(errorBody)) {
+            const error = errorBody as Record<string, unknown>
+            const keys = Object.keys(error)
+            if (keys.length === 4 && keys.every((key) => ['code', 'message', 'details', 'hint'].includes(key)) &&
+                (error.code === 'P0001' || error.code === '22023') && typeof error.message === 'string' &&
+                (error.details === null || typeof error.details === 'string') &&
+                (error.hint === null || typeof error.hint === 'string')) throw new OnboardingClaimRejectedError()
+          }
+        }
+        throw new OnboardingAuthorizationError()
+      }
       return oneRow(await jsonResponse(response), expectedKeys)
     } catch (error) {
       if (error instanceof OnboardingAuthorizationError) throw error

@@ -1,7 +1,45 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer } from '../src/onboarding-authorizer.js'
+import { OnboardingAuthorizationError, OnboardingClaimRejectedError, SupabaseOnboardingAuthorizer } from '../src/onboarding-authorizer.js'
 import { loadConfig } from '../src/config.js'
+
+test('claim HTTP 400 canonical database errors identify confirmed rollback only', async () => {
+  const request = { actorUserId: actor, correlationId: correlation, worldId: 'muhan', legacyNameKey: 'Legacyhero', fileSha256: 'f'.repeat(64) }
+  for (const code of ['P0001', '22023']) {
+    const client = new SupabaseOnboardingAuthorizer(config(), async () => Response.json(
+      { code, message: 'claim unavailable', details: null, hint: null }, { status: 400 }))
+    await assert.rejects(client.claim(request), (error: unknown) =>
+      error instanceof OnboardingClaimRejectedError && error instanceof OnboardingAuthorizationError && error.indeterminate === false)
+    await assert.rejects(client.challenge(request), (error: unknown) =>
+      error instanceof OnboardingAuthorizationError && error.name !== 'OnboardingClaimRejectedError')
+  }
+})
+
+test('claim transport, malformed and non-database failures never prove rollback', async () => {
+  const canonical = { code: 'P0001', message: 'claim unavailable', details: null, hint: null }
+  const replies = [
+    () => Response.json(canonical, { status: 500 }),
+    () => Response.json(canonical, { status: 403 }),
+    () => Response.json(canonical, { status: 200 }),
+    () => Response.json({ ...canonical, code: '23505' }, { status: 400 }),
+    () => Response.json({ ...canonical, details: 42 }, { status: 400 }),
+    () => Response.json({ ...canonical, hint: [] }, { status: 400 }),
+    () => Response.json({ ...canonical, message: null }, { status: 400 }),
+    () => Response.json({ code: 'P0001', message: 'claim unavailable' }, { status: 400 }),
+    () => Response.json({ ...canonical, unexpected: true }, { status: 400 }),
+    () => Response.json([canonical], { status: 400 }),
+    () => new Response('<html>failure</html>', { status: 400, headers: { 'content-type': 'text/html' } }),
+    () => new Response('{', { status: 400, headers: { 'content-type': 'application/json' } }),
+    () => Response.json({ ...canonical, message: 'x'.repeat(65_537) }, { status: 400 }),
+    () => { throw new Error('network failure') },
+    () => { throw new DOMException('aborted', 'AbortError') },
+  ]
+  for (const reply of replies) {
+    const client = new SupabaseOnboardingAuthorizer(config(), async () => reply())
+    await assert.rejects(client.claim({ actorUserId: actor, correlationId: correlation, worldId: 'muhan', legacyNameKey: 'Legacyhero', fileSha256: 'f'.repeat(64) }),
+      (error: unknown) => error instanceof OnboardingAuthorizationError && error.name !== 'OnboardingClaimRejectedError')
+  }
+})
 
 const actor = '123e4567-e89b-12d3-a456-426614174000'
 const correlation = '123e4567-e89b-12d3-a456-426614174001'

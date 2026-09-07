@@ -15,7 +15,7 @@ import {
 } from './character-authorizer.js'
 import { TelnetParser } from './telnet.js'
 import { createOnboardingTicket, OnboardingControlDemultiplexer, OnboardingProtocolError, parseOnboardingAuthFrame, type OnboardingControl } from './onboarding-protocol.js'
-import { OnboardingAuthorizationError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type BindSnapshotCommandRequest, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
+import { OnboardingAuthorizationError, OnboardingClaimRejectedError, SupabaseOnboardingAuthorizer, TestOnlyOnboardingAuthorizer, type BindSnapshotCommandRequest, type ChallengeOnboardingRequest, type OnboardingAuthorizer } from './onboarding-authorizer.js'
 import { GatewayEvidenceFinalizer, SupabaseEvidenceFinalizerTransport, type FinalizeLegacyIdentityEvidenceRequest } from './evidence-finalizer.js'
 import { authoritativeOnboardingSourceAddress, OnboardingSourceAttemptLimiter } from './onboarding-source-attempt-limiter.js'
 
@@ -958,6 +958,14 @@ class OnboardingSession {
         try {
           result = await this.authorizer.claim(claimRequest)
         } catch (error) {
+          if (error instanceof OnboardingClaimRejectedError) {
+            // The first request was explicitly rolled back by PostgreSQL.
+            // Release only its still-started intent; the DB retains attempts
+            // and refuses cancellation of reserved/finalized work.
+            this.unreservedIntentMayExist = true
+            if (this.closed) this.cancelUnreservedIntent()
+            throw error
+          }
           if (!(error instanceof OnboardingAuthorizationError && error.indeterminate)) throw error
           if (this.closed) return
           result = await this.authorizer.claim(claimRequest)
