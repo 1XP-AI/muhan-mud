@@ -265,3 +265,13 @@ CI-only stack과 별개로 로컬 실행을 지원하는 기존 `scripts/run-onb
 session `62926` exit 0, onboarding-real-c passed, 18.251초. 20개 case: flag-off, startup-malformed-receipt, provision-confirmation-no, provision-confirmation-await-enter, reserved-admin-name, pending-rename-crash-window, pending-rename-crash-relogin-mud1, pre-commit-world-invisibility, provision-fragmented-controls, out-of-order-control, save-failure, restart-relogin-mud1, claim-peer-eof-await-allow, claim-peer-eof-await-password, claim-success, claim-fragmented-activation, claim-wrong-password, claim-password-before-allow, claim-file-mutation, replay.
 
 결과에서는 상태/이벤트 이름만 출력하고 TCP transcript·게임 비밀번호를 내보내지 않았다. fixture와 로그는 runner finally 및 --rm 컨테이너 수명으로 정리했고 muhan-c-onboarding-0907a의 목록 부재를 확인했다. 로컬 테스트 이미지는 보존했다. 이 결과는 실제 C wizard/save/재접속 및 Gateway control 프로토콜의 증거지만, 실제 Gateway/Supabase Auth/웹 UI/DB 연결을 한 번에 실행한 증거는 아니다. 게임 binary의 소스는 03c677f라 후속 info 문자열 수정은 이 실행에 포함되지 않는다. 실제 C가 생성한 receipt/artifact를 normalized DB 저장·비교에 연결하는 통합 검증이 다음 남은 경로다.
+
+## 실제 C/browser stack에 정규화 저장·비교 acceptance 연결
+
+기존 stack 테스트의 manifest-first pass는 정규화 persistence를 활성화하지 않았고, assertM3OnboardingEvidence도 manifest/artifact/receipt/fulfillment까지만 검사했다. 이제 runner가 locked Rust workspace에서 projector를 임시 target 디렉터리에 빌드하고 disposable DB의 전용 reader login 비밀번호를 준비한다. 테스트에 projector와 별도 reader URL을 명시적으로 전달하며 main 시작 시 필수 입력을 검사한다. 기존 CI-only gate는 유지한다.
+
+manifest-first CLI에만 normalized persistence=true를 전달하고 별도 artifact fulfillment pass는 false를 명시한다. C가 생성한 실제 outbox artifact와 manifest를 receipt-bound parser로 읽고, production PostgresNormalizedProjectionSessionReader 및 Rust projector/comparator가 MATCH를 반환해야 onboarding evidence 검사가 통과한다. browser provision/claim의 정규화 exact retry도 각각 포함해 최소 2개를 요구한다. 합성 projection seed로 대체하지 않는다. reader URL/테스트 비밀번호는 기존 오류 redaction 목록에 추가했다.
+
+새 normalized-snapshot-check helper의 테스트를 모듈 부재로 먼저 실패시킨 후 구현했다. MATCH/MISSING_RECORD/예외에서 reader close를 검증하는 3개와 기존 lifecycle 14개, 총 17개가 통과했다. helper 및 테스트 TypeScript strict 검사, migration coverage 44개, shell 구문 및 diff whitespace 검사도 통과했다. 단위 테스트의 artifact는 전달/정리 순서만 보는 대역이며 SQL/C parsing의 증거가 아니다. .github/workflows/ci.yml에 helper 테스트를 연결했다.
+
+전체 변경된 C/Gateway/browser/DB acceptance는 GitHub 결제/한도 차단 때문에 아직 실행하지 못했다. 이 변경은 검증 요구사항을 실제 경로에 연결한 로컬 커밋이며 end-to-end 통과로 보고하지 않는다. 운영 설정/기존 파일 저장 권위/배포 이미지는 변경하지 않았다. 다음은 전체 stack 실행 결과 회수와 발견되는 실제 데이터 호환성 문제 수정이다.
