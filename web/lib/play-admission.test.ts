@@ -9,6 +9,7 @@ import {
   shouldOpenGatewaySocket,
 } from "./gateway-contract.ts";
 import { createOnboardingSocketContract } from "./onboarding-contract.ts";
+import { recoveryFromOnboardingControl } from "./onboarding-contract.ts";
 
 const accountId = "00000000-0000-4000-8000-000000000001";
 const characterId = "00000000-0000-4000-8000-000000000002";
@@ -64,6 +65,25 @@ test("an account with no owned active roster entry cannot start normal game admi
   assert.equal(resolvePlayAdmission(accountId, "ready", [
     { ...activeRoster[0], id: otherCharacterId },
   ], handoff), null);
+});
+
+test("browser mock claim failures return to the roster without a normal socket handoff", () => {
+  const browserFailureFrames = [
+    { type: "error", reason: "onboarding authentication failed" },
+    { type: "error", reason: "onboarding failed" },
+    { type: "error", reason: "C/Gateway password=ticket=sha256=internal-id" },
+  ];
+
+  for (const frame of browserFailureFrames) {
+    const recovery = recoveryFromOnboardingControl("claim", frame);
+    assert.ok(["session", "legacy-credentials", "unknown"].includes(recovery.category));
+
+    // The browser mock receives a terminal failure, not a completion. It must
+    // keep normal /ws closed until a fresh owner-filtered active row exists.
+    assert.equal(resolvePlayAdmission(accountId, "empty", [], null), null);
+    assert.equal(shouldOpenGatewaySocket("empty", null, []), false);
+    assert.equal(shouldOpenGatewaySocket("ready", characterId, []), false);
+  }
 });
 
 test("both finalized legacy claim and web-first provision wait for the owned active roster then use normal Gateway auth", () => {

@@ -6,6 +6,8 @@ import {
   createOnboardingSocketContract,
   decideOnboardingClose,
   decideOnboardingControl,
+  recoveryFromOnboardingClose,
+  recoveryFromOnboardingControl,
   shouldOpenGatewaySocket,
   shouldOpenOnboardingSocket,
   shouldReconnectOnboardingClose,
@@ -58,14 +60,41 @@ test('provisioned control validates the UUID and records a successful completion
   })
 })
 
-test('onboarding error text is display-only and does not become a failed lifecycle', () => {
+test('browser-visible claim failure maps to credential recovery without retaining Gateway text', () => {
   assert.deepEqual(decideOnboardingControl('provision', {
     type: 'error',
-    reason: 'temporary upstream failure',
+    reason: 'onboarding authentication failed',
   }, 'ready'), {
     kind: 'error',
-    detail: 'temporary upstream failure',
+    recovery: {
+      category: 'session',
+      title: '웹 로그인 확인이 필요합니다.',
+      detail: '웹 로그인 세션을 다시 확인한 뒤 캐릭터 목록을 새로고침하고 다시 시도해 주세요.',
+    },
   })
+
+  const claim = recoveryFromOnboardingControl('claim', {
+    type: 'error', reason: 'onboarding failed',
+  })
+  assert.equal(claim.category, 'legacy-credentials')
+  assert.match(claim.detail, /기존 캐릭터 이름과 게임 비밀번호/)
+})
+
+test('state, transport, and unknown recovery categories never echo raw diagnostics', () => {
+  const stateChanged = recoveryFromOnboardingControl('provision', {
+    type: 'error', reason: 'onboarding failed',
+  })
+  assert.equal(stateChanged.category, 'state-changed')
+
+  assert.equal(recoveryFromOnboardingClose(4001).category, 'session')
+  assert.equal(recoveryFromOnboardingClose(1012).category, 'unavailable')
+
+  const secret = 'password=not-for-display ticket=abc sha256=deadbeef internal-id=42'
+  const unknown = recoveryFromOnboardingControl('claim', {
+    type: 'error', reason: secret,
+  })
+  assert.equal(unknown.category, 'unknown')
+  assert.doesNotMatch(`${unknown.title} ${unknown.detail}`, /password=|ticket=|sha256=|internal-id=/)
 })
 
 test('onboarding close decisions terminate completed or failed flows and reconnect transient drops', () => {

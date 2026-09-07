@@ -4,7 +4,7 @@ import type {
   CharacterRosterStatus,
   OwnedCharacter,
 } from "@/lib/character-roster";
-import type { OnboardingMode } from "@/lib/onboarding-contract";
+import type { OnboardingMode, OnboardingRecovery } from "@/lib/onboarding-contract";
 import { decideClaimEntry } from "@/lib/claim-transparency";
 
 interface CharacterRosterProps {
@@ -17,6 +17,7 @@ interface CharacterRosterProps {
   onEnter: () => void;
   onboardingEnabled?: boolean;
   onStartOnboarding?: (mode: OnboardingMode) => void;
+  onboardingRecovery?: OnboardingRecovery | null;
 }
 
 export function CharacterRoster({
@@ -29,6 +30,7 @@ export function CharacterRoster({
   onEnter,
   onboardingEnabled = false,
   onStartOnboarding,
+  onboardingRecovery = null,
 }: CharacterRosterProps) {
   if (status === "loading") {
     return (
@@ -56,6 +58,12 @@ export function CharacterRoster({
     return (
       <div className="roster-state roster-empty">
         <p className="roster-empty-title">이 계정에 연결된 캐릭터가 없습니다</p>
+        {onboardingRecovery ? (
+          <div className="form-notice error" role="alert">
+            <p>{onboardingRecovery.title}</p>
+            <p>{onboardingRecovery.detail}</p>
+          </div>
+        ) : null}
         {claimEntry.kind === "claim-start" && onStartOnboarding ? (
           <>
             <p className="claim-boundary" role="status">

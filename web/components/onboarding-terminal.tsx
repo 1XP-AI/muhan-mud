@@ -11,6 +11,8 @@ import {
   createOnboardingSocketUrl,
   decideOnboardingClose,
   decideOnboardingControl,
+  recoveryFromOnboardingClose,
+  type OnboardingRecovery,
   type OnboardingLifecyclePhase,
   type OnboardingMode,
 } from "@/lib/onboarding-contract";
@@ -24,7 +26,7 @@ interface OnboardingTerminalProps {
   onStatus: (status: GatewayStatus) => void;
   onCancel: () => void;
   onProvisioned: (characterId: string) => void;
-  onTerminated: () => void;
+  onTerminated: (recovery?: OnboardingRecovery) => void;
   onClaimed: (characterId: string) => void;
 }
 
@@ -33,10 +35,6 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 
 function reconnectDelay(attempt: number): number {
   return Math.min(MAX_RECONNECT_DELAY_MS, 750 * 2 ** Math.max(0, attempt - 1));
-}
-
-function genericFailure(): string {
-  return "온보딩을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.";
 }
 
 export function OnboardingTerminal({
@@ -143,6 +141,7 @@ export function OnboardingTerminal({
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let failed = false;
+    let pendingRecovery: OnboardingRecovery | undefined;
 
     const publishStatus = (state: GatewayStatus["state"], detail: string) => {
       if (!cancelled) onStatus({ state, detail, attempt });
@@ -214,11 +213,12 @@ export function OnboardingTerminal({
           break;
         }
         case "error":
-          // The error frame is user-facing context; the subsequent close code
-          // decides whether this flow retries or returns to the roster. Clear
-          // any password before waiting for that close event.
+          // Gateway reasons and C output are not safe display material. Keep
+          // only the allowlisted recovery category until the close decides
+          // whether this flow retries or returns to the roster.
           clearInputState();
-          publishStatus("error", decision.detail);
+          pendingRecovery = decision.recovery;
+          publishStatus("error", decision.recovery.detail);
           break;
         case "claimed": {
           phaseRef.current = "ready";
@@ -239,7 +239,8 @@ export function OnboardingTerminal({
           phaseRef.current = "failed";
           failed = true;
           clearInputState();
-          publishStatus("error", genericFailure());
+          pendingRecovery = recoveryFromOnboardingClose(1008);
+          publishStatus("error", pendingRecovery.detail);
           socketRef.current?.close(1008, "onboarding failed");
           break;
         case "ignore":
@@ -252,7 +253,8 @@ export function OnboardingTerminal({
       setNotReady();
       const contract = createOnboardingSocketContract("empty", mode);
       if (!contract) {
-        publishStatus("error", genericFailure());
+        pendingRecovery = recoveryFromOnboardingClose(1008);
+        publishStatus("error", pendingRecovery.detail);
         return;
       }
       publishStatus(
@@ -266,9 +268,10 @@ export function OnboardingTerminal({
       } catch {
         failed = true;
         phaseRef.current = "failed";
-        publishStatus("error", genericFailure());
+        pendingRecovery = recoveryFromOnboardingClose(1008);
+        publishStatus("error", pendingRecovery.detail);
         settledRef.current = true;
-        onTerminated();
+        onTerminated(pendingRecovery);
         return;
       }
       socket.binaryType = "arraybuffer";
@@ -290,7 +293,8 @@ export function OnboardingTerminal({
           } catch {
             failed = true;
             clearInputState();
-            publishStatus("error", genericFailure());
+            pendingRecovery = recoveryFromOnboardingClose(1008);
+            publishStatus("error", pendingRecovery.detail);
             socket.close(1008, "invalid onboarding response");
           }
           return;
@@ -299,7 +303,8 @@ export function OnboardingTerminal({
           if (!readyRef.current) {
             failed = true;
             clearInputState();
-            publishStatus("error", genericFailure());
+            pendingRecovery = recoveryFromOnboardingClose(1008);
+            publishStatus("error", pendingRecovery.detail);
             socket.close(1008, "onboarding data before ready");
             return;
           }
@@ -309,14 +314,16 @@ export function OnboardingTerminal({
 
         failed = true;
         clearInputState();
-        publishStatus("error", genericFailure());
+        pendingRecovery = recoveryFromOnboardingClose(1008);
+        publishStatus("error", pendingRecovery.detail);
         socket.close(1008, "malformed onboarding frame");
       });
 
       socket.addEventListener("error", () => {
         if (!cancelled) {
           clearInputState();
-          publishStatus("error", genericFailure());
+          pendingRecovery = recoveryFromOnboardingClose(1011);
+          publishStatus("error", pendingRecovery.detail);
         }
       });
 
@@ -330,7 +337,7 @@ export function OnboardingTerminal({
         if (cancelled || settledRef.current) return;
         if (decideOnboardingClose(closedPhase, event.code, attempt, failed) === "terminate") {
           settledRef.current = true;
-          onTerminated();
+          onTerminated(pendingRecovery ?? recoveryFromOnboardingClose(event.code));
           return;
         }
         scheduleReconnect();

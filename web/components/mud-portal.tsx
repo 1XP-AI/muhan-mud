@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AuthGate } from "@/components/auth-gate";
 import { CharacterRoster } from "@/components/character-roster";
-import type { OnboardingMode } from "@/lib/onboarding-contract";
+import type { OnboardingMode, OnboardingRecovery } from "@/lib/onboarding-contract";
 import type { GatewayStatus } from "@/components/mud-terminal";
 import type { ConfigResult } from "@/lib/config";
 import {
@@ -79,6 +79,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
   } | null>(null);
   const [onboardingHandoff, setOnboardingHandoff] =
     useState<PlayAdmissionHandoff | null>(null);
+  const [onboardingRecovery, setOnboardingRecovery] = useState<OnboardingRecovery | null>(null);
   const presence = useLobbyPresence(supabase, session);
   const roster = useCharacterRoster(supabase, session?.user.id ?? null);
 
@@ -114,6 +115,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
     setGatewayStatus(initialGatewayStatus);
     setOnboardingFlow(null);
     setOnboardingHandoff(null);
+    setOnboardingRecovery(null);
   }, [session?.user.id]);
 
   useEffect(() => {
@@ -143,6 +145,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
 
   const cancelOnboarding = useCallback(() => {
     setOnboardingFlow(null);
+    setOnboardingRecovery(null);
     setGatewayStatus(initialGatewayStatus);
     roster.retry();
   }, [roster.retry]);
@@ -158,6 +161,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
       completeOnboardingHandoff(ownerUserId, characterId, completion, existing),
     );
     setOnboardingFlow(null);
+    setOnboardingRecovery(null);
     roster.retry();
   }, [roster.retry, session?.user.id]);
 
@@ -165,11 +169,12 @@ export function MudPortal({ configResult }: MudPortalProps) {
     completedOnboarding("provisioned", characterId);
   }, [completedOnboarding]);
 
-  const terminateOnboarding = useCallback(() => {
+  const terminateOnboarding = useCallback((recovery?: OnboardingRecovery) => {
     setOnboardingFlow(null);
     setActiveCharacterId(null);
     setActiveOwnerId(null);
     setGatewayStatus(initialGatewayStatus);
+    setOnboardingRecovery(recovery ?? null);
     roster.retry();
   }, [roster.retry]);
 
@@ -341,6 +346,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
             <CharacterRoster
               characters={roster.characters}
               error={roster.error}
+              onboardingRecovery={onboardingEnabled ? onboardingRecovery : null}
               onEnter={() => {
                 if (roster.selectedId) {
                   setActiveCharacterId(roster.selectedId);
@@ -356,6 +362,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
                 if (!onboardingEnabled || roster.status !== "empty") return;
                 // One correlation identifies a user-started flow and is reused
                 // only by the bounded reconnects inside this terminal.
+                setOnboardingRecovery(null);
                 setOnboardingFlow({ mode, correlationId: crypto.randomUUID() });
               }}
             />
