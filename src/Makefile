@@ -155,7 +155,10 @@ mud1c-admission-context-sanitizer-test: mud1c-admission-context-static-test
 info-alignment-utf8-test:
 	CC="$(CC)" python3 ../tests/unit/info_alignment_utf8_test.py
 
-unit-test: info-alignment-utf8-test
+login-state-signedness-test:
+	python3 ../tests/unit/login_state_signedness_test.py
+
+unit-test: info-alignment-utf8-test login-state-signedness-test
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/stack_e2e_migration_coverage_test.py
 	python3 ../tests/unit/resource_tree_manifest_test.py

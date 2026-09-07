@@ -63,7 +63,7 @@ typedef struct iobuf {			/* I/O buffers for players */
 	short		ihead, itail;
 	short		ohead, otail;
 	void		(*fn)();
-	char		fnparam;
+	signed char	fnparam; /* login welcome uses -1 on every CPU */
 	long		ltime;
 	char		intrpt;
 	char		commands;
