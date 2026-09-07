@@ -5,6 +5,8 @@ begin
 end $$;
 select receipt_request_sha256 as request from private.game_character_player_snapshot_v1_artifacts
 where character_id = 'a9500000-0000-0000-0000-000000000001' \gset
+select payload as bank_payload, bank_sha256 as bank_hash from private.game_character_bank_snapshot_v1_payloads
+where character_id='a9500000-0000-0000-0000-000000000001' \gset
 set session authorization mud_full_payload_rehearsal_reader_login;
 select pg_temp.assert_true(
   current_user = session_user
@@ -22,6 +24,10 @@ select pg_temp.assert_true(
 reset session authorization;
 set session authorization mud_writer_login;
 set role mud_writer;
+select pg_temp.assert_true(not has_table_privilege(current_user,'private.game_character_bank_snapshot_v1_payloads','SELECT'));
+select pg_temp.assert_true((select outcome='EXACT_RETRY' from private.record_bank_snapshot_v1_payload_for_receipt(
+  'a9500000-0000-0000-0000-000000000001','c9500000-0000-0000-0000-000000000001',
+  :'request',repeat('a',64),9,:'bank_hash',:'bank_payload'::bytea)));
 select pg_temp.assert_true((select outcome = 'EXACT_RETRY' from private.record_m4_file_snapshot_manifest_for_receipt(
   'a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001',
   :'request', 'legacy-file-manifest-v1', repeat('a',64), 9)));

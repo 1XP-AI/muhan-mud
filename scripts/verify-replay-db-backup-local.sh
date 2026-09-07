@@ -17,6 +17,7 @@ fingerprint() {
   sql "$1" "select count(*)::text || ':' || coalesce(md5(string_agg(to_jsonb(t)::text, '' order by to_jsonb(t)::text)), '') from private.$2 t"
 }
 tables=(game_character_player_snapshot_v1_artifacts game_character_shadow_receipts game_character_player_snapshot_v1_level_projections game_character_m4_file_snapshot_manifests game_character_legacy_heads game_character_writer_epochs)
+tables+=(game_character_bank_snapshot_v1_payloads game_character_bank_snapshot_v1_topology_shadows game_character_bank_snapshot_v1_topology_shadow_items)
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 sql postgres "create database $source_database template template0" >/dev/null
 # Copy schema only: negative comparator rows must not enter the valid restore fixture.
@@ -31,7 +32,9 @@ docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
 before=()
 for table in "${tables[@]}"; do
   value="$(fingerprint "$source_database" "$table")"
-  [[ "$value" == 1:* ]] || { echo 'valid backup fixture must contain one row per evidence relation' >&2; exit 1; }
+  expected=1
+  [[ "$table" != game_character_bank_snapshot_v1_topology_shadow_items ]] || expected=3
+  [[ "$value" == "$expected":* ]] || { echo 'valid backup fixture has unexpected evidence row count' >&2; exit 1; }
   before+=("$value")
 done
 sql postgres "create database $restored_database template template0" >/dev/null
