@@ -1,5 +1,32 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: confirmed expiry rejection releases intent; positive claim next
+
+`272bbb5` distinguishes only canonical bounded claim RPC HTTP400 PostgreSQL
+P0001/22023 rejection via OnboardingClaimRejectedError. Only a confirmed FIRST
+request rejection restores cancellation. Network/abort/5xx/malformed replies
+do not; an uncertain first request followed by a rejected exact retry also
+remains non-cancellable. This retains the indeterminate ownership boundary.
+
+Frozen full-stack now passes expired-claim cancellation and next normal claim
+begin, but fails waiting for the positive claim's `claimed` event at line970.
+Evidence `/tmp/muhan-local-stack.u8gLQS/result.json`; root must next inspect
+claim RPC, C CLAIMED/activation acknowledgement and DB lifecycle separately.
+Do not weaken the completion assertion. Browser phase remains unexecuted.
+
+Fresh Gateway suite: 141 pass, 0 fail, 4 conditional skips. Added tests cover
+initial confirmed rejection versus uncertainty followed by rejection. Fixed
+undefined test-only characterId shorthand that previously made delayed
+challenge throw; delayed callback test now waits for server cancellation,
+then drains Gateway operations rather than assuming client close means server
+closure. Direct strict compilation of the entire test file exposes older
+RawData/Buffer.from overload errors; package source typecheck passes, so do
+not claim full test-file typecheck success.
+
+Remote CI run34093192597: macOS failed; check annotation says runner lost
+communication. Linux remains queued; hosted exceptions were billing-blocked.
+No duplicate run dispatched. No production rollout or push this turn.
+
 ## Latest: pre-completion claim cancellation fixed; expired finalize next
 
 `89e50b4` keeps unfinished claim cancellation eligible through challenge and

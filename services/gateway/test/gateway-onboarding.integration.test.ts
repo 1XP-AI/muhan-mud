@@ -6,7 +6,7 @@ import WebSocket, { type RawData } from 'ws'
 import type { AuthorizedCharacter, BeginCharacterSessionRequest, CharacterAuthorizer, RenewCharacterSessionRequest, RenewedCharacterSession } from '../src/character-authorizer.js'
 import { loadConfig } from '../src/config.js'
 import { createGateway, sendBufferedWebSocketFrame, type EvidenceFinalizer, type GatewayDependencies, type GatewayTimers } from '../src/gateway.js'
-import { OnboardingAuthorizationError, type ChallengeOnboardingRequest, type FinalizeOnboardingRequest, type OnboardingAuthorizer } from '../src/onboarding-authorizer.js'
+import { OnboardingAuthorizationError, OnboardingClaimRejectedError, type ChallengeOnboardingRequest, type FinalizeOnboardingRequest, type OnboardingAuthorizer } from '../src/onboarding-authorizer.js'
 import { OnboardingControlDemultiplexer } from '../src/onboarding-protocol.js'
 
 const actor = '123e4567-e89b-12d3-a456-426614174000'
@@ -237,10 +237,21 @@ class DeferredChallengeAuthorizer extends RecordingOnboardingAuthorizer {
   override async challenge(request: ChallengeOnboardingRequest): Promise<{ characterId: string, legacyNameKey: string, fileSha256: string, allowExpiresAtMs: number }> {
     this.calls.push('challenge'); this.challenges.push(request)
     await this.gate
-    return { characterId, legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + 90_000 }
+    return { characterId: character, legacyNameKey: request.legacyNameKey, fileSha256: request.fileSha256, allowExpiresAtMs: Date.now() + 90_000 }
   }
 
   finishChallenge(): void { this.releaseGate() }
+}
+
+class SequencedClaimAuthorizer extends RecordingOnboardingAuthorizer {
+  constructor(private readonly claimErrors: Error[]) { super() }
+
+  override async claim(request: { legacyNameKey: string, fileSha256: string }): Promise<{ characterId: string }> {
+    this.calls.push('claim'); this.claimNames.push(request.legacyNameKey); this.claimFingerprints.push(request.fileSha256)
+    const error = this.claimErrors.shift()
+    if (error) throw error
+    return { characterId: character }
+  }
 }
 
 class DeferredBeginAuthorizer extends RecordingOnboardingAuthorizer {
@@ -1015,9 +1026,9 @@ test('disconnect while claim challenge is pending cancels and never writes ALLOW
   const [code] = await closed
   assert.equal(code, 1000)
 
-  authorizer.finishChallenge()
   await eventually(() => assert.deepEqual(authorizer.cancellations, [{ actorUserId: actor, correlationId: correlation }]))
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  authorizer.finishChallenge()
+  await gateway.close()
   assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'cancel'])
   assert.equal(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n'), false)
 })
@@ -1091,6 +1102,73 @@ test('claim completion drops later C game bytes while ownership finalization is 
   assert.equal(closeCode, 1000)
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
   assert.deepEqual(authorizer.cancellations, [])
+})
+
+test('first confirmed claim rejection cancels once without retrying or sending CLAIMED', async (t) => {
+  const mud = new ClaimCompletionRaceMudSocket()
+  const authorizer = new SequencedClaimAuthorizer([new OnboardingClaimRejectedError()])
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /기존 이름\? /))
+  ws.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
+  const closed = once(ws, 'close') as Promise<[number]>
+  ws.send(Buffer.from('old-secret\n'))
+  const [code] = await closed
+
+  assert.equal(code, 1008)
+  await eventually(() => assert.deepEqual(authorizer.cancellations, [{ actorUserId: actor, correlationId: correlation }]))
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'cancel'])
+  assert.equal(mud.writes.some((value) => value.toString('ascii') === `MUD1O CLAIMED|${character}\n`), false)
+  assert.equal(mud.writes.some((value) => /^MUD1O ACTIVATED\|/.test(value.toString('ascii'))), false)
+})
+
+test('indeterminate claim rejection followed by confirmed rejection preserves no-cancel history', async (t) => {
+  const mud = new ClaimCompletionRaceMudSocket()
+  const authorizer = new SequencedClaimAuthorizer([
+    new OnboardingAuthorizationError(true), new OnboardingClaimRejectedError(),
+  ])
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { await gateway.close() })
+
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /기존 이름\? /))
+  ws.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
+  const closed = once(ws, 'close') as Promise<[number]>
+  ws.send(Buffer.from('old-secret\n'))
+  const [code] = await closed
+
+  assert.equal(code, 1008)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'claim'])
+  assert.deepEqual(authorizer.cancellations, [])
+  assert.equal(mud.writes.some((value) => value.toString('ascii') === `MUD1O CLAIMED|${character}\n`), false)
+  assert.equal(mud.writes.some((value) => /^MUD1O ACTIVATED\|/.test(value.toString('ascii'))), false)
 })
 
 test('claim rejects out-of-order VERIFIED and never exposes private claim controls to the browser', async (t) => {
