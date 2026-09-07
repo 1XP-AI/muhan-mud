@@ -29,7 +29,7 @@ if(process.argv[2]==='--child') {
   assert.deepEqual(await child(commands[winner]),{code:0,output:'EXACT_RETRY\n'})
   assert.equal((await child(commands[(winner+1)%8])).code,2)
   assert.deepEqual(await readFile(join(root,files[0])),saved)
-  assert.equal((await child(commands[0],'c0000000-0000-4000-8000-000000000001')).code,0)
+  assert.equal((await child('d0000000-0000-4000-8000-000000000001','c0000000-0000-4000-8000-000000000001')).code,0)
   const requests=[]
   assert.equal(await visitMoneyPending(root,async r=>{requests.push(r)}),false)
   assert.equal(requests.length,2,'fence-only crash state must be discovered')

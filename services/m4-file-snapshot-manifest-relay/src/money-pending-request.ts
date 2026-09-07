@@ -22,14 +22,14 @@ function encode(args:string[],frame:Buffer):Buffer {
   const body=JSON.stringify({version:1,args,frame:frame.toString('base64')})
   return Buffer.from(JSON.stringify({body,sha256:hash(body)}))
 }
-function decode(bytes:Buffer,command:string):{args:string[],frame:Buffer} {
+function decode(bytes:Buffer,command?:string):{args:string[],frame:Buffer} {
   const envelope=JSON.parse(bytes.toString('utf8'))
   if(typeof envelope.body!=='string'||hash(envelope.body)!==envelope.sha256) throw new Error('pending digest mismatch')
   const value=JSON.parse(envelope.body)
   if(value.version!==1||typeof value.frame!=='string') throw new Error('invalid pending record')
   const frame=Buffer.from(value.frame,'base64')
   validate(value.args,frame)
-  if(value.args[7]!==command||!encode(value.args,frame).equals(bytes)) throw new Error('noncanonical pending record')
+  if((command!==undefined&&value.args[7]!==command)||!encode(value.args,frame).equals(bytes)) throw new Error('noncanonical pending record')
   return {args:value.args,frame}
 }
 async function directory(root:string) {
@@ -41,8 +41,8 @@ async function directory(root:string) {
     return fd
   } catch(error) { await fd.close(); throw error }
 }
-async function readAt(base:string,command:string) {
-  const fd=await open(`${base}/${command}.money-request`,constants.O_RDONLY|constants.O_NOFOLLOW)
+async function readRecordAt(base:string,name:string,command?:string) {
+  const fd=await open(`${base}/${name}`,constants.O_RDONLY|constants.O_NOFOLLOW)
   try {
     const stat=await fd.stat()
     if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size>MAX) throw new Error('invalid pending file')
@@ -57,6 +57,9 @@ async function readAt(base:string,command:string) {
     const result=decode(bytes.subarray(0,used),command)
     return {bytes:bytes.subarray(0,used),result}
   } finally { await fd.close() }
+}
+async function readAt(base:string,command:string) {
+  return readRecordAt(base,`${command}.money-request`,command)
 }
 export async function readMoneyPending(root:string,command:string) {
   if(!uuid.test(command)) throw new Error('invalid pending command')
@@ -112,12 +115,24 @@ export async function visitMoneyPending(root:string,visit:(request:{args:string[
   try {
     const entries=await opendir(base)
     let scanned=0
+    const seen=new Map<string,string>()
     for await(const entry of entries) {
       if(++scanned>limit) return true
-      if(!entry.name.endsWith('.money-request')) continue
-      const command=entry.name.slice(0,-'.money-request'.length)
+      const fence=entry.name.endsWith('.money-fence')
+      if(!fence&&!entry.name.endsWith('.money-request')) continue
+      const key=entry.name.slice(0,-(fence?'.money-fence':'.money-request').length)
       let request=null
-      try { if(uuid.test(command)) request=(await readAt(base,command)).result } catch { /* preserve invalid record */ }
+      try {
+        if(fence?!/^[0-9a-f]{64}$/.test(key):!uuid.test(key)) throw new Error('invalid pending filename')
+        const record=await readRecordAt(base,entry.name,fence?undefined:key)
+        if(fence&&key!==hash(JSON.stringify([record.result.args[1],record.result.args[0]]))) throw new Error('wrong character fence key')
+        const command=record.result.args[7],digest=createHash('sha256').update(record.bytes).digest('hex')
+        if(seen.has(command)) {
+          if(seen.get(command)===digest) continue
+          throw new Error('conflicting recovery copies')
+        }
+        seen.set(command,digest);request=record.result
+      } catch { /* preserve invalid record, including corrupt/misnamed fences */ }
       await visit(request)
     }
     return false
