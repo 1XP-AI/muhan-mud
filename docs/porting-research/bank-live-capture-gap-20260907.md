@@ -353,6 +353,30 @@ reconciliation, deadlines and session/writer binding belong to the next real
 coordinator implementation. Other character saves and item-bank commands must
 also be fenced before enabling any DB-authoritative character in live play.
 
+### Qualified writer read -> Rust -> qualified commit
+
+Migration 220 adds `read_qualified_money_transfer_state`, returning one shared
+revision, both payloads and their whole-payload SHA-256 digests after the same
+owner/session/world-writer qualifier used by the commit. The held locks keep
+that returned pair consistent. A separate later commit must still recheck
+authority and expected revision; this read is not a reservation after its
+transaction ends. All production EXECUTE grants remain revoked.
+
+Source `85eb97d` passed the full local Linux runner, exit 0:
+`/tmp/muhan-qualified-read.log`. The actual writer-login integration now obtains
+its Rust planner input from this RPC instead of the administrator's direct
+table query. The independent admin observation compares all returned fields;
+direct writer table SELECT fails, a different actor is rejected, and calling
+the RPC as the administrator fails its login-identity check. The real Rust
+deposit/withdraw results commit through the qualified writer RPC with exact
+retry and full-byte roundtrip preserved. Test-only read and commit grants are
+both explicitly revoked and checked absent in teardown.
+
+This completes the tested DB-side read/plan/commit access path, not the native
+C coordinator transport. Command identity/reconnect reconciliation, bounded
+transport, live normalization and legacy-write fencing remain required before
+the bank command compile gate can be enabled.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
