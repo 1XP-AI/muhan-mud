@@ -1,5 +1,37 @@
 # Live bank capture and transaction gap
 
+## Onboarding-to-session path and completion input barrier — 2026-09-07
+
+Correction to the earlier handoff prerequisite: the existing browser and gateway
+intentionally close the one-shot onboarding socket after provisioned/claimed.
+`onboarding-terminal.tsx` hands the character back to the roster/admission flow;
+ordinary `/ws` admission then acquires its own DB lease. Onboarding must not
+invent or retain a parallel gameplay lease. The new MUD2 ordinary-admission
+path can therefore serve freshly provisioned characters through that reconnect.
+
+The existing provision-to-ordinary-socket integration test now runs with binding
+both off and on. It proves onboarding acquired no gameplay lease, then the fresh
+socket acquired one and emitted its exact session/gateway IDs, with matching
+actor and character (not the onboarding correlation ID). The test uses the real
+gateway with a fake MUD and recording authorizer; it does not prove the entire
+browser/real-C/real-DB scenario or all claim reconnect cases.
+
+A concrete completion race was reproduced: while claim snapshot binding was
+pending, a synthetic socket `drain` unpaused queued browser input and sent it to
+the MUD. The test waits for WebSocket pong to prove input arrived before drain.
+`resumeInput` now refuses to reopen the completion-only barrier. The regression
+covers successful/rejected binding and missing ACTIVE, retaining queued input
+until teardown rather than allowing gameplay without fresh ordinary admission.
+
+Verification: gateway typecheck passed; full gateway suite 146 passed/5 skipped;
+onboarding integration suite 35/35 passed in each of five repeated runs.
+Evidence: `/tmp/muhan-onboarding-drain-red.log`,
+`/tmp/muhan-onboarding-drain-green.log`, and
+`/tmp/muhan-onboarding-drain-repeat-1.log` through `-5.log`.
+No CI, Docker build, deployment, or production configuration change. Still
+needed: real C socket/queued-input completion verification and live bank
+coordinator/authority binding; this does not establish full gameplay cutover.
+
 ## Opt-in ordinary-admission DB session handoff — 2026-09-07
 
 Source `1d78559` introduces an optional MUD2 ticket:
