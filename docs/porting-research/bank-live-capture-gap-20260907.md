@@ -1,5 +1,35 @@
 # Live bank capture and transaction gap
 
+## Normalized live-state equality before bank commit — 2026-09-07
+
+Source `15aed9c`, with fixture correction `e04da36`, captures the live player
+through the real bounded legacy serializer, anonymous Linux memfd, strict
+player decoder and canonical PlayerSnapshotV1 encoder. It never writes a game
+file or changes the input player. The intermediate legacy credential bytes are
+wiped before freeing. The checked coordinator requires exact canonical player
+bytes to match the qualified DB read before planning or durable preparation.
+After a positive result, the descriptor wrapper rechecks binding and normalized
+state; changed state discards the result and reports UNKNOWN without applying it.
+
+The first real-codec test failed because its password string exceeded the legacy
+20-byte field, leaving no terminator in that field. The strict decoder correctly
+rejected it. The fixture now uses a bounded string with an explicit size assertion;
+no decoder validation or production behavior was relaxed.
+
+Fresh full frozen-source Linux ARM64 run at `e04da36` exited 0. Evidence:
+`/tmp/muhan-bank-live-state.log`. Actual codec sanitizers pass, and real PostgreSQL
+tests reject independent live gold/level drift with no pending record, no output,
+and unchanged DB state. Matching-state withdrawal/all-money, immutable retries,
+lost acknowledgement recovery, real C onboarding and canonical/tree_inventory
+backup restoration also pass. The owned test containers were removed by the
+runner; no cloud build, Actions run or deployment was performed.
+
+This compares normalized persisted bytes, not all transient runtime fields.
+It is not a concurrency lock or a route installer. Remaining: apply validated
+results to live state, install the actual command callback, integrate pending
+fences/recovery, and govern every other player-save path before DB authority
+cutover. Ordinary gameplay is not yet fully database-authoritative.
+
 ## DB-derived command amount resolution — 2026-09-07
 
 Source `1dcee62` adds bounded Rust parsing of decimal amounts, `25냥`, leading-zero
