@@ -1,5 +1,35 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: claim completion EOF race fixed; legacy file preservation fails next
+
+`c62c957` serializes onboarding TCP EOF behind the existing control queue.
+C sends ACTIVE then disconnects, while Gateway awaits snapshot binding before
+acknowledging the browser. Previously EOF failed the WebSocket during that
+RPC. The `binding-rpc-ok` diagnostic proves ACTIVE was already parsed; earlier
+localization to before C activation was incorrect. Missing-head hypothesis
+was also disproved (`heads=1`).
+
+Astra added a deterministic deferred-binding regression: RED closed with 1011
+before the fix, GREEN now returns claimed/1000. Negative cases preserve errors
+for rejected binding and missing ACTIVE. Fresh full Gateway suite: 144 pass,
+0 fail, 4 conditional skips (148 total). Package source typecheck passed.
+C activation lifecycle tests (runtime and legacy) passed for numeric-only
+diagnostics committed in `77c1bea`; no control payloads/credentials are logged.
+
+Frozen `77c1bea` reproduced the EOF failure, evidence
+`/tmp/muhan-local-stack.9RkHko/result.json`. Frozen `c62c957` now prints
+`claim-rpc-green`, validates finalized/active ownership, then fails the
+unchanged legacy player file SHA-256 assertion at stack-e2e line1001.
+Evidence: `/tmp/muhan-local-stack.PINlby/result.json`.
+The C activation saver serializes a claim player whose in-memory credentials
+were erased; this is a source-backed suspect, not yet a field-level proof of
+which bytes changed. Preserve zeroization and the unchanged-file assertion;
+next add a byte/field-preservation regression and repair the snapshot source,
+not the assertion or activation gate. Browser acceptance is still unreached.
+
+Full stack remains 1 PASS / 1 FAIL. Test containers were cleaned up by their
+own runner. No remote CI dispatch, push, or deployment in this goal turn.
+
 ## Latest: confirmed expiry rejection releases intent; positive claim next
 
 `272bbb5` distinguishes only canonical bounded claim RPC HTTP400 PostgreSQL
