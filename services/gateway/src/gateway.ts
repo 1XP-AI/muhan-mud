@@ -1061,7 +1061,13 @@ class OnboardingSession {
     })
   }
   private pauseInput(): void { this.paused = true }
-  private resumeInput(): void { if (this.closed) return; this.paused = false; void this.track(this.drainMessages()).catch(() => undefined) }
+  private resumeInput(): void {
+    // A late TCP drain must not release the one-shot completion barrier.
+    // Gameplay resumes only through a fresh /ws admission with its own lease.
+    if (this.closed || this.completionControlOnly) return
+    this.paused = false
+    void this.track(this.drainMessages()).catch(() => undefined)
+  }
   private sendBinary(data: Buffer): void { sendBufferedWebSocketFrame(this.ws, data, true, this.config.maxBufferedBytes, (code, reason) => this.fail(code, reason)) }
   private sendText(value: Record<string, unknown>): void { sendBufferedWebSocketFrame(this.ws, jsonFrame(value), false, this.config.maxBufferedBytes, (code, reason) => this.fail(code, reason)) }
   private scheduleExpiry(expiresAtMs: number): void {

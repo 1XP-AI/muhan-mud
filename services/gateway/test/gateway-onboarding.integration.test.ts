@@ -597,14 +597,14 @@ test('unexpected C game bytes before a valid SAVED still fail closed', async (t)
   assert.equal(authorizer.finalizations.length, 0)
 })
 
-test('provision completion closes onboarding and hands the owned active character to normal /ws lease and ticket admission', async (t) => {
+for (const bound of [false,true]) test(`provision completion hands off to a fresh /ws lease (session binding ${bound})`, async (t) => {
   const timers = new FakeTimers(1_700_000_000_000)
   const mud = new CommitCallbackMudSocket()
   const authorizer = new RecordingOnboardingAuthorizer()
   const sessionIds = ['123e4567-e89b-12d3-a456-426614174003', '123e4567-e89b-12d3-a456-426614174004']
   let tcpConnections = 0
   const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
-  const gateway = createGateway(config, {
+  const gateway = createGateway({...config,mudSessionBindingEnabled:bound}, {
     onboardingAuthorizer: authorizer,
     characterAuthorizer: authorizer,
     authenticator: { verify: async () => ({ sub: actor, expiresAtMs: timers.nowMs + 3_600_000, claims: {} }) },
@@ -642,7 +642,14 @@ test('provision completion closes onboarding and hands the owned active characte
   regular.send(JSON.stringify({ type: 'auth', accessToken: 'browser-token-not-for-logs', characterId: character }))
   await eventually(() => assert.equal(authorizer.leaseBegins.length, 1))
   await eventually(() => assert.equal(tcpConnections, 2))
-  assert.match(mud.writes.at(-1)!.toString('ascii'), /^MUD1\|/)
+  const ticket=mud.writes.at(-1)!.toString('ascii').trimEnd().split('|')
+  assert.equal(ticket[0],bound?'MUD2':'MUD1')
+  assert.equal(ticket[3],actor); assert.equal(ticket[4],character)
+  if(bound) {
+    assert.equal(ticket[6],authorizer.leaseBegins[0]!.sessionId)
+    assert.equal(ticket[7],authorizer.leaseBegins[0]!.gatewayInstanceId)
+    assert.notEqual(ticket[6],correlation)
+  }
   regular.close()
   await regularClosed
   await eventually(() => assert.ok(authorizer.leaseReleases.includes(authorizer.leaseBegins[0]!.sessionId)))
@@ -1098,6 +1105,15 @@ test(`claim binds before activation and handles C EOF (${outcome})`, async (t) =
   await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
   ws.send(Buffer.from('old-secret\n'))
   await eventually(() => assert.ok(authorizer.calls.includes('bind')))
+  // A socket drain is a transport signal, not permission to resume gameplay
+  // during the activation handoff. Pong proves the preceding input arrived.
+  const heldInput='look-after-finalization\n'
+  ws.send(Buffer.from(heldInput))
+  const pong=once(ws,'pong'); ws.ping(); await pong
+  mud.emit('drain')
+  await new Promise<void>(resolve=>setImmediate(resolve))
+  assert.equal(mud.writes.some(value=>value.toString('ascii')===heldInput),false,
+    'TCP drain must not reopen input while activation binding is pending')
   assert.equal(mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|')), false,
     'C must not save the activation command before its database binding commits')
   await new Promise<void>((resolve) => setImmediate(resolve))
