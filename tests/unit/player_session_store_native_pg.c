@@ -106,6 +106,14 @@ int main(int argc,char **argv)
             assert(peer.pending_length==expected_length&&!memcmp(peer.pending,expected,expected_length));
             assert(player_session_registry_remove(&registry,&peer)!=0); /* durable lifecycle still unresolved */
         }
+        /* Finishing an older request must not serialize the newer live state. */
+        detached.gold=202;before=detached;
+        peer.status=PLAYER_SNAPSHOT_SAVE_UNKNOWN;peer.committed_revision=0;
+        assert(!player_session_store_finish_pending(&peer,"c9300000-0000-0000-0000-000000000002"));
+        assert(!peer.pending&&!strcmp(peer.fields[6],"1"));
+        assert(!strcmp(peer.fields[5],"c9300000-0000-0000-0000-000000000002"));
+        assert(!memcmp(&detached,&before,sizeof(detached))&&detached.gold==202);
+        assert(!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
         free(expected);
         player_snapshot_v1_free_clone(p);
     }
@@ -173,7 +181,7 @@ int main(int argc,char **argv)
     assert(!strcmp(ctx.fields[6],"2")&&!ctx.pending);
     assert(!player_session_registry_remove(&registry,&ctx));
     assert(save_ply(argv[2],&copy)==PLAYER_STORE_IO_ERROR);
-    assert(player_session_registry_remove(&registry,&peer)!=0);
+    assert(!player_session_registry_remove(&registry,&peer));
     assert(player_store_unbind(&binding)==PLAYER_STORE_UNBIND_RESTORED);
     player_session_store_dispose(&ctx);player_snapshot_v1_free_clone(loaded);PQfinish(db);
     player_session_store_dispose(&peer);

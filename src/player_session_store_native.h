@@ -29,6 +29,11 @@ int player_session_store_adopt(player_session_store *,const struct creature *,co
  * then invoke the trusted owned-directory release recorder. No baseline/live
  * mutation. Caller retains per-character ownership until subsequent adoption. */
 int player_session_store_release(player_session_store *);
+/* Finish the frozen older request without reading or changing newer gameplay.
+ * Caller must keep that newer state owned and quiescent, then save it under
+ * next_command after success. Failure retains pending state; not a restart
+ * loader or an automatic disconnect hook. */
+int player_session_store_finish_pending(player_session_store *,const char *next_command);
 /* Frees memory only; NEVER releases/deletes a durable pending reservation. */
 void player_session_store_dispose(player_session_store *);
 #endif

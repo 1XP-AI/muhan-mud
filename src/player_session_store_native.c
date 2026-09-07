@@ -68,6 +68,30 @@ done:
 }
 player_store_ops player_session_store_build(player_session_store *ctx)
 {player_store_ops ops;ops.save=save;ops.load=load;ops.opaque=ctx;return ops;}
+int player_session_store_finish_pending(player_session_store *ctx,const char *command)
+{
+    creature *frozen=NULL;int i,result=-1;
+    if(!ctx||!ctx->configured||!ctx->loaded||ctx->busy||!ctx->pending||!command) return -1;
+    /* Reject malformed next identities before any replay or disk publication. */
+    for(i=0;i<36;i++) {
+        char c=command[i];
+        if(i==8||i==13||i==18||i==23) {if(c!='-') return -1;}
+        else if(!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) return -1;
+    }
+    if(command[36]||!strcmp(command,ctx->fields[5])) return -1;
+    if(player_snapshot_v1_decode_clone(ctx->pending,ctx->pending_length,&frozen)) return -1;
+    /* A previous release may have succeeded even if its helper echo was lost. */
+    if(!player_session_store_adopt(ctx,frozen,command)) {result=0;goto done;}
+    if(ctx->status!=PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx->status!=PLAYER_SNAPSHOT_SAVE_RETRY) {
+        if(save(ctx,ctx->fields[1],frozen)!=PLAYER_STORE_OK) goto done;
+    }
+    /* Release may itself have completed before an acknowledgement failure;
+     * adoption independently verifies its durable record and current DB. */
+    (void)player_session_store_release(ctx);
+    result=player_session_store_adopt(ctx,frozen,command);
+done:
+    player_snapshot_v1_free_clone(frozen);return result;
+}
 int player_session_store_adopt(player_session_store *ctx,const creature *live,const char *command)
 {
     player_paired_route_context route;creature *current=NULL;
