@@ -5,6 +5,9 @@ import { parseManifest } from '../src/manifest.js'
 import { InvalidBankSnapshotV1ArtifactError, parseBankSnapshotV1Artifact } from '../src/bank-snapshot-v1-artifact.js'
 import { relayBankSnapshotV1ArtifactsOnce } from '../src/bank-snapshot-v1-artifact-relay.js'
 import { readFile } from 'node:fs/promises'
+import { relayBankSnapshotV1PayloadsOnce } from '../src/bank-snapshot-v1-payload-relay.js'
+import { PostgresBankSnapshotV1PayloadStore } from '../src/store.js'
+import { main as payloadMain } from '../src/bank-snapshot-v1-payload-cli.js'
 
 const id = '11111111-1111-4111-8111-111111111111'
 function be16(n:number) { const b=Buffer.alloc(2); b.writeUInt16BE(n); return b }
@@ -15,6 +18,49 @@ function node(index:number,parent:number|null,sibling:number) { const value=Buff
 function bank(nodes:readonly Buffer[]) { const fields=[be16(1),Buffer.from([3]),be32(4),be32(nodes.length)]; for (let i=0;i<nodes.length;i++) fields.push(be16(i+2),Buffer.from([9]),be32(349),nodes[i]!); return cdto(8,Buffer.concat([be16(1),Buffer.from([9]),be32(cdto(6,Buffer.concat(fields)).length),cdto(6,Buffer.concat(fields))])) }
 function artifact(payload=bank([node(0,null,0)])) { const h=createHash('sha256').update(payload).digest('hex'); return Buffer.concat([Buffer.from(`version=1\nartifact_format=bank-snapshot-v1\nworld_id=muhan-01\ncharacter_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\ncommand_id=${id}\ncanonical_name_hex=4d3341\nrequest_sha256=${'a'.repeat(64)}\nsource_post_sha256=${'b'.repeat(64)}\nwriter_epoch=7\nwriter_revision=2\nbank_sha256=${h}\nbank_octets=${payload.length}\n\n`),payload]) }
 function rejects(payload:Buffer) { assert.throws(() => parseBankSnapshotV1Artifact(`${id}.bank-snapshot-v1`,artifact(payload),parseManifest(manifest())), InvalidBankSnapshotV1ArtifactError) }
+test('payload CLI is opt-in and closes its store on relay failure', async () => {
+  let created = 0, closed = 0
+  const dependencies = {
+    createStore: () => { created++; return { recordBankSnapshotV1Payload: async () => 'RECORDED' as const, close: async () => { closed++ } } },
+    relay: async () => { throw new Error('private diagnostic') }, write: () => {},
+  }
+  await assert.rejects(payloadMain({},['--once'],dependencies))
+  assert.equal(created,0)
+  await assert.rejects(payloadMain({
+    M4_BANK_SNAPSHOT_V1_PAYLOAD_ENABLED:'true',
+    M4_BANK_SNAPSHOT_V1_PAYLOAD_OUTBOX_DIR:'/outbox',
+    M4_BANK_SNAPSHOT_V1_PAYLOAD_DATABASE_URL:'postgresql://mud_writer_login@localhost/postgres',
+  },['--once'],dependencies))
+  assert.equal(created,1)
+  assert.equal(closed,1)
+})
+test('full bank relay writes exact validated payload and reports exact retries', async () => {
+  const payload = bank([node(0,null,0),node(1,0,0)])
+  const bytes = artifact(payload)
+  const queries: { text:string, values?:unknown[] }[] = []
+  let released = 0
+  const client = { query: async (text:string, values?:unknown[]) => {
+    queries.push({text,values})
+    return {rows:text.startsWith('select') ? [{outcome:'EXACT_RETRY'}] : []}
+  }, release: () => { released++ } }
+  const store = new PostgresBankSnapshotV1PayloadStore('postgresql://mud_writer_login@localhost/postgres', {
+    connect: async () => client as never, end: async () => {},
+  })
+  const result = await relayBankSnapshotV1PayloadsOnce('/ignored',store,{scan:async()=>[
+    {name:`${id}.bank-snapshot-v1`,bytes,receiptManifestBytes:manifest()},
+    {name:'bad.bank-snapshot-v1',bytes,receiptManifestBytes:manifest()},
+  ]})
+  assert.equal(result.exactRetry,1)
+  assert.equal(result.invalid,1)
+  assert.equal(released,1)
+  assert.equal(queries[0]!.text,'set role mud_writer')
+  assert.match(queries[1]!.text,/record_bank_snapshot_v1_payload_for_receipt/)
+  assert.deepEqual(queries[1]!.values,[
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',id,'a'.repeat(64),'b'.repeat(64),'128',
+    createHash('sha256').update(payload).digest('hex'),payload,
+  ])
+  assert.ok(!JSON.stringify(result).includes('MUHCDTO'))
+})
 test('bank artifact parser binds M3 receipt identity and normalized canonical topology', () => { const a=parseBankSnapshotV1Artifact(`${id}.bank-snapshot-v1`,artifact(),parseManifest(manifest())); assert.deepEqual(a.nodes,[{nodeIndex:0,parentNodeIndex:null,siblingOrdinal:0}]); assert.throws(()=>parseBankSnapshotV1Artifact(`${id}.bank-snapshot-v1`,artifact(),parseManifest(Buffer.from(manifest().toString().replace('writer_revision=2','writer_revision=3'))))) })
 test('bank artifact parser rejects every topology shape the C BankSnapshotV1 decoder rejects', () => {
   rejects(bank([]))

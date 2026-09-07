@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import type { Manifest } from './manifest.js'
 import type { PlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
 import type { BankSnapshotV1Artifact } from './bank-snapshot-v1-artifact.js'
+import type { BankSnapshotV1PayloadArtifact, BankSnapshotV1PayloadStore } from './bank-snapshot-v1-payload-relay.js'
 import type { PlayerSnapshotV1ReplayArtifactDifferentialReader, PlayerSnapshotV1ReplayArtifactEvidence } from './player-snapshot-v1-replay-differential.js'
 import type { ImmutablePlayerSnapshotLevelProjectionEvidence, ImmutablePlayerSnapshotLevelProjectionReader } from './player-snapshot-v1-level-comparator.js'
 import type { ImmutablePlayerSnapshotV1FullPayloadEvidence, ImmutablePlayerSnapshotV1FullPayloadReader } from './player-snapshot-v1-full-payload-rehearsal.js'
@@ -226,6 +227,27 @@ export class PostgresPlayerSnapshotV1ArtifactStore implements PlayerSnapshotV1Ar
     } finally { client.release() }
   }
 
+  async close(): Promise<void> { await this.pool.end() }
+}
+
+export class PostgresBankSnapshotV1PayloadStore implements BankSnapshotV1PayloadStore {
+  private readonly pool: PgPool
+  constructor(databaseUrl: string, pool?: PgPool) { this.pool = pool ?? new (require('pg') as PgModule).Pool({ connectionString: assertDatabaseUrl(databaseUrl), max: 1 }) }
+  async recordBankSnapshotV1Payload(artifact: BankSnapshotV1PayloadArtifact): Promise<StoreOutcome> {
+    const payload = Buffer.from(artifact.payload)
+    if (payload.length !== artifact.bankOctets || createHash('sha256').update(payload).digest('hex') !== artifact.bankSha256) throw new Error('invalid bank payload binding')
+    const client = await this.pool.connect()
+    try {
+      await client.query('set role mud_writer')
+      const result = await client.query<{ outcome: string }>(
+        'select outcome from private.record_bank_snapshot_v1_payload_for_receipt($1::uuid,$2::uuid,$3::text,$4::text,$5::bigint,$6::text,$7::bytea)',
+        [artifact.characterId, artifact.commandId, artifact.receiptRequestSha256, artifact.sourcePostSha256, artifact.sourceOctets, artifact.bankSha256, payload],
+      )
+      const outcome = result.rows[0]?.outcome
+      if (result.rows.length !== 1 || (outcome !== 'RECORDED' && outcome !== 'EXACT_RETRY')) throw new Error('unexpected database outcome')
+      return outcome
+    } finally { client.release() }
+  }
   async close(): Promise<void> { await this.pool.end() }
 }
 
