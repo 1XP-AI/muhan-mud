@@ -314,12 +314,24 @@ async function installAuthBoundary(page: Page, fixture: WebStackFixture): Promis
 }
 
 async function signInToEmptyRoster(page: Page, fixture: WebStackFixture): Promise<void> {
+  const statuses: number[] = [];
+  const observe = (response: import("@playwright/test").Response) => {
+    if (new URL(response.url()).pathname === "/rest/v1/game_characters") statuses.push(response.status());
+  };
+  page.on("response", observe);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /글자로 열린 세계/ })).toBeVisible();
   await page.getByLabel("웹 계정 이메일").fill(fixture.email);
   await page.getByLabel("비밀번호").fill("web-stack-password");
   await page.getByRole("button", { name: "성문 열기" }).click();
-  await expect(page.getByText("이 계정에 연결된 캐릭터가 없습니다")).toBeVisible();
+  try {
+    await expect(page.getByText("이 계정에 연결된 캐릭터가 없습니다")).toBeVisible();
+  } catch (error) {
+    process.stderr.write(`stack-e2e: empty-roster responses=${JSON.stringify(statuses)} auth-visible=${await page.getByRole("heading", { name: /글자로 열린 세계/ }).isVisible()} alerts=${await page.getByRole("alert").count()}\n`);
+    throw error;
+  } finally {
+    page.off("response", observe);
+  }
 }
 
 async function submitOnboardingInput(page: Page, value: string): Promise<void> {
