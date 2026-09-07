@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile,mkdtemp,rm,appendFile } from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {prepareMoneyPending,readMoneyPending} from '../dist/money-pending-request.js'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
@@ -248,6 +251,15 @@ try {
       }
       if(index===0) {
         const lengths=Buffer.alloc(8); lengths.writeUInt32BE(p.length); lengths.writeUInt32BE(b.length,4)
+        const pendingRoot=await mkdtemp(join(tmpdir(),'muhan-money-pending-'))
+        const pendingArgs=[id,...authority,...args.slice(1,5)].map(String)
+        const pendingFrame=Buffer.concat([lengths,p,b])
+        try {
+        assert.equal(await prepareMoneyPending(pendingRoot,pendingArgs,pendingFrame),'PREPARED')
+        assert.equal(await prepareMoneyPending(pendingRoot,pendingArgs,pendingFrame),'EXACT_RETRY')
+        const changed=[...pendingArgs]; changed[10]='26'
+        await assert.rejects(prepareMoneyPending(pendingRoot,changed,pendingFrame),/conflict/)
+        assert.deepEqual(await readMoneyPending(pendingRoot,args[1]),{args:pendingArgs,frame:pendingFrame})
         await loseCommittedAck({port,binary:process.env.BANK_TRANSFER_NATIVE_COMMIT,
           args:[id,...authority,...args.slice(1,5)],input:Buffer.concat([lengths,p,b]),
           committed:async()=>{
@@ -255,7 +267,21 @@ try {
             return state.revision==='1' && state.player_payload.equals(p) && state.bank_payload.equals(b)
           },
         })
+        const recover=()=>spawnSync(process.execPath,[new URL('./money-pending-replay.mjs',import.meta.url).pathname,pendingRoot,args[1]],{
+          timeout:7000,maxBuffer:8192,
+          env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
+            ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
+        })
+        const recovered=recover()
+        assert.equal(recovered.status,0,recovered.stderr.toString())
+        assert.equal(recovered.stdout.toString(),'EXACT_RETRY 1\n')
+        // A corrupted durable record must fail before it reaches the DB.
+        await appendFile(join(pendingRoot,`${args[1]}.money-request`),'x')
+        const corrupt=recover()
+        assert.equal(corrupt.status,1); assert.equal(corrupt.stdout.length,0)
+        } finally { await rm(pendingRoot,{recursive:true,force:true}) }
         assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,1)
+        console.log('GREEN durable pending request survives sender exit; fresh process recovers exact retry and rejects corruption')
         console.log('GREEN commit durable while native acknowledgement is lost: UNKNOWN, then same-command reconnect retry')
       }
       for(const expected of [index===0?'EXACT_RETRY':'COMMITTED','EXACT_RETRY']) {
