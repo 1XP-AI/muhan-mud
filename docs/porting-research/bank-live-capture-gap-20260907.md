@@ -1,5 +1,38 @@
 # Live bank capture and transaction gap
 
+## Native per-character PlayerStore baseline — 2026-09-08
+
+Source `ed782c9` adds a caller-owned per-character/load/command adapter using
+the actual PlayerStore interface. Load resolves and revalidates DB identity,
+then copies original character UUID/revision/hash into the context. It rejects
+saves before load and repeated load in that lifetime. Save captures the complete
+normalized player, freezes the first pending payload, and uses the prepared
+native transaction with the original baseline. Different subsequent bytes are
+refused; neither successful commit nor retry silently refreshes the baseline.
+No fd, Ply index or creature pointer identity selects persistence authority.
+
+The fixture initially failed compilation because the adapter was absent.
+After implementation, the real PostgreSQL suite binds this adapter to actual
+load_ply/save_ply. A shallow player copy with fd=-1 commits gold 101, retries
+the same request, then rejects a changed payload. Original revision stays 0;
+attempting FileStore load/save aborts the fixture. The managed binding restores
+its prior provider on exit. Detached clone/context allocations pass ASan/UBSan.
+The surrounding test reads exact DB player bytes, preserved bank and durable
+request, and continues through verified release and money preparation.
+
+Full frozen local ARM64 runner at `ed782c9` exited 0, observed via process
+handle; evidence `/tmp/muhan-player-session-store.log`. All existing native bank,
+cross-operation/recovery, differential, actual C onboarding and both restore
+profiles still passed.
+
+Limits: this is one character/one command lifetime, not a multi-character
+runtime router. Context disposal frees memory only and never releases durable
+evidence. Production still needs registry ownership, explicit confirmed
+release/adoption into the next command lifetime, login credential/admission
+initialization, and actual savegame/uninit/recovery-queue orchestration.
+The fixture uses a shallow fd-less copy, not a complete live disconnect event.
+No production installation, grant, push, Actions run or deployment.
+
 ## Verified player reservation release — 2026-09-07
 
 Source `e8f13b8` adds serialized player release. Under the shared character
