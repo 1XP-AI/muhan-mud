@@ -1,5 +1,30 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: real browser provisioning questions reached; post-password handoff next
+
+`bb1779c` allocates the actual web port before constructing the claim Gateway
+and includes only that exact browser origin alongside the existing Node-test
+origin. It replaces the ReadonlySet instead of calling `.add` (first draft
+`fdef6ea` had a type error, corrected before the successful test run).
+Frozen bb1779c passes onboarding readiness and input, then fails looking for
+the password field: `/tmp/muhan-local-stack.Q7CmBl/result.json`.
+
+Source comparison with the passing real-C socket scenario revealed that the
+browser fixture skipped name confirmation (`예`) and the subsequent Enter
+prompt. `7eb72e6` adds both and waits for each real C question before advancing.
+Fresh frozen run reaches actual C new-password prompt and submits through the
+rendered password field, but fails the next selected-character assertion for
+Webhero in web-stack-ui.ts404/caller467. Evidence:
+`/tmp/muhan-local-stack.nsjGbT/result.json`, console
+`/tmp/muhan-browser-provision.log`. This does not yet prove browser provisioning
+committed; next inspect DB intent/provision/handoff/head and UI completion
+controls after password submission. Do not weaken automatic-admission gate.
+
+Stack TypeScript and 14 lifecycle tests passed. An initial run was stopped by
+Docker ENOSPC before tests; removed eleven explicitly identified unused
+task-owned images, no global cache/volume pruning. Subsequent runs cleaned all
+owned containers. Full stack remains 1 PASS / 1 FAIL. No push/CI/deploy.
+
 ## Latest: real browser login/empty roster pass; onboarding socket next
 
 Browser diagnostics established `auth-visible=true`, no roster responses,
