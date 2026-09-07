@@ -2,6 +2,18 @@
 
 ## Backup/restore gate — valid fixture passed
 
+Restored C/Rust decoding at `abcb3c1` also passes (combined runner exit 0).
+Log: `/tmp/muhan-restored-c-rust.log`. A fresh Linux container, sharing only
+the disposable PG namespace, reads the exact known character/command payload
+and stored digest from the restored database with read-only session settings.
+The test uses the disposable administrator login for this extraction; it is not
+a new least-privilege gameplay reader. It compiles the current native C oracle,
+decodes a detached clone, re-encodes it and compares every payload byte. Current
+Rust replay then accepts those restored bytes against the database digest.
+No live player, socket, file projection or gameplay authority is changed.
+This fixture has the canonical small inventory; broader persisted-world restore
+and value-bearing nested inventory coverage remain separate requirements.
+
 Restored operation checks at `026b8d3` pass as well (full runner exit 0).
 Log: `/tmp/muhan-restored-runtime-contract.log`. Under the restored database's
 reader session identities, full-payload SELECT remains available without DML,
