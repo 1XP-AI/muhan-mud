@@ -115,6 +115,17 @@ try {
       const request=[world,name,writer,'1',saveId,'c9260000-0000-0000-0000-000000000001','0',sha(initial).toString('hex'),changed]
       const state=async()=>(await db.query('select revision::text,player_payload,bank_payload from private.game_character_paired_snapshot_states where character_id=$1',[saveId])).rows[0]
       await assert.rejects(db.query(sql,request),e=>e.code==='P0001')
+      // A well-formed payload/digest is not permission to save another identity.
+      for (const [index,value] of [[1,'Missinghero'],[3,'2'],[4,id]]) {
+        const mismatch=[...request];mismatch[index]=value
+        await assert.rejects(login.query(sql,mismatch),e=>e.code==='P0001')
+      }
+      const renamedBody=Buffer.from(changed.subarray(16,-32))
+      renamedBody.fill(0,7,87);renamedBody.write('Otherhero',7,'utf8')
+      const renamed=[...request];renamed[8]=rebody(changed,renamedBody)
+      await assert.rejects(login.query(sql,renamed),e=>e.code==='22023')
+      assert.deepEqual(await state(),{revision:'0',player_payload:initial,bank_payload:bank})
+      assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,0)
       const wrong=[...request];wrong[7]='0'.repeat(64)
       await assert.rejects(login.query(sql,wrong),e=>e.code==='40001')
       assert.equal((await state()).revision,'0')
