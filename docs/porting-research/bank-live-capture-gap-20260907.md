@@ -1,5 +1,41 @@
 # Live bank capture and transaction gap
 
+## Opt-in ordinary-admission DB session handoff — 2026-09-07
+
+Source `1d78559` introduces an optional MUD2 ticket:
+`MUD2|expiry|nonce|actor|character|nameHex|session|gateway|hmac`.
+The HMAC covers the entire prefix, including the exact DB lease session and
+gateway instance ID. `MUD_SESSION_BINDING_ENABLED=true` makes ordinary gateway
+admission emit this format; the default remains MUD1. A bound gateway identifier
+is restricted to 1–128 ASCII letters/digits/dot/dash/underscore. Invalid or
+partial binding is rejected, never silently downgraded. The existing MUD1 OK/ERR
+response is unchanged; deploy the accepting C runtime before enabling emission.
+
+C keeps the old MUD1 limit at 256 and permits at most 384 bytes for MUD2.
+The actual admission callback receives the separate 1,025-byte `buf` in
+`handle_commands` (IBUFSIZE 1024), not the 256-byte alias command array.
+Ordinary login copies the verified session/gateway into descriptor-owned `extra`,
+which is freed on disconnect and is not serialized with `creature`. MUD1 leaves
+these fields empty. MUD1O activation explicitly clears them: onboarding lease
+handoff still needs implementation and must not reuse a nonce/correlation ID.
+
+Evidence:
+- Test-first cross-language test failed because old output was MUD1.
+- C/Gateway conformance: all 3 tests passed, including unchanged IDs, tampered
+  binding rejection, replay rejection, maximum gateway length (>256-byte wire),
+  partial/invalid binding and legacy empty session fields.
+- Gateway suite: 145 passed, 5 intentionally skipped; typecheck passed. The new
+  real gateway/socket test compares emitted session/gateway to the acquired lease.
+- Linux frozen-source `e49238a` full runner exited 0:
+  `/tmp/muhan-session-admission-linux.log`. Includes actual command1.c compilation,
+  existing admission ASan/UBSan, DB money/recovery and both restore profiles.
+  The new MUD2 conformance cases ran on the local C oracle; they are not yet a
+  full live-login C socket scenario or a sanitizer test of every MUD2 boundary.
+
+No deployment, authority switch, or production config change. Remaining work:
+onboarding handoff, actual selector/coordinator binding to these transient IDs,
+live state/revision checks, pending recovery, and all non-bank player writers.
+
 ## Selected-authority legacy bank fence — 2026-09-07
 
 Source `bc6db47` closes the remaining file-bank entry points when the existing
