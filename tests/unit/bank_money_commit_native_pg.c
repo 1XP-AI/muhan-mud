@@ -4,6 +4,7 @@
 #include "bank_money_result_native.h"
 #include "bank_money_command_native.h"
 #include "player_snapshot_v1.h"
+#include "mtype.h"
 #include "bank_money_read_native.h"
 #include <libpq-fe.h>
 #include <stdio.h>
@@ -13,6 +14,9 @@
 struct { creature *ply; iobuf *io; extra *extr; } Ply[PMAX];
 int Tablesize=1;
 static int selected(void *ctx,const creature *p) {(void)ctx;(void)p;return 1;}
+extern int deposit(creature *,cmd *),withdraw(creature *,cmd *);
+extern int bank_command_success;
+extern long bank_command_amount,bank_command_balance;
 int main(int argc,char **argv)
 {
     unsigned char *frame;
@@ -28,7 +32,7 @@ int main(int argc,char **argv)
     if(PQresultStatus(role)!=PGRES_COMMAND_OK) { free(frame); PQclear(role); PQfinish(c); return 2; }
     PQclear(role);
     if(getenv("BANK_TRANSFER_COORDINATE") && !strcmp(getenv("BANK_TRANSFER_COORDINATE"),"1")) {
-      bank_money_command_context context; bank_money_route_ops ops; bank_money_ack ack; cmd command; long before;
+      bank_money_command_context context; bank_money_route_ops ops; cmd command; room bank_room; long before;
       creature *player=NULL; extra ext; iobuf io;
       bank_money_read_result current; size_t pl;
       bank_money_live_request request;
@@ -54,11 +58,14 @@ int main(int argc,char **argv)
       command.num=2; strcpy(command.str[1],argv[11]); before=player->gold;
       memset(&ops,0,sizeof(ops)); ops.select=selected; ops.transfer=bank_money_command_native; ops.context=&context;
       bank_money_route_set(&ops);
-      status=bank_money_route_dispatch(player,&command,!strcmp(argv[10],"withdraw"),&ack);
-      if((context.status==BANK_MONEY_COMMIT_CONFIRMED)!=(status==BANK_MONEY_COMMITTED)) abort();
-      if(status==BANK_MONEY_COMMITTED) {
-        if(player->gold!=ack.player_gold||player->gold==before) abort();
+      memset(&bank_room,0,sizeof(bank_room));F_SET(&bank_room,RBANK);player->parent_rom=&bank_room;
+      if(!strcmp(argv[10],"withdraw")) withdraw(player,&command);else deposit(player,&command);
+      if((context.status==BANK_MONEY_COMMIT_CONFIRMED)!=(bank_command_success==1)) abort();
+      if(bank_command_success) {
+        long expected=!strcmp(argv[10],"withdraw")?before+bank_command_amount:before-bank_command_amount;
+        if(player->gold!=expected||player->gold==before||bank_command_balance<0) abort();
       } else if(player->gold!=before) abort();
+      player->parent_rom=NULL;
       status=context.status; revision=context.revision; bank_money_route_reset();
       memset(Ply,0,sizeof(Ply));
       player_snapshot_v1_free_clone(player);
