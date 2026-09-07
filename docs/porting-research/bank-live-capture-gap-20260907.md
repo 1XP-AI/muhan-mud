@@ -563,6 +563,28 @@ NOT installed into the live coordinator yet. Reaper ownership/nonblocking
 collection must be tested and adjusted before activation, along with the
 existing pending-request integration and legacy-write fencing requirements.
 
+### Nonblocking legacy child collection
+
+The stale SIGCHLD failure was reproduced by linking the actual `src/io.c`
+reaper with an already-reaped child and another still-running child. Before
+the fix, the one-second watchdog fired (exit 90; it cleaned its own sleeper):
+`/tmp/muhan-child-reaper-red.log`. No real auth files were accessed.
+
+Source `ef6e0a0` treats `Deadchildren` as a volatile signal-safe hint rather
+than a count. The reaper clears it before draining `waitpid(-1,WNOHANG)`, retries
+EINTR, and processes every returned PID through the existing auth path. It no
+longer blocks on a live child or silently discards one result in a final wait4.
+Signals during draining remain hints for another harmless nonblocking pass.
+
+The actual reaper regression now passes under ASan/UBSan: stale notification
+with a live child, multiple waitable children behind one notification, no-child
+notification, and the existing recognized authentication result update. Auth
+file operations are replaced only in the test, using an anonymous fixture file.
+The full local replay/restore runner passed exit 0:
+`/tmp/muhan-child-reaper-final.log`. This resolves the observed reaper blocking
+prerequisite; it does not install the native money coordinator or prove a full
+live session. Durable preparation integration and legacy-write fencing remain.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
