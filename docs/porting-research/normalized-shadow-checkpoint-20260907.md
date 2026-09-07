@@ -159,3 +159,9 @@ Luna/max의 제한적 독립 정적 점검 `task_1416f14fae81` / `ctx_b7da02f59d
 테스트부터 작성해 기존 hook 부재와 새 모듈 부재로 실패한 뒤 구현했다. readiness/runner mock과 chart/prerequisite 검사 55개가 통과했다. 실제 Helm v3.16.4의 install/upgrade `--no-hooks` 렌더링에서 비교 Job이 일반 리소스 목록에 없는 것도 확인했다. 공식 Helm hook 문서와 v3.16.4 hook JSON 구조를 대조했으나 실제 release JSON 및 cluster test 실행 검증은 아직 없다. release 작업 직렬 실행이 필요하고 revision 재검사는 분산 잠금을 대체하지 않는다. 기존 일반 Job 버전에서 전환 시 결과 보관 필요사항도 운영 문서에 명시했다.
 
 다음 검증은 실제 Helm 형식과 checksum 연결, CLI 프로세스 경계, 독립 리뷰 및 amd64 통합 이미지다. 소스 검토 기준 SHA 불일치는 여전히 미해결이며 전체 포팅·웹 게임 onboarding·DB 권위 전환·운영 배포가 완료된 것은 아니다. 두 저장소의 변경은 로컬 커밋이다.
+
+## CLI 프로세스 검증 및 다음 실제 데이터 경로 확인
+
+`normalized-shadow-cli-process.test.mjs`는 실제 로컬 Helm 렌더링의 migration/test manifest를 합성 release JSON에 넣고 실행기를 별도 Node 프로세스로 실행한다. 하위 Helm/kubectl은 임시 디렉터리의 대역만 PATH에 제공하며 사용자 환경/자격증명은 상속하지 않는다. preflight/execute, 기존 Job, revision 변경, 외부 명령 실패, 잘못된 JSON, test 실패, 필수 인자 누락의 8개 분기가 통과했다. 실제 CLI가 계산한 SQL checksum과 chart 출력이 연결됐고 정확한 context/namespace/test filter, 종료 코드·한 줄 출력, 원시 명령 출력 미노출을 검증했다. 임시 fixture는 finally로 정리했다. 실제 클러스터의 release JSON이나 실제 Helm test 실행 증거는 아니다.
+
+전체 데이터 경로를 다시 확인한 결과, normalized DB 저장 구현은 소스 `player-snapshot-v1-artifact-cli.ts`의 별도 opt-in에 이미 있다. 하지만 배포 chart의 artifact relay Job은 `player-snapshot-v1-manifest-first-cli.js`를 실행하고, 이 entrypoint는 현재 manifest/artifact만 저장하며 normalized projector/store를 연결하지 않는다. 따라서 비교 Job만 등록해도 실제 게임 outbox의 normalized 행이 자동으로 생성되는 것은 아니다. 다음 핵심 작업은 이 manifest-first 저장 경로에 검증된 normalized persistence를 연결하고 실제 C receipt-bound outbox → Rust → PostgreSQL → 비교를 E2E로 검증하는 것이다. 별도 기존 artifact CLI와 운영 receipt-bound 입력 형식 호환성부터 확인해야 하며, 기존 게임 파일 권위는 그대로 유지한다.
