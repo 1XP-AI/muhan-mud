@@ -13,12 +13,27 @@ fingerprint() {
   sql "$1" "select count(*)::text || ':' || coalesce(md5(string_agg(to_jsonb(t)::text, '' order by character_id, command_id)), '') from private.$2 t"
 }
 tables=(game_character_player_snapshot_v1_artifacts game_character_shadow_receipts game_character_player_snapshot_v1_level_projections)
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+sql postgres 'create database replay_backup_source template template0' >/dev/null
+# Copy schema only: negative comparator rows must not enter the valid restore fixture.
+docker exec -e PGPASSWORD=contract-only-password "$container_id" \
+  pg_dump -h 127.0.0.1 -U postgres -d postgres --schema-only |
+  docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
+    psql -X -q -h 127.0.0.1 -U postgres -d replay_backup_source -v ON_ERROR_STOP=1
+fixture_hex="$(tr -d '\r\n' < "$root/tests/fixtures/player_snapshot_v1_canonical.hex")"
+docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
+  psql -X -q -h 127.0.0.1 -U postgres -d replay_backup_source -v ON_ERROR_STOP=1 \
+    -v "fixture_hex=$fixture_hex" < "$root/supabase/tests/replay_backup_valid_seed.sql"
 before=()
-for table in "${tables[@]}"; do before+=("$(fingerprint postgres "$table")"); done
+for table in "${tables[@]}"; do
+  value="$(fingerprint replay_backup_source "$table")"
+  [[ "$value" == 1:* ]] || { echo 'valid backup fixture must contain one row per evidence relation' >&2; exit 1; }
+  before+=("$value")
+done
 sql postgres 'create database replay_restore_check template template0' >/dev/null
 # Use the server image's matching pg_dump/pg_restore, not the host client version.
 docker exec -e PGPASSWORD=contract-only-password "$container_id" \
-  pg_dump -h 127.0.0.1 -U postgres -d postgres --format=custom |
+  pg_dump -h 127.0.0.1 -U postgres -d replay_backup_source --format=custom |
   docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
     pg_restore -h 127.0.0.1 -U postgres -d replay_restore_check --exit-on-error
 for index in "${!tables[@]}"; do
