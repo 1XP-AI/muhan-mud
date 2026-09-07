@@ -325,6 +325,34 @@ try {
     const missing=[...request]; missing[7]='c9240000-0000-0000-0000-000000000099'
     assert.deepEqual((await login.query(recoverySql,missing)).rows,[{outcome:'UNRESOLVED',committed_revision:null}])
     await assert.rejects(db.query(recoverySql,request),e=>e.code==='P0001')
+    const restartRoot=await mkdtemp(join(tmpdir(),'muhan-money-restart-'))
+    try {
+      const header=Buffer.alloc(8); header.writeUInt32BE(original[11].length); header.writeUInt32BE(original[12].length,4)
+      const frame=Buffer.concat([header,original[11],original[12]])
+      const savedArgs=original.slice(0,11).map(String)
+      await prepareMoneyPending(restartRoot,savedArgs,frame)
+      const restart=()=>spawnSync(process.execPath,[new URL('../dist/money-pending-recovery-cli.js',import.meta.url).pathname,'--once'],{
+        timeout:10000,maxBuffer:8192,env:{...process.env,MONEY_PENDING_RECOVERY_ENABLED:'true',MONEY_PENDING_ROOT:restartRoot,
+          MONEY_RECOVERY_WORLD:world,MONEY_RECOVERY_WRITER:successor,MONEY_RECOVERY_EPOCH:'2',
+          MONEY_RECOVERY_DATABASE_URL:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`},
+      })
+      const first=restart()
+      assert.equal(first.status,0,first.stderr.toString())
+      assert.deepEqual(JSON.parse(first.stdout.toString()),{confirmed:1,unresolved:0,invalid:0,errors:0,truncated:false})
+      const unknown=[...savedArgs]; unknown[7]='c9240000-0000-0000-0000-000000000088'
+      await prepareMoneyPending(restartRoot,unknown,frame)
+      const corrupt=[...savedArgs]; corrupt[7]='c9240000-0000-0000-0000-000000000089'
+      await prepareMoneyPending(restartRoot,corrupt,frame)
+      await appendFile(join(restartRoot,`${corrupt[7]}.money-request`),'x')
+      const beforeFiles=await Promise.all([savedArgs[7],unknown[7],corrupt[7]].map(command=>readFile(join(restartRoot,`${command}.money-request`))))
+      for(let attempt=0;attempt<2;attempt++) {
+        const result=restart()
+        assert.equal(result.status,1,result.stderr.toString())
+        assert.deepEqual(JSON.parse(result.stdout.toString()),{confirmed:1,unresolved:1,invalid:1,errors:0,truncated:false})
+      }
+      assert.deepEqual(await Promise.all([savedArgs[7],unknown[7],corrupt[7]].map(command=>readFile(join(restartRoot,`${command}.money-request`)))),beforeFiles)
+      console.log('GREEN restarted recovery CLI discovers durable requests: confirms old commit, preserves unknown/corrupt files without writes')
+    } finally { await rm(restartRoot,{recursive:true,force:true}) }
     assert.deepEqual(await read(),final)
     assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
     console.log('GREEN successor writer reconciles exact old commit after session/epoch expiry without replay or state changes')

@@ -1,7 +1,7 @@
 // Durable transport request, not a second gameplay database. Retain until an
 // independently confirmed commit/retry is reconciled; never rewrite on retry.
 import {constants} from 'node:fs'
-import {open,link,unlink} from 'node:fs/promises'
+import {open,link,unlink,opendir} from 'node:fs/promises'
 import {isAbsolute} from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
 const MAX=12*1024*1024
@@ -63,6 +63,25 @@ export async function readMoneyPending(root:string,command:string) {
   const dir=await directory(root)
   try { return (await readAt(`/proc/self/fd/${dir.fd}`,command)).result }
   finally { await dir.close() }
+}
+// Bounded sequential visitor: never hold many multi-megabyte requests in memory.
+// Keep one directory capability across discovery and every record read.
+export async function visitMoneyPending(root:string,visit:(request:{args:string[],frame:Buffer}|null)=>Promise<void>,limit=1000):Promise<boolean> {
+  if(!Number.isInteger(limit)||limit<1||limit>1000) throw new Error('invalid scan limit')
+  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
+  try {
+    const entries=await opendir(base)
+    let scanned=0
+    for await(const entry of entries) {
+      if(++scanned>limit) return true
+      if(!entry.name.endsWith('.money-request')) continue
+      const command=entry.name.slice(0,-'.money-request'.length)
+      let request=null
+      try { if(uuid.test(command)) request=(await readAt(base,command)).result } catch { /* preserve invalid record */ }
+      await visit(request)
+    }
+    return false
+  } finally { await dir.close() }
 }
 export async function prepareMoneyPending(root:string,args:string[],frame:Buffer):Promise<'PREPARED'|'EXACT_RETRY'> {
   const bytes=encode(args,frame),command=args[7]
