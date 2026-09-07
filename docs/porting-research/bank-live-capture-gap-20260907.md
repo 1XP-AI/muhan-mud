@@ -1,5 +1,37 @@
 # Live bank capture and transaction gap
 
+## Prepared native player save — 2026-09-07
+
+Source `3e9eda2` adds an internal prepared-save wrapper: a trusted absolute
+helper must return the exact payload after durable publication before the
+wrapper invokes SQL. Missing directory, conflicting stored request, helper
+failure or mismatched echo returns NOT_SENT with zero revision. NOT_SENT does
+not mean no local record exists; interrupted preparation must retain evidence.
+
+The initial real PostgreSQL test failed on the valid request with NOT_SENT.
+Investigation traced this to bank_money_process_native enforcing a paired
+player/bank frame before spawning. A 1778-byte canonical player is not that
+frame. Source `50b2466` adds an independently bounded single-player mode while
+preserving every existing bank pair validation. The exact previously failing
+test now passes: missing/conflicting preparation changes neither DB state nor
+intent ledger; successful native save retains the full original request; a
+fresh process retries with identical bytes and receives historical revision 1.
+
+Frozen full local ARM64 suite at `50b2466` exited 0, observed from the process
+handle; evidence `/tmp/muhan-player-prepared-fixed.log`. The prior RED is
+`/tmp/muhan-player-prepared.log`. Existing bank/native/sanitizer/differential,
+actual C onboarding and both backup profiles also pass. Investigate skill
+guided tracing the failure to the protocol boundary before changing code.
+Its separate learning logger failed because its jsonl-store.ts was missing;
+this document is the retained investigation record.
+
+Still internal and not installed as PlayerStore. Raw transport remains available
+for focused tests; production integration must choose the prepared path and
+also enforce per-character cross-operation fencing, load-baseline lifetime,
+pending discovery/reconciliation and verified release. No claim that this
+wrapper alone prevents two different command IDs or completes crash recovery.
+No production grant, push, Actions run or deployment.
+
 ## Immutable player pending records — 2026-09-07
 
 Source `2e3accd` stores the complete player-save request: original world/name,
