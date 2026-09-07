@@ -68,6 +68,8 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       --test bank_transfer_v1 -- --ignored
     CARGO_TARGET_DIR=/work/rust/target cargo build --locked --offline --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_replay_verify
     PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 PLAYER_SNAPSHOT_V1_REPLAY_READER_CONTAINERLESS=1 bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
+    make -C src onboarding-activation-command-lifecycle-test onboarding-activation-command-lifecycle-sanitizer-test
+    python3 tests/harness/run_onboarding_scenario.py --repo-root /work --output /tmp/onboarding-close.json
   ')"
 created=("$runner" "${created[@]}")
 docker start -ai "$runner"

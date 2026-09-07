@@ -168,9 +168,13 @@ def mud1o_ticket(mode: str, nonce: str, correlation: str) -> tuple[str, str]:
     return f"{signed}|{mac}\n", mac
 
 
-def mud1_ticket(name: str, nonce: str) -> tuple[str, str]:
+def mud1_ticket(name: str, nonce: str, session_id: Optional[str] = None,
+                character_id: str = CHARACTER) -> tuple[str, str]:
     expires = int(time.time()) + 15
-    signed = f"MUD1|{expires}|{nonce}|{ACTOR}|{CHARACTER}|{name.encode('utf-8').hex()}"
+    version = "MUD2" if session_id else "MUD1"
+    signed = f"{version}|{expires}|{nonce}|{ACTOR}|{character_id}|{name.encode('utf-8').hex()}"
+    if session_id:
+        signed += f"|{session_id}|scenario-gateway"
     mac = hmac.new(SECRET.encode("ascii"), signed.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{signed}|{mac}\n", mac
 
@@ -369,8 +373,10 @@ def provision(session: Session, name: str, nonce: str, correlation: str, charact
         session.send_fragmented(
             f"MUD1O ACTIVATED|{character}\n".encode(), 13,
         )
-        session.read_until("레벨 5".encode())
-        session.read_until("도력): ".encode())
+        if read_control(session, b"MUD1O ACTIVE|") != f"MUD1O ACTIVE|{character}\n".encode():
+            raise ScenarioFailure("provision did not emit its exact ACTIVE")
+        if session.read_close():
+            raise ScenarioFailure("provision emitted gameplay after ACTIVE")
         assert_receipt(fixture, "committed", correlation, character, name, sensitive, digest)
     return digest
 
@@ -622,6 +628,14 @@ def main() -> int:
         if not player.is_file() or hashlib.sha256(player.read_bytes()).hexdigest() != digest:
             raise ScenarioFailure("SAVED digest did not match the final player file")
 
+        good.sock.close()
+        good = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
+        observer_ticket, observer_mac = mud1_ticket("Alice", "11112233445566778899aabbccddeeff",
+                                                   "77777777-7777-4777-8777-777777777777")
+        sensitive.append(observer_mac)
+        good.send(observer_ticket.encode())
+        good.read_until(b"MUD1 OK\n")
+
         # A saved-but-uncommitted character must not be present in the world.
         # Keep Alice live as an observer while a second real wizard reaches
         # SAVED, then prove visibility begins only after Gateway COMMIT.
@@ -647,16 +661,25 @@ def main() -> int:
             raise ScenarioFailure("saved character wrote a login/logout log before COMMIT")
 
         staged.send_fragmented(b"MUD1O COMMIT\n", 8)
-        staged.send_fragmented(
-            "MUD1O ACTIVATED|45454545-4545-4454-8454-454545454545\n".encode(), 13,
-        )
-        staged.read_until("레벨 5".encode())
-        staged.read_until("도력): ".encode())
+        # Bytes already queued behind activation must not become gameplay on
+        # this lease-less wizard descriptor.
+        staged.send("MUD1O ACTIVATED|45454545-4545-4454-8454-454545454545\n건강\n".encode())
+        if read_control(staged, b"MUD1O ACTIVE|") != b"MUD1O ACTIVE|45454545-4545-4454-8454-454545454545\n":
+            raise ScenarioFailure("staged provision did not emit its exact ACTIVE")
+        if staged.read_close():
+            raise ScenarioFailure("staged provision emitted gameplay after ACTIVE")
         after_commit = good.read_until(b"Staged") + good.read_available()
         if b"Staged" not in after_commit:
             raise ScenarioFailure("committed character did not become world-visible")
         if login_log_count(fixture, "Staged") != 1:
             raise ScenarioFailure("committed character did not run legacy login initialization exactly once")
+        staged.sock.close()
+        staged = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
+        staged_ticket, staged_mac = mud1_ticket("Staged", "16112233445566778899aabbccddeeff",
+            "88888888-8888-4888-8888-888888888888", "45454545-4545-4454-8454-454545454545")
+        sensitive.append(staged_mac)
+        staged.send(staged_ticket.encode())
+        staged.read_until(b"MUD1 OK\n")
         staged.send("건강\n".encode())
         staged.read_until("체력".encode())
         staged.send("끝\n".encode())

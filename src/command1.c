@@ -276,14 +276,6 @@ int fd;
 	       sizeof(Ply[fd].extr->onboarding_activation_command_id));
 }
 
-#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
-static void onboarding_activation_command_test_return(fd, param, str)
-int fd;
-int param;
-unsigned char *str;
-{ (void)fd; (void)param; (void)str; }
-#endif
-
 static int onboarding_activation_complete(fd)
 int fd;
 {
@@ -296,14 +288,10 @@ int fd;
 		}
 		Ply[fd].extr->onboarding_world_staged = 0;
 		onboarding_finish_activation(fd);
-		print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");
-		print(fd, "레벨 5 가 되지 않으면 아이디가 삭제될 수도 있습니다.\n");
-#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
-		Ply[fd].io->fn = onboarding_activation_command_test_return;
-#else
-		Ply[fd].io->fn = command;
-#endif
-		Ply[fd].io->fnparam = 1;
+		/* One-shot onboarding never acquires a gameplay lease. Discard this
+		 * descriptor (including queued wizard bytes); play requires fresh
+		 * trusted admission, just as the claim completion path does. */
+		disconnect(fd);
 		return 0;
 	}
 	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {

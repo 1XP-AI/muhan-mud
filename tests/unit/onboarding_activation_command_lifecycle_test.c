@@ -189,7 +189,7 @@ static int completed(const fixture *test, onboarding_activation_binding_mode mod
         !test->ext.onboarding_activation_command_id[0] &&
         test->active_count == 1 &&
         (mode == ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION ?
-         test->activation_count == 1 && !test->disconnect_count &&
+         test->activation_count == 1 && test->disconnect_count == 1 &&
          !test->ext.onboarding_world_staged:
          !test->activation_count && test->disconnect_count == 1);
 }
