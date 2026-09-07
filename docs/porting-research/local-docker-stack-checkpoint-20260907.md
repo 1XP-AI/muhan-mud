@@ -1,5 +1,31 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest full-stack: restart and recovered gameplay pass; claim readiness next
+
+Frozen `e8926aa` actually passed the previously failing C restart. The next
+assertion failed at recovered lifecycle: evidence-only CLI reconciliation
+correctly returned handoff_pending, while the test expected active. The
+existing saved-handoff opt-in was not exposed by CLI. `934ef08` adds strict
+`ONBOARDING_RECONCILER_RECOVER_SAVED_HANDOFFS=true|false` (default false),
+with CLI RED/GREEN tests and explicit true in the full-stack recovery lane.
+All 32 reconciler tests and the strict stack TypeScript check passed.
+
+Frozen `934ef08` then passed recovery-rpc-green, recovery-ws-ready and
+recovery-game-green: actual fresh C/Gateway admission plus Korean health
+command after finalize outage recovery. It proceeded through the first claim
+negative case (missing batch membership) and failed on the next wrong-password
+case's onboarding-ready wait, before a password was sent. Current evidence:
+`/tmp/muhan-local-stack.WYff58/result.json`; failing caller line 940, helper
+line 392. Investigate successive claim intent/session lifecycle and returned
+Gateway outcome; do not weaken readiness or relabel DB lifecycle to bypass it.
+Full run remains 1 PASS / 1 FAIL, actual browser phase not yet reached.
+
+Docker was confirmed at zero free space. Removed only four old, unused,
+rebuildable task image tags ending 1788758197-59781, 1788758473-68867,
+1788758637-72181 and 1788758850-77565; no broad cache/image/volume prune.
+This recovered 3.2GB. Both runs used the local default Docker driver, and
+task containers/networks were cleaned on exit.
+
 ## Latest: historical recovery regression green locally; full-stack pending
 
 Implemented a separate historical receipt replay path. Ordinary publish/ACK
