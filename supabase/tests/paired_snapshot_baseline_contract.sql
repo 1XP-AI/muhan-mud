@@ -1,5 +1,7 @@
 \set ON_ERROR_STOP on
 begin;
+create function pg_temp.reject_paired_baseline_insert() returns trigger language plpgsql as $$
+begin raise exception using errcode='P0001',message='injected baseline ledger failure'; end $$;
 do $$
 declare cid uuid:='a9220000-0000-0000-0000-000000000001'; cmd uuid:='c9220000-0000-0000-0000-000000000001';
   request text; before_state jsonb; result text;
@@ -19,6 +21,23 @@ begin
     if sqlerrm='stale head accepted' then raise; end if;
   end;
   if exists(select 1 from private.game_character_paired_snapshot_states where character_id=cid) then raise exception 'negative probe wrote state'; end if;
+  begin
+    perform private.enroll_paired_snapshot_baseline(cid,'c9220000-0000-0000-0000-000000000099',request);
+    raise exception 'missing command accepted';
+  exception when sqlstate 'P0001' then
+    if sqlerrm='missing command accepted' then raise; end if;
+  end;
+  create trigger injected_baseline_failure before insert on private.game_character_paired_snapshot_baselines
+    for each row execute function pg_temp.reject_paired_baseline_insert();
+  begin
+    perform private.enroll_paired_snapshot_baseline(cid,cmd,request);
+    raise exception 'baseline failure not injected';
+  exception when sqlstate 'P0001' then
+    if sqlerrm<>'injected baseline ledger failure' then raise; end if;
+  end;
+  drop trigger injected_baseline_failure on private.game_character_paired_snapshot_baselines;
+  if exists(select 1 from private.game_character_paired_snapshot_states where character_id=cid)
+     or exists(select 1 from private.game_character_paired_snapshot_baselines where character_id=cid) then raise exception 'failed enrollment left partial state'; end if;
   result:=private.enroll_paired_snapshot_baseline(cid,cmd,request);
   if result<>'ENROLLED' then raise exception 'enrollment failed'; end if;
   if not exists(select 1 from private.game_character_paired_snapshot_states s
