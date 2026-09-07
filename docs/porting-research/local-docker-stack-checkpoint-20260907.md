@@ -1,5 +1,28 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: JSON claims bootstrap fixed; both browser game paths pass
+
+`7be3d7d` diagnostics showed provisioning `finalized|finalized|active` but
+no selected character. The disposable `auth.uid()` only read the legacy
+singular claim GUC, not PostgREST JSON claims. New SQL regression failed
+before the fix and passed afterward on isolated PostgreSQL 17, including
+owner-only RLS visibility, missing subject denial, and legacy compatibility.
+`4addf71` updates only the disposable bootstrap and runs this regression in
+both stack entrypoints. Production authentication/policies are unchanged.
+
+Fresh frozen full run: `/tmp/muhan-local-stack.TLzSgJ/result.json`, console
+`/tmp/muhan-json-claims-stack.log`. Both rendered browser flows returned from
+`runWebStackAcceptance`: provision and claim each verified automatic entry,
+roster reselection, and real C health-command output. Auth is still the
+deterministic test boundary, not a real Supabase Auth acceptance claim.
+
+The next failure is stack-e2e.test.ts:1093: original claimed-file SHA versus
+file SHA **after** browser admission/reselection/game/disconnect. Do not remove
+the assertion without proving what changed. Inspect exact changed fields and
+the ordinary save/receipt boundary; preserve the separate pre-game immutable
+claim proof. Full suite remains 1 PASS / 1 FAIL; no push, CI or deployment.
+The isolated SQL container and full-stack containers were cleaned up by ID.
+
 ## Latest: real browser provisioning questions reached; post-password handoff next
 
 `bb1779c` allocates the actual web port before constructing the claim Gateway
