@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+# Only a source line number is emitted; never expand the failed command or env.
+trap 'printf "replay reader harness failed at line %s\n" "$LINENO" >&2' ERR
 
 [[ "${PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE:-}" == 1 ]] || {
   echo "M5e replay reader PG17 integration skipped (set PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1)"
@@ -337,7 +339,10 @@ full_payload_rehearsal_stderr="$journal_root/full-payload-rehearsal.stderr"
 M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_OUTBOX_PATH="$full_payload_rehearsal_outbox" \
 M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_DATABASE_URL="$full_payload_reader_database_url" \
 M4_PLAYER_SNAPSHOT_V1_FULL_PAYLOAD_REHEARSAL_VERIFIER_PATH="$full_payload_rehearsal_verifier" \
-  node "$full_payload_rehearsal_cli" --once >"$full_payload_rehearsal_stdout" 2>"$full_payload_rehearsal_stderr"
+  node "$full_payload_rehearsal_cli" --once >"$full_payload_rehearsal_stdout" 2>"$full_payload_rehearsal_stderr" || {
+    node -e 'const fs = require("node:fs"); let c; try { c = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).classification } catch {} console.error("full payload rehearsal failed: " + (/^[A-Z_]{1,64}$/.test(c ?? "") ? c : "UNREADABLE_DIAGNOSTIC"))' "$full_payload_rehearsal_stdout"
+    exit 1
+  }
 [[ ! -s "$full_payload_rehearsal_stderr" ]] || { echo "full payload rehearsal emitted stderr" >&2; exit 1; }
 FULL_PAYLOAD_REHEARSAL_OUTPUT="$full_payload_rehearsal_stdout" \
 node <<'NODE'
