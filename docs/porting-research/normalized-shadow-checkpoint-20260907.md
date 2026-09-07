@@ -75,3 +75,11 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 범위 제한: 20260901 lobby migration은 Supabase Realtime 스키마를 요구하므로 기존 PG 계약 lane처럼 제외했다. 일반 PostgreSQL에 적용하면 Realtime 스키마 부재로 실패한다. 같은 클러스터의 다른 DB로 전체 migration을 반복하면 공유 역할의 membership 전제로 실패하므로 fresh-chain 검증은 별도 인스턴스로 수행했다. 실제 Supabase 전체 설치·웹 가입/계정 연동·게임 저장 권위 전환·k8s 배포 검증은 여전히 남아 있다.
 
 두 임시 컨테이너 `muhan-normalized-contract-7f913c`, `muhan-normalized-contract-7f913d`는 테스트 라벨/ID를 확인한 뒤 종료했고 auto-remove 및 컨테이너 목록 부재를 확인했다. tmpfs의 합성 테스트 데이터도 제거되었다. 재현용 전체 자동 orchestration script와 독립 변경 리뷰는 후속 작업이다.
+
+## 전용 연결 풀 adapter — 2026-09-07
+
+`PostgresNormalizedProjectionSessionReader`를 추가했다. 별도 전용 login URL만 허용하고 writer pool과 공유하지 않는다. 조회마다 연결을 독점해 `BEGIN READ ONLY` 후 current/session user 및 기본 read-only 설정을 검사하고 기존 SQL adapter를 호출한다. 성공·실패 모두 rollback 후 release하며 실패한 연결은 재사용하지 않도록 destroy한다. `close()`는 소유한 pool을 종료한다. 이 클래스는 아직 운영 CLI/worker에 자동 연결되지 않았다.
+
+테스트를 먼저 작성해 모듈 부재로 실패하는 것을 확인한 뒤 구현했다. 정상 정리, 계정/기본 설정 불일치, BEGIN/조회/ROLLBACK 실패, 잘못된 URL 거부의 4개 테스트가 통과했다. typecheck/build 및 전체 C→Rust→Node bridge는 155 tests, 150 pass, 0 fail, 5 기존 조건부 skip이다.
+
+별도 새 PostgreSQL 17 컨테이너에서 게임 migration, 실제 Rust fixture seed, 전용 login을 준비하고 integration 실행기에 이 연결 pool 경로를 추가해 실행했다. 기존 직접 SQL 검증과 함께 pool 재사용 2회 모두 기존 행 전체와 일치했다. `muhan-normalized-session-834be1`은 라벨/ID 확인 후 종료했고 auto-remove와 목록 부재를 확인했다. 운영 DB/k8s는 변경하지 않았다. 다음은 운영 comparison job의 입력·종료·결과 계약을 이 연결 경로에 붙이고 배포 전 검증하는 단계다.

@@ -65,6 +65,13 @@ try {
   await assert.rejects(client.query('select payload from private.game_character_player_snapshot_v1_artifacts limit 0'), { code: '42501' })
   await client.query('rollback to savepoint denied_payload')
   assert.equal((await reader.findByIdentity(identity)).length, 1)
+  const { PostgresNormalizedProjectionSessionReader } = await import('../../services/m4-file-snapshot-manifest-relay/dist/player-snapshot-v1-normalized-projection-session.js')
+  const sessions = new PostgresNormalizedProjectionSessionReader(url.toString())
+  try {
+    assert.deepEqual(await sessions.findByIdentity(identity), records)
+    // Reusing the pool must not inherit an unfinished transaction.
+    assert.deepEqual(await sessions.findByIdentity(identity), records)
+  } finally { await sessions.close() }
 } catch {
   // Do not print connection strings, fixture bytes, or raw PostgreSQL errors.
   console.error('Normalized reader integration failed')
@@ -78,5 +85,5 @@ try {
   }
 }
 if (process.exitCode !== 1) {
-  console.log('Normalized reader integration passed: real SQL, fixture projection, world scope, and payload exclusion')
+  console.log('Normalized reader integration passed: real SQL, fixture projection, world scope, payload exclusion, and pooled sessions')
 }
