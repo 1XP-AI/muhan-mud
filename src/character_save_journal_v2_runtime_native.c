@@ -325,6 +325,17 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
         fprintf(stderr,"M3 owner startup failed: startup=%d recovery=%d\n",
             (int)native->process_owner.startup_result,
             (int)native->process_owner.recovery_result);
+        {
+            unsigned int outcome;
+            for(outcome=0;outcome<=CHARACTER_SAVE_JOURNAL_V2_PUBLISH_IO;outcome++)
+                if(native->process_owner.recovery_report.publish_results[outcome])
+                    fprintf(stderr,"M3 recovery publish: outcome=%u count=%u\n",
+                        outcome,native->process_owner.recovery_report.publish_results[outcome]);
+            for(outcome=0;outcome<=CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE;outcome++)
+                if(native->process_owner.recovery_report.ack_results[outcome])
+                    fprintf(stderr,"M3 recovery ack: outcome=%u count=%u\n",
+                        outcome,native->process_owner.recovery_report.ack_results[outcome]);
+        }
         goto failed;
     }
     native->shadow_active=1;
