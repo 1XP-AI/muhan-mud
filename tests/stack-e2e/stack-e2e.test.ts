@@ -987,6 +987,9 @@ async function main(): Promise<void> {
     } catch (error) {
       const state = await sql(`select i.status || '|' || c.lifecycle from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${importedClaimCharacterId}' where i.correlation_id = '${importedClaimCorrelation}'`)
       process.stderr.write(`stack-e2e: positive-claim phase=${claimCompletionPhase} state=${state} error-frame=${claim.json('error')} socket=${claim.ws.readyState}\n`)
+      const headCount = await sql(`select count(*) from private.game_character_legacy_heads where character_id = '${importedClaimCharacterId}'`)
+      const saveFailures = mudDiagnostics.match(/M3 player save failed: step=[a-z-]+ cutpoint=[0-9]+/g) ?? []
+      process.stderr.write(`stack-e2e: positive-claim heads=${headCount} save-failures=${JSON.stringify(saveFailures)}\n`)
       throw error
     }
     process.stderr.write('stack-e2e: claim-rpc-green\n')
