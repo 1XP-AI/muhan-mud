@@ -1,5 +1,38 @@
 # Live bank capture and transaction gap
 
+## Native release authority and failure preservation — 2026-09-08
+
+Source `34203d7` moves the two-save fixture's release decision from the Node
+test parent into C. C reconciles the exact immutable request, checks its
+committed revision, reselects the same character/owner under writer authority,
+and compares the current DB snapshot with the pending bytes. Only then does
+it invoke the trusted private-directory release recorder. The parent now
+independently verifies the persisted resolved record rather than authorizing
+the release itself.
+
+Source `b489304` adds native negative cases: a fixture-owned disconnected DB
+socket, a mismatched committed revision, and a mismatched captured owner.
+Every rejected release must preserve the complete context; after restoring
+the correct context, adoption must still fail until a real release succeeds.
+These are caller-context mismatch tests, not simulated database owner turnover.
+
+Frozen full local Linux ARM64 runner at `b489304` exited 0 through process
+handle 24488; evidence `/tmp/muhan-native-release-negative.log`. The run
+includes the native two-save/registry fixture, existing recovery and money
+contracts, C/Rust differential checks, sanitizers, actual C onboarding, and
+the legacy canonical/tree-inventory backup/restore profiles. It does not
+prove complete restoration of the new intent ledger or production readiness.
+The earlier `34203d7` log reached restore success but its terminal exit code
+was unavailable; this new observed exit is the authoritative full-run result.
+
+The helper's `--record-verified-release` mode is an internal filesystem
+recorder, not a standalone DB verifier. C's DB reads precede its filesystem
+lock; this is not an atomic DB/filesystem transaction. The caller must retain
+per-character authority throughout release and adoption, and subsequent writes
+still require the shared fence and DB CAS. This API is not installed in the
+production login/disconnect path. The pending pre-disconnect versus post-uninit
+state transition remains an integration gap; no production cutover is claimed.
+
 ## Never-committed queue recovery — 2026-09-08
 
 Source `47b686c` adds the previously missing first-commit recovery case. Before
