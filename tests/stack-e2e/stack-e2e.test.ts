@@ -634,7 +634,7 @@ async function main(): Promise<void> {
     const diagnosticFetch: typeof fetch = async (input, init) => {
       const response = await fetch(input, init)
       const path = new URL(String(input)).pathname
-      if (!response.ok && ['/rpc/finalize_game_character_provisioning', '/rpc/reconcile_game_character_provisioning'].includes(path)) {
+      if (!response.ok && path.startsWith('/rpc/')) {
         const error = await response.clone().json().catch(() => ({})) as Record<string, unknown>
         completionRpcErrors.push({ path, status: response.status, code: error.code, message: error.message })
       }
