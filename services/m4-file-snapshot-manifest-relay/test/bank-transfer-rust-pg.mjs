@@ -41,6 +41,7 @@ const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,tex
 const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
 const recoverySignature='private.reconcile_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea,uuid,bigint)'
 const playerRouteSignature='private.resolve_player_paired_route(text,text,uuid,bigint)'
+const playerLoadSignature='private.read_player_paired_snapshot(text,text,uuid,bigint,uuid,bigint)'
 const playerRouteSql='select * from private.resolve_player_paired_route($1,$2,$3,$4)'
 const nativeRoute=values=>{
   assert.ok(process.env.PLAYER_PAIRED_ROUTE_NATIVE?.startsWith('/'))
@@ -98,6 +99,8 @@ try {
     await login.connect(); await login.query('set role mud_writer')
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRouteSignature,'EXECUTE'])).rows[0].allowed,false)
     await db.query(`grant execute on function ${playerRouteSignature} to mud_writer`)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerLoadSignature,'EXECUTE'])).rows[0].allowed,false)
+    await db.query(`grant execute on function ${playerLoadSignature} to mud_writer`)
     const routeName=(await db.query('select legacy_name from public.game_characters where id=$1',[id])).rows[0].legacy_name
     const routed=(await login.query(playerRouteSql,[world,routeName,writer,1])).rows
     assert.equal(routed.length,1);assert.equal(routed[0].character_id,id);assert.equal(routed[0].owner_user_id,actor);assert.equal(routed[0].revision,'0')
@@ -486,10 +489,12 @@ try {
     await db.query(`revoke execute on function ${readSignature} from mud_writer`)
     await db.query(`revoke execute on function ${recoverySignature} from mud_writer`)
     await db.query(`revoke execute on function ${playerRouteSignature} from mud_writer`)
+    await db.query(`revoke execute on function ${playerLoadSignature} from mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRouteSignature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerLoadSignature,'EXECUTE'])).rows[0].allowed,false)
   }
   await db.end()
 }
