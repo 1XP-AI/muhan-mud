@@ -47,6 +47,7 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/trusted-admission-test
     /repo/services/m4-file-snapshot-manifest-relay/node_modules/.bin/tsc -p services/m4-file-snapshot-manifest-relay/tsconfig.json
     node services/m4-file-snapshot-manifest-relay/test/money-character-fence.mjs
+    node services/m4-file-snapshot-manifest-relay/test/player-pending-request.mjs
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-normalized-projection-bridge.sh
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-artifact-conformance.sh
     make -C src bank-snapshot-v1-test bank-snapshot-v1-artifact-test

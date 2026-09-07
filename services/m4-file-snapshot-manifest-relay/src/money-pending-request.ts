@@ -3,9 +3,8 @@
 import {constants} from 'node:fs'
 import {open,link,unlink,opendir} from 'node:fs/promises'
 import {spawnSync} from 'node:child_process'
-import {isAbsolute} from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
-const MAX=12*1024*1024
+import {pendingDirectory as directory,readPendingBytes,publishPendingBytes} from './pending-record-store.js'
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const hash=(body:string)=>createHash('sha256').update(body).digest('hex')
 function validate(args:string[],frame:Buffer):void {
@@ -33,31 +32,9 @@ function decode(bytes:Buffer,command?:string):{args:string[],frame:Buffer} {
   if((command!==undefined&&value.args[7]!==command)||!encode(value.args,frame).equals(bytes)) throw new Error('noncanonical pending record')
   return {args:value.args,frame}
 }
-async function directory(root:string) {
-  if(process.platform!=='linux'||!isAbsolute(root)) throw new Error('pending store requires absolute Linux directory')
-  const fd=await open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW)
-  try {
-    const stat=await fd.stat()
-    if(!stat.isDirectory()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o700) throw new Error('pending directory must be private and owned')
-    return fd
-  } catch(error) { await fd.close(); throw error }
-}
 async function readRecordAt(base:string,name:string,command?:string) {
-  const fd=await open(`${base}/${name}`,constants.O_RDONLY|constants.O_NOFOLLOW)
-  try {
-    const stat=await fd.stat()
-    if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size>MAX) throw new Error('invalid pending file')
-    const bytes=Buffer.alloc(stat.size+1)
-    let used=0
-    while(used<bytes.length) {
-      const {bytesRead}=await fd.read(bytes,used,bytes.length-used,null)
-      if(bytesRead===0) break
-      used+=bytesRead
-    }
-    if(used!==stat.size) throw new Error('pending file changed during read')
-    const result=decode(bytes.subarray(0,used),command)
-    return {bytes:bytes.subarray(0,used),result}
-  } finally { await fd.close() }
+  const bytes=await readPendingBytes(base,name)
+  return {bytes,result:decode(bytes,command)}
 }
 async function readAt(base:string,command:string) {
   return readRecordAt(base,`${command}.money-request`,command)
@@ -196,25 +173,5 @@ export async function visitMoneyPending(root:string,visit:(request:{args:string[
 }
 export async function prepareMoneyPending(root:string,args:string[],frame:Buffer):Promise<'PREPARED'|'EXACT_RETRY'> {
   const bytes=encode(args,frame),command=args[7]
-  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
-  const temp=`${base}/.${command}.${randomUUID()}.tmp`,target=`${base}/${command}.money-request`
-  let created=false
-  try {
-    const fd=await open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
-    created=true
-    try { await fd.writeFile(bytes); await fd.sync() } finally { await fd.close() }
-    let outcome:'PREPARED'|'EXACT_RETRY'='PREPARED'
-    try { await link(temp,target) }
-    catch(error) {
-      if((error as NodeJS.ErrnoException).code!=='EEXIST') throw error
-      if(!(await readAt(base,command)).bytes.equals(bytes)) throw new Error('pending command conflict')
-      outcome='EXACT_RETRY'
-    }
-    await unlink(temp); created=false
-    await dir.sync()
-    return outcome
-  } finally {
-    if(created) await unlink(temp).catch(()=>{})
-    await dir.close()
-  }
+  return publishPendingBytes(root,`${command}.money-request`,bytes)
 }
