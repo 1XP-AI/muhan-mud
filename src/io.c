@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include <signal.h>
 #include <sys/types.h>
 
 #ifndef WIN32
@@ -50,7 +51,7 @@ typedef struct wq_tag {
 
 int				Numplayers;
 int				Numwaiting;
-int				Deadchildren;
+volatile sig_atomic_t Deadchildren;
 static wq_tag			*First_wait;
 static int			Waitsock = -1;
 static fd_set			Sockets;
@@ -1710,7 +1711,7 @@ char	*str;
 
 void child_died()
 {
-	Deadchildren++;
+	Deadchildren = 1;
 #ifndef WIN32
 	signal(SIGCHLD, child_died);
 #endif
@@ -1737,10 +1738,15 @@ void reap_children()
 	strcpy(timestr, (char *)ctime(&t));
 	timestr[strlen(timestr)-1] = 0;
 
-	while(Deadchildren > 0) {
-		Deadchildren--;
+	/* SIGCHLD is only a hint: signals coalesce and synchronous owners may
+	 * already have reaped their child. Never wait for a still-running child.
+	 * Clear before draining so a signal arriving during processing stays set. */
+	Deadchildren = 0;
+	for(;;) {
+		pid = waitpid(-1, &status, WNOHANG);
+		if(pid < 0 && errno == EINTR) continue;
+		if(pid <= 0) break;
 		found = -1;
-		pid = wait(&status);
 		sprintf(filename, "%s/auth/lookup.%d", LOGPATH, pid);
 		for(i=0; i<Tablesize; i++) {
 			if(Ply[i].io && Ply[i].io->lookup_pid == pid) {
@@ -1768,7 +1774,5 @@ void reap_children()
 			strcpy(Ply[found].io->address, address);
 	}
 
-	/* just in case, kill off any zombies */
-	wait4(-1, &status, WNOHANG, (struct rusage *)0);
 #endif
 }

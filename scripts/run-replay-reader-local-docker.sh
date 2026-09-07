@@ -40,6 +40,10 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-artifact-conformance.sh
     make -C src bank-snapshot-v1-test bank-snapshot-v1-artifact-test
     make -C src bank-transfer-snapshot-v1-test bank-transfer-snapshot-v1-sanitizer-test
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
+      -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/child_reaper_test.c src/io.c -Wl,--gc-sections -o /tmp/child-reaper-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/child-reaper-test
     # Characterization only: explicitly exposes the legacy cross-file failure gap.
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       tests/unit/bank_transfer_legacy_characterization.c src/bank.c \
