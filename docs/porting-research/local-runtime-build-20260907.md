@@ -2,6 +2,24 @@
 
 ## Latest execution
 
+### Reconciler packaging gate
+
+While Docker VM capacity remains zero, inspected the deployment recipe and
+found it copies only reconciler package.json and dist, but no pg dependency.
+The reconciler's two direct PostgreSQL adapters require pg at construction.
+Added an infrastructure regression test (initially failed) and changed the
+reconciler stage to pnpm deploy production output, copying its node_modules.
+
+An actual host-side frozen-workspace install/build/deploy then exposed a second
+failure: the service's dist gitignore excluded compiled output from deployment.
+Adding `files: ["dist"]` to its package manifest restored that output. The
+resulting standalone package successfully instantiated and closed both real
+PostgreSQL adapters without connecting to a database. Evidence remains under
+`/tmp/muhan-reconciler-package.pLUhRe` (`out` failed, `out-fixed` passed).
+Host validation used pnpm 10.15.1 / Node 24.10.0, not runtime Node 22; complete
+Docker runtime acceptance is still required. Both app and infrastructure changes
+must be used together in the next build.
+
 ### Storage diagnosis after the failed build
 
 A read-only container from retained successful test image
