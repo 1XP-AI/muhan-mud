@@ -280,3 +280,27 @@ the SQL RPC was tested against actual Postgres separately. A real filesystem
 through new adapter to Postgres end-to-end run, bank backup/restore, and C/Rust
 verification of those restored bank bytes remain to be implemented and run.
 No production activation or testnet deployment was performed.
+# Real bank payload filesystem / PostgreSQL E2E
+
+Frozen source `17f5641`, local runner exit 0:
+`/tmp/muhan-bank-real-pg-e2e.log`.
+
+New `test/bank-payload-local-pg.mjs` creates a private temporary outbox containing
+an actual M3 manifest and canonical bank artifact (one root, two children,
+signed-i64 minimum root value). It calls the production payload CLI without
+dependency injection, using the real descriptor-rooted scanner, parser,
+Postgres adapter, authenticated writer login and database RPC.
+
+Observed results: first scan `recorded=1`, second `exactRetry=1`, corrupt-file
+scan `invalid=1, delivered=0`. SQL comparison verifies complete byte equality,
+stored SHA-256 and unchanged recorded_at across retry/rejection. The relay
+does not alter source files. The test alone mutates its own disposable fixture
+for the negative case and removes its exact temporary directory afterward.
+
+All existing local gates also passed (165 relay tests, artifact conformance,
+bank SQL contracts and both player restore profiles). No cloud CI, image build
+or deployment was used.
+
+Remaining bank gap: a backup containing nonempty bank payload rows and
+C/Rust validation of those restored bytes. This E2E demonstrates persistence,
+not production bank capture coverage, bank restore, or live DB authority.
