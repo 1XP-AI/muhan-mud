@@ -78,6 +78,10 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       -Dfopen=child_reaper_test_fopen -Dunlink=child_reaper_test_unlink \
       tests/unit/child_reaper_test.c src/io.c -Wl,--gc-sections -o /tmp/child-reaper-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/child-reaper-test
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
+      -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/player_disconnect_persist_test.c src/io.c -Wl,--gc-sections -o /tmp/player-disconnect-persist-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/player-disconnect-persist-test
     # Characterization only: explicitly exposes the legacy cross-file failure gap.
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       tests/unit/bank_transfer_legacy_characterization.c src/bank.c \

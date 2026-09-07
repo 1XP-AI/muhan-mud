@@ -1299,10 +1299,32 @@ void handle_commands()
 /* by the first parameter, clears his spot in the socket bit-array, and     */
 /* removes him from the player array by freeing all memory taken by him.    */
 
+#include "player_disconnect_persist.h"
+
+int player_disconnect_persist(creature **owned)
+{
+	int save_result;
+	if(!owned) return -1;
+	if(!*owned) return 0;
+	if((*owned)->fd > -1) {
+		uninit_ply(*owned);
+		save_result = save_ply((*owned)->name, *owned);
+		if(save_result != PLAYER_STORE_OK) {
+			log_f("disconnect: %s 저장 실패 (%d)\n", (*owned)->name, save_result);
+			if(player_recovery_enqueue(*owned) != 0) return -1;
+			*owned = 0;
+			return 0;
+		}
+	}
+	free_crt(*owned);
+	*owned = 0;
+	return 0;
+}
+
 void disconnect(fd)
 int 	fd;
 {
-	int 	i, save_result;
+	int 	i;
 	etag	*ign, *temp;
 	wq_tag	*wq;
 
@@ -1359,26 +1381,11 @@ int 	fd;
 				if(Spy[i] == fd) Spy[i] = -1;
 			F_CLR(Ply[fd].ply, PSPYON);
 		}
-		if(Ply[fd].ply->fd > -1) {
-			uninit_ply(Ply[fd].ply);
-			save_result = save_ply(Ply[fd].ply->name, Ply[fd].ply);
-			if(save_result != PLAYER_STORE_OK) {
-				log_f("disconnect: %s 저장 실패 (%d)\n",
-					Ply[fd].ply->name, save_result);
-				if(player_recovery_enqueue(Ply[fd].ply) == 0) {
-					Ply[fd].ply = 0;
-				}
-				else {
-					log_f("disconnect: recovery ownership exhausted for %s; stopping server\n",
-						Ply[fd].ply->name);
-					merror("player recovery ownership", FATAL);
-					return;
-				}
-			}
-		}
-		if(Ply[fd].ply) {
-			free_crt(Ply[fd].ply);
-			Ply[fd].ply = 0;
+		if(player_disconnect_persist(&Ply[fd].ply) != 0) {
+			log_f("disconnect: recovery ownership exhausted for %s; stopping server\n",
+				Ply[fd].ply->name);
+			merror("player recovery ownership", FATAL);
+			return;
 		}
 	}
 	else {
