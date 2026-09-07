@@ -1,5 +1,32 @@
 # Live bank capture and transaction gap
 
+## Reservation enforcement exposes missing release lifecycle — 2026-09-07
+
+Source `304dbf6` first reproduced that the preparation CLI accepted another
+command despite an existing character reservation. `2de3309` adds a bounded
+legacy-request/conflict preflight followed by exclusive durable reservation,
+then request preparation. No frame is echoed on conflict, invalid discovery,
+or scan truncation. Old unfenced senders must be stopped before adopting this
+protocol; preflight alone cannot serialize them.
+
+Verification is INCOMPLETE/RED, not a passing full suite. The reservation CLI
+regression passes, as do qualified normal transactions and lost-ack retry.
+The real all-money sequence then fails at bank-transfer-rust-pg.mjs's second
+new transaction (native status 4 instead of success): the first confirmed
+transaction's reservation intentionally remains. Evidence:
+`/tmp/muhan-money-fence-enforce.log`, terminal exit 1 at `2de3309`.
+Do not evade this by changing directories, clearing reservations in tests, or
+loosening the reservation check. Sequential normal transfers must work again
+through an explicit verified release lifecycle before this is accepted.
+
+Next requirement: serialize claim/release for the same character, verify exact
+reservation identity plus authoritative terminal DB outcome/current-state
+adoption, preserve the immutable historical request, then durably release only
+that reservation. A read-then-unlink without serialization can delete a newer
+reservation when two recovery workers race; it is not an acceptable release.
+Unknown outcomes and partial release failures must stay fenced. No deployment
+or Actions run was performed; runtime policy installation remains disabled.
+
 ## Recovery discovers fence-only interrupted preparation — 2026-09-07
 
 Test-first source `5110cd6` failed with zero records instead of two because the
