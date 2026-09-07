@@ -232,3 +232,26 @@ Remaining: persist full receipt-bound bank payload in Postgres, connect its read
 path to this verifier, then prove C/Rust differential and backup/restore against
 that persisted payload before any live authority switch. This API alone is not
 evidence that DB-backed bank restore is implemented.
+# Complete bank payload persistence (local, not live authority)
+
+Migration `20261016000000_bank_snapshot_v1_payload.sql` adds an immutable
+private payload table and writer-only receipt-bound RPC. The SQL decoder checks
+the kind-8 envelope, its digest, the canonical nested object graph and exactly
+one root. It derives topology from the actual bytes and reuses the existing
+M3/M4/topology writer checks; payload SHA-256 and bytes are stored together.
+No table access was granted to the web or writer login.
+
+Frozen source `04e0a35` passed local Linux ARM64/Postgres 17 acceptance, exit 0:
+`/tmp/muhan-bank-payload-contract-regression.log`. The contract fails before the
+migration (missing payload decoder), then passes after applying it twice.
+Verified complete-byte equality, exact retry, different canonical payload
+conflict, wrong request hash, missing M4 manifest, bad digest, malformed input,
+writer identity and direct SELECT/UPDATE/DELETE restrictions. Relay 163 tests,
+bank C tests, previous bank SQL gates, and both player C/Rust restore profiles
+also remain green.
+
+Still required: connect the actual bank relay to this RPC, add a narrowly
+authorized read path, persist nonempty bank payloads in backup fixtures and
+verify restored bytes through C and Rust. Existing player restore success does
+NOT prove bank payload restoration. No migration was applied to testnet and
+no legacy bank authority was switched.
