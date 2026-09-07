@@ -78,8 +78,11 @@ select pg_temp.assert_true(
     'full_payload_rehearsal_contract_unrelated_parent',
     'set'
   )
-  and (select password_hash from pg_temp.full_payload_rehearsal_replay_baseline) is not distinct from
-    (select rolpassword from pg_authid where rolname = 'mud_full_payload_rehearsal_reader_login'),
+  and not exists (
+    select 1 from pg_temp.full_payload_rehearsal_replay_baseline baseline
+    where baseline.password_hash is distinct from
+      (select rolpassword from pg_authid where rolname = 'mud_full_payload_rehearsal_reader_login')
+  ),
   'replay must remove only reader memberships and preserve its password hash'
 );
 
