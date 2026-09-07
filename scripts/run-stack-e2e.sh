@@ -149,6 +149,7 @@ apply_sql "$repo_root/supabase/migrations/20261011000000_pending_onboarding_snap
 apply_sql "$repo_root/supabase/migrations/20261012000000_pending_onboarding_snapshot_eligibility_login_hardening.sql"
 apply_sql "$repo_root/supabase/migrations/20261013000000_private_function_execute_hardening.sql"
 apply_sql "$repo_root/supabase/migrations/20261014000000_player_snapshot_normalized_v1_replay_reader.sql"
+apply_sql "$repo_root/supabase/migrations/20261015000000_provisioning_completion_head_qualification.sql"
 
 postgres_port="$(docker port "$postgres_name" 5432/tcp 2>/dev/null | sed -n '1s/.*://p' || true)"
 if [[ -z "$postgres_port" ]]; then
