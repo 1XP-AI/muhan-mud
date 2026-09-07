@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {spawn} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
-import {claimMoneyCharacterFence,prepareMoneyPending,visitMoneyPending} from '../dist/money-pending-request.js'
+import {claimMoneyCharacterFence,prepareMoneyPending,visitMoneyPending,resolveMoneyCharacterFence} from '../dist/money-pending-request.js'
 import {recoverMoneyPendingOnce} from '../dist/money-pending-recovery.js'
 const args=['a0000000-0000-4000-8000-000000000001','fence-world','a0000000-0000-4000-8000-000000000002',
  'a0000000-0000-4000-8000-000000000003','gateway','a0000000-0000-4000-8000-000000000004','1',
@@ -59,5 +59,19 @@ if(process.argv[2]==='--child') {
   assert.equal(queries,2)
   assert.deepEqual(await readFile(join(root,files[0])),saved)
   console.log('GREEN durable character fence: one process wins, restart retries exactly, other command blocked, other character independent')
+  const winning=requests.find(r=>r.args[0]===args[0])
+  await assert.rejects(resolveMoneyCharacterFence(root,winning.args,frame,async()=>{throw new Error('unconfirmed')}),/unconfirmed/)
+  assert.deepEqual(await readFile(join(root,files[0])),saved)
+  let begin,finish
+  const entered=new Promise(r=>{begin=r}),gate=new Promise(r=>{finish=r})
+  const releasing=resolveMoneyCharacterFence(root,winning.args,frame,async()=>{begin();await gate})
+  await entered
+  assert.equal((await child(commands[(winner+1)%8])).code,2,'claim must not race release')
+  finish();await releasing
+  assert.deepEqual(await readFile(join(root,`${winning.args[7]}.money-request`)),saved)
+  assert.equal((await child(commands[winner])).code,2,'resolved command cannot reacquire')
+  assert.equal((await child(commands[(winner+1)%8])).code,0)
+  await assert.rejects(resolveMoneyCharacterFence(root,winning.args,frame,async()=>{}),/different active/)
+  console.log('GREEN serialized release preserves history, rejects unconfirmed release and cannot remove a newer reservation')
  } finally {await rm(root,{recursive:true,force:true})}
 }

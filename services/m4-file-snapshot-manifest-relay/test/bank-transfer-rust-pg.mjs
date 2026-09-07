@@ -5,6 +5,7 @@ import { readFile,mkdtemp,rm,appendFile } from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../dist/money-pending-request.js'
+import {releaseConfirmedMoney} from '../dist/money-pending-release.js'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
@@ -372,6 +373,14 @@ try {
       assert.equal(rejected.status,4); assert.equal(rejected.stdout.length,0)
       await assert.rejects(readMoneyPending(amountRoot,empty[1]),{code:'ENOENT'})
       assert.deepEqual(await read(),afterAll)
+      // Normal sequence must use verified release, not a fresh directory or
+      // manual deletion. No reconcile grant escapes this disposable block.
+      await db.query(`grant execute on function ${recoverySignature} to mud_writer`)
+      try {
+        await assert.rejects(releaseConfirmedMoney(amountRoot,saved.args,saved.frame,{query:async()=>({rows:[{outcome:'UNRESOLVED',committed_revision:null}]})}),/unconfirmed/)
+        await releaseConfirmedMoney(amountRoot,saved.args,saved.frame,login)
+        assert.deepEqual(await readMoneyPending(amountRoot,depositAll[1]),saved)
+      } finally {await db.query(`revoke execute on function ${recoverySignature} from mud_writer`)}
       const withdraw=[id,'c9250000-0000-0000-0000-000000000003',3,'withdraw','000100냥',player,bank]
       const withdrawn=nativeCommit(withdraw,authority,'',amountRoot,true)
       assert.equal(withdrawn.status,0,withdrawn.stderr.toString()); assert.equal(withdrawn.stdout.toString(),'COMMITTED 4\n')

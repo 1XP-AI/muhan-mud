@@ -1,7 +1,7 @@
 // Durable transport request, not a second gameplay database. Retain until an
 // independently confirmed commit/retry is reconciled; never rewrite on retry.
 import {constants} from 'node:fs'
-import {open,link,unlink,opendir} from 'node:fs/promises'
+import {open,link,unlink,opendir,mkdir,rmdir} from 'node:fs/promises'
 import {isAbsolute} from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
 const MAX=12*1024*1024
@@ -67,16 +67,22 @@ export async function readMoneyPending(root:string,command:string) {
   try { return (await readAt(`/proc/self/fd/${dir.fd}`,command)).result }
   finally { await dir.close() }
 }
-// Durable per-character reservation primitive. No release API: a DB-confirmed
-// current-state recovery protocol must own release before runtime adoption.
+// Durable per-character reservation primitive. Shared claim/release lock is
+// fail-closed after process death; never reclaim a stale lock automatically.
 // Unlike a directory scan, the exclusive link serializes competing processes.
 export async function claimMoneyCharacterFence(root:string,args:string[],frame:Buffer):Promise<'CLAIMED'|'EXACT_RETRY'> {
   const bytes=encode(args,frame)
   const key=hash(JSON.stringify([args[1],args[0]]))
   const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
   const target=`${base}/${key}.money-fence`,temp=`${base}/.${key}.${randomUUID()}.tmp`
-  let created=false
+  const lock=`${base}/${key}.money-lock`
+  let created=false,locked=false
   try {
+    await mkdir(lock,{mode:0o700});locked=true;await dir.sync()
+    try {
+      await readRecordAt(base,`${args[7]}.money-resolved`,args[7])
+      throw new Error('money command already resolved')
+    } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
     const fd=await open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
     created=true
     try {await fd.writeFile(bytes);await fd.sync()} finally {await fd.close()}
@@ -104,12 +110,40 @@ export async function claimMoneyCharacterFence(root:string,args:string[],frame:B
     await unlink(temp);created=false;await dir.sync();return outcome
   } finally {
     if(created) await unlink(temp).catch(()=>{})
-    await dir.close()
+    try {if(locked) {await rmdir(lock);await dir.sync()}} finally {await dir.close()}
+  }
+}
+// Internal storage operation: verifier must independently establish exact DB
+// confirmation and current-source agreement. Retain request and a durable
+// resolution record before unlinking only the serialized matching reservation.
+export async function resolveMoneyCharacterFence(root:string,args:string[],frame:Buffer,verify:()=>Promise<void>):Promise<void> {
+  const bytes=encode(args,frame),key=hash(JSON.stringify([args[1],args[0]]))
+  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`,lock=`${base}/${key}.money-lock`
+  const temp=`${base}/.${key}.${randomUUID()}.tmp`
+  let locked=false,created=false
+  try {
+    await mkdir(lock,{mode:0o700});locked=true;await dir.sync()
+    const fence=await readRecordAt(base,`${key}.money-fence`)
+    if(!fence.bytes.equals(bytes)) throw new Error('different active money reservation')
+    await verify()
+    // A fence-only interrupted preparation must also retain ordinary history.
+    await prepareMoneyPending(root,args,frame)
+    const fd=await open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
+    created=true
+    try {await fd.writeFile(bytes);await fd.sync()} finally {await fd.close()}
+    try {await link(temp,`${base}/${args[7]}.money-resolved`)} catch(error) {
+      if((error as NodeJS.ErrnoException).code!=='EEXIST'||!(await readRecordAt(base,`${args[7]}.money-resolved`,args[7])).bytes.equals(bytes)) throw error
+    }
+    await unlink(temp);created=false;await dir.sync()
+    await unlink(`${base}/${key}.money-fence`);await dir.sync()
+  } finally {
+    if(created) await unlink(temp).catch(()=>{})
+    try {if(locked) {await rmdir(lock);await dir.sync()}} finally {await dir.close()}
   }
 }
 // Bounded sequential visitor: never hold many multi-megabyte requests in memory.
 // Keep one directory capability across discovery and every record read.
-export async function visitMoneyPending(root:string,visit:(request:{args:string[],frame:Buffer}|null)=>Promise<void>,limit=1000):Promise<boolean> {
+export async function visitMoneyPending(root:string,visit:(request:{args:string[],frame:Buffer}|null)=>Promise<void>,limit=1000,skipResolved=false):Promise<boolean> {
   if(!Number.isInteger(limit)||limit<1||limit>1000) throw new Error('invalid scan limit')
   const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
   try {
@@ -125,6 +159,13 @@ export async function visitMoneyPending(root:string,visit:(request:{args:string[
       try {
         if(fence?!/^[0-9a-f]{64}$/.test(key):!uuid.test(key)) throw new Error('invalid pending filename')
         const record=await readRecordAt(base,entry.name,fence?undefined:key)
+        if(skipResolved&&!fence) {
+          try {
+            const resolved=await readRecordAt(base,`${key}.money-resolved`,key)
+            if(!resolved.bytes.equals(record.bytes)) throw new Error('conflicting resolution')
+            continue
+          } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
+        }
         if(fence&&key!==hash(JSON.stringify([record.result.args[1],record.result.args[0]]))) throw new Error('wrong character fence key')
         const command=record.result.args[7],digest=createHash('sha256').update(record.bytes).digest('hex')
         if(seen.has(command)) {

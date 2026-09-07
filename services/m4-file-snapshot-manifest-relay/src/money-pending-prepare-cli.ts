@@ -21,7 +21,7 @@ async function main() {
     if(!request) {conflict=true;return}
     if(request.args[0]===args[0]&&request.args[1]===args[1]
        &&(JSON.stringify(request.args)!==JSON.stringify(args)||!request.frame.equals(frame))) conflict=true
-  })
+  },1000,true)
   if(conflict||truncated) throw new Error('pending recovery required before preparation')
   // Exclusive publication is the process-race arbiter. A crash after this
   // point leaves a complete recoverable fence even without a request file.
