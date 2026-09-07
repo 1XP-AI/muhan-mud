@@ -114,6 +114,9 @@ try {
         // The writer has already locked/read its live session when it waits
         // on the snapshot row. Eligibility must use time AFTER that wait.
         await login.query("set statement_timeout='10s'")
+        // Override the role's short lock timeout only in this disposable
+        // session, so expiry rather than lock timeout decides this case.
+        await login.query("set lock_timeout='5s'")
         const pid=(await login.query('select pg_backend_pid() pid')).rows[0].pid
         await db.query("update private.game_character_sessions set expires_at=clock_timestamp()+interval '3 seconds' where character_id=$1",[id])
         await db.query('begin')
