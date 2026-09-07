@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromium, expect, type Page } from "@playwright/test";
+import { sql } from "./sql-transport.js";
 
 import {
   completeClaimThroughRenderedXterm,
@@ -464,7 +465,16 @@ export async function runWebStackAcceptance({
     await expect(provisionTerminal).toContainText(/새 암호를/);
     await provisionPage.getByLabel("게임 비밀번호 입력").fill(provision.gamePassword);
     await provisionPage.getByRole("button", { name: "보내기" }).click();
-    await assertRosterThenAdmission(provisionPage, provision.characterName);
+    try {
+      await assertRosterThenAdmission(provisionPage, provision.characterName);
+    } catch (error) {
+      assert.match(provision.userId, /^[0-9a-f-]{36}$/);
+      const state = await sql(`select i.status || '|' || coalesce(p.status, 'none') || '|' || coalesce(c.lifecycle, 'none') from private.game_character_onboarding_intents i left join private.game_character_provisioning_requests p using(correlation_id) left join public.game_characters c on c.id=p.character_id where i.actor_user_id='${provision.userId}'`);
+      let terminal = await provisionTerminal.textContent() ?? "";
+      for (const secret of [provision.accessToken, provision.gamePassword, provision.email]) terminal = terminal.split(secret).join("<REDACTED>");
+      process.stderr.write(`stack-e2e: web-provision-state=${state} terminal=${JSON.stringify(terminal.slice(-1200))}\n`);
+      throw error;
+    }
     await provisionContext.close();
 
     const claimContext = await browser.newContext({ baseURL: server.baseUrl });
