@@ -1,5 +1,37 @@
 # Live bank capture and transaction gap
 
+## Shared player/money character reservation — 2026-09-07
+
+Source `b1cfdba` moves the existing kernel flock implementation into shared
+pending storage without changing its stable `.money-lock` inode or world/UUID
+key. Money claim now rejects a matching player fence under that lock; player
+claim rejects a matching money fence and publishes the complete immutable
+player request as `.player-fence` before ordinary request publication.
+Player publication holds the same directory capability throughout.
+
+Both preparation CLIs now scan pending evidence from both operation types,
+reject invalid/truncated discovery, then claim under the shared lock. The scan
+protects adoption of existing request-only records; it is not the race arbiter.
+Old unfenced senders must be stopped and both paths must share one private
+pending directory. A bounded player visitor reads both fence and request forms,
+validates the character key and deduplicates byte-identical command copies.
+
+The new mixed-process test races eight distinct money/player commands for one
+character and observes exactly one winner. Fresh-process exact retry preserves
+the winner's bytes; the opposite operation is refused. Separate characters
+test both blocking directions deterministically. Existing money release,
+SIGKILL/restart tests and native prepared-save integration remain passing.
+Full frozen ARM64 runner at `b1cfdba` exited 0, observed via its process handle;
+evidence `/tmp/muhan-cross-player-money.log`. C onboarding, differential,
+sanitizer and both restore profiles also ran successfully.
+
+Remaining: player historical DB reconciliation and independently verified
+release are absent. Player reservations intentionally remain blocking; this
+must not be installed as ordinary gameplay persistence until release/recovery
+and baseline lifetime are complete. The new visitor still needs dedicated
+player fence-only crash/corrupt-copy coverage beyond preparation preflight.
+No runtime authority switch, production grant, push or deployment.
+
 ## Prepared native player save — 2026-09-07
 
 Source `3e9eda2` adds an internal prepared-save wrapper: a trusted absolute
