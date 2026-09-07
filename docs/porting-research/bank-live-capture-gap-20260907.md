@@ -1,5 +1,32 @@
 # Live bank capture and transaction gap
 
+## Latest native durable preparation verification — 2026-09-07
+
+Source `e2855b1` adds the C prepared-commit wrapper: the trusted Node helper
+persists the exact eleven arguments and framed payload using the existing
+fsynced pending store, then echoes the frame. C sends the database commit only
+after successful preparation and byte-identical echo. Missing directory or
+conflicting same-command content returns NOT_SENT without changing DB state.
+Preparation failure can still leave a durable record; it must be retained.
+
+Source `ce341fc` removes parent-side preparation from the acknowledgement-loss
+integration test. The pending record is initially absent; the real C sender
+creates it, commits to PostgreSQL, loses its reply and reports UNKNOWN. A new
+process reads that record and receives EXACT_RETRY revision 1. Changed request
+content and corrupted records are rejected; there is exactly one intent.
+
+The complete frozen-source local Linux ARM64 runner exited 0:
+`/tmp/muhan-native-prepared-ack-loss.log`. This includes native preparation
+failure/conflict probes, acknowledgement-loss recovery, C/Rust differential
+tests and both canonical/tree-inventory database restore profiles with C/Rust
+byte verification. No GitHub Actions, image build or deployment was performed.
+
+This is not a live authority cutover: the actual bank command still needs a
+coordinator binding current player/session identity, read/plan/prepare/commit,
+pending recovery and other legacy writers. Item transfers and startup recovery
+installation remain incomplete. A historical EXACT_RETRY must not overwrite a
+newer live wallet. Power-loss/fsync fault coverage is not established here.
+
 ## Confirmed current behavior
 
 All ordinary `load_bank` / `save_bank` calls in `src/bank.c` route through
