@@ -231,6 +231,29 @@ window. This is not a production timeout change. This evidence covers session
 expiry at the paired-state lock; writer-lease expiry and competing ownership
 changes across other operation lock orders still need dedicated coverage.
 
+### Writer expiry and concurrent renewal follow-up
+
+Source `5c85cba` extends the real-connection test to expire the writer lease
+while the qualified command waits on the paired-state lock. Like session expiry,
+it returns P0001 without changing either snapshot or any command journal.
+Both probes establish that the lease is live after the wait is observed, before
+waiting for its expiry. No production lease settings are changed.
+
+The real `renew_game_character_session` and `renew_game_world_writer_epoch`
+functions also run in separate held transactions. A concurrent qualified writer
+is observed blocked via `pg_blocking_pids`; committing the renewal releases it
+and the money operation succeeds. Its outer test transaction is then rolled
+back, proving both snapshots and all three journals return to the baseline.
+These two renewal-before-command schedules passed without deadlock. This does
+not prove all possible lock orders: reverse schedules, ownership takeover and
+writer fencing during other persistence operations remain untested here.
+
+Full isolated Linux runner, including both restored player/bank profiles,
+passed exit 0: `/tmp/muhan-qualified-renewal.log`. No live grants, CI runs or
+deployments were performed. Next live-transition prerequisites remain an
+audited consistent player/bank baseline, a single runtime authority choice,
+and actual command wiring with restart/differential verification.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
