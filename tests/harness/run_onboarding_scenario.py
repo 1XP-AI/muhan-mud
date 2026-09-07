@@ -367,6 +367,11 @@ def provision(session: Session, name: str, nonce: str, correlation: str, charact
     if not saved_control.startswith(prefix) or not saved_control.endswith(suffix) or len(saved_control) != len(prefix) + 64 + len(suffix):
         raise ScenarioFailure("provision did not emit a bounded SAVED control")
     digest = saved_control[len(prefix):-len(suffix)].decode("ascii")
+    # Bind SAVED to its file at that boundary, before ordinary disconnect
+    # performs its separate legacy uninit/save transition.
+    saved_player = expected_player_path(fixture, name)
+    if not saved_player.is_file() or hashlib.sha256(saved_player.read_bytes()).hexdigest() != digest:
+        raise ScenarioFailure("SAVED digest did not match the player file before COMMIT")
     assert_receipt(fixture, "saved", correlation, character, name, sensitive, digest)
     if commit is True:
         session.send_fragmented(b"MUD1O COMMIT\n", 8)
@@ -621,12 +626,16 @@ def main() -> int:
         result["events"].append({"case": "pending-rename-crash-window", "response": "pending-to-saved-at-startup"})
         result["events"].append({"case": "pending-rename-crash-relogin-mud1", "response": "MUD1 OK"})
 
+        stage = "provision-completion-close"
         good = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
         digest = provision(good, "Alice", "10112233445566778899aabbccddeeff", CORRELATION,
                            CHARACTER, sensitive, fixture)
         player = expected_player_path(fixture, "Alice")
-        if not player.is_file() or hashlib.sha256(player.read_bytes()).hexdigest() != digest:
-            raise ScenarioFailure("SAVED digest did not match the final player file")
+        # Disconnect may update legacy runtime fields. The original SAVED bytes
+        # and receipt were checked before COMMIT; require settled output and a
+        # successful real C read on fresh admission below, not byte immutability
+        # across a separate legacy save.
+        result["post_completion_player_sha256"] = settled_sha256(player, args.timeout)
 
         good.sock.close()
         good = Session(connect_first(port, args.timeout, process), redactor, args.timeout)
