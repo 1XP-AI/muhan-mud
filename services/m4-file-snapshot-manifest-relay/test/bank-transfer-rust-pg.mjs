@@ -38,7 +38,8 @@ try {
   await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format)
     values($1,'rust-pair','Pvahero','Pvahero',substr(encode(public.digest(convert_to('Pvahero','UTF8'),'sha1'),'hex'),1,2),'imported_unclaimed',1)`,[id])
   await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[id,player,bank])
-  const commit='select * from private.commit_paired_snapshot_candidate($1,$2,$3,$4,$5)'
+  const commit='select * from private.commit_money_transfer_candidate($1,$2,$3,$4,$5,$6,$7)'
+  assert.equal((await db.query("select has_function_privilege('mud_writer','private.commit_money_transfer_candidate(uuid,uuid,bigint,text,bigint,bytea,bytea)','EXECUTE') allowed")).rows[0].allowed,false)
   for(const [index,direction] of ['deposit','withdraw'].entries()) {
     const before=await read()
     for(const negative of [planned(before,direction,25,true),planned(before,direction,999999)]) {
@@ -52,13 +53,25 @@ try {
     const p=out.stdout.subarray(8,8+pl),b=out.stdout.subarray(8+pl)
     assert.deepEqual(p,playerGold(player,direction==='deposit'?75n:100n))
     assert.deepEqual(b,bankGold(bank,direction==='deposit'?75n:50n))
-    const args=[id,`c9190000-0000-0000-0000-00000000000${index+1}`,before.revision,p,b]
+    const args=[id,`c9190000-0000-0000-0000-00000000000${index+1}`,before.revision,direction,25,p,b]
+    const nameBody=Buffer.from(p.subarray(16,-32)); nameBody[7]=81
+    const renamed=rebody(p,nameBody)
+    const bankBody=Buffer.from(b.subarray(16,-32)), inner=bankBody.subarray(7), innerBody=Buffer.from(inner.subarray(16,-32)); innerBody[30]=65
+    rebody(inner,innerBody).copy(bankBody,7)
+    const renamedBank=rebody(b,bankBody)
+    for(const [badPlayer,badBank] of [[renamed,b],[p,renamedBank],[playerGold(p,777n),b]]) {
+      await assert.rejects(db.query(commit,[...args.slice(0,5),badPlayer,badBank]),e=>e.code==='22023')
+      assert.deepEqual(await read(),before,'invalid transfer leaves both snapshots and revision unchanged')
+    }
     assert.equal((await db.query(commit,args)).rows[0].outcome,'COMMITTED')
     assert.equal((await db.query(commit,args)).rows[0].outcome,'EXACT_RETRY')
+    await assert.rejects(db.query(commit,[...args.slice(0,3),direction,26,p,b]),e=>e.code==='P0001')
+    await assert.rejects(db.query(commit,[...args.slice(0,3),direction==='deposit'?'withdraw':'deposit',25,p,b]),e=>e.code==='P0001')
     const after=await read(); assert.equal(after.revision,String(index+1)); assert.deepEqual(after.player_payload,p); assert.deepEqual(after.bank_payload,b)
   }
   const final=await read(); assert.deepEqual(final.player_payload,player); assert.deepEqual(final.bank_payload,bank)
-  await assert.rejects(db.query(commit,[id,'c9190000-0000-0000-0000-000000000003',0,player,bank]),e=>e.code==='40001')
+  await assert.rejects(db.query(commit,[id,'c9190000-0000-0000-0000-000000000003',0,'deposit',25,player,bank]),e=>e.code==='40001')
   assert.deepEqual(await read(),final)
+  assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
   console.log('GREEN DB snapshots -> digest-bound Rust deposit/withdraw -> atomic DB pair and exact retry; full-byte roundtrip preserved')
 } finally { await db.end() }
