@@ -2,6 +2,23 @@
 
 ## Latest execution
 
+### Other service packages and reusable smoke
+
+Built and deployed importer and relay packages from frozen `fb581b7` in
+`/tmp/muhan-services-package.A538I1`. Unlike reconciler, neither service has a
+service-local dist gitignore, and both existing deployment outputs contain
+compiled code and pg. No speculative manifest changes were made to them.
+Both modules and their packaged pg dependencies loaded in Node 22.23.2 ARM64
+using the retained local test image with network disabled, read-only root,
+and only the generated package directory mounted read-only.
+
+Added `scripts/verify-service-packages.mjs`: checks the compiled module, pg
+resolution relative to that module, and existence of declared node dist CLIs.
+It does not connect to PostgreSQL or execute administrative commands. Passed
+against all three corrected packages; failed against the original reconciler
+output missing dist. This is a load/packaging smoke, not gameplay, database,
+AMD64, or completed production image acceptance.
+
 ### Reconciler packaging gate
 
 While Docker VM capacity remains zero, inspected the deployment recipe and
