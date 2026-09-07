@@ -205,6 +205,7 @@ try {
         assert.notDeepEqual(peerState.player_payload,playerGold(peerInitial,201n),'equipped/inventory objects must persist')
         const peerPending=await readPlayerPending(pending,'c9300000-0000-0000-0000-000000000001')
         assert.equal(peerPending.args[4],peerId);assert.deepEqual(peerPending.payload,peerState.player_payload)
+        assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[peerId])).rows[0].n,1,'queue recovery and later retries must create one intent')
         const equipmentPlan=planned({...peerState,player_hash:sha(peerState.player_payload).toString('hex'),bank_hash:sha(bank).toString('hex')},'deposit',1)
         assert.equal(equipmentPlan.status,0,equipmentPlan.stderr.toString())
         const equipmentPlayerLength=equipmentPlan.stdout.readUInt32BE(0)

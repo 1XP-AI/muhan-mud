@@ -50,6 +50,29 @@ int main(int argc,char **argv)
         assert(!player_snapshot_v1_encode_loaded(&normalized,&expected,&expected_length));
         inventory.next_tag=NULL;pack.parent_crt=&detached;blade.parent_crt=NULL;
         before=detached;pack_before=pack;blade_before=blade;
+        {
+            PGconn *broken=PQconnectdb("host=127.0.0.1 dbname=postgres user=mud_writer_login connect_timeout=3");
+            creature *queued=NULL,*unchanged=NULL;PGresult *check;
+            const char *read_args[6]={argv[1],"Peerhero",argv[3],argv[4],peer.fields[4],"0"};
+            assert(PQstatus(broken)==CONNECTION_OK);assert(!shutdown(PQsocket(broken),SHUT_RDWR));
+            peer.connection=broken;
+            assert(savegame_nomsg(&detached)==PLAYER_STORE_IO_ERROR);
+            assert(peer.status==PLAYER_SNAPSHOT_SAVE_UNKNOWN&&!peer.committed_revision);
+            // A separate healthy reader proves this request never committed.
+            check=PQexecParams(db,"select * from private.read_player_paired_snapshot($1,$2,$3,$4,$5,$6)",6,NULL,read_args,NULL,NULL,1);
+            assert(PQresultStatus(check)==PGRES_TUPLES_OK&&PQntuples(check)==1);
+            assert(!player_snapshot_v1_decode_clone((const unsigned char *)PQgetvalue(check,0,0),(size_t)PQgetlength(check,0,0),&unchanged));
+            assert(unchanged->gold==100&&!unchanged->first_obj);
+            PQclear(check);player_snapshot_v1_free_clone(unchanged);
+            assert(!player_snapshot_v1_decode_clone(expected,expected_length,&queued));
+            assert(!player_recovery_enqueue(queued)&&player_recovery_pending()==1);
+            assert(player_recovery_retry_one()==PLAYER_STORE_IO_ERROR&&player_recovery_pending()==1);
+            PQfinish(broken);peer.connection=db;
+            assert(player_recovery_retry_one()==PLAYER_STORE_OK);
+            assert(peer.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&peer.committed_revision==1);
+            assert(!player_recovery_pending()&&!player_recovery_login_blocked());
+            queued=NULL; /* queue's actual free_crt released the owned graph */
+        }
         assert(savegame_nomsg(&detached)==PLAYER_STORE_OK);
         assert(peer.pending_length==expected_length&&!memcmp(peer.pending,expected,expected_length));
         assert(!memcmp(&detached,&before,sizeof(detached))&&!memcmp(&pack,&pack_before,sizeof(pack))
@@ -98,7 +121,7 @@ int main(int argc,char **argv)
     assert(!strcmp(ctx.fields[6],"0"));
     assert(savegame_nomsg(&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
     copy.gold++;assert(savegame_nomsg(&copy)==PLAYER_STORE_IO_ERROR);
-    assert(save_errors==1);
+    assert(save_errors==2);
     assert(!strcmp(ctx.fields[6],"0"));
     copy.gold--;assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
@@ -115,7 +138,7 @@ int main(int argc,char **argv)
     assert(ctx.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx.committed_revision==2);
     assert(!strcmp(ctx.fields[6],"1"));
     assert(savegame_nomsg(&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
-    assert(save_errors==1);
+    assert(save_errors==2);
     puts("READY2");fflush(stdout);
     assert(getchar()=='R');
     assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000002"));
