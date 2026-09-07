@@ -630,7 +630,17 @@ async function main(): Promise<void> {
         return { sub, expiresAtMs: Date.now() + 120_000, claims: {} }
       },
     }
-    const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config)
+    const completionRpcErrors: unknown[] = []
+    const diagnosticFetch: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init)
+      const path = new URL(String(input)).pathname
+      if (!response.ok && ['/rpc/finalize_game_character_provisioning', '/rpc/reconcile_game_character_provisioning'].includes(path)) {
+        const error = await response.clone().json().catch(() => ({})) as Record<string, unknown>
+        completionRpcErrors.push({ path, status: response.status, code: error.code, message: error.message })
+      }
+      return response
+    }
+    const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config, diagnosticFetch)
     let finalizeObservedSaved = false
     let completionPhase = 'not-started'
     const onboardingAuthorizer: OnboardingAuthorizer = {
@@ -712,7 +722,7 @@ async function main(): Promise<void> {
       const dbState = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || coalesce(h.status, 'none') from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id left join private.game_character_onboarding_handoffs h on h.correlation_id = i.correlation_id where i.correlation_id = '${correlation}'`)
       const headState = await sql(`select json_build_object('state', h.head_state, 'revision', h.revision, 'hasWriterEpoch', h.writer_epoch is not null, 'storageFormat', h.storage_format)::text from private.game_character_legacy_heads h join private.game_character_provisioning_requests p on p.character_id = h.character_id where p.correlation_id = '${correlation}'`)
       const journal = await readdir(join(fixture, 'character-save-journal'))
-      throw new Error(redact(`provision completion missing; phase=${completionPhase}; db=${dbState}; head=${headState}; journal=${JSON.stringify(journal)}; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`))
+      throw new Error(redact(`provision completion missing; phase=${completionPhase}; rpc=${JSON.stringify(completionRpcErrors)}; db=${dbState}; head=${headState}; journal=${JSON.stringify(journal)}; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`))
     }
     assert.equal(finalizeObservedSaved, true)
 
