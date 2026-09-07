@@ -214,3 +214,21 @@ This proves bank *shadow evidence* contracts, not canonical bank payload
 persistence or restoration. Bank payload loading and the broader authoritative
 DB migration remain outstanding. All execution was local Docker, with no new
 image build, Actions dispatch, host ports, production database or deployment.
+# Digest-bound bank replay boundary
+
+Added Rust `verify_bank_snapshot_v1(wire, expected_digest)`: enforce the 4 MiB
+whole-artifact limit, compare independently supplied SHA-256, decode one detached
+bank root, and require byte-identical canonical re-encoding. This does not bind
+receipt provenance or make DB contents authoritative; those remain caller gates.
+
+TDD: new assertions first failed compilation because the API did not exist.
+After implementation, all 25 library tests passed on macOS. Full default crate
+tests also passed in local Linux ARM64 Docker (exit 0), including binaries and
+integration tests: `/tmp/muhan-bank-rust-verification.log`.
+Coverage includes wrong digest, replacement by another valid bank, i64 minimum,
+nested objects, wrong kind, malformed input, trailing bytes and oversize input.
+
+Remaining: persist full receipt-bound bank payload in Postgres, connect its read
+path to this verifier, then prove C/Rust differential and backup/restore against
+that persisted payload before any live authority switch. This API alone is not
+evidence that DB-backed bank restore is implemented.

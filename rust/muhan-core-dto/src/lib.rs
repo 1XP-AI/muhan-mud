@@ -842,6 +842,28 @@ pub fn decode_bank_snapshot_v1(wire: &[u8]) -> Result<BankSnapshotV1, Error> {
     Ok(BankSnapshotV1 { root })
 }
 
+/// Verify restored bank bytes against an independently stored whole-artifact
+/// digest before returning a detached graph. This grants no gameplay authority
+/// and does not establish receipt provenance; the caller must bind those keys.
+pub fn verify_bank_snapshot_v1(
+    wire: &[u8],
+    expected_digest: &[u8; DIGEST_LENGTH],
+) -> Result<BankSnapshotV1, Error> {
+    // Match the immutable bank artifact's total-byte limit, not just CDTO payload.
+    const BANK_ARTIFACT_LIMIT: usize = 4 * 1024 * 1024;
+    if wire.len() > BANK_ARTIFACT_LIMIT {
+        return Err(Error::SizeLimitExceeded { limit: BANK_ARTIFACT_LIMIT });
+    }
+    if sha256(wire) != *expected_digest {
+        return Err(Error::DigestMismatch);
+    }
+    let snapshot = decode_bank_snapshot_v1(wire)?;
+    if encode_bank_snapshot_v1(&snapshot)? != wire {
+        return Err(Error::NonCanonicalEncoding);
+    }
+    Ok(snapshot)
+}
+
 fn array<const N: usize>(value: &[u8]) -> [u8; N] {
     value
         .try_into()
@@ -1553,6 +1575,31 @@ mod tests {
             },
         };
         let wire = encode_bank_snapshot_v1(&snapshot).unwrap();
+        let expected_digest = sha256(&wire);
+        assert_eq!(verify_bank_snapshot_v1(&wire, &expected_digest).unwrap(), snapshot);
+        assert_eq!(verify_bank_snapshot_v1(&wire, &[0; DIGEST_LENGTH]), Err(Error::DigestMismatch));
+        // A different, internally valid snapshot must not replace the stored one.
+        let mut changed = snapshot.clone();
+        changed.root.nodes[0].object.value = i64::MIN;
+        let changed_wire = encode_bank_snapshot_v1(&changed).unwrap();
+        assert_eq!(verify_bank_snapshot_v1(&changed_wire, &expected_digest), Err(Error::DigestMismatch));
+        assert_eq!(verify_bank_snapshot_v1(&changed_wire, &sha256(&changed_wire)).unwrap(), changed);
+        let malformed = b"not a bank snapshot";
+        assert!(verify_bank_snapshot_v1(malformed, &sha256(malformed)).is_err());
+        let mut trailing = wire.clone();
+        trailing.push(0);
+        assert!(verify_bank_snapshot_v1(&trailing, &sha256(&trailing)).is_err());
+        let mut nested = snapshot.clone();
+        let mut child = nested.root.nodes[0].clone();
+        child.parent_index = Some(0);
+        nested.root.nodes.push(child);
+        let nested_wire = encode_bank_snapshot_v1(&nested).unwrap();
+        assert_eq!(verify_bank_snapshot_v1(&nested_wire, &sha256(&nested_wire)).unwrap(), nested);
+        let wrong_kind = encode_object_graph_v1(&nested.root).unwrap();
+        assert!(verify_bank_snapshot_v1(&wrong_kind, &sha256(&wrong_kind)).is_err());
+        let oversized = vec![0; 4 * 1024 * 1024 + 1];
+        assert_eq!(verify_bank_snapshot_v1(&oversized, &[0; DIGEST_LENGTH]),
+            Err(Error::SizeLimitExceeded { limit: 4 * 1024 * 1024 }));
         assert_eq!(&wire[10..12], &[0, 8]);
         assert_eq!(decode_bank_snapshot_v1(&wire).unwrap(), snapshot);
         assert_eq!(
