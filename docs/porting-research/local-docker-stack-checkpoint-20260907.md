@@ -1,5 +1,32 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: provision-to-gameplay path verified; restart remains
+
+Frozen `0aa8ae7` now passes real C character creation, first-save evidence,
+completion/activation, a new normal `/ws` session, the Korean health command,
+duplicate-session rejection and lease release on close. Two stale test
+assumptions were corrected without weakening data checks:
+
+- Capture the actual player hash before finalize and require it to equal both
+  the SAVED control request and saved/committed onboarding receipt. Activation
+  performs another explicit save, so independently require the current file to
+  match the DB head with revision >= 2. Both generations passed (`f5d0332`).
+- The Gateway intentionally closes onboarding after ACTIVE/binding. Reconnect
+  through normal `/ws` for gameplay, matching the web client; do not send game
+  commands on the completed onboarding socket (`0aa8ae7`).
+
+Full acceptance remains 1 PASS / 1 FAIL. It has advanced to restarting C for
+the injected-finalize-outage scenario: the second process exits 78 with
+`M3 runtime startup failed` at stack-e2e.test.ts:787. Investigate persisted
+writer lease/epoch/recovery state across graceful restart; do not delete its
+journal or bypass startup checks to make the fixture pass. Evidence:
+`/tmp/muhan-local-stack.8F1oTb/result.json`. The first process's graceful stop
+completed. No runtime containers remain after exact-name cleanup.
+
+20 local fast tests, strict TypeScript, 45-migration coverage and manual-only
+workflow policy pass. Real Chromium, remaining claim/normalized scenarios and
+production acceptance remain unverified. No cloud build, Actions or rollout.
+
 ## Latest correction: completion and activation now succeed
 
 Read-only disposable RPC diagnostics reproduced SQLSTATE 42702 for
