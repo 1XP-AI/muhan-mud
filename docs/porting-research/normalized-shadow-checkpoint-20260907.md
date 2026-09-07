@@ -143,3 +143,9 @@ NetworkPolicy enabled 시 새 Job의 ingress를 닫고 같은 release Postgres/D
 배포 커밋 `778a30e3`은 회귀 테스트만 보강한다. 실행 입력 각각의 누락·긴 ID·하위 경로 거부, default/schema-only/network-off 시 비교 정책 부재, 실행 시 같은 release 선택과 PostgreSQL/DNS 포트, DB ingress의 비교 Job 연결을 검사한다. 최초 테스트의 리소스 선택이 PostgREST 이름까지 부분 일치하는 결함을 바로잡아 정확한 PostgreSQL 정책 이름으로 검사한다. 이는 테스트 구현 수정이지 chart 런타임 결함 수정은 아니다. 보강 후 prerequisite/normalized/chart 50개가 모두 통과했다. 위의 별도 source-path 검사는 여전히 미해결이다. 커밋은 로컬이며 운영 변경은 없다.
 
 Luna/max의 제한적 독립 정적 점검 `task_1416f14fae81` / `ctx_b7da02f59d62` 결과를 회수했다. 검토 대상은 배포 `c3857ea6`이며 이후 테스트 보강은 대상이 아니다. (1) 일반 Job이 post-install migration보다 먼저 실행될 수 있어 문서의 2단계 절차가 코드로 강제되지 않는 점, (2) 기존 Postgres ingress의 component-only allowlist에 normalized Job을 추가해 다른 release의 같은 component label도 허용되는 점을 지적했다. 후자는 비교 Job 자체의 egress가 같은 release로 제한되는 것과 별개다. 두 항목은 다음 수정/검증 대상으로 남겼다. retained Job의 이미지 변경 upgrade 동작도 미검증이다. 정적 검토를 운영 동작 보증으로 계산하지 않는다. 결과 보존과 `worker-release`의 `released / closed_agent_terminal / captured`를 확인하고 완료 메시지를 처리했다.
+
+## DB ingress 범위 수정
+
+배포 커밋 `e9ffe418`에서 normalized comparison을 기존 component-only DB allowlist에서 제거하고 같은 앱·release·component를 모두 요구하는 별도 TCP 5432 ingress 항목으로 옮겼다. 다른 기존 consumer 규칙은 변경하지 않았다. 비교 Job의 network policy가 활성화되는 기존 조건(enabled + run)을 그대로 따른다. 회귀 테스트를 먼저 변경해 broad allowlist가 남아 있는 실패를 확인하고 구현 후 prerequisite/normalized/chart 50개 통과를 확인했다. default/schema-only에는 새 ingress가 없으며 같은 release selector와 5432 포트가 렌더링되는 것을 검사한다. 실제 CNI 트래픽 검증은 수행하지 않았다.
+
+실행 순서 문제는 여전히 남아 있다. migration Job은 post-install/post-upgrade hook이면서 성공 즉시 삭제되므로, 후속 도구가 단순히 이름으로 완료 Job을 기다리는 방식은 사용할 수 없다. 비교 Job만 무조건 post-hook으로 바꾸면 일상적인 upgrade마다 실행될 수 있어 기존 명시적 단발 실행 계약도 검토해야 한다. 스키마 준비 성공을 실제로 확인한 뒤 별도 실행을 허용하는 수명주기 설계와 retained Job의 upgrade 검증이 다음 작업이다. 소스 커밋 검증 기준 불일치, amd64 통합 이미지 및 운영 검증도 여전히 미완료다.
