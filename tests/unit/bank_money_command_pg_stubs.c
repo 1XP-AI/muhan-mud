@@ -17,6 +17,5 @@ int print(int fd,char *format,...)
 int bank_store_load(char *name,object **out) {(void)name;(void)out;abort();}
 int bank_store_save(char *name,object *bank) {(void)name;(void)bank;abort();}
 int savegame_nomsg(creature *p) {(void)p;abort();}
-void free_obj(object *p) {(void)p;abort();}
 void zero(void *p,int n) {(void)p;(void)n;abort();}
 int utf8_ends_with(unsigned char *s,unsigned char *suffix) {(void)s;(void)suffix;abort();}
