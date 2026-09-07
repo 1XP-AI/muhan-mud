@@ -2,7 +2,8 @@
 
 `../../scripts/run-stack-e2e.sh` creates a uniquely named, internal-only
 Docker network, disposable PostgreSQL 17 container, and PostgREST container.
-It applies `bootstrap_contract.sql`, the identity migrations through 210, then runs the
+It applies `bootstrap_contract.sql` and the identity, handoff, snapshot-eligibility,
+fulfillment, command-binding, and importer migrations through 2026-10-09, then runs the
 real C binary and Gateway against that PostgREST instance. Before the broader
 onboarding scenario, a separately gated PostgreSQL 17 contract sends the shared
 admission identity fixture through the real Gateway finalizer HTTP transport and
@@ -28,9 +29,16 @@ disposable Gateway, C MUD, and PostgREST resources. It stubs only the absent
 Supabase Auth endpoint with signed deterministic fixtures, then proves the
 actual UI can provision and claim, refresh each active roster, and enter the
 unchanged normal MUD socket. Chromium must already be installed (CI installs
-it immediately before this runner).
+it immediately before this runner). The acceptance explicitly compiles the
+M3 runtime, starts its M3 lane in `shadow`/`handoff` mode, and enables the M4
+artifact relay's fulfillment flag only inside this disposable run; ordinary
+runtime configuration remains default-off.
 
-Run from the repository root:
+This is a CI-only disposable gate, not a local development command: without
+`CI=true` the runner exits before creating Docker resources. Its CI job needs
+Docker with space for `postgres:17-alpine`, Node, pnpm, make, curl, `gcc`, a
+working `pg_config`/libpq toolchain, installed workspace dependencies, and a
+Playwright Chromium binary. The CI job invokes it from the repository root:
 
 ```sh
 ./scripts/run-stack-e2e.sh
