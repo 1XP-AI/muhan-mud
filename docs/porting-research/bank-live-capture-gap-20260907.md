@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Executable disconnect persistence boundary — 2026-09-08
+
+Source `64e04d1` extracts the existing io.c disconnect persistence block into
+`player_disconnect_persist`, called by the real disconnect path after its
+socket/io and spy cleanup. No storage authority or ordering is changed:
+saveable players are uninitialized before save, successful saves free the
+player, failures transfer ownership to recovery, and exhausted recovery keeps
+the pointer for the existing fatal server-stop path. Non-saveable players
+(including claim-lane cleanup) are freed without save.
+
+The new fixture failed to compile before this boundary existed, then passed
+with ASan/UBSan. It links the actual io.c function with controlled uninit,
+save, queue and free collaborators, checking order, ownership transfer and
+failure retention. This is not full socket disconnect or real uninit/update
+coverage. In particular it does not yet coordinate an older native pending
+request with the newer post-uninit state. The extraction makes that production
+boundary directly testable without reproducing disconnect code in a fixture.
+
+Frozen Linux ARM64 source `64e04d1` completed the full local runner with exit
+0 observed through process handle 79223 (`/tmp/muhan-disconnect-boundary.log`).
+The claim credential lifecycle static guard also passed. Existing native DB,
+C/Rust differential, onboarding and legacy restore gates remain green. No
+Actions, push, deployment or production DB authority switch was performed.
+
 ## Native release authority and failure preservation — 2026-09-08
 
 Source `34203d7` moves the two-save fixture's release decision from the Node
