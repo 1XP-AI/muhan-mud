@@ -687,7 +687,7 @@ async function main(): Promise<void> {
       const shards = await readdir(join(fixture, 'player'))
       throw new Error(redact(`first save incomplete; C=${mudDiagnostics}; controls=${JSON.stringify(controls)}; journal=${JSON.stringify(journal)}; stage=${JSON.stringify(stage)}; playerDirectories=${JSON.stringify(shards)}; terminal=${browser.text()}`))
     }
-    await eventually(() => assert.ok(browser.json('provisioned')))
+    await eventually(() => assert.ok(browser.json('provisioned'), redact(`provision completion missing; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`)))
     assert.equal(finalizeObservedSaved, true)
 
     const player = join(fixture, 'player', createHash('sha1').update(canonicalName).digest('hex').slice(0, 2), canonicalName)
