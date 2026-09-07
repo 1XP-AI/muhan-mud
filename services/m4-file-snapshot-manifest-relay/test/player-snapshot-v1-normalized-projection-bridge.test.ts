@@ -11,6 +11,7 @@ import { comparePlayerSnapshotV1NormalizedProjectionShadow } from '../src/player
 import { parsePlayerSnapshotV1ArtifactEvidence, parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
 import { parseManifest } from '../src/manifest.js'
 import { PostgresNormalizedProjectionReader } from '../src/player-snapshot-v1-normalized-projection-reader.js'
+import { loadNormalizedShadowArtifact } from '../src/player-snapshot-v1-normalized-shadow-cli.js'
 
 const commandId = '11111111-1111-4111-8111-111111111111'
 const characterId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -19,6 +20,19 @@ const sourcePostSha256 = 'b'.repeat(64)
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const treeFixture = join(repoRoot, 'tests/fixtures/player_snapshot_v1_tree_inventory.hex')
 const TREE_CANONICAL_DIGEST = '96df4bf87d1012fbef2043f215b95b6bf0790780b731546b1fcd6a257ee2b76c'
+
+test('one-shot normalized loader requires exactly one receipt-bound artifact pair', async () => {
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const digest = createHash('sha256').update(payload).digest('hex')
+  const pair = { name: `${commandId}.player-snapshot-v1`, bytes: artifact(payload, digest), receiptManifestBytes: receipt() }
+  const loaded = await loadNormalizedShadowArtifact('/fixture', { scan: async () => [pair] })
+  assert.equal(loaded.receiptRequestSha256, requestSha256)
+  assert.deepEqual(loaded.payload, payload)
+  for (const files of [[], [pair, pair], [{ ...pair, receiptManifestBytes: undefined }],
+    [{ ...pair, receiptManifestBytes: Buffer.from('invalid receipt') }]]) {
+    await assert.rejects(loadNormalizedShadowArtifact('/fixture', { scan: async () => files }))
+  }
+})
 
 function receipt(): Uint8Array {
   return Buffer.from([

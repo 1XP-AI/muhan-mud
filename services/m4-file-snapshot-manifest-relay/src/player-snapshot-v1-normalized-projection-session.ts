@@ -10,18 +10,24 @@ export interface NormalizedProjectionSessionPool {
 const require = createRequire(import.meta.url)
 const login = 'mud_normalized_replay_reader_login'
 
+export function assertNormalizedProjectionSessionDatabaseUrl(databaseUrl: string | undefined): string {
+  try {
+    if (!databaseUrl) throw new Error()
+    const url = new URL(databaseUrl)
+    if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname
+      || decodeURIComponent(url.username) !== login || url.pathname.length < 2 || url.hash
+      || [...url.searchParams.keys()].some(key => key !== 'sslmode')
+      || url.searchParams.getAll('sslmode').length > 1) throw new Error()
+    return databaseUrl
+  } catch { throw new Error('invalid normalized projection session configuration') }
+}
+
 /** Owns a separate pool; never shares a writer connection or changes role. */
 export class PostgresNormalizedProjectionSessionReader implements ImmutablePlayerSnapshotV1NormalizedProjectionRecordReader {
   private readonly pool: NormalizedProjectionSessionPool
 
   constructor(databaseUrl: string, pool?: NormalizedProjectionSessionPool) {
-    try {
-      const url = new URL(databaseUrl)
-      if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname
-        || decodeURIComponent(url.username) !== login || url.pathname.length < 2 || url.hash
-        || [...url.searchParams.keys()].some(key => key !== 'sslmode')
-        || url.searchParams.getAll('sslmode').length > 1) throw new Error()
-    } catch { throw new Error('invalid normalized projection session configuration') }
+    assertNormalizedProjectionSessionDatabaseUrl(databaseUrl)
     this.pool = pool ?? new (require('pg').Pool)({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5000 })
   }
 

@@ -83,3 +83,11 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 테스트를 먼저 작성해 모듈 부재로 실패하는 것을 확인한 뒤 구현했다. 정상 정리, 계정/기본 설정 불일치, BEGIN/조회/ROLLBACK 실패, 잘못된 URL 거부의 4개 테스트가 통과했다. typecheck/build 및 전체 C→Rust→Node bridge는 155 tests, 150 pass, 0 fail, 5 기존 조건부 skip이다.
 
 별도 새 PostgreSQL 17 컨테이너에서 게임 migration, 실제 Rust fixture seed, 전용 login을 준비하고 integration 실행기에 이 연결 pool 경로를 추가해 실행했다. 기존 직접 SQL 검증과 함께 pool 재사용 2회 모두 기존 행 전체와 일치했다. `muhan-normalized-session-834be1`은 라벨/ID 확인 후 종료했고 auto-remove와 목록 부재를 확인했다. 운영 DB/k8s는 변경하지 않았다. 다음은 운영 comparison job의 입력·종료·결과 계약을 이 연결 경로에 붙이고 배포 전 검증하는 단계다.
+
+## 단발 normalized shadow CLI
+
+`services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-normalized-shadow-cli.ts`를 추가했다. 빌드 후 `node dist/player-snapshot-v1-normalized-shadow-cli.js --once`로 실행한다. 명시적인 `M4_NORMALIZED_SHADOW_OUTBOX_PATH`, `M4_NORMALIZED_SHADOW_DATABASE_URL`, `M4_NORMALIZED_SHADOW_PROJECTOR_PATH`가 필요하다. 경로는 절대 경로이며 DB URL은 기존 session reader와 같은 전용 login 검증을 공유한다. 일반 `DATABASE_URL` fallback이나 기본 relay에서의 자동 활성화는 없다.
+
+입력은 기존 읽기 전용 filesystem scanner를 이용한 정확히 한 artifact/receipt 쌍이다. receipt-bound parser → 실제 Rust projector → normalized comparator → 전용 session reader를 기본 의존성으로 연결했다. stdout은 format/version/classification만 포함하는 JSON 한 줄이며 MATCH만 exit 0이다. reader 생성 실패·비교 예외·연결 종료 실패는 각각 실패로 출력하고 원시 에러는 출력하지 않는다. 종료 실패 후 MATCH로 보고하지 않는다.
+
+CLI 테스트를 먼저 작성해 모듈 부재 실패 후 구현했다. 설정 누락과 --once 검사, 실행·정리 순서, close 실패, 비교 예외, 잘못된 입력 전 DB 생성 방지 및 실제 tree fixture의 receipt pairing을 검증했다. build와 C→Rust→Node bridge는 160 tests, 155 pass, 0 fail, 5 기존 skip이다. **이번 CLI 프로세스 전체를 실제 filesystem outbox와 PostgreSQL에 동시에 연결한 E2E는 아직 미실행이다.** 앞 절의 PostgreSQL 검증은 조회 adapter/session의 증거이지 새 CLI 전체의 증거가 아니다. 독립 리뷰, 실제 CLI E2E, 배포 job/chart 연결이 다음 단계다.
