@@ -389,7 +389,8 @@ async function openOnboarding(address: string, correlationId: string, mode: 'pro
   await once(ws, 'open')
   const browser = new Browser(ws)
   ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken, mode, correlationId }))
-  await eventually(() => assert.ok(browser.frames.some((frame) => !frame.binary && frame.data.toString() === JSON.stringify({ type: 'onboarding-ready', mode }))))
+  await eventually(() => assert.ok(browser.frames.some((frame) => !frame.binary && frame.data.toString() === JSON.stringify({ type: 'onboarding-ready', mode })),
+    `onboarding-ready missing; error-frame=${browser.json('error')}; socket-state=${ws.readyState}`))
   await eventually(() => assert.match(browser.text(), /당신의 이름은 무엇입니까/))
   return browser
 }
@@ -936,6 +937,7 @@ async function main(): Promise<void> {
     assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') from public.game_characters where id = '${missingMemberCharacterId}'`), 'imported_unclaimed|<null>')
     await assertNormalAdmissionDenied(gateway.address(), missingMemberCharacterId)
     await closeAndWait(missingMember.ws)
+    process.stderr.write(`stack-e2e: missing-member-intent-after-close=${await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${missingMemberCorrelation}'`)}\n`)
 
     const wrongPassword = await openOnboarding(gateway.address(), wrongPasswordCorrelation, 'claim')
     wrongPassword.send(`${importedClaimName}\n`)
