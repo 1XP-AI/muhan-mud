@@ -377,6 +377,32 @@ C coordinator transport. Command identity/reconnect reconciliation, bounded
 transport, live normalization and legacy-write fencing remain required before
 the bank command compile gate can be enabled.
 
+### Native C qualified reader
+
+Source `58a0f0c` adds an isolated libpq C reader, borrowing an already connected,
+idle writer session. It sends the seven authority parameters separately and
+uses nonblocking libpq plus monotonic poll deadlines (1..10000 ms) for the query
+exchange. It requires exactly one binary-format row with the expected field
+types, nonnull revision/payload/digests, bounded payload sizes and lowercase
+digests. It copies owned data into the same paired Rust input frame and publishes
+nothing on failure. A failed connection must be discarded by the caller; the
+adapter does not claim to recover an unfinished query or establish connections.
+
+The actual native executable now supplies both payloads to the real Rust
+deposit/withdraw -> qualified DB commit integration. Its returned revision,
+digests and full bytes match independent database observations. Wrong-actor
+native reads produce no frame. Holding the pair lock with server lock and
+statement timeouts disabled proves the two-second native deadline returns
+failure with no output before the five-second process watchdog (test bounds
+1.5..4.5 seconds). The test's separate connection setup has a three-second limit.
+
+ASan/UBSan instrument the reader and its real PostgreSQL harness. The entire
+local runner passed exit 0, including both restores:
+`/tmp/muhan-native-money-read-final.log`. No libpq dependency was added to the
+default runtime object list. Native commit transport, command identity and
+uncertain-result recovery, live session binding and exclusive write fencing
+remain required before installing this into the actual game coordinator.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
