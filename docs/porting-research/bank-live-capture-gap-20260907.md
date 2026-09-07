@@ -1,5 +1,35 @@
 # Live bank capture and transaction gap
 
+## Immutable player pending records — 2026-09-07
+
+Source `2e3accd` stores the complete player-save request: original world/name,
+writer/epoch, character/command, revision, full-source hash and payload. A typed
+canonical envelope binds all these bytes with a digest. The helper echoes the
+payload only after file fsync, exclusive publication and directory fsync;
+existing records are never overwritten. Read validates private owned directory,
+file mode/type/link count, size, digest, canonical encoding and command binding.
+
+The directory capability, bounded byte reader and immutable publication were
+extracted from money storage into `pending-record-store.ts`, so both transports
+use the same implementation. Money envelope formats and fence protocol remain
+unchanged. The player test initially failed with its implementation absent;
+after implementation it proves fresh-process exact retry with byte-identical
+history, conflicting baseline refusal, one winner for conflicting concurrent
+publication, and corrupted record refusal with no CLI echo.
+
+Full frozen local ARM64 suite at `2e3accd` exited 0, observed from its process
+handle. Evidence: `/tmp/muhan-player-pending.log`. Existing money fence/recovery,
+native C/PG save, sanitizer/differential, actual C onboarding and both restore
+profiles still pass after the shared storage extraction.
+
+This is durable transport storage, not character-level ownership. It does not
+block two different player commands or coordinate with a money reservation;
+the native player save does not yet require this helper. Player-specific pending
+discovery, exact historical reconciliation after writer turnover, release and
+process-death/power-loss fault injection remain required before installation.
+The envelope digest is not gameplay validation (native codec and SQL do that).
+No automatic retry, record deletion, production grant, push or deployment.
+
 ## Native player save transport — 2026-09-07
 
 Source `7a412a7` adds a bounded libpq adapter for the closed general player
