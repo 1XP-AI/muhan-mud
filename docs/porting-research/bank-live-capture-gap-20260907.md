@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Recovery discovers fence-only interrupted preparation — 2026-09-07
+
+Test-first source `5110cd6` failed with zero records instead of two because the
+visitor ignored reservations. `e726363` makes the bounded visitor read both
+money-request and money-fence records with the same strict owner/mode/link/size,
+canonical encoding and digest checks. Fence filenames must match the payload's
+world/character key. Identical copies are deduplicated by command and content
+digest; conflicting copies report an invalid record rather than silently winning.
+No file is removed or rewritten, including invalid reservations.
+
+`a5f6e72` exercises the real recovery CLI against PostgreSQL with only the
+reservation present: it confirms the exact historical committed request after
+session/writer turnover. Adding the identical request file still yields one
+confirmed operation. Unknown/corrupt records remain reported; reservation and
+request bytes remain unchanged across repeated fresh-process recovery. Unit
+fixtures also verify two fence-only characters and no duplicate query calls.
+
+Full frozen ARM64 suite at `a5f6e72` exited 0:
+`/tmp/muhan-money-fence-recovery-pg.log`, including real C onboarding and both
+backup restore profiles. This supersedes the prior visitor gap, but does not
+release reservations or enforce them in the preparation CLI. Safe release,
+current-state adoption and all runtime save-path ownership remain prerequisites.
+No Actions run, production flag change or deployment.
+
 ## Durable per-character reservation primitive — 2026-09-07
 
 Source `1f5745e` adds explicit `claimMoneyCharacterFence`, keyed by canonical
