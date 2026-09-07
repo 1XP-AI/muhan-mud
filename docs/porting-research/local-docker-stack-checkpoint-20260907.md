@@ -1,5 +1,28 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest correction: completion and activation now succeed
+
+Read-only disposable RPC diagnostics reproduced SQLSTATE 42702 for
+`character_id` in completion (`d03d945`) and then `correlation_id` in activation
+(`93d4cd6`). Both names collided with PL/pgSQL TABLE output variables.
+Forward migration `20261015000000_provisioning_completion_head_qualification.sql`
+replaces the current function bodies with qualified column lookups only;
+ownership, lifecycle, evidence and exact-retry checks remain unchanged.
+
+Frozen `18a38d9` passes both previously failing boundaries: a `provisioned`
+response arrives and DB state is `finalized|finalized|active`. Full acceptance
+still FAILS at stack-e2e.test.ts's subsequent hash assertion: the onboarding
+request's saved-file hash differs from the now-current player file hash. Next
+trace the activation save/snapshot timing and compare evidence from the correct
+save generation; do not overwrite immutable onboarding evidence or remove hash
+validation. Real browser and later claim/normalized acceptance remain unproven.
+
+Evidence: `/tmp/muhan-local-stack.Tt2rgW/result.json`. Local fast checks pass:
+20 tests, strict TypeScript, all 45 game migrations and manual-only CI policy.
+All executions used the local default Docker driver. No cloud build, Actions
+run, remote push or production rollout occurred. Disposable containers and
+network were cleaned; frozen evidence and local image/cache were retained.
+
 ## Latest rerun: storage resolved, first save acknowledged
 
 Frozen source `24cd12d` ran on local Docker Desktop with the pinned default
