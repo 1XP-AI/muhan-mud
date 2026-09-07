@@ -35,6 +35,22 @@ try {
   const raw=Buffer.from((await readFile(new URL('../../../tests/fixtures/player_snapshot_v1_canonical.hex',import.meta.url),'utf8')).trim(),'hex')
   const {rows:[{payload:rawBank}]}=await db.query("select payload from private.game_character_bank_snapshot_v1_payloads where character_id='a9530000-0000-0000-0000-000000000001'")
   const player=playerGold(raw,100n), bank=bankGold(rawBank,50n)
+  for(const [gold,balance,nextGold,nextBalance,direction,amount,valid] of [
+    [100n,50n,75n,75n,'deposit',25,true],
+    [100n,50n,125n,25n,'withdraw',25,true],
+    [100n,299999999n,99n,300000000n,'deposit',1,true],
+    [100n,300000000n,99n,300000001n,'deposit',1,false],
+    [0n,50n,-1n,51n,'deposit',1,false],
+    [100n,0n,101n,-1n,'withdraw',1,false],
+    [9223372036854775807n,50n,-9223372036854775808n,49n,'withdraw',1,false],
+    [100n,50n,100n,50n,'deposit',0,false],
+    [100n,50n,75n,75n,null,25,false],
+  ]) {
+    const {rows}=await db.query('select private.money_transfer_pair_valid($1,$2,$3,$4,$5,$6) valid',[
+      playerGold(player,gold),bankGold(bank,balance),playerGold(player,nextGold),bankGold(bank,nextBalance),direction,amount,
+    ])
+    assert.equal(rows[0].valid,valid)
+  }
   await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format)
     values($1,'rust-pair','Pvahero','Pvahero',substr(encode(public.digest(convert_to('Pvahero','UTF8'),'sha1'),'hex'),1,2),'imported_unclaimed',1)`,[id])
   await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[id,player,bank])
@@ -62,6 +78,14 @@ try {
     for(const [badPlayer,badBank] of [[renamed,b],[p,renamedBank],[playerGold(p,777n),b]]) {
       await assert.rejects(db.query(commit,[...args.slice(0,5),badPlayer,badBank]),e=>e.code==='22023')
       assert.deepEqual(await read(),before,'invalid transfer leaves both snapshots and revision unchanged')
+    }
+    if(index===0) {
+      await db.query("create function pg_temp.reject_money_intent() returns trigger language plpgsql as $$ begin raise exception using errcode='P0001',message='injected intent failure'; end $$")
+      await db.query('create trigger injected_money_failure before insert on private.game_character_money_transfer_intents for each row execute function pg_temp.reject_money_intent()')
+      await assert.rejects(db.query(commit,args),e=>e.code==='P0001')
+      assert.deepEqual(await read(),before)
+      assert.equal((await db.query('select count(*)::int count from private.game_character_paired_snapshot_commands where character_id=$1',[id])).rows[0].count,0)
+      await db.query('drop trigger injected_money_failure on private.game_character_money_transfer_intents')
     }
     assert.equal((await db.query(commit,args)).rows[0].outcome,'COMMITTED')
     assert.equal((await db.query(commit,args)).rows[0].outcome,'EXACT_RETRY')
