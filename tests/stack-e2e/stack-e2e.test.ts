@@ -1124,11 +1124,19 @@ async function main(): Promise<void> {
     // fulfillment pass consumes it. Retrying both passes is intentional: the
     // exact same command evidence must remain an idempotent replay.
     const secretValues = [password, accessToken, admissionSecret, webProvisionJwt, webClaimJwt]
-    await eventually(async () => {
-      await relayM3Artifacts()
+    let browserRelaySummary: { artifact: RelaySummary, manifest: RelaySummary } | undefined
+    try { await eventually(async () => {
+      browserRelaySummary = await relayM3Artifacts()
       await assertM3OnboardingEvidence({ actorUserId: webProvisionActor, correlationId: webProvisionCorrelation, expectedMode: 'provision', secrets: secretValues })
       await assertM3OnboardingEvidence({ actorUserId: webClaimActor, correlationId: webClaimCorrelation, expectedMode: 'claim', secrets: secretValues })
-    }, 45_000)
+    }, 45_000) } catch (error) {
+      // Count independently: a NULL from a missing LEFT JOIN member can make
+      // the concatenated evidence row empty without the binding being absent.
+      const counts = await sql(`select json_build_object('bindings',(select count(*) from private.game_character_onboarding_snapshot_command_bindings where correlation_id='${webProvisionCorrelation}'),'outbox',(select count(*) from private.game_character_onboarding_snapshot_eligibility_outbox where correlation_id='${webProvisionCorrelation}'),'fulfillments',(select count(*) from private.game_character_onboarding_snapshot_fulfillments where correlation_id='${webProvisionCorrelation}'),'artifacts',(select count(*) from private.game_character_player_snapshot_v1_artifacts a join private.game_character_onboarding_snapshot_command_bindings b using(character_id,command_id) where b.correlation_id='${webProvisionCorrelation}'),'manifests',(select count(*) from private.game_character_m4_file_snapshot_manifests m join private.game_character_onboarding_snapshot_command_bindings b using(character_id,command_id) where b.correlation_id='${webProvisionCorrelation}'),'receipts',(select count(*) from private.game_character_shadow_receipts r join private.game_character_onboarding_snapshot_command_bindings b using(character_id,command_id) where b.correlation_id='${webProvisionCorrelation}'))::text`).catch(() => 'diagnostic-unavailable')
+      const numericSummary = Object.fromEntries(Object.entries(browserRelaySummary ?? {}).map(([phase, values]) => [phase, Object.fromEntries(Object.entries(values).filter(([, value]) => typeof value === 'number'))]))
+      process.stderr.write(`stack-e2e: browser-snapshot-counts=${counts} relay=${JSON.stringify(numericSummary)}\n`)
+      throw error
+    }
     const replay = await relayM3Artifacts()
     assert.ok((replay.manifest.exactRetry ?? 0) >= 2, 'manifest relay must exact-retry the browser provision and claim evidence')
     assert.ok((replay.manifest.normalizedProjectionExactRetry ?? 0) >= 2, 'normalized persistence must exact-retry both real C onboarding snapshots')
