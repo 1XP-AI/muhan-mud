@@ -1,5 +1,37 @@
 # Live bank capture and transaction gap
 
+## Verified serialized release restores sequential money commands — 2026-09-07
+
+Source `432f3f1` resolves the preceding real-PG regression without changing
+directories or deleting test reservations manually. Claim and release share an
+exclusive per-character directory lock. Release compares the exact reservation,
+then calls the read-only DB reconciliation RPC and qualified current pair reader.
+Both must confirm the expected next revision and exact resulting player/bank
+bytes. UNKNOWN or changed current state cannot release. Original request history
+is retained, and a separate exact-byte resolution record is synced before only
+the matching active fence is unlinked and the directory synced.
+
+Preparation skips only exact validated resolved history; an active fence remains
+blocking. A resolved command cannot reacquire the reservation. A late old release
+cannot remove a newer reservation because verification/unlink and claim are
+serialized. Tests hold a release open while a competing process claims, reject
+an unconfirmed verifier, preserve history, and reject stale release after a new
+reservation. Real PG all-deposit -> verified release -> withdrawal in the SAME
+directory now passes, as do exact retry and empty-all refusal.
+
+Full frozen Linux ARM64 suite at `432f3f1` exited 0:
+`/tmp/muhan-money-fence-release.log`, including C onboarding and both backup
+restores. This supersedes the previous RED outcome. No production deployment or
+Actions execution; only disposable fixture reservations were released, with
+immutable requests/completion records retained until fixture cleanup.
+
+Remaining lifecycle limits: process death while holding the directory lock leaves
+a fail-closed stale lock; there is deliberately no unsafe time-based reclamation.
+Crash/fdatasync fault injection, supervised stale-lock recovery and restart source
+adoption remain unverified. The running C server does not yet invoke the release
+service or install the policy. Qualified leases, memory adoption, pending recovery
+and all other save-path ownership must be wired by the runtime before cutover.
+
 ## Reservation enforcement exposes missing release lifecycle — 2026-09-07
 
 Source `304dbf6` first reproduced that the preparation CLI accepted another
