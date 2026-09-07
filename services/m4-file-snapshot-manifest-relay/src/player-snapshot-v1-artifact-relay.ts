@@ -79,6 +79,60 @@ export interface PlayerSnapshotV1NormalizedProjectionPersistence {
   store: PlayerSnapshotNormalizedV1ProjectionStore
 }
 
+/**
+ * The persistence seam is a deliberate object boundary. Rebuild the reviewed
+ * numeric projection instead of passing through any projector-owned object or
+ * its additional properties.
+ */
+function normalizedProjectionAllowlist(
+  projection: PlayerSnapshotV1NormalizedProjection,
+): PlayerSnapshotV1NormalizedProjection {
+  const player = projection.player
+  return {
+    format: projection.format,
+    version: projection.version,
+    algorithm: projection.algorithm,
+    canonicalDigest: projection.canonicalDigest,
+    player: {
+      level: player.level,
+      hpMax: player.hpMax,
+      hpCurrent: player.hpCurrent,
+      mpMax: player.mpMax,
+      mpCurrent: player.mpCurrent,
+      experience: player.experience,
+      gold: player.gold,
+      daily: player.daily.map((daily) => ({
+        max: daily.max,
+        current: daily.current,
+        lastUsed: daily.lastUsed,
+      })),
+      timers: player.timers.map((timer) => ({
+        interval: timer.interval,
+        lastUsed: timer.lastUsed,
+        misc: timer.misc,
+      })),
+      items: player.items.map((item) => ({
+        parentIndex: item.parentIndex,
+        childIndex: item.childIndex,
+        value: item.value,
+        weight: item.weight,
+        typeCode: item.typeCode,
+        adjustment: item.adjustment,
+        shotsMax: item.shotsMax,
+        shotsCurrent: item.shotsCurrent,
+        ndice: item.ndice,
+        sdice: item.sdice,
+        pdice: item.pdice,
+        armor: item.armor,
+        wearFlag: item.wearFlag,
+        magicPower: item.magicPower,
+        magicRealm: item.magicRealm,
+        special: item.special,
+      })),
+    },
+  }
+}
+
 function isPlayerSnapshotV1Filename(name: Uint8Array): boolean {
   const suffix = Buffer.from(PLAYER_SNAPSHOT_V1_SUFFIX)
   return name.length >= suffix.length && Buffer.from(name).subarray(-suffix.length).equals(suffix)
@@ -306,7 +360,9 @@ export async function relayPlayerSnapshotV1ArtifactsOnce(
     if (!artifactSettled || !normalizedProjectionPersistence) continue
     let normalizedProjection: PlayerSnapshotV1NormalizedProjection
     try {
-      normalizedProjection = await normalizedProjectionPersistence.project(artifact.payload, artifact.snapshotSha256)
+      normalizedProjection = normalizedProjectionAllowlist(
+        await normalizedProjectionPersistence.project(artifact.payload, artifact.snapshotSha256),
+      )
     } catch {
       result.normalizedProjectionInvalid = (result.normalizedProjectionInvalid ?? 0) + 1
       continue

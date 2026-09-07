@@ -937,7 +937,23 @@ test('normalized persistence binds the exact artifact and receipt before project
     project: async (payload: Uint8Array, snapshotSha256: string) => {
       calls.push(`project:${snapshotSha256}`)
       assert.deepEqual(payload, parsePlayerSnapshotV1Artifact(`${first}.player-snapshot-v1`, artifact, parseManifest(receipt)).payload)
-      return normalizedProjection()
+      const projection = normalizedProjection()
+      // The seam must forward the reviewed normalized shape, not arbitrary
+      // projector object properties or the source payload captured by a fake.
+      return {
+        ...projection,
+        unreviewedProjectProperty: payload,
+        player: {
+          ...projection.player,
+          unreviewedPlayerProperty: 'not persistence input',
+          items: [{
+            parentIndex: null, childIndex: 0, value: 1n, weight: 1, typeCode: 1,
+            adjustment: 0, shotsMax: 0, shotsCurrent: 0, ndice: 0, sdice: 0,
+            pdice: 0, armor: 0, wearFlag: 0, magicPower: 0, magicRealm: 0,
+            special: 0, unreviewedItemProperty: 'not persistence input',
+          }],
+        },
+      } as unknown as PlayerSnapshotV1NormalizedProjection
     },
     store: {
       recordPlayerSnapshotNormalizedV1Projection: async (input: unknown) => {
@@ -976,11 +992,39 @@ test('normalized persistence binds the exact artifact and receipt before project
     'artifact', `project:${createHash('sha256').update(playerSnapshotV1()).digest('hex')}`, 'normalized-store',
     'artifact', `project:${createHash('sha256').update(playerSnapshotV1()).digest('hex')}`, 'normalized-store',
   ])
+  const expectedProjection = normalizedProjection()
+  expectedProjection.player.items = [{
+    parentIndex: null, childIndex: 0, value: 1n, weight: 1, typeCode: 1,
+    adjustment: 0, shotsMax: 0, shotsCurrent: 0, ndice: 0, sdice: 0,
+    pdice: 0, armor: 0, wearFlag: 0, magicPower: 0, magicRealm: 0, special: 0,
+  }]
   assert.deepEqual(inputs, [first, first].map((commandId) => ({
     characterId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', commandId,
     receiptRequestSha256: 'a'.repeat(64), sourcePostSha256: 'b'.repeat(64), sourceOctets: '128',
-    projection: normalizedProjection(),
+    projection: expectedProjection,
   })))
+})
+
+test('normalized persistence does not project or persist before artifact settlement', async () => {
+  const calls: string[] = []
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: playerSnapshotV1Artifact(), receiptManifestBytes: body(first) }],
+  }
+  const artifactStore: PlayerSnapshotV1ArtifactStore = {
+    recordPlayerSnapshotV1Artifact: async () => {
+      calls.push('artifact')
+      throw Object.assign(new Error('deterministic artifact conflict'), { code: 'P0001' })
+    },
+  }
+  const persistence = {
+    project: async () => { calls.push('project'); return normalizedProjection() },
+    store: { recordPlayerSnapshotNormalizedV1Projection: async () => { calls.push('normalized-store'); return 'RECORDED' as const } },
+  }
+
+  const result = await relayPlayerSnapshotV1ArtifactsOnce('/ignored', artifactStore, filesystem, undefined, undefined, undefined, persistence)
+  assert.equal(result.conflict, 1)
+  assert.equal(result.normalizedProjectionDelivered, 0)
+  assert.deepEqual(calls, ['artifact'])
 })
 
 test('normalized persistence does not store malformed projections or deterministically failed records, and does not expose projection values', async () => {
