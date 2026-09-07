@@ -281,6 +281,26 @@ quiescence/capture protocol, exclusive runtime authority, and command integratio
 with restart tests. This turn's backup checks retain their existing scope; they
 do not yet exercise restoration of an enrolled baseline ledger.
 
+### Enrolled baseline backup/restore follow-up
+
+Source `6c1dca5` adds paired state, baseline ledger and paired command rows to
+the full-row backup fingerprints (12 relations total). Both canonical and tree
+inventory fixtures enroll through the real internal function, then advance to
+revision one through the internal paired kernel before pg_dump/pg_restore.
+That kernel probe preserves payload bytes and is not a money-transfer claim.
+
+After restoration, baseline enrollment returns EXACT_RETRY without resetting
+revision one; retrying the saved paired command returns its original revision.
+Both payloads, the baseline provenance, command and timestamps are covered by
+unchanged full-row fingerprints. Browser/service/writer roles retain no baseline
+enrollment or paired-state write grants. C byte roundtrips and Rust digest-bound
+replay still verify both player and bank payloads for both profiles.
+
+Full isolated Linux runner passed exit 0: `/tmp/muhan-baseline-backup.log`.
+This closes the enrolled-baseline restore gap above, not live capture or runtime
+authority activation. Qualified money-transfer intent/authority restoration is
+still outside this particular backup fixture.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
