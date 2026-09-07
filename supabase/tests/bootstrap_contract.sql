@@ -37,7 +37,11 @@ language sql
 stable
 set search_path = pg_catalog
 as $$
-  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
+  -- PostgREST supplies JSON claims; retain legacy SQL fixture compatibility.
+  select coalesce(
+    nullif(current_setting('request.jwt.claim.sub', true), ''),
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub'
+  )::uuid;
 $$;
 
 revoke all on schema auth from public, anon, authenticated, service_role;

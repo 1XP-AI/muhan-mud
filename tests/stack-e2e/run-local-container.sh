@@ -11,6 +11,7 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 psql -X -v ON_ERROR_STOP=1 -f /repo/supabase/tests/bootstrap_contract.sql >/dev/null
+psql -X -v ON_ERROR_STOP=1 -f /repo/supabase/tests/bootstrap_auth_uid_contract.sql >/dev/null
 for migration in /repo/supabase/migrations/*.sql; do
   [[ "${migration##*/}" == 20260901000000_profiles_and_lobby_presence.sql ]] && continue
   psql -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null

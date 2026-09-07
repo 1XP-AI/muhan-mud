@@ -102,6 +102,7 @@ apply_sql() {
   docker exec -i "$postgres_name" psql -v ON_ERROR_STOP=1 -U postgres -d stack_e2e < "$1" >/dev/null
 }
 apply_sql "$repo_root/supabase/tests/bootstrap_contract.sql"
+apply_sql "$repo_root/supabase/tests/bootstrap_auth_uid_contract.sql"
 apply_sql "$repo_root/supabase/migrations/20260902000000_game_identity.sql"
 apply_sql "$repo_root/supabase/migrations/20260903000000_character_onboarding.sql"
 apply_sql "$repo_root/supabase/migrations/20260904000000_onboarding_intent_safety.sql"
