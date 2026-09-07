@@ -19,6 +19,13 @@ if(process.argv[2]==='--child') {
   const p=spawn(process.execPath,[fileURLToPath(import.meta.url),'--child',root,command,character],{stdio:['ignore','pipe','inherit']})
   let output='';p.stdout.on('data',b=>{output+=b});p.on('error',reject);p.on('exit',code=>resolve({code,output}))
  })
+ const prepare=command=>new Promise((resolve,reject)=>{
+  const request=[...args];request[7]=command
+  const p=spawn(process.execPath,[fileURLToPath(new URL('../dist/money-pending-prepare-cli.js',import.meta.url)),
+   '--prepare',root,...request],{stdio:['pipe','pipe','inherit']})
+  const chunks=[];p.stdout.on('data',b=>chunks.push(b));p.on('error',reject)
+  p.on('close',code=>resolve({code,output:Buffer.concat(chunks)}));p.stdin.end(frame)
+ })
  try {
   const commands=Array.from({length:8},(_,i)=>`b0000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`)
   const results=await Promise.all(commands.map(c=>child(c)))
@@ -29,6 +36,11 @@ if(process.argv[2]==='--child') {
   assert.deepEqual(await child(commands[winner]),{code:0,output:'EXACT_RETRY\n'})
   assert.equal((await child(commands[(winner+1)%8])).code,2)
   assert.deepEqual(await readFile(join(root,files[0])),saved)
+  const refused=await prepare(commands[(winner+1)%8])
+  assert.equal(refused.code,1,'C preparation helper must enforce character reservation')
+  assert.equal(refused.output.length,0)
+  await assert.rejects(readFile(join(root,`${commands[(winner+1)%8]}.money-request`)),{code:'ENOENT'})
+  const prepared=await prepare(commands[winner]);assert.equal(prepared.code,0);assert.deepEqual(prepared.output,frame)
   assert.equal((await child('d0000000-0000-4000-8000-000000000001','c0000000-0000-4000-8000-000000000001')).code,0)
   const requests=[]
   assert.equal(await visitMoneyPending(root,async r=>{requests.push(r)}),false)
