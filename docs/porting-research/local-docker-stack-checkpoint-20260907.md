@@ -1,5 +1,36 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: claim preservation and gameplay pass; browser empty-roster gate next
+
+`4736e35` wires explicit CLAIM-only `player_store_save_existing` through the
+same authorized V4 resolver/route/save/receipt pipeline. The serializer copies
+the existing bound-head bytes instead of serializing the scrubbed creature.
+Copied scratch is volatile-wiped after success/failure; pre-copy rejection
+does not modify caller buffer. Provision retains its original serializer.
+
+TDD RED was observed in both store and activation-composition tests. GREEN:
+PlayerStore normal + ASan/UBSan, activation-composition normal + ASan/UBSan,
+live-observer normal + ASan/UBSan, and package static gates. Test outputs:
+`/tmp/muhan-claim-store-verification.log`, `/tmp/muhan-store-preserve-final.log`.
+Stack TypeScript compilation passed. Astra implemented the store/test portion;
+root reviewed and integrated the CLAIM caller and composition/stack gates.
+
+Frozen actual local Docker `4736e35` passes original claim file SHA unchanged,
+DB head SHA equal to that original, and increasing authoritative revision.
+It then passes normal `/ws` admission and a health game command, printing
+`claim-rpc-green`, `claim-mud1-ready`, `claim-game-green`.
+This fixes the observed persisted-credential overwrite without bypassing saves.
+
+Next failure is now in real Chromium UI acceptance:
+`web-stack-ui.ts:322`, `signInToEmptyRoster`: expected text
+`이 계정에 연결된 캐릭터가 없습니다` absent after login (5s timeout).
+Caller is `runWebStackAcceptance` line405, before web provisioning/claim flow.
+Evidence `/tmp/muhan-local-stack.atdcwO/result.json`. Inspect page state,
+deterministic Auth fixture, roster request response and current UI text before
+changing any assertion. Do not infer the browser flow passed from socket tests.
+Full stack still 1 PASS / 1 FAIL; all owned containers cleaned. No cloud build,
+CI dispatch, push, or deployment. Goal remains active.
+
 ## Latest: exact original-byte copy primitive implemented, not wired yet
 
 `4a2444f` adds `character_save_journal_v2_copy_existing_at` to the existing
