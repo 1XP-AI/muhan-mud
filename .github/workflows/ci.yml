@@ -36,6 +36,8 @@ jobs:
         run: |
           set -euo pipefail
           task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          mkdir -p "$task_temp/tmp" "$task_temp/cache"
+          printf 'TMPDIR=%s/tmp\nXDG_CACHE_HOME=%s/cache\nnpm_config_cache=%s/npm\nnpm_config_store_dir=%s/pnpm-store\nPLAYWRIGHT_BROWSERS_PATH=%s/playwright\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
           printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
 
       - name: Checkout
@@ -65,7 +67,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.15.1
-          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.job }}
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.90.0
@@ -498,6 +500,8 @@ jobs:
         run: |
           set -euo pipefail
           task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          mkdir -p "$task_temp/tmp" "$task_temp/cache"
+          printf 'TMPDIR=%s/tmp\nXDG_CACHE_HOME=%s/cache\nnpm_config_cache=%s/npm\nnpm_config_store_dir=%s/pnpm-store\nPLAYWRIGHT_BROWSERS_PATH=%s/playwright\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
           printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
 
       - name: Checkout (default)
@@ -572,7 +576,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.15.1
-          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.job }}
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
       - name: Setup Rust
         if: matrix.lane == 'linux-arm64'
@@ -616,8 +620,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get -o DPkg::Lock::Timeout=120 install -y libpq-dev
           make -C src character-save-journal-v2-runtime-native-test \
             CC=gcc PG_CONFIG=pg_config
 

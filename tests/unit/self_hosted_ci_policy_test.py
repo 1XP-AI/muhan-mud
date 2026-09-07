@@ -17,6 +17,10 @@ assert "job.services.postgres.ports['5432']" in workflow
 assert 'log_file="/tmp/frp.log"' not in workflow
 assert 'mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX"' in workflow
 assert 'MUHAN_BROWSER_PORT=' in workflow
+for setting in ('TMPDIR', 'XDG_CACHE_HOME', 'npm_config_cache',
+                'npm_config_store_dir', 'PLAYWRIGHT_BROWSERS_PATH'):
+    assert workflow.count(f'{setting}=%s/') == 2, setting
+assert workflow.count('${{ github.run_attempt }}') == 2
 assert 'dtolnay/rust-toolchain@1.90.0' in workflow
 assert 'pnpm/action-setup@v4' in workflow
 assert 'python-is-python3' in workflow and 'build-essential' in workflow

@@ -1,5 +1,38 @@
 # Self-hosted ARM64 CI migration — 2026-09-07
 
+## Renewed request: current verification
+
+Rechecked the only workflow and its complete matrix. ARM64 label routing is
+already present on the working branch; there are no reusable workflows.
+Added per-job temporary/cache paths for npm, pnpm and Playwright, included
+the run attempt in pnpm installation paths, and removed a redundant system
+package installation. Existing isolated Cargo outputs, dynamically assigned
+PostgreSQL ports and owned-resource-only Docker cleanup remain in place.
+The routing/isolation, local-first and Docker collision policy tests all pass.
+
+Docker Hub's tag API confirms Linux ARM64 manifests for both CI stack images:
+`postgres:17-alpine` (`dfc2780980fe…`) and
+`postgrest/postgrest:v12.2.8` (`cff60f8c98d2…`). The native amd64 GCC
+digest is used only by the retained x64 compatibility lane. Runtime setup
+actions select the runner architecture; no x64-only binary download was
+found in the workflow. This manifest check is not a full runtime test.
+
+A fresh dispatch attempt against the existing remote migration branch was
+rejected with HTTP 422: the workflow is disabled. No new run was created;
+the local cache-isolation changes therefore have no remote execution result.
+The last actual run remains `34093192597`, completed with failure.
+The default branch still uses `on: push`, hosted Ubuntu and port 5432.
+Organization runner-group inspection still returns HTTP 403. Do not infer
+missing runner access solely from that API permission failure.
+
+Before enabling CI, merge the reviewed manual-only workflow onto the default
+branch; enabling it first would restore the old automatic paid workflow.
+An organization administrator must allow this repository in the runner group
+and, if configured, allow this workflow/ref. Linux needs apt plus noninteractive
+sudo and Docker; macOS needs Xcode Command Line Tools. Then enable and dispatch
+the workflow and verify every job's result. No default-branch merge, workflow
+enablement, deployment, or global resource cleanup was performed here.
+
 ## Delivery
 
 Migration branch: `codex/self-hosted-arm64-ci`, pushed to
