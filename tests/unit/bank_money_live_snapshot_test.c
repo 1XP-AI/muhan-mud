@@ -14,7 +14,8 @@ int main(int argc,char **argv)
     while(fscanf(file,"%2x",&byte)==1) {assert(length<sizeof(wire)); wire[length++]=(unsigned char)byte;}
     fclose(file);
     assert(player_snapshot_v1_decode_clone(wire,length,&player)==0);
-    player->fd=7; strcpy(player->password,"transient-test-password"); before=*player;
+    assert(sizeof("test-password")<=sizeof(player->password));
+    player->fd=7; strcpy(player->password,"test-password"); before=*player;
     assert(bank_money_live_snapshot(player,&actual,&size)==0);
     assert(size==length && !memcmp(actual,wire,size)); assert(!memcmp(player,&before,sizeof(before)));
     player->gold=player->gold==100?101:100;
