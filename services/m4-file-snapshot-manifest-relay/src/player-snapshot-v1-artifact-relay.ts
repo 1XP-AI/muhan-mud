@@ -84,7 +84,7 @@ export interface PlayerSnapshotV1NormalizedProjectionPersistence {
  * numeric projection instead of passing through any projector-owned object or
  * its additional properties.
  */
-function normalizedProjectionAllowlist(
+export function normalizedProjectionAllowlist(
   projection: PlayerSnapshotV1NormalizedProjection,
 ): PlayerSnapshotV1NormalizedProjection {
   const player = projection.player

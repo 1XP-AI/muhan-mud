@@ -1270,6 +1270,98 @@ test('paired shadow relay preserves malformed and initially missing pair evidenc
   assert.deepEqual(sourceEvidence, originalEvidence)
 })
 
+test('manifest-first normalized opt-in records in prerequisite order and recovers a partial delivery', async () => {
+  const calls: string[] = []
+  const bytes = playerSnapshotV1Artifact(), receipt = body(first)
+  const before = [Buffer.from(bytes), Buffer.from(receipt)]
+  const filesystem: PlayerSnapshotV1ManifestFirstFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes, receiptManifestBytes: receipt }],
+  }
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async () => { calls.push('manifest'); return 'EXACT_RETRY' },
+    recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return 'EXACT_RETRY' },
+  }
+  let fail = true
+  const persistence = {
+    project: async () => { calls.push('project'); return normalizedProjection() },
+    store: { recordPlayerSnapshotNormalizedV1Projection: async (input: { commandId: string }) => {
+      calls.push('normalized'); assert.equal(input.commandId, first)
+      if (fail) throw Object.assign(new Error('retry'), { code: 'ECONNRESET' })
+      return 'EXACT_RETRY' as const
+    } },
+  }
+  const failed = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem, persistence)
+  assert.equal(failed.retryable, 1)
+  assert.equal(failed.delivered, 0)
+  assert.equal(failed.artifactDelivered, 1)
+  fail = false
+  const retried = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem, persistence)
+  assert.equal(retried.delivered, 1)
+  assert.equal(retried.normalizedProjectionExactRetry, 1)
+  assert.deepEqual(calls, ['manifest', 'artifact', 'project', 'normalized', 'manifest', 'artifact', 'project', 'normalized'])
+  assert.deepEqual([Buffer.from(bytes), Buffer.from(receipt)], before)
+})
+
+test('manifest-first normalized opt-in never projects before artifact success or forwards extra fields', async () => {
+  let failArtifact = true, projected = 0
+  const filesystem: PlayerSnapshotV1ManifestFirstFilesystem = {
+    scan: async () => [{ name: `${first}.player-snapshot-v1`, bytes: playerSnapshotV1Artifact(), receiptManifestBytes: body(first) }],
+  }
+  const store: ManifestStore & PlayerSnapshotV1ArtifactStore = {
+    recordManifest: async () => 'RECORDED',
+    recordPlayerSnapshotV1Artifact: async () => {
+      if (failArtifact) throw Object.assign(new Error('bad'), { code: 'P0001' })
+      return 'RECORDED'
+    },
+  }
+  const persistence = {
+    project: async () => { projected++; return { ...normalizedProjection(), payload: 'must not pass' } },
+    store: { recordPlayerSnapshotNormalizedV1Projection: async (input: { projection: PlayerSnapshotV1NormalizedProjection }) => {
+      assert.equal('payload' in input.projection, false)
+      assert.deepEqual(input.projection, normalizedProjection())
+      return 'RECORDED' as const
+    } },
+  }
+  const failed = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem, persistence)
+  assert.equal(failed.delivered, 0)
+  assert.equal(projected, 0)
+  failArtifact = false
+  const recorded = await relayPlayerSnapshotV1ManifestFirstOnce('/ignored', store, filesystem, persistence)
+  assert.equal(recorded.normalizedProjectionRecorded, 1)
+  assert.equal(recorded.delivered, 1)
+})
+
+test('manifest-first CLI explicitly enables normalized persistence and closes both stores after failure', async () => {
+  const calls: string[] = []
+  const store = {
+    recordManifest: async () => 'RECORDED' as const,
+    recordPlayerSnapshotV1Artifact: async () => 'RECORDED' as const,
+    close: async () => { calls.push('close-base') },
+  }
+  const dependencies = {
+    createStore: () => store,
+    createNormalizedPersistence: (url: string, path: string) => {
+      assert.equal(url, 'postgresql://mud_writer_login@localhost/postgres')
+      assert.equal(path, '/verified/projector')
+      calls.push('create-normalized')
+      return { project: async () => normalizedProjection(), store: {
+        recordPlayerSnapshotNormalizedV1Projection: async () => 'RECORDED' as const,
+        close: async () => { calls.push('close-normalized') },
+      } }
+    },
+    relay: async (...args: Parameters<typeof relayPlayerSnapshotV1ManifestFirstOnce>) => {
+      assert.ok(args[3]); calls.push('relay'); throw new Error('expected relay failure')
+    },
+    writeStdout: () => { throw new Error('must not print success') },
+  }
+  await assert.rejects(manifestFirstRelayMain({
+    M4_FILE_SNAPSHOT_OUTBOX_DIR: '/immutable/outbox', DATABASE_URL: 'postgresql://mud_writer_login@localhost/postgres',
+    M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED: 'true',
+    M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_RUNNER: '/verified/projector',
+  }, ['--once'], dependencies), /expected relay failure/)
+  assert.deepEqual(calls, ['create-normalized', 'relay', 'close-normalized', 'close-base'])
+})
+
 test('combined entrypoint supplies one manifest-first store in manifest/artifact order without side-effect capabilities', async () => {
   const calls: unknown[][] = []
   const storeCalls: string[] = []

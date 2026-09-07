@@ -1,6 +1,8 @@
 import { parseManifest } from './manifest.js'
 import {
   NodePlayerSnapshotV1ArtifactFilesystem,
+  normalizedProjectionAllowlist,
+  type PlayerSnapshotV1NormalizedProjectionPersistence,
   type PlayerSnapshotV1ArtifactFilesystem,
 } from './player-snapshot-v1-artifact-relay.js'
 import { parsePlayerSnapshotV1Artifact } from './player-snapshot-v1-artifact.js'
@@ -29,6 +31,9 @@ export interface PlayerSnapshotV1ManifestFirstSummary {
   artifactDelivered: number
   artifactRecorded: number
   artifactExactRetry: number
+  normalizedProjectionDelivered?: number
+  normalizedProjectionRecorded?: number
+  normalizedProjectionExactRetry?: number
 }
 
 function summary(): PlayerSnapshotV1ManifestFirstSummary {
@@ -44,14 +49,21 @@ function summary(): PlayerSnapshotV1ManifestFirstSummary {
  * Record each complete immutable M3 pair in its database precondition order:
  * canonical legacy-file manifest first, then PlayerSnapshotV1 artifact. A
  * failed manifest stage deliberately prevents its artifact RPC for that pass.
- * Fulfillment, replay, and projection are not capabilities of this entrypoint.
+ * Optional numeric projection follows both settled prerequisites. Fulfillment
+ * and gameplay authority remain outside this relay.
  */
 export async function relayPlayerSnapshotV1ManifestFirstOnce(
   outboxPath: string,
   store: ManifestStore & PlayerSnapshotV1ArtifactStore,
   filesystem: PlayerSnapshotV1ManifestFirstFilesystem = new NodePlayerSnapshotV1ArtifactFilesystem(),
+  normalizedPersistence?: PlayerSnapshotV1NormalizedProjectionPersistence,
 ): Promise<PlayerSnapshotV1ManifestFirstSummary> {
   const result = summary()
+  if (normalizedPersistence) {
+    result.normalizedProjectionDelivered = 0
+    result.normalizedProjectionRecorded = 0
+    result.normalizedProjectionExactRetry = 0
+  }
   let files: Awaited<ReturnType<PlayerSnapshotV1ManifestFirstFilesystem['scan']>>
   try { files = await filesystem.scan(outboxPath) }
   catch { result.ioError++; return result }
@@ -88,20 +100,41 @@ export async function relayPlayerSnapshotV1ManifestFirstOnce(
       continue
     }
 
+    let finalOutcome: 'RECORDED' | 'EXACT_RETRY'
     try {
       const outcome = await store.recordPlayerSnapshotV1Artifact(artifact)
       if (outcome === 'RECORDED') {
         result.artifactRecorded++
         result.artifactDelivered++
-        result.recorded++
-        result.delivered++
       } else if (outcome === 'EXACT_RETRY') {
         result.artifactExactRetry++
         result.artifactDelivered++
-        result.exactRetry++
-        result.delivered++
-      } else result.unknown++
-    } catch (error) { result[classifyDatabaseError(error)]++ }
+      } else { result.unknown++; continue }
+      finalOutcome = outcome
+    } catch (error) { result[classifyDatabaseError(error)]++; continue }
+
+    if (normalizedPersistence) {
+      let projection
+      try {
+        projection = normalizedProjectionAllowlist(await normalizedPersistence.project(artifact.payload, artifact.snapshotSha256))
+      } catch { result.invalid++; continue }
+      try {
+        const outcome = await normalizedPersistence.store.recordPlayerSnapshotNormalizedV1Projection({
+          characterId: artifact.characterId, commandId: artifact.commandId,
+          receiptRequestSha256: artifact.receiptRequestSha256, sourcePostSha256: artifact.sourcePostSha256,
+          sourceOctets: artifact.sourceOctets, projection,
+        })
+        if (outcome === 'RECORDED') result.normalizedProjectionRecorded!++
+        else if (outcome === 'EXACT_RETRY') result.normalizedProjectionExactRetry!++
+        else { result.unknown++; continue }
+        result.normalizedProjectionDelivered!++
+        finalOutcome = outcome
+      } catch (error) { result[classifyDatabaseError(error)]++; continue }
+    }
+    // Aggregate delivery represents every enabled stage, not just a prefix.
+    result.delivered++
+    if (finalOutcome === 'RECORDED') result.recorded++
+    else result.exactRetry++
   }
   return result
 }
