@@ -39,6 +39,11 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-normalized-projection-bridge.sh
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-artifact-conformance.sh
     make -C src bank-snapshot-v1-test bank-snapshot-v1-artifact-test
+    # Characterization only: explicitly exposes the legacy cross-file failure gap.
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
+      tests/unit/bank_transfer_legacy_characterization.c src/bank.c \
+      -Wl,--gc-sections -o /tmp/bank-transfer-characterization
+    /tmp/bank-transfer-characterization
     CARGO_TARGET_DIR=/work/rust/target cargo build --locked --offline --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_replay_verify
     PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 PLAYER_SNAPSHOT_V1_REPLAY_READER_CONTAINERLESS=1 bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
   ')"
