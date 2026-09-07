@@ -530,3 +530,9 @@ run_super --file=/workspace/supabase/tests/bank_snapshot_v1_payload_contract.sql
 echo 'GREEN complete bank payload persistence contract'
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-payload-local-pg.mjs"
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261017000000_paired_snapshot_transaction_kernel.sql
+done
+run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex")" \
+  --file=/workspace/supabase/tests/paired_snapshot_transaction_contract.sql
+echo 'GREEN paired snapshot transaction rollback and retry contract'
