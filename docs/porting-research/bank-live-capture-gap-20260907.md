@@ -1,5 +1,30 @@
 # Live bank capture and transaction gap
 
+## Durable per-character reservation primitive — 2026-09-07
+
+Source `1f5745e` adds explicit `claimMoneyCharacterFence`, keyed by canonical
+world/character rather than command ID. It writes/fsyncs the immutable complete
+request into an exclusive temporary file, publishes a no-overwrite hard link,
+removes only its own temporary link, and fsyncs the private owned directory
+before returning. Competing different requests cannot replace the winning
+reservation. A fresh process may acknowledge only an exact byte-for-byte retry.
+Partially published/two-link state fails closed and is not auto-cleaned.
+
+Eight independent Linux Node processes race different commands for one character:
+exactly one succeeds. A new process retries the winner, a loser remains rejected,
+the winning bytes remain unchanged, and another character can reserve independently.
+The full frozen ARM64 suite at `1f5745e` exited 0, including existing DB/native
+command, C onboarding and restore checks: `/tmp/muhan-money-fence.log`.
+
+IMPORTANT: this primitive is not yet called by prepare CLI or the running game.
+Existing preparation still deduplicates only by command ID. There is deliberately
+no release API; automatic release on process exit/timeout would admit a second
+transaction while the first may have committed. Before adoption, recovery must
+discover fence records (current visitor only discovers money-request files),
+resolve the exact immutable request against DB, and coordinate confirmed current
+state plus durable reservation release. Power-loss/fsync fault injection remains
+unverified. No production cutover, Actions run or deployment.
+
 ## Native command callback through live wallet dispatcher — 2026-09-07
 
 Source `e1982b5` adds a production-source transfer callback accepting actual C
