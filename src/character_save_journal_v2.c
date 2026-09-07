@@ -573,6 +573,34 @@ out:
     return result;
 }
 
+int character_save_journal_v2_prepare_absent_shard_at(root_fd,w)
+int root_fd; const character_save_journal_v2_wire *w;
+{
+    v2_tree t;
+    int result=-1;
+    memset(&t,0,sizeof(t));
+    t.root_fd=t.player_fd=t.shard_fd=t.journal_fd=t.stage_fd=-1;
+    /* Validate the complete canonical name/shard wire before any mkdir. */
+    if(!v2_wire_valid(w,1)||w->expected_state!=CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT)
+        return -1;
+    t.root_fd=fcntl(root_fd,F_DUPFD_CLOEXEC,0);
+    if(!v2_dir_ok(t.root_fd)) goto done;
+    t.player_fd=v2_open_component(t.root_fd,"player");
+    t.journal_fd=v2_open_component(t.root_fd,"character-save-journal");
+    t.stage_fd=v2_open_component(t.root_fd,"character-save-stage");
+    if(t.player_fd<0||t.journal_fd<0||t.stage_fd<0) goto done;
+    if(mkdirat(t.player_fd,w->legacy_shard,0700)!=0&&errno!=EEXIST) goto done;
+    t.shard_fd=v2_open_component(t.player_fd,w->legacy_shard);
+    if(t.shard_fd<0) goto done;
+    /* Sync even an existing directory: a previous attempt may have stopped
+     * between mkdir and parent fsync. No player bytes are written here. */
+    if(fsync(t.shard_fd)!=0||fsync(t.player_fd)!=0) goto done;
+    result=0;
+done:
+    v2_tree_close(&t);
+    return result;
+}
+
 int character_save_journal_v2_live_precondition_at(root_fd,w)
 int root_fd; const character_save_journal_v2_wire *w;
 {

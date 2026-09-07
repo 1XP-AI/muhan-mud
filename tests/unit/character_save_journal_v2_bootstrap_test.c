@@ -16,7 +16,8 @@ typedef enum bootstrap_mode {
     BOOTSTRAP_BAD_TREE, BOOTSTRAP_BAD_SHARD, BOOTSTRAP_BAD_FORMAT,
     BOOTSTRAP_TUPLE_MISMATCH, BOOTSTRAP_STALE,
     BOOTSTRAP_IMPORTED_UNCLAIMED, BOOTSTRAP_PROVISIONING,
-    BOOTSTRAP_BAD_LIFECYCLE
+    BOOTSTRAP_BAD_LIFECYCLE, BOOTSTRAP_MISSING_SHARD,
+    BOOTSTRAP_SHARD_SYMLINK, BOOTSTRAP_SHARD_MODE
 } bootstrap_mode;
 
 #define BOOTSTRAP_TEST_ROOT_CAP 128
@@ -146,6 +147,9 @@ static int setup(fixture *test, bootstrap_mode mode, int create_live)
        snprintf(stage,sizeof(stage),"%s/character-save-stage",test->root)>=(int)sizeof(stage) ||
        mkdir(player,0700)||mkdir(shard,0700)||mkdir(journal,0700)||mkdir(stage,0700)) return -1;
     if(mode==BOOTSTRAP_BAD_TREE&&chmod(stage,0755)) return -1;
+    if(mode==BOOTSTRAP_MISSING_SHARD&&rmdir(shard)) return -1;
+    if(mode==BOOTSTRAP_SHARD_SYMLINK&&(rmdir(shard)||symlink("..",shard))) return -1;
+    if(mode==BOOTSTRAP_SHARD_MODE&&chmod(shard,0755)) return -1;
     if(create_live) {
         if(snprintf(live,sizeof(live),"%s/player/11/M3hero",test->root)>=(int)sizeof(live)) return -1;
         descriptor=open(live,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
@@ -166,6 +170,7 @@ static void teardown(fixture *test)
     snprintf(stage,sizeof(stage),"%s/character-save-stage",test->root);
     snprintf(live,sizeof(live),"%s/player/11/M3hero",test->root);
     (void)unlink(live); (void)chmod(stage,0700); (void)rmdir(stage); (void)rmdir(journal);
+    if(test->mode==BOOTSTRAP_SHARD_SYMLINK) (void)unlink(shard);
     (void)rmdir(shard); (void)rmdir(player); (void)rmdir(test->root);
     current=0;
 }
@@ -213,7 +218,13 @@ static int run_case(bootstrap_mode mode, int present, int expected,
 
 int main(void)
 {
-    return run_case(BOOTSTRAP_EXISTING,1,0,1,0,
+    return run_case(BOOTSTRAP_MISSING_SHARD,0,0,2,1,
+        "first save creates its missing private shard before absent observation") |
+        run_case(BOOTSTRAP_SHARD_SYMLINK,0,-1,1,0,
+        "existing shard symlink is not followed or replaced") |
+        run_case(BOOTSTRAP_SHARD_MODE,0,-1,1,0,
+        "existing permissive shard is rejected without chmod") |
+        run_case(BOOTSTRAP_EXISTING,1,0,1,0,
         "actual existing canonical file skips seed") |
         run_case(BOOTSTRAP_PRESENT,1,-1,1,0,
         "uninitialized route with actual present file never seeds") |

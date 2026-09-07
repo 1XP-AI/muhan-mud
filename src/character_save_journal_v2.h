@@ -57,6 +57,10 @@ int character_save_journal_v2_stage_at(int root_fd,
                                        size_t stage_length);
 int character_save_journal_v2_live_precondition_at(
     int root_fd, const character_save_journal_v2_wire *wire);
+/* Prepare only the validated absent route's shard under the held root.
+ * Existing components are validated, never chmod'd or replaced. */
+int character_save_journal_v2_prepare_absent_shard_at(
+    int root_fd, const character_save_journal_v2_wire *wire);
 int character_save_journal_v2_commit_prepared_at(
     int root_fd, const character_save_journal_v2_wire *wire);
 int character_save_journal_v2_prepare_at(int root_fd,

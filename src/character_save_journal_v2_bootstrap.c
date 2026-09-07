@@ -121,6 +121,7 @@ static int bootstrap_live_file_absent(
        canonical_legacy_name_length,&wire) ||
        character_save_journal_v2_writer_dup_held_root_fd(writer,&root)!=
        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK ||
+       character_save_journal_v2_prepare_absent_shard_at(root,&wire) ||
        character_save_journal_v2_live_precondition_at(root,&wire)) goto done;
     result=0;
 done:
