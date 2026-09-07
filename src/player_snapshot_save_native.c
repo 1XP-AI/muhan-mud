@@ -67,7 +67,7 @@ int player_snapshot_save_prepared_native(void *connection,const char *node,const
        ||!payload||length<48||length>4194304||timeout_ms<1||timeout_ms>10000) return PLAYER_SNAPSHOT_SAVE_NOT_SENT;
     args[0]=script;args[1]="--prepare";args[2]=root;
     for(i=0;i<8;i++) {if(!values[i]) return PLAYER_SNAPSHOT_SAVE_NOT_SENT;args[i+3]=values[i];}
-    result=bank_money_process_native(node,args,11,payload,length,timeout_ms,&echo,&echoed);
+    result=player_snapshot_process_native(node,args,11,payload,length,timeout_ms,&echo,&echoed);
     if(result||echoed!=length||!echo||memcmp(echo,payload,length)) {
         free(echo);return PLAYER_SNAPSHOT_SAVE_NOT_SENT;
     }

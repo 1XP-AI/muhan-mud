@@ -11,6 +11,9 @@
 int bank_money_plan_native(const char *,const char *const [4],const unsigned char *,size_t,int,unsigned char **,size_t *);
 /* Internal framed subprocess exchange; used by the durable preparation helper. */
 int bank_money_process_native(const char *,const char *const *,int,const unsigned char *,size_t,int,unsigned char **,size_t *);
+/* Single player payload, 48 bytes..4 MiB. Transport bounds only; caller must
+ * require byte-exact echo and validate the canonical codec independently. */
+int player_snapshot_process_native(const char *,const char *const *,int,const unsigned char *,size_t,int,unsigned char **,size_t *);
 /* Versioned reply: positive resolved i64 then the normal pair frame.
  * Strips metadata; caller persists resolved amount with the returned bytes. */
 int bank_money_plan_resolved_native(const char *,const char *const [4],const unsigned char *,size_t,int,unsigned char **,size_t *,uint64_t *);
