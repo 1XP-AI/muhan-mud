@@ -368,17 +368,21 @@ const char *line;
 long now;
 trusted_admission_ticket *ticket;
 {
-    char copy[TRUSTED_ADMISSION_MAX_LINE + 1];
-    char signed_copy[TRUSTED_ADMISSION_MAX_LINE + 1];
-    char *part[7], expected[TRUSTED_ADMISSION_HMAC_HEX_LEN + 1];
+    char copy[TRUSTED_ADMISSION_BOUND_MAX_LINE + 1];
+    char signed_copy[TRUSTED_ADMISSION_BOUND_MAX_LINE + 1];
+    char *part[9], expected[TRUSTED_ADMISSION_HMAC_HEX_LEN + 1];
+    trusted_admission_ticket value;
     unsigned long len, signed_len;
-    int i, bars = 0;
+    int i, bars = 0, bound, mac;
     long expires_at;
 
-    if(!line || !ticket || trusted_admission_mode() != 1) return -1;
+    if(!ticket) return -1;
+    memset(ticket,0,sizeof(*ticket)); memset(&value,0,sizeof(value));
+    if(!line || trusted_admission_mode() != 1) return -1;
+    bound=!strncmp(line,"MUD2|",5); mac=bound?8:6;
     len = strlen(line);
     if(len && line[len-1] == '\n') len--;
-    if(!len || len > TRUSTED_ADMISSION_MAX_LINE) return -1;
+    if(!len || len > (unsigned long)(bound?TRUSTED_ADMISSION_BOUND_MAX_LINE:TRUSTED_ADMISSION_MAX_LINE)) return -1;
     memcpy(copy, line, len);
     copy[len] = 0;
     part[0] = copy;
@@ -386,28 +390,37 @@ trusted_admission_ticket *ticket;
         if((unsigned char)copy[i] < 0x20 || (unsigned char)copy[i] > 0x7e)
             return -1;
         if(copy[i] == '|') {
-            if(++bars > 6) return -1;
+            if(++bars > mac) return -1;
             copy[i] = 0;
             part[bars] = copy + i + 1;
         }
     }
-    if(bars != 6 || strcmp(part[0], "MUD1") || !ta_time_value(part[1], &expires_at))
+    if(bars != mac || strcmp(part[0], bound?"MUD2":"MUD1") || !ta_time_value(part[1], &expires_at))
         return -1;
     if(strlen(part[2]) != TRUSTED_ADMISSION_NONCE_LEN) return -1;
     for(i=0; i<TRUSTED_ADMISSION_NONCE_LEN; i++) if(!ta_lower_hex(part[2][i])) return -1;
-    if(!ta_strict_uuid(part[3]) || !ta_strict_uuid(part[4]) || !ta_decode_name(part[5], ticket->name))
+    if(!ta_strict_uuid(part[3]) || !ta_strict_uuid(part[4]) || !ta_decode_name(part[5], value.name))
         return -1;
-    if(strlen(part[6]) != TRUSTED_ADMISSION_HMAC_HEX_LEN) return -1;
-    for(i=0; i<TRUSTED_ADMISSION_HMAC_HEX_LEN; i++) if(!ta_lower_hex(part[6][i])) return -1;
+    if(bound) {
+        if(!ta_strict_uuid(part[6]) || !part[7][0] || strlen(part[7])>128) return -1;
+        for(i=0;part[7][i];i++) {
+            char c=part[7][i];
+            if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.')) return -1;
+        }
+        strcpy(value.session_id,part[6]); strcpy(value.gateway_instance_id,part[7]);
+    }
+    if(strlen(part[mac]) != TRUSTED_ADMISSION_HMAC_HEX_LEN) return -1;
+    for(i=0; i<TRUSTED_ADMISSION_HMAC_HEX_LEN; i++) if(!ta_lower_hex(part[mac][i])) return -1;
     if(expires_at < now || expires_at > now + 30) return -1;
 
     signed_len = len - TRUSTED_ADMISSION_HMAC_HEX_LEN - 1;
     memcpy(signed_copy, line, signed_len);
     signed_copy[signed_len] = 0;
     if(trusted_admission_hmac_hex(configured_secret, signed_copy, expected) < 0 ||
-       !ta_constant_time_equal(expected, part[6], TRUSTED_ADMISSION_HMAC_HEX_LEN))
+       !ta_constant_time_equal(expected, part[mac], TRUSTED_ADMISSION_HMAC_HEX_LEN))
         return -1;
     if(ta_consume_nonce(part[2], expires_at, now) < 0) return -1;
+    *ticket=value;
     strcpy(ticket->user_id, part[3]);
     strcpy(ticket->character_id, part[4]);
     strcpy(ticket->nonce, part[2]);

@@ -8,6 +8,7 @@
 #define TRUSTED_ADMISSION_NONCE_LEN 32
 #define TRUSTED_ADMISSION_HMAC_HEX_LEN 64
 #define TRUSTED_ADMISSION_MAX_LINE 256
+#define TRUSTED_ADMISSION_BOUND_MAX_LINE 384
 #define TRUSTED_ADMISSION_REPLAY_LIMIT (2 * PMAX)
 
 typedef struct trusted_admission_ticket {
@@ -16,6 +17,9 @@ typedef struct trusted_admission_ticket {
     char nonce[TRUSTED_ADMISSION_NONCE_LEN + 1];
     char name[PLAYER_NAME_MAX_BYTES + 1];
     long expires_at;
+    /* MUD2 only; empty for MUD1. Transient, never player-file data. */
+    char session_id[TRUSTED_ADMISSION_UUID_LEN + 1];
+    char gateway_instance_id[129];
 } trusted_admission_ticket;
 
 /* 0 means legacy mode, 1 means ticket mode, and -1 is an invalid

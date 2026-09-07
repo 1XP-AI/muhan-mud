@@ -29,6 +29,28 @@ function request(evidence: LegacyIdentityEvidenceV1) {
   }
 }
 
+test('session-bound ticket preserves the DB session and gateway in C', {
+  skip: !oracle && 'requires C oracle',
+}, () => {
+  const binding={sessionId:'123e4567-e89b-12d3-a456-426614174088',gatewayInstanceId:'gateway-test-1'}
+  const input={actorUserId:fixture.actorUserId,characterId:fixture.characterId,
+    legacyNameKey:fixture.canonicalName,nowMs:fixture.nowMs,jwtExpiresAtMs:fixture.nowMs+20000,...binding}
+  const wire=createAdmissionTicket(input,fixture.secret,{randomBytes:()=>Buffer.from(fixture.nonceHex,'hex')}).toString('ascii')
+  assert.ok(wire.startsWith('MUD2|'))
+  assert.deepEqual(runOracle('ticket-bound',fixture.secret,wire),{status:0,stdout:`bound|${binding.sessionId}|${binding.gatewayInstanceId}`})
+  assert.deepEqual(runOracle('ticket-twice',fixture.secret,wire),{status:0,stdout:'accepted|rejected'})
+  for(const changed of [wire.replace(binding.sessionId,binding.sessionId.slice(0,-1)+'9'),wire.replace(binding.gatewayInstanceId,'gateway-test-2')])
+    assert.deepEqual(runOracle('ticket',fixture.secret,changed),{status:0,stdout:'rejected'})
+  assert.throws(()=>createAdmissionTicket({...input,gatewayInstanceId:undefined},fixture.secret))
+  assert.throws(()=>createAdmissionTicket({...input,gatewayInstanceId:'bad|gateway'},fixture.secret))
+  const maximum=createAdmissionTicket({...input,legacyNameKey:'Abcdefghijkl',gatewayInstanceId:'g'.repeat(128)},fixture.secret,{randomBytes:()=>Buffer.alloc(16,3)}).toString('ascii')
+  assert.ok(Buffer.byteLength(maximum)>256 && Buffer.byteLength(maximum)<=384)
+  assert.deepEqual(runOracle('ticket-bound',fixture.secret,maximum),{status:0,stdout:`bound|${binding.sessionId}|${'g'.repeat(128)}`})
+  assert.throws(()=>createAdmissionTicket({...input,gatewayInstanceId:'g'.repeat(129)},fixture.secret))
+  const legacy=createAdmissionTicket({...input,sessionId:undefined,gatewayInstanceId:undefined},fixture.secret).toString('ascii')
+  assert.deepEqual(runOracle('ticket-bound',fixture.secret,legacy),{status:0,stdout:'bound||'})
+})
+
 function row(evidence: LegacyIdentityEvidenceV1, extra: Record<string, unknown> = {}) {
   return [{
     character_id: fixture.characterId,

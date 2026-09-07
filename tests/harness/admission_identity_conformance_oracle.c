@@ -117,7 +117,10 @@ int twice;
     int first, second;
     if(trusted_admission_set_secret_for_test(secret) != 0) return 2;
     first = trusted_admission_validate(line, 1700000000L, &ticket);
-    if(!twice) {
+    if(twice==2) {
+        if(first==0) printf("bound|%s|%s\n",ticket.session_id,ticket.gateway_instance_id);
+        else puts("rejected");
+    } else if(!twice) {
         if(first == 0) printf("accepted|%s\n", ticket.name);
         else puts("rejected");
     }
@@ -177,6 +180,7 @@ int argc;
 char **argv;
 {
     if(argc == 4 && !strcmp(argv[1], "ticket")) return ticket_line(argv[2], argv[3], 0);
+    if(argc == 4 && !strcmp(argv[1], "ticket-bound")) return ticket_line(argv[2], argv[3], 2);
     if(argc == 4 && !strcmp(argv[1], "ticket-twice")) return ticket_line(argv[2], argv[3], 1);
     if(argc == 4 && !strcmp(argv[1], "ticket-name")) return ticket_name(argv[2], argv[3]);
     if(argc == 4 && !strcmp(argv[1], "emit-evidence")) return emit_evidence(argv[2], argv[3]);

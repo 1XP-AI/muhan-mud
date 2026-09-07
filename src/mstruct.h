@@ -81,6 +81,10 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		auth_user_id[37];
 	char		character_id[37];
 	char		admission_nonce[33];
+	/* MUD2 DB lease identity, cleared with descriptor-owned extra on logout.
+	 * Empty for MUD1/MUD1O: never substitute admission_nonce as session ID. */
+	char		db_session_id[37];
+	char		db_gateway_instance_id[129];
 	/* MUD1O transient identity/state.  extra is never serialized with a
 	 * creature, so the actor/correlation/character IDs cannot enter player
 	 * files.  The compact state fields are protocol guards, not credentials. */

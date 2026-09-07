@@ -461,7 +461,8 @@ class GatewaySession {
           characterId: authFrame.characterId,
           legacyNameKey: this.legacyNameKey,
           jwtExpiresAtMs: identity.expiresAtMs,
-          nowMs: this.now()
+          nowMs: this.now(),
+          ...(this.config.mudSessionBindingEnabled ? {sessionId, gatewayInstanceId:this.config.gatewayInstanceId!} : {})
         }, this.config.mudAdmissionSecret!, { randomBytes: this.randomBytes })
         this.timers.clearTimeout(this.authTimer)
         this.scheduleExpiry(identity.expiresAtMs)

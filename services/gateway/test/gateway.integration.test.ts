@@ -125,14 +125,36 @@ function authFrame(): string {
   return JSON.stringify({ type: 'auth', accessToken: 'browser-token-not-for-logs', characterId: character })
 }
 
-async function startGateway(mud: Server, dependenciesValue: GatewayDependencies): Promise<RunningGateway> {
+async function startGateway(mud: Server, dependenciesValue: GatewayDependencies, bound=false): Promise<RunningGateway> {
   const address = mud.address()
   assert.ok(address && typeof address !== 'string')
-  const gateway = createGateway(config(address.port), dependenciesValue)
+  const gateway = createGateway({...config(address.port),mudSessionBindingEnabled:bound}, dependenciesValue)
   gateway.server.listen(0, '127.0.0.1')
   await once(gateway.server, 'listening')
   return gateway
 }
+
+test('opt-in MUD2 carries the exact acquired DB session, not a new identity', async (t) => {
+  let ticket=''
+  const mud=createServer(socket=>socket.on('data',bytes=>{
+    if(ticket.includes('\n')) return
+    ticket+=bytes.toString('ascii')
+    if(ticket.includes('\n')) socket.write('MUD1 OK\n')
+  }))
+  mud.listen(0,'127.0.0.1'); await once(mud,'listening')
+  const authorizer=new RecordingAuthorizer()
+  const gateway=await startGateway(mud,dependencies(authorizer),true)
+  t.after(async()=>{await closeGateway(gateway); await closeServer(mud)})
+  const {ws,messages}=await openWs(gateway)
+  ws.send(authFrame())
+  await waitForMessage(messages,({data,isBinary})=>!isBinary&&Buffer.from(data).toString()==='{"type":"ready"}')
+  assert.equal(authorizer.begins.length,1)
+  const parts=ticket.trimEnd().split('|')
+  assert.equal(parts[0],'MUD2')
+  assert.equal(parts[6],authorizer.begins[0]!.sessionId)
+  assert.equal(parts[7],authorizer.begins[0]!.gatewayInstanceId)
+  ws.close()
+})
 
 test('auth-first trusted relay writes ticket, waits for fragmented ACK, and preserves coalesced game bytes', async (t) => {
   const receivedFromGateway: Buffer[] = []

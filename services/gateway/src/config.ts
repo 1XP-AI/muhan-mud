@@ -24,6 +24,7 @@ export interface GatewayConfig {
   jwtIssuer?: string
   jwtAudience: string
   mudAdmissionSecret?: string
+  mudSessionBindingEnabled?: boolean
   gatewayInstanceId?: string
   authTimeoutMs: number
   tcpConnectTimeoutMs: number
@@ -217,6 +218,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     jwtIssuer,
     jwtAudience: env.SUPABASE_JWT_AUDIENCE ?? 'authenticated',
     mudAdmissionSecret,
+    mudSessionBindingEnabled: parseBoolean(env.MUD_SESSION_BINDING_ENABLED, 'MUD_SESSION_BINDING_ENABLED'),
     gatewayInstanceId,
     authTimeoutMs: requiredInteger(env.AUTH_TIMEOUT_MS, 'AUTH_TIMEOUT_MS', 10_000, 100),
     tcpConnectTimeoutMs: requiredInteger(env.TCP_CONNECT_TIMEOUT_MS, 'TCP_CONNECT_TIMEOUT_MS', 5_000, 100),

@@ -259,6 +259,10 @@ int fd;
 	if(!onboarding_fd_active(fd)) return;
 	strcpy(Ply[fd].extr->auth_user_id, Ply[fd].extr->onboarding_actor_id);
 	strcpy(Ply[fd].extr->character_id, Ply[fd].extr->onboarding_character_id);
+	/* MUD1O activation has no DB-session handoff yet. Never retain a prior
+	 * binding or fabricate one from the onboarding correlation/nonce. */
+	memset(Ply[fd].extr->db_session_id,0,sizeof(Ply[fd].extr->db_session_id));
+	memset(Ply[fd].extr->db_gateway_instance_id,0,sizeof(Ply[fd].extr->db_gateway_instance_id));
 	memset(Ply[fd].extr->onboarding_actor_id, 0,
 	       sizeof(Ply[fd].extr->onboarding_actor_id));
 	memset(Ply[fd].extr->onboarding_correlation_id, 0,
@@ -773,6 +777,8 @@ unsigned char *str;
 	strcpy(Ply[fd].extr->auth_user_id, ticket.user_id);
 	strcpy(Ply[fd].extr->character_id, ticket.character_id);
 	strcpy(Ply[fd].extr->admission_nonce, ticket.nonce);
+	strcpy(Ply[fd].extr->db_session_id, ticket.session_id);
+	strcpy(Ply[fd].extr->db_gateway_instance_id, ticket.gateway_instance_id);
 
 	/* The acknowledgement intentionally precedes every legacy game byte. */
 	scwrite(fd, "MUD1 OK\n", 8);
@@ -794,7 +800,7 @@ unsigned char *str;
 	unsigned long length;
 
 	(void)param;
-	if(str && !strncmp((char *)str, "MUD1|", 5)) {
+	if(str && (!strncmp((char *)str, "MUD1|", 5) || !strncmp((char *)str, "MUD2|", 5))) {
 		trusted_admission_login(fd, 1, str);
 		return;
 	}
