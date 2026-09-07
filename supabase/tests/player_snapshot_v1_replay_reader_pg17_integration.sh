@@ -509,3 +509,13 @@ after_projection_fingerprint="$(run_super --tuples-only --no-align --command="se
 [[ "$before_projection_fingerprint" == "$after_projection_fingerprint" ]] || { echo "reader activity changed level projection data" >&2; exit 1; }
 
 echo "GREEN PostgreSQL 17 M5e replay reader login and v2 comparator are metadata-only, read-only, and non-writer"
+
+# Separate bank shadow contracts keep their own rolled-back fixtures; never
+# confuse topology/value evidence with a complete bank restoration payload.
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261005000000_bank_snapshot_v1_topology_shadow.sql
+  run_super --file=/workspace/supabase/migrations/20261007000000_bank_snapshot_v1_root_value_shadow.sql
+done
+run_super --file=/workspace/supabase/tests/bank_snapshot_v1_topology_shadow_contract.sql
+run_super --file=/workspace/supabase/tests/bank_snapshot_v1_root_value_shadow_contract.sql
+echo 'GREEN bank topology and root-value SQL shadow contracts'
