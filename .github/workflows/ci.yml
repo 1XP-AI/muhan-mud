@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -65,6 +65,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.15.1
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.job }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.90.0
@@ -558,7 +559,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates pkg-config jq
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates pkg-config jq xz-utils unzip
 
       - name: Setup Node
         if: matrix.lane == 'linux-arm64'
@@ -571,6 +572,7 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10.15.1
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.job }}
 
       - name: Setup Rust
         if: matrix.lane == 'linux-arm64'
@@ -615,7 +617,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libpq-dev
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y libpq-dev
           make -C src character-save-journal-v2-runtime-native-test \
             CC=gcc PG_CONFIG=pg_config
 
