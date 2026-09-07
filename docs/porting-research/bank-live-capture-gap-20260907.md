@@ -105,6 +105,33 @@ Next: actual concurrent-session tests and transaction rollback/retry; then bind
 the Rust planner's exact input/output digests and implement the authority and
 transfer-policy checks before granting any runtime access. No testnet migration
 or authority switch was performed.
+
+## Real concurrent PostgreSQL sessions verified
+
+Source `9086ddb`, full local runner exit 0:
+`/tmp/muhan-paired-concurrency.log`.
+`paired-snapshot-concurrency-local-pg.mjs` opens two real transaction clients
+and a separate observer in the disposable PG17 database. It waits until
+`pg_blocking_pids` proves the second request is blocked by the first, rather
+than assuming overlap from sleeps or simultaneous Promise dispatch.
+
+Four cases passed:
+
+- First transaction commits: competing different command gets 40001; only the
+  first snapshot pair and command revision exist.
+- Same command concurrently retries: waiter returns EXACT_RETRY at revision 1;
+  no duplicate journal row or extra state advance.
+- First transaction explicitly rolls back: waiter commits its own pair and
+  command at revision 1; aborted command is absent.
+- First connection closes before commit: server rollback releases the lock;
+  waiter commits, with no partial pair or orphan command from the closed client.
+
+Every case compares both persisted byte arrays and exact command identity/count.
+Statement timeouts and a bounded observation deadline prevent indefinite waits.
+The client-close case is not a database-host crash test. These checks exercise
+the unexposed internal kernel as a disposable administrator, not production
+actor/writer permissions. All earlier relay, C/Rust comparison and bank/player
+restore gates also passed. Runtime grants and authority remain unchanged.
 Live command integration and C/Rust command-level differential tests remain.
 
 ## Actual C / Rust command differential verified
