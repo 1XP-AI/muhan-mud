@@ -1,7 +1,9 @@
 #include "bank_money_commit_native.h"
+#include "bank_money_coordinate_native.h"
 #include <libpq-fe.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 int main(int argc,char **argv)
 {
     unsigned char *frame;
@@ -16,7 +18,12 @@ int main(int argc,char **argv)
     role=PQexec(c,"set role mud_writer");
     if(PQresultStatus(role)!=PGRES_COMMAND_OK) { free(frame); PQclear(role); PQfinish(c); return 2; }
     PQclear(role);
-    if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])
+    if(getenv("BANK_TRANSFER_COORDINATE") && !strcmp(getenv("BANK_TRANSFER_COORDINATE"),"1")) {
+      bank_money_coordinate_result output;
+      status=bank_money_coordinate_native(c,getenv("BANK_TRANSFER_PLANNER"),getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),
+        (const char *const *)(argv+1),2000,&output);
+      revision=output.revision; free(output.frame);
+    } else if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])
       status=bank_money_commit_prepared_native(c,getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),
         (const char *const *)(argv+1),frame,length,2000,&revision);
     else status=bank_money_commit_native(c,(const char *const *)(argv+1),frame,length,2000,&revision);
