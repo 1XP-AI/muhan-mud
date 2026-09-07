@@ -158,7 +158,7 @@ int main(void)
         "exact command lookup must validate one immutable artifact without discovery");
     memset(&loaded, 0, sizeof(loaded));
     failed |= expect(character_player_snapshot_v1_artifact_load_metadata_for_command(
-        directory_fd, "not-a-command-uuid", &loaded) ==
+        directory_fd, "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", &loaded) ==
         CHARACTER_PLAYER_SNAPSHOT_V1_ARTIFACT_INVALID && !loaded.command_id[0],
         "metadata lookup must reject a malformed selector before any artifact read");
     failed |= expect(character_player_snapshot_v1_artifact_store(directory_fd,
