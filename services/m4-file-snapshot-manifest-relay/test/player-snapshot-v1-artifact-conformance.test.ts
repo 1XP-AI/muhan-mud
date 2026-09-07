@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import { parseManifest } from '../src/manifest.js'
-import { parsePlayerSnapshotV1ArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
+import { parsePlayerSnapshotV1Artifact, parsePlayerSnapshotV1ArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
 import { relayPlayerSnapshotV1ArtifactsOnce } from '../src/player-snapshot-v1-artifact-relay.js'
 
 const producer = process.env.PLAYER_SNAPSHOT_V1_ARTIFACT_C_PRODUCER
@@ -49,7 +49,7 @@ function malformedPayload(artifact: Uint8Array): Uint8Array {
   return result
 }
 
-test('C artifact-store fixture conforms across Rust and Node and malformed bytes stop before relay/projection mutation', { skip: !producer || !rustVerifier }, async () => {
+test('C artifact-store fixture is receipt-bound through Node relay and malformed bytes stop before side effects', { skip: !producer || !rustVerifier }, async () => {
   // Provenance is intentionally narrow: this is C artifact-store fixture
   // production, not invocation of the live PlayerStore runtime.
   const artifact = execFileSync(producer!, [], { encoding: 'buffer' })
@@ -72,9 +72,83 @@ test('C artifact-store fixture conforms across Rust and Node and malformed bytes
   }, 'Rust and Node must expose the same immutable C artifact facts')
 
   const receipt = pairedReceipt(node)
-  assert.doesNotThrow(() => parseManifest(receipt), 'the relay fixture carries a canonical paired receipt')
+  const manifest = parseManifest(receipt)
+  const filename = `${node.commandId}.player-snapshot-v1`
+  const parsed = parsePlayerSnapshotV1Artifact(filename, artifact, manifest)
+  assert.deepEqual({
+    characterId: parsed.characterId,
+    commandId: parsed.commandId,
+    receiptRequestSha256: parsed.receiptRequestSha256,
+    sourcePostSha256: parsed.sourcePostSha256,
+    sourceOctets: parsed.sourceOctets,
+    snapshotFormat: parsed.snapshotFormat,
+    snapshotSha256: parsed.snapshotSha256,
+    snapshotOctets: parsed.snapshotOctets,
+  }, {
+    characterId: node.characterId,
+    commandId: node.commandId,
+    receiptRequestSha256: node.requestSha256,
+    sourcePostSha256: node.sourcePostSha256,
+    sourceOctets: node.sourceOctets,
+    snapshotFormat: node.snapshotFormat,
+    snapshotSha256: node.snapshotSha256,
+    snapshotOctets: node.snapshotOctets,
+  }, 'the receipt-bound parser preserves the immutable C artifact identity')
+  assert.deepEqual(parsed.payload, node.payload, 'the receipt-bound parser preserves the exact C payload bytes')
+
+  const mismatchedReceipt = parseManifest(Buffer.from(
+    Buffer.from(receipt).toString('ascii').replace(
+      `writer_revision=${node.writerRevision}`,
+      `writer_revision=${BigInt(node.writerRevision) + 1n}`,
+    ),
+    'ascii',
+  ))
+  assert.throws(
+    () => parsePlayerSnapshotV1Artifact(filename, artifact, mismatchedReceipt),
+    'a valid but mismatched receipt cannot be bound to C artifact evidence',
+  )
+
+  const calls: string[] = []
+  const delivered = await relayPlayerSnapshotV1ArtifactsOnce('/hermetic/c-artifact', {
+    recordPlayerSnapshotV1Artifact: async (value) => {
+      calls.push('artifact')
+      assert.deepEqual(value, parsed, 'relay passes the receipt-bound immutable artifact to its store')
+      return 'RECORDED' as const
+    },
+  }, {
+    scan: async () => [{ name: filename, bytes: artifact, receiptManifestBytes: receipt }],
+  }, undefined, {
+    fulfillGameCharacterOnboardingSnapshotEligibility: async (characterId, commandId) => {
+      calls.push('fulfillment')
+      assert.equal(characterId, parsed.characterId)
+      assert.equal(commandId, parsed.commandId)
+      return 'FULFILLED' as const
+    },
+  }, {
+    recordPlayerSnapshotV1LevelProjection: async (value) => {
+      calls.push('projection')
+      assert.deepEqual(value, {
+        characterId: parsed.characterId,
+        commandId: parsed.commandId,
+        receiptRequestSha256: parsed.receiptRequestSha256,
+        sourcePostSha256: parsed.sourcePostSha256,
+        sourceOctets: parsed.sourceOctets,
+      })
+      return 'RECORDED' as const
+    },
+  })
+  assert.equal(delivered.valid, 1)
+  assert.equal(delivered.delivered, 1)
+  assert.equal(delivered.recorded, 1)
+  assert.equal(delivered.fulfillmentDelivered, 1)
+  assert.equal(delivered.fulfillmentFulfilled, 1)
+  assert.equal(delivered.projectionDelivered, 1)
+  assert.equal(delivered.projectionRecorded, 1)
+  assert.deepEqual(calls, ['artifact', 'fulfillment', 'projection'], 'side effects run only after artifact recording settles')
+
   for (const malformed of [malformedHeader(artifact), malformedPayload(artifact)]) {
     assert.throws(() => parsePlayerSnapshotV1ArtifactEvidence(malformed), 'Node rejects malformed C artifact bytes')
+    assert.throws(() => parsePlayerSnapshotV1Artifact(filename, malformed, manifest), 'receipt-bound Node parser rejects malformed C artifact bytes')
     const rejected = spawnSync(rustVerifier!, [], { input: malformed, encoding: 'buffer' })
     assert.equal(rejected.status, 1)
     assert.deepEqual(rejected.stdout, Buffer.alloc(0))
@@ -85,7 +159,7 @@ test('C artifact-store fixture conforms across Rust and Node and malformed bytes
       recordPlayerSnapshotV1Artifact: async () => { calls.push('artifact'); return 'RECORDED' as const },
     }, {
       scan: async () => [{
-        name: `${node.commandId}.player-snapshot-v1`, bytes: malformed, receiptManifestBytes: receipt,
+        name: filename, bytes: malformed, receiptManifestBytes: receipt,
       }],
     }, undefined, {
       fulfillGameCharacterOnboardingSnapshotEligibility: async () => { calls.push('fulfillment'); return 'FULFILLED' as const },
