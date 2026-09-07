@@ -2,6 +2,18 @@
 
 ## Backup/restore gate — valid fixture passed
 
+Empty and nested inventory restore at `65daff0` passes (combined runner exit 0).
+Log: `/tmp/muhan-nested-inventory-restore.log`. The original canonical profile
+(zero items) is retained, and the checked-in tree_inventory fixture is separately
+written through the same receipt/manifest/artifact/projection RPC path into a
+different database. Both are independently dumped and restored with constraints,
+checked for exact retries and six-relation full-row equality, then decoded into
+detached C clones and re-encoded byte-for-byte. Rust verifies the DB-bound digest
+and explicitly reports the expected inventory count: zero and five respectively.
+Thus the tree fixture's encoded parent/sibling topology and item fields survive
+this restore, not merely the item count. These remain synthetic bounded profiles,
+not bank/world/PVC or live player installation coverage.
+
 Restored C/Rust decoding at `abcb3c1` also passes (combined runner exit 0).
 Log: `/tmp/muhan-restored-c-rust.log`. A fresh Linux container, sharing only
 the disposable PG namespace, reads the exact known character/command payload
