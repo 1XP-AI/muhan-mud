@@ -1,5 +1,42 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: actual claim activation erases the persisted credential field
+
+Frozen `03a6d0b` proves the field-level cause on Linux ARM64:
+`size-equal=true password-equal=false password-before-nonzero=true password-after-zero=true`.
+Evidence: `/tmp/muhan-local-stack.TJbt5e/result.json`.
+The layout probe compiles against the running native C ABI, reports offsets
+only, and the comparison emits booleans only. Neither record bytes nor password
+values are printed. Stack TypeScript compilation passed. The initial probe
+attempt at `831412a` could not write its executable under root-owned `/repo`;
+`03a6d0b` corrected that to a unique writable temporary directory. No permission
+relaxation was made. Both Docker runs cleaned their owned containers.
+
+Root cause now observed, not merely suspected: the claim handler zeroizes its
+loaded creature password, then activation_runtime_helper dispatches that same
+creature through player_store_save and player_record_serialize_bounded, which
+copies the creature bytes. This overwrites the original credential on disk.
+Do not remove zeroization, restore credentials into the session object, skip
+activation receipts, or weaken the original exact-file assertion.
+
+Next implementation, independently reviewed by Astra:
+
+1. Add a bounded existing-file copy primitive in character_save_journal_v2.c,
+   reusing trusted descriptor traversal and leaf checks. Its hash must cover
+   the exact copied bytes and match the existing bound head. Test unchanged
+   bytes, bounds/hash/missing-file rejection and held-root behavior first.
+2. Add explicit preserve-existing PlayerStore save dispatch, selected only
+   for captured CLAIM mode. Run the same V4 resolver, writer renewal, route
+   checks, stage, publish, snapshot observer and receipt path. Read within the
+   authorized serializer callback; wipe temporary raw bytes after completion
+   and errors. Provisioning continues normal creature serialization.
+3. Prove exact original-file preservation plus activation receipt/snapshot
+   hashes in the real stack, then continue normal game and browser acceptance.
+
+No implementation of the preservation path yet. Full stack remains 1 PASS /
+1 FAIL at the unchanged-file gate (line1016); browser is unreached. No CI
+dispatch, push, or deployment. Goal remains active.
+
 ## Latest: claim completion EOF race fixed; legacy file preservation fails next
 
 `c62c957` serializes onboarding TCP EOF behind the existing control queue.
