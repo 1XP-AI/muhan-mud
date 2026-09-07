@@ -905,6 +905,7 @@ async function main(): Promise<void> {
     await waitForMud(claimMudPort, mud)
     const claimConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `claim-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(claimMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
     const claimAuthorizer = new SupabaseOnboardingAuthorizer(claimConfig)
+    let claimCompletionPhase = 'before-claim'
     const expiringClaimAuthorizer: OnboardingAuthorizer = {
       begin: (request) => claimAuthorizer.begin(request),
       cancelUnreserved: (request) => claimAuthorizer.cancelUnreserved(request),
@@ -921,9 +922,23 @@ async function main(): Promise<void> {
       },
       finalize: (request) => claimAuthorizer.finalize(request),
       reconcile: (request) => claimAuthorizer.reconcile(request),
-      claim: (request) => claimAuthorizer.claim(request),
-      activateHandoff: (request) => claimAuthorizer.activateHandoff(request),
-      bindSnapshotCommand: (request) => claimAuthorizer.bindSnapshotCommand(request),
+      claim: async (request) => {
+        claimCompletionPhase = 'claim-rpc-start'
+        const result = await claimAuthorizer.claim(request)
+        claimCompletionPhase = 'claim-rpc-ok'
+        return result
+      },
+      activateHandoff: async (request) => {
+        claimCompletionPhase = 'activation-rpc-start'
+        const result = await claimAuthorizer.activateHandoff(request)
+        claimCompletionPhase = 'activation-rpc-ok'
+        return result
+      },
+      bindSnapshotCommand: async (request) => {
+        claimCompletionPhase = 'binding-rpc-start'
+        await claimAuthorizer.bindSnapshotCommand(request)
+        claimCompletionPhase = 'binding-rpc-ok'
+      },
     }
     gateway = createGateway(claimConfig, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(claimConfig), onboardingAuthorizer: expiringClaimAuthorizer })
     gateway.server.listen(0, '127.0.0.1')
@@ -967,7 +982,13 @@ async function main(): Promise<void> {
     claim.send(`${importedClaimName}\n`)
     await eventually(() => assert.match(claim.text(), /암호를 넣어 주십시요/))
     claim.send(`${password}\n`)
-    await eventually(() => assert.ok(claim.json('claimed')))
+    try {
+      await eventually(() => assert.ok(claim.json('claimed')))
+    } catch (error) {
+      const state = await sql(`select i.status || '|' || c.lifecycle from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${importedClaimCharacterId}' where i.correlation_id = '${importedClaimCorrelation}'`)
+      process.stderr.write(`stack-e2e: positive-claim phase=${claimCompletionPhase} state=${state} error-frame=${claim.json('error')} socket=${claim.ws.readyState}\n`)
+      throw error
+    }
     process.stderr.write('stack-e2e: claim-rpc-green\n')
     await closeAndWait(claim.ws)
     const claimState = await sql(`select i.status || '|' || c.lifecycle || '|' || c.owner_user_id || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${importedClaimCharacterId}' where i.correlation_id = '${importedClaimCorrelation}'`)
