@@ -15,7 +15,7 @@ Frozen full Docker run `/tmp/muhan-local-stack.HjZCok/result.json`, console
 claim both complete; post-game preservation and actual latest-head/receipt
 hash+epoch+revision match pass (`web-claim-post-game` evidence event).
 
-Next failure: `assertM3OnboardingEvidence` line 233 sees an empty command ID
+Next failure: `assertM3OnboardingEvidence` line 233 sees an empty joined binding result
 while checking browser provisioning (caller 1129) after relayM3Artifacts.
 Investigate onboarding snapshot binding/manifest fulfillment next; do not
 weaken the required command correlation/normalized projection gates.
