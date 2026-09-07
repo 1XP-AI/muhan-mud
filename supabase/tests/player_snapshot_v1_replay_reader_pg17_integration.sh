@@ -547,6 +547,16 @@ done
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"
+run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex")" --file=/workspace/supabase/tests/replay_backup_valid_seed.sql
+if run_super --file=/workspace/supabase/tests/paired_snapshot_baseline_contract.sql; then
+  echo 'RED unexpectedly passed before paired baseline migration' >&2
+  exit 1
+fi
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261021000000_paired_snapshot_baseline.sql
+done
+run_super --file=/workspace/supabase/tests/paired_snapshot_baseline_contract.sql
+echo 'GREEN receipt-bound paired baseline rejects stale heads and never resets advanced state'
 for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261019000000_money_transfer_authority.sql
 done
