@@ -1,5 +1,36 @@
 # Live bank capture and transaction gap
 
+## Historical player save reconciliation — 2026-09-07
+
+Source `2a31207` adds a closed read-only player reconciliation RPC and bounded
+pending visitor consumer. The RPC locks and checks the current writer and
+active character, then matches original world/name/owner/writer/epoch/source
+hash, expected revision and exact payload against immutable intent/command
+rows. It returns historical CONFIRMED revision or UNRESOLVED for missing
+intent; it never resends, upgrades old authority, mutates the pair or releases
+local ownership. The owner recorded by the intent must still own the character.
+
+The real PostgreSQL harness proves the RPC absent before migration, applies
+it twice, checks default denial and revokes disposable test grants afterward.
+Tests confirm the old revision even after head advancement, reject mismatched
+writer/revision/hash/payload and admin identity, and leave unknown commands
+unresolved. After writer turnover, the expired writer is refused while its
+successor confirms the exact original request. Fence-only player preparation
+is discovered; adding its ordinary request copy still counts once. Corrupting
+one copy reports invalid evidence while preserving it and the unchanged DB
+head. Confirmation does not hide the invalid counter or authorize release.
+
+Full frozen local ARM64 runner at `2a31207` exited 0, observed via its process
+handle. Evidence `/tmp/muhan-player-reconcile.log`; existing cross-operation
+locks, native C/PG saves, bank flows, sanitizer/differential, actual onboarding
+and both restore profiles also passed.
+
+Remaining: independently verified player reservation release/current-state
+adoption, live baseline lifetime, and a deployed recovery lifecycle. The new
+consumer is callable only, not an automatic daemon. Player-specific lost-ack,
+lease-expiry-during-lock, and owner-turnover negative cases still need dedicated
+coverage. No production grant, push, Actions run or deployment.
+
 ## Shared player/money character reservation — 2026-09-07
 
 Source `b1cfdba` moves the existing kernel flock implementation into shared
