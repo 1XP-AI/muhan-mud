@@ -1,9 +1,9 @@
 // New senders must share one private pending directory for both operations.
-import {preparePlayerPending,claimPlayerCharacterFence,visitPlayerPending,verifyPlayerResolved} from './player-pending-request.js'
+import {preparePlayerPending,claimPlayerCharacterFence,visitPlayerPending,verifyPlayerResolved,resolvePlayerCharacterFence} from './player-pending-request.js'
 import {visitMoneyPending} from './money-pending-request.js'
 async function main() {
   const [mode,root,...args]=process.argv.slice(2)
-  if(!['--prepare','--verify-resolved'].includes(mode)||!root||args.length!==8) throw new Error('invalid player preparation')
+  if(!['--prepare','--verify-resolved','--record-verified-release'].includes(mode)||!root||args.length!==8) throw new Error('invalid player preparation')
   const chunks:Buffer[]=[];let length=0
   for await(const chunk of process.stdin) {
     const bytes=Buffer.from(chunk);length+=bytes.length
@@ -11,6 +11,13 @@ async function main() {
     chunks.push(bytes)
   }
   const payload=Buffer.concat(chunks)
+  if(mode==='--record-verified-release') {
+    // Internal filesystem recorder, NOT a DB verifier or public recovery API.
+    // Native caller has just checked exact history/current state under its
+    // writer authority; this helper preserves the shared reservation protocol.
+    await resolvePlayerCharacterFence(root,args,payload,async()=>{})
+    process.stdout.write(payload);return
+  }
   if(mode==='--verify-resolved') {
     await verifyPlayerResolved(root,args,payload);process.stdout.write(payload);return
   }

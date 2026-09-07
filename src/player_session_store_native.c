@@ -3,6 +3,7 @@
 #include "player_paired_load_native.h"
 #include "bank_money_live_snapshot.h"
 #include "bank_money_plan_native.h"
+#include "bank_money_pg_exchange.h"
 #include "player_snapshot_v1.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -100,3 +101,37 @@ done:
 }
 void player_session_store_dispose(player_session_store *ctx)
 {if(ctx&&!ctx->busy) {free(ctx->pending);memset(ctx,0,sizeof(*ctx));}}
+int player_session_store_release(player_session_store *ctx)
+{
+    player_paired_route_context route;creature *current=NULL;PGresult *r=NULL;
+    const char *values[11],*args[11];int lengths[11]={0},formats[11]={0},i,result=-1;Oid types[11]={0};
+    unsigned char *wire=NULL,*echo=NULL;const unsigned char *raw;size_t length=0,echoed=0;uint64_t revision=0;
+    if(!ctx||!ctx->configured||!ctx->loaded||ctx->busy||!ctx->pending
+       ||(ctx->status!=PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx->status!=PLAYER_SNAPSHOT_SAVE_RETRY)) return -1;
+    ctx->busy=1;
+    for(i=0;i<8;i++) values[i]=ctx->fields[i];
+    values[8]=(const char *)ctx->pending;lengths[8]=(int)ctx->pending_length;formats[8]=1;types[8]=17;
+    values[9]=ctx->fields[2];values[10]=ctx->fields[3];
+    r=bank_money_pg_exchange(ctx->connection,"select * from private.reconcile_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",11,types,values,lengths,formats,ctx->timeout_ms);
+    if(!r||PQresultStatus(r)!=PGRES_TUPLES_OK||PQntuples(r)!=1||PQnfields(r)!=2
+       ||PQgetisnull(r,0,0)||PQgetisnull(r,0,1)||PQftype(r,0)!=25||PQftype(r,1)!=20
+       ||PQfformat(r,0)!=1||PQfformat(r,1)!=1||PQgetlength(r,0,0)!=9||memcmp(PQgetvalue(r,0,0),"CONFIRMED",9)
+       ||PQgetlength(r,0,1)!=8) goto done;
+    raw=(const unsigned char *)PQgetvalue(r,0,1);if(raw[0]&128) goto done;
+    for(i=0;i<8;i++) revision=(revision<<8)|raw[i];
+    if(revision!=ctx->committed_revision) goto done;
+    memset(&route,0,sizeof(route));route.connection=ctx->connection;route.world=ctx->fields[0];
+    route.writer=ctx->fields[2];route.epoch=ctx->fields[3];route.timeout_ms=ctx->timeout_ms;
+    if(player_paired_route_select(&route,ctx->fields[1])!=1||route.last.revision!=revision
+       ||strcmp(route.last.character_id,ctx->fields[4])||strcmp(route.last.owner_user_id,ctx->owner)) goto done;
+    if(player_paired_load_native(&route,ctx->fields[1],&current)!=PLAYER_STORE_OK
+       ||player_snapshot_v1_encode_loaded(current,&wire,&length)||length!=ctx->pending_length||memcmp(wire,ctx->pending,length)) goto done;
+    args[0]=ctx->script;args[1]="--record-verified-release";args[2]=ctx->root;
+    for(i=0;i<8;i++) args[i+3]=ctx->fields[i];
+    if(player_snapshot_process_native(ctx->node,args,11,ctx->pending,ctx->pending_length,ctx->timeout_ms,&echo,&echoed)
+       ||echoed!=ctx->pending_length||!echo||memcmp(echo,ctx->pending,echoed)) goto done;
+    result=0;
+done:
+    if(r) PQclear(r);
+    free(wire);free(echo);player_snapshot_v1_free_clone(current);ctx->busy=0;return result;
+}

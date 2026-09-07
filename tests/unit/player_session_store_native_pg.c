@@ -126,6 +126,7 @@ int main(int argc,char **argv)
     copy.gold--;assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
     assert(!strcmp(ctx.fields[6],"0")&&ctx.pending);
+    assert(!player_session_store_release(&ctx));
     puts("READY");fflush(stdout);
     assert(getchar()=='R');
     copy.gold++;assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
@@ -139,6 +140,7 @@ int main(int argc,char **argv)
     assert(!strcmp(ctx.fields[6],"1"));
     assert(savegame_nomsg(&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
     assert(save_errors==2);
+    assert(!player_session_store_release(&ctx));
     puts("READY2");fflush(stdout);
     assert(getchar()=='R');
     assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000002"));

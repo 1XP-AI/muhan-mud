@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../dist/money-pending-request.js'
 import {releaseConfirmedMoney} from '../dist/money-pending-release.js'
-import {preparePlayerPending,readPlayerPending,claimPlayerCharacterFence} from '../dist/player-pending-request.js'
+import {preparePlayerPending,readPlayerPending,claimPlayerCharacterFence,verifyPlayerResolved} from '../dist/player-pending-request.js'
 import {recoverPlayerPendingOnce} from '../dist/player-pending-recovery.js'
 import {releaseConfirmedPlayer} from '../dist/player-pending-release.js'
 import {fileURLToPath} from 'node:url'
@@ -183,7 +183,7 @@ try {
             output+=b
             if(output==='READY\n'&&releases===0) {
               releases=1
-              releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login)
+              verifyPlayerResolved(pending,request.slice(0,8),request[8])
                 .then(()=>child.stdin.write('R')).catch(e=>{failure=e;child.kill('SIGKILL')})
             } else if(output==='READY\nREADY2\n'&&releases===1) {
               releases=2
@@ -191,7 +191,7 @@ try {
               ;(async()=>{
                 assert.deepEqual(await state(),{revision:'2',player_payload:second,bank_payload:bank})
                 assert.deepEqual(await readPlayerPending(pending,nextArgs[5]),{args:nextArgs,payload:second})
-                await releaseConfirmedPlayer(pending,nextArgs,second,writer,'1',login)
+                await verifyPlayerResolved(pending,nextArgs,second)
                 child.stdin.end('R')
               })().catch(e=>{failure=e;child.kill('SIGKILL')})
             }

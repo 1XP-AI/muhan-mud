@@ -25,6 +25,10 @@ player_store_ops player_session_store_build(player_session_store *);
  * release evidence before advancing to a fresh command. Does not release a
  * reservation or mutate gameplay. Subsequent writes still require CAS/fence. */
 int player_session_store_adopt(player_session_store *,const struct creature *,const char *);
+/* Reconcile exact request and current DB under the caller's writer identity,
+ * then invoke the trusted owned-directory release recorder. No baseline/live
+ * mutation. Caller retains per-character ownership until subsequent adoption. */
+int player_session_store_release(player_session_store *);
 /* Frees memory only; NEVER releases/deletes a durable pending reservation. */
 void player_session_store_dispose(player_session_store *);
 #endif
