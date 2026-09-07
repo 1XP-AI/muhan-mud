@@ -183,6 +183,29 @@ No runtime grants were added. Actor ownership, current lease/world/writer-epoch
 qualification, audited baseline enrollment and gameplay wiring are still needed.
 The internal generic pair kernel remains inaccessible to runtime roles so it
 cannot bypass this money-only policy. Item transfer semantics remain separate.
+
+## Locked ownership/session/writer qualifier
+
+Migration `20261019000000_money_transfer_authority.sql` adds a closed internal
+qualifier requiring actual `mud_writer_login` plus `SET ROLE mud_writer`. It
+locks the writer lease, character, character session and paired state before
+sampling `clock_timestamp()`. It checks active ownership, exact world/session/
+gateway identity, storage format, live session expiry and matching unsealed,
+unexpired writer instance/epoch. The pair lock prevents a later wait between
+qualification and mutation when composed in the same database transaction.
+
+Source `2540992` full local runner exit 0:
+`/tmp/muhan-money-authority-closed.log`. Valid identity succeeds; wrong actor,
+session, gateway, world, epoch, suspended lifecycle, expired session and sealed
+writer are rejected. Admin identity is rejected as a runtime caller. The test
+grants function access only inside its rollback-only disposable transaction;
+a post-rollback assertion proves the runtime role still lacks EXECUTE.
+
+This qualifier is not yet called by the money commit entrypoint. It must be
+composed inside the same entrypoint/transaction, never called as a separate
+autocommit preflight. Runtime grants remain closed. Lock-wait expiry races and
+cross-operation lock-order compatibility still require execution evidence;
+baseline eligibility/enrollment and eventual live activation remain outstanding.
 Live command integration and C/Rust command-level differential tests remain.
 
 ## Actual C / Rust command differential verified
