@@ -19,7 +19,35 @@ shadow 검증을 통과한 기능만 전환한다. 첫 사용자 결과는 다�
 절대적인 “버그 0%”를 증명할 수는 없다. 대신 **검증되지 않은 기능은 권위
 경로로 전환하지 않는다**는 규칙을 강제한다.
 
-## 현재 실행 상태 (2026-09-03)
+## 최신 검증과 남은 권위 전환 (2026-09-07)
+
+아래 9월 3일 표는 당시 기록이며 현재 전체 진행률로 사용하지 않는다.
+현재도 게임 상태의 권위는 C 메모리/파일이고 Postgres snapshot/projection은
+검증용 기록이다. 계정 소유권 DB화나 패키지 검증을 gameplay 권위 전환으로
+계산하지 않는다.
+
+- 실제 GoTrue + 브라우저 로컬 stack은 `ead4537`에서 38/38 통과했다.
+  자세한 범위는 `local-docker-stack-checkpoint-20260907.md`에 있다.
+- 배포 runtime의 reconciler 의존성/compiled output 누락을 수정했다. 세 서비스
+  패키지는 Node 22, UID 10001, network-none에서 로딩 통과했고 관련 차트
+  테스트 49/49가 통과했다. 전체 amd64 이미지 빌드는 Docker VM 용량 부족으로
+  아직 완료하지 못했다. `local-runtime-build-20260907.md`를 참조한다.
+- `897236f`에서 Rust replay/normalized CLI/legacy fixture 검사 20개가 오프라인
+  로컬 실행으로 통과했다. 이어 실제 native C oracle을 컴파일한 differential
+  harness도 통과했다: Rust fixture 4개, C/Rust versioned corpus 1개,
+  rich/minimal/persisted-graph 세 native profile 및 ABI mismatch 거부.
+  로그: `/tmp/muhan-rust-authority-check.log`,
+  `/tmp/muhan-c-rust-authority-check.log`.
+  이는 macOS ARM64의 테스트 전용 복제/재생 경계 검증이며 live DB restore,
+  amd64 배포 검증 또는 gameplay loader 구현의 증거가 아니다.
+
+실사용 승격에는 고정 소스/이미지로 전체 runtime 빌드, testnet staged schema와
+shadow 배포, 신규 가입·기존 계정 연결·재접속·복구 및 rollback 실증이 남았다.
+전체 포팅 목표에는 그 이후에도 character/inventory/bank를 포함한 아래
+aggregate 순서대로 DB command/state/outbox transaction과 복원 경로를 구현하고
+차등/장애 검증을 통과한 뒤 권위를 전환하는 작업이 남는다.
+
+## 과거 실행 상태 (2026-09-03)
 
 | 범위 | 상태 | 검증/잔여 gate |
 | --- | --- | --- |
