@@ -301,6 +301,31 @@ This closes the enrolled-baseline restore gap above, not live capture or runtime
 authority activation. Qualified money-transfer intent/authority restoration is
 still outside this particular backup fixture.
 
+### All-or-nothing native C planner input
+
+Source `4783104` adds `bank_transfer_snapshot_v1_encode`: synchronously encode
+one normalized player and detached bank graph, then publish a single frame
+with two big-endian lengths and both complete CDTO payloads. This is the actual
+Rust money planner's input format. Both payloads are capped at 4 MiB including
+digests. A failed bank encoder or final allocation frees the player payload and
+returns no frame. The API performs no callbacks, IO or source mutation.
+
+The new C test first failed for the absent API. Normal and ASan/UBSan targets
+now pass, checking deterministic bytes, decoded balances, unchanged sources,
+invalid-bank failure after player encoding, and injected final allocation
+failure. A separate executable integration takes the real C frame into the
+Rust planner, deposits and withdraws 25, and compares the complete returned
+frame to the original. A wrong player digest returns no output. The full local
+Linux runner passed exit 0: `/tmp/muhan-c-rust-paired-capture.log`, including
+the existing DB and both backup/restore profiles.
+
+This is a synchronous encoding boundary, not yet a live command hook. Its
+caller must exclusively own/freeze both normalized graphs for the call. It
+does not establish cross-file atomic capture, normalize live runtime fields,
+write evidence, stop legacy saves or activate DB authority. Those prerequisites
+must be provided by the eventual runtime coordinator, not inferred from a
+passing codec test.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
