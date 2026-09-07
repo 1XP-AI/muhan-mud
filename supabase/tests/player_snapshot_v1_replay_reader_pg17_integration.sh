@@ -519,3 +519,8 @@ done
 run_super --file=/workspace/supabase/tests/bank_snapshot_v1_topology_shadow_contract.sql
 run_super --file=/workspace/supabase/tests/bank_snapshot_v1_root_value_shadow_contract.sql
 echo 'GREEN bank topology and root-value SQL shadow contracts'
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261016000000_bank_snapshot_v1_payload.sql
+done
+run_super --file=/workspace/supabase/tests/bank_snapshot_v1_payload_contract.sql
+echo 'GREEN complete bank payload persistence contract'
