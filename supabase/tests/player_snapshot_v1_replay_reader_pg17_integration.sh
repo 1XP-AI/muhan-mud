@@ -587,7 +587,7 @@ cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --included
   "$repo_root/src/bank_money_read_native.c" "$repo_root/tests/unit/bank_money_read_native_pg.c" \
   -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_read_native_pg"
 bank_codec_objects=()
-for bank_codec in files1 player_record_serializer player_snapshot_v1 object_graph_v1 cdto_v1; do
+for bank_codec in files1 player_record_serializer player_snapshot_v1 object_graph_v1 cdto_v1 bank_snapshot_v1 bank_money_result_native; do
   bank_codec_object="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank-native-${bank_codec}.o"
   cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I"$repo_root/src" -c "$repo_root/src/${bank_codec}.c" -o "$bank_codec_object"

@@ -1,6 +1,7 @@
 #include "bank_money_commit_native.h"
 #include "bank_money_coordinate_native.h"
 #include "bank_money_live_native.h"
+#include "bank_money_result_native.h"
 #include "player_snapshot_v1.h"
 #include "bank_money_read_native.h"
 #include <libpq-fe.h>
@@ -44,7 +45,13 @@ int main(int argc,char **argv)
       request.world_id=argv[2]; request.writer_id=argv[6]; request.writer_epoch=argv[7];
       request.command_id=argv[8]; request.expected_revision=argv[9]; request.direction=argv[10]; request.amount=argv[11];
       status=bank_money_live_native(c,player,&request,getenv("BANK_TRANSFER_PLANNER"),getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),2000,&output);
-      revision=output.revision; free(output.frame);
+      revision=output.revision;
+      if(status==BANK_MONEY_COMMIT_CONFIRMED) {
+        bank_money_ack ack; char *end; unsigned long long expected=strtoull(argv[9],&end,10);
+        if(*end||!bank_money_result_native(player,status,(uint64_t)expected,!strcmp(argv[10],"withdraw"),&output,&ack))
+          status=BANK_MONEY_COMMIT_UNKNOWN;
+      }
+      free(output.frame);
       memset(Ply,0,sizeof(Ply));
       player_snapshot_v1_free_clone(player);
     } else if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])

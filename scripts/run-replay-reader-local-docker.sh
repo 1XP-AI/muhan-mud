@@ -56,6 +56,11 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       tests/unit/bank_money_live_snapshot_test.c src/bank_money_live_snapshot.c src/files1.c src/player_record_serializer.c \
       src/player_snapshot_v1.c src/object_graph_v1.c src/cdto_v1.c -Wl,--gc-sections -o /tmp/bank-money-live-snapshot-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-live-snapshot-test tests/fixtures/player_snapshot_v1_tree_inventory.hex
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/bank_money_result_native_test.c src/bank_money_result_native.c src/bank_money_live_snapshot.c \
+      src/files1.c src/player_record_serializer.c src/player_snapshot_v1.c src/object_graph_v1.c src/cdto_v1.c \
+      src/bank_snapshot_v1.c src/bank_transfer_snapshot_v1.c -Wl,--gc-sections -o /tmp/bank-money-result-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-result-test
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       -fsanitize=address,undefined -fno-omit-frame-pointer \
       -Dfopen=child_reaper_test_fopen -Dunlink=child_reaper_test_unlink \
