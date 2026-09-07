@@ -753,8 +753,12 @@ async function main(): Promise<void> {
     assert.match(receipt, new RegExp(`saved_file_sha256=${provisioningDigest}\\n`))
     assert.match(receipt, new RegExp(`canonical_name_hex=${Buffer.from(canonicalName, 'utf8').toString('hex')}\\n`))
     assert.doesNotMatch(receipt, new RegExp(`${password}|${admissionSecret}|${accessToken}`))
-    browser.send('건강\n')
-    await eventually(() => assert.match(browser.text(), /체력/))
+    // Onboarding closes normally after ACTIVE/binding. Gameplay acquires a
+    // separate /ws session, as the web client does after provisioning.
+    await closeAndWait(browser.ws)
+    const provisionedGame = await openGame(gateway.address(), characterId)
+    provisionedGame.send('건강\n')
+    await eventually(() => assert.match(provisionedGame.text(), /체력/))
 
     // A second browser cannot acquire the same DB-backed lease while gameplay
     // is still connected; closing the first socket must release it.
@@ -763,7 +767,7 @@ async function main(): Promise<void> {
     duplicate.send(JSON.stringify({ type: 'auth', accessToken, characterId: (await sql(`select character_id from private.game_character_provisioning_requests where correlation_id = '${correlation}'`)) }))
     const [duplicateCloseCode] = await once(duplicate, 'close') as [number]
     assert.equal(duplicateCloseCode, 1008)
-    await closeAndWait(browser.ws)
+    await closeAndWait(provisionedGame.ws)
     await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id = '${characterId}'`), '0'))
     evidence.events.push({ case: 'wrong-db-hash', result: 'actual-RPC-rejected-without-state-change' })
     evidence.events.push({ case: 'real-stack-provision', result: 'intent-reservation-finalized-file-sha-receipt-game-command' })
