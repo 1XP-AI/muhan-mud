@@ -48,3 +48,9 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 실행 전 relay의 `dist`와 Rust normalized projector가 빌드되어 있어야 한다. `NORMALIZED_READER_ALLOW_DISPOSABLE=1`, `NORMALIZED_READER_TEST_DATABASE_URL`(전용 login), `NORMALIZED_READER_TEST_WORLD_ID`, `NORMALIZED_READER_TEST_CHARACTER_ID`, `NORMALIZED_READER_TEST_COMMAND_ID`, `M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER`(절대 경로)를 명시한 뒤 Node로 실행한다. 해당 identity에는 checked-in tree fixture 및 **그 fixture에서 Rust가 실제로 계산한 projection**이 receipt/manifest/artifact/normalized recorder 경로로 미리 저장되어 있어야 한다. 기존 persistence SQL 계약의 인위적인 i64 극값 projection은 이 positive fixture를 대신할 수 없다.
 
 검증: Node 문법 검사 통과, DB에 연결하지 않는 guard tests 2개 통과(필수 설정별 누락 및 잘못된 계정 거부). **실제 integration은 아직 실행하지 않았다.** disposable fixture seed 연결, PostgreSQL 실행 증거, production runtime consumer와 배포 검증은 남아 있다.
+
+## 별도 조회 세션용 seed SQL 후보
+
+`supabase/tests/player_snapshot_normalized_v1_replay_reader_seed.sql`은 disposable DB 소유자가 실제 tree fixture 표현식(`pvi_tree_payload`)과 그 fixture에서 Rust가 출력한 JSON(`normalized_projection`)을 전달해 실행할 후보다. receipt → manifest → artifact → normalized recorder 순서로 저장하고 하나의 transaction을 commit하므로 이후 별도의 전용 reader 세션에서 조회할 수 있다. fixed test identity를 새로 INSERT하며 기존 행을 삭제·덮어쓰지 않는다. 각 recorder의 결과는 정확히 한 행의 `RECORDED`여야 한다. source post hash/크기는 합성 fixture metadata이며 실제 legacy save 증거가 아니다.
+
+조회 실행기에 전달할 identity: world `normalized-reader-test`, character `a9140000-0000-0000-0000-000000000001`, command `c9140000-0000-0000-0000-000000000001`. 기존 persistence 계약의 rollback fixture와는 별개다. SQL은 아직 미실행이며 Rust 출력 준비와 seed/계약/reader의 자동 연결도 남아 있다. 2026-09-07 Docker 도구 경로만 확인했으며 daemon이나 DB에는 접속하지 않았다. 사용자에게 로컬 임시 PostgreSQL 생성·검증·정리 실행 허용을 질문했고 답변을 기다리는 중이다.
