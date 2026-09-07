@@ -45,6 +45,11 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       tests/unit/bank_transfer_legacy_characterization.c src/bank.c \
       -Wl,--gc-sections -o /tmp/bank-transfer-characterization
     /tmp/bank-transfer-characterization
+    cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
+      -DMUHAN_BANK_MONEY_ROUTING -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/bank_transfer_legacy_characterization.c src/bank.c src/bank_money_route.c \
+      -Wl,--gc-sections -o /tmp/bank-money-route-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-route-test
     MUHAN_BANK_COMMAND_ORACLE=/tmp/bank-transfer-characterization CARGO_TARGET_DIR=/work/rust/target \
       cargo test --locked --offline --manifest-path rust/Cargo.toml -p muhan-core-dto \
       --test bank_transfer_v1 -- --ignored

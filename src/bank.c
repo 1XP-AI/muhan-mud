@@ -3,6 +3,25 @@
 #include "mextern.h"
 #include "resource_path.h"
 #include "bank_store.h"
+#ifdef MUHAN_BANK_MONEY_ROUTING
+#include "bank_money_route.h"
+/* Compile-gated until a qualified DB coordinator and exclusive authority are
+ * installed. Selection is separate from outcome: failure NEVER falls back. */
+static int route_bank_money(creature *player,cmd *command,int withdrawing)
+{
+    bank_money_ack ack;
+    int result=bank_money_route_dispatch(player,command,withdrawing,&ack);
+    if(result==BANK_MONEY_LEGACY) return 0;
+    if(result!=BANK_MONEY_COMMITTED) {
+        print(player->fd,"입출금을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        return 1;
+    }
+    if(withdrawing) print(player->fd,"당신은 %ld냥을 출금했습니다.\n",ack.amount);
+    else print(player->fd,"당신은 %ld냥을 입금했습니다.\n",ack.amount);
+    print(player->fd,"은행의 잔고가 %ld냥이 되었습니다.",ack.bank_gold);
+    return 1;
+}
+#endif
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -312,6 +331,9 @@ cmd	*cmnd;
 		print(fd, "얼마를 입금하시려고요?");
 		return(0);
 	}
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(route_bank_money(ply_ptr,cmnd,0)) return(0);
+#endif
 	if(!strcmp(cmnd->str[1], "모두")) {
 		amt = ply_ptr->gold;
 		goto input_bank_all;
@@ -372,6 +394,9 @@ cmd	*cmnd;
 		print(fd, "얼마를 출금하시려고요?");
 		return(0);
 	}
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(route_bank_money(ply_ptr,cmnd,1)) return(0);
+#endif
 		n = load_bank(ply_ptr->name, &bnk_ptr);
 		if(n < 0) {
 			bnk_ptr = (object *)malloc(sizeof(object));
@@ -608,7 +633,6 @@ char *part_obj;
 		free_obj(cnt_ptr);
 		savegame_nomsg(ply_ptr);
 }
-
 
 
 

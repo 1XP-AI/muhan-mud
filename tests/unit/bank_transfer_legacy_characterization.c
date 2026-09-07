@@ -4,15 +4,20 @@
 #include <string.h>
 #include "mtype.h"
 #include "mstruct.h"
+#ifdef MUHAN_BANK_MONEY_ROUTING
+#include "bank_money_route.h"
+#include <assert.h>
+#endif
 
 extern int deposit(creature *,cmd *);
 extern int withdraw(creature *,cmd *);
 static long bank_balance, saved_gold;
-static int fail_save, bank_calls, player_calls;
+static int fail_save, bank_calls, player_calls, load_calls;
 static char order[4];
 int bank_store_load(char *name, object **out)
 {
     (void)name;
+    load_calls++;
     *out=calloc(1,sizeof(**out));
     if(!*out) return -1;
     (*out)->value=bank_balance;
@@ -76,10 +81,51 @@ static int differential(int argc,char **argv)
     printf("%s %ld %ld\n",bank_calls==1 && player_calls==1?"OK":"REJECT",saved_gold,bank_balance);
     return 0;
 }
+#ifdef MUHAN_BANK_MONEY_ROUTING
+static int selection, transfer_status, transfer_calls;
+static int choose(void *ctx,const creature *player)
+{ (void)ctx; (void)player; return selection; }
+static int transfer(void *ctx,const creature *player,const cmd *command,int taking,bank_money_ack *ack)
+{
+    (void)ctx; (void)player; (void)command;
+    transfer_calls++;
+    ack->amount=25; ack->player_gold=taking?125:75; ack->bank_gold=taking?25:75;
+    return transfer_status;
+}
+static void route_scenarios(void)
+{
+    creature player; room bank_room; cmd command;
+    bank_money_route_ops ops;
+    int taking,status;
+    memset(&ops,0,sizeof(ops)); ops.select=choose; ops.transfer=transfer;
+    assert(bank_money_route_set(&ops)==0);
+    for(taking=0;taking<2;taking++) for(status=-1;status<=2;status++) {
+        memset(&player,0,sizeof(player)); memset(&bank_room,0,sizeof(bank_room));
+        memset(&command,0,sizeof(command)); F_SET(&bank_room,RBANK);
+        player.parent_rom=&bank_room; player.gold=100; command.num=2;
+        strcpy(command.str[1],"25냥"); selection=1; transfer_status=status;
+        transfer_calls=load_calls=bank_calls=player_calls=0;
+        if(taking) withdraw(&player,&command); else deposit(&player,&command);
+        assert(transfer_calls==1 && load_calls==0 && bank_calls==0 && player_calls==0);
+        assert(player.gold==(status==1?(taking?125:75):100));
+    }
+    ops.transfer=NULL; assert(bank_money_route_set(&ops)==0);
+    transfer_calls=load_calls=bank_calls=player_calls=0; player.gold=100;
+    deposit(&player,&command);
+    assert(transfer_calls==0 && load_calls==0 && bank_calls==0 && player_calls==0 && player.gold==100);
+    selection=-1; withdraw(&player,&command);
+    assert(load_calls==0 && bank_calls==0 && player_calls==0 && player.gold==100);
+    bank_money_route_reset();
+    puts("GREEN actual bank commands: selected route never falls back, only confirmed commit changes wallet");
+}
+#endif
 int main(int argc,char **argv)
 {
     if(argc>1) return differential(argc,argv);
     if(scenario(0,0)||scenario(1,0)||scenario(0,1)||scenario(1,1)) return 1;
+#ifdef MUHAN_BANK_MONEY_ROUTING
+    route_scenarios();
+#endif
     puts("legacy bank characterization: success conserves value; failed bank saves still persist player (known non-atomic baseline)");
     return 0;
 }
