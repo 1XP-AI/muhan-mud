@@ -1,5 +1,16 @@
 # Stack E2E harness
 
+For the explicitly authorized **local Docker** lane, use
+`STACK_E2E_REAL_AUTH=1 bash scripts/run-stack-e2e-local-docker.sh --allow-disposable`
+from the repository root with the local Docker endpoint configured. It freezes
+HEAD and uses the local default builder, never the cloud release wrapper.
+GoTrue v2.189.0 performs real browser login; Gateway uses its production token
+verifier and PostgREST enforces real ownership. All users/data are disposable.
+Absent/zero REAL_AUTH retains the deterministic Auth boundary for isolated
+protocol regression tests. Values other than zero/one are rejected.
+The local lane is separate from the CI-only script below; it publishes no
+host ports, mounts no host files/socket, and cleans only its created resources.
+
 `../../scripts/run-stack-e2e.sh` creates a uniquely named, internal-only
 Docker network, disposable PostgreSQL 17 container, and PostgREST container.
 It applies `bootstrap_contract.sql` and the identity, handoff, snapshot-eligibility,

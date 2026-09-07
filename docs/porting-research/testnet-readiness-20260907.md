@@ -39,10 +39,12 @@ run's explicit success is evidence. No production credentials/data were used.
 This is not yet real Auth **inside the full browser stack**, and the DB image
 is the disposable PG17 fixture, not production Supabase PostgreSQL.
 
-1. Extend disposable stack acceptance to the pinned real GoTrue Auth service.
-   Use only synthetic test users/passwords and isolated DB/network; verify real
-   password login/JWT consumption and both browser onboarding paths. Do not
-   create production test users or read production secrets for this check.
+1. **Local real-Auth browser gate passed:** frozen `ead4537` with
+   `STACK_E2E_REAL_AUTH=1` passes 38/38 in `/tmp/muhan-local-stack.7BebVV`.
+   Real GoTrue login/JWT, production Gateway verifier, PostgREST ownership,
+   both browser onboarding/game paths and normalized snapshot fulfillment
+   pass together. Node protocol scenarios still use a deterministic token;
+   production ingress and Supabase PostgreSQL image parity remain unverified.
 2. Provide a local-only production-image build path. The current infra
    `muhan-mud/build.sh` calls root `build.sh`, which selects
    `cloud-tech1xp-testnet`, targets linux/amd64 and immediately pushes.

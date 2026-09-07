@@ -1,5 +1,30 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: real GoTrue browser + full stack GREEN (38/38)
+
+Frozen `ead4537` with `STACK_E2E_REAL_AUTH=1` passes 38 tests, zero
+failures/skips. Evidence `/tmp/muhan-local-stack.7BebVV/result.json` includes
+`real-auth-browser` and `web-ui-provision-and-claim-m3`; console is
+`/tmp/muhan-real-auth-stack-retry.log`. All owned containers were cleaned.
+
+The same pinned GoTrue v2.189.0 as testnet performs its own migrations on the
+isolated PG17 instance before game bootstrap/migrations. Synthetic browser
+accounts are created through its signup API; actual returned IDs are used.
+Browser `/auth/v1` requests forward to that GoTrue without mocked responses,
+and their tokens go through production SupabaseAuthenticator and actual
+PostgREST RLS. The deterministic token map is retained only for the separate
+Node protocol scenarios, never for these real browser tokens. The test requires
+multiple successful production verifier calls and unchanged full game/snapshot
+assertions. Same-origin forwarding still models ingress inside Playwright;
+production ingress and the Supabase PostgreSQL image remain separate gates.
+
+Six fixture validation tests and fourteen browser lifecycle tests also pass
+locally. Initial full attempt ended before tests at ENOSPC; six explicitly
+identified unused task images were removed (1788769699..1788770284), no global
+cache or volume deletion. Repeated image accumulation remains a local runner
+cleanup improvement; do not invoke the cloud build wrapper to work around it.
+No push, CI, live account creation, or deployment occurred.
+
 ## Latest: frozen local full-stack acceptance GREEN (32/32)
 
 `ad8f9de` frozen local Docker run passes all 32 tests, zero failures/skips.
