@@ -1,5 +1,26 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: bounded post-game preservation and DB receipt pass
+
+`607947e` introduces a native-layout post-game verifier, keeping the separate
+claim-only exact SHA assertion. TDD: throwing stub failed five positive cases;
+implemented verifier passes 22 cases (32/64-bit, both endian layouts, repeated
+admission, and corruption of credentials/protected bytes/inventory/padding/
+timer metadata). All timestamps and exceptional intervals are numerically
+bounded before masking; unaffected bytes remain exact. Diagnostics never
+print credential byte values. TypeScript/native metadata compilation pass.
+
+Frozen full Docker run `/tmp/muhan-local-stack.HjZCok/result.json`, console
+`/tmp/muhan-post-game-invariant.log`: 23 PASS / 1 FAIL. Browser provision and
+claim both complete; post-game preservation and actual latest-head/receipt
+hash+epoch+revision match pass (`web-claim-post-game` evidence event).
+
+Next failure: `assertM3OnboardingEvidence` line 233 sees an empty command ID
+while checking browser provisioning (caller 1129) after relayM3Artifacts.
+Investigate onboarding snapshot binding/manifest fulfillment next; do not
+weaken the required command correlation/normalized projection gates.
+No push, hosted CI, or deployment. Owned Docker resources cleaned up.
+
 ## Latest: post-game digest mismatch localized to ordinary runtime state
 
 Frozen `32ea9fd` run `/tmp/muhan-local-stack.f513IS/result.json`, console
