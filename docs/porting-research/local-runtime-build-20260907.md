@@ -2,6 +2,23 @@
 
 ## Latest execution
 
+### Final image packaging enforcement
+
+The infrastructure Dockerfile now runs the source-owned package verifier after
+`USER muhan:muhan`, with BuildKit networking disabled and the verifier mounted
+read-only from the source context. All three deployed service paths are checked
+before the runtime target can succeed. This requires source commit `0183376`
+or a descendant; the old example commit below predates the verifier and must
+not be used with this updated recipe.
+
+The exact verifier passed against all three generated packages under Node 22
+with UID/GID 10001, read-only root, network none and read-only package mounts.
+Infrastructure package, normalized prerequisite, and rendered-chart suites pass
+49/49 after updating two assertions that described the old reconciler copy
+path/deploy list. Log: `/tmp/muhan-runtime-chart-package-check.log`.
+This verifies the check and chart contracts, not execution of the final Docker
+stage: VM storage still reports zero available and the full build was not retried.
+
 ### Other service packages and reusable smoke
 
 Built and deployed importer and relay packages from frozen `fb581b7` in
