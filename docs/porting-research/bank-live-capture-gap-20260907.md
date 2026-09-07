@@ -1,5 +1,28 @@
 # Live bank capture and transaction gap
 
+## Native paired route selector — 2026-09-07
+
+Source `bb81b08` provides player_paired_route_select with the PlayerAuthorityStore
+selector signature. It borrows the caller's idle authenticated connection and
+held world/writer/epoch, calls the closed paired-route RPC through the bounded
+libpq exchange, and validates one binary row's field count/types/nullability,
+UUID lengths, nonnegative revision and lowercase 64-byte hashes. Last result is
+cleared on every attempt; only a complete valid result returns DB selection 1.
+All failure returns -1, never legacy or a cached route.
+
+The real PostgreSQL native executable pre-fills last with stale bytes and asserts
+zero output state on failure. Tests compare exact ID/owner/revision/hashes before
+gameplay and after session expiry/writer succession. A held paired-state DB lock
+forces native timeout within the watchdog with no output. Full frozen ARM64
+suite at `bb81b08` exited 0: `/tmp/muhan-player-native-route.log`, including real
+bank commands, C onboarding and both restore profiles.
+
+This callable selector is not globally installed. The actual DB player provider
+must revalidate identity/revision during save/load and own connection/pending
+lifecycle; the selector alone does not grant mutation authority. Malformed
+PGresult injection and the new SQL lookup's lock-wait lease-expiry race remain
+additional tests. No production RPC grant, deployment or Actions execution.
+
 ## Offline-capable paired-state identity lookup — 2026-09-07
 
 Source `7bb5494` adds closed read-only resolve_player_paired_route(world,name,
