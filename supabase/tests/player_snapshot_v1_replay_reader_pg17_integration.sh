@@ -537,3 +537,5 @@ run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_
   --set="next_fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_tree_inventory.hex")" \
   --file=/workspace/supabase/tests/paired_snapshot_transaction_contract.sql
 echo 'GREEN paired snapshot transaction rollback and retry contract'
+BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
+  node "$repo_root/services/m4-file-snapshot-manifest-relay/test/paired-snapshot-concurrency-local-pg.mjs"
