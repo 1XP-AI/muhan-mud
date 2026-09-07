@@ -28,7 +28,7 @@ function bankGold(wire,value) {
 }
 function planned(state,direction,amount,badDigest=false) {
   const lengths=Buffer.alloc(8); lengths.writeUInt32BE(state.player_payload.length); lengths.writeUInt32BE(state.bank_payload.length,4)
-  return spawnSync(binary,[direction,String(amount),badDigest?'0'.repeat(64):state.player_hash,state.bank_hash],{
+  return spawnSync(process.env.BANK_TRANSFER_NATIVE_PLANNER??binary,[direction,String(amount),badDigest?'0'.repeat(64):state.player_hash,state.bank_hash],{
     input:Buffer.concat([lengths,state.player_payload,state.bank_payload]),maxBuffer:9*1024*1024,timeout:5000,
   })
 }
