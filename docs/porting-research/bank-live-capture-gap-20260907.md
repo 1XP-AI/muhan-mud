@@ -1,5 +1,34 @@
 # Live bank capture and transaction gap
 
+## DB-derived command amount resolution — 2026-09-07
+
+Source `1dcee62` adds bounded Rust parsing of decimal amounts, `25냥`, leading-zero
+numeric forms, `all` and `모두`. Signs, junk, zero, overflow and oversized tokens
+are rejected. All-money resolves from the same digest-verified player/bank pair
+used for planning: player gold for deposit, bank root value for withdrawal.
+An empty balance yields no plan. This deliberately does not preserve legacy
+zero-all writes or permissive atol parsing of malformed input.
+
+The new explicit `--resolved-amount-v1` planner mode returns a positive BE i64
+amount followed by the original bounded pair frame. Native transport validates
+and strips the metadata, then the coordinator replaces the command token with
+the canonical numeric amount before durable preparation/commit. Successful new
+results also expose that amount. Original four-argument planner framing remains
+unchanged. No ambiguous all-token is saved for a future retry to recalculate.
+
+Verification includes Rust digest-bound all-deposit/all-withdraw and grammar
+tests; native coordinator unit sanitizers; and real writer-login PostgreSQL
+calls through the descriptor wrapper. The latter deposits all 100, confirms a
+numeric pending record, retries exactly without a second transfer, rejects
+empty-all without a record, and accepts `000100냥` withdrawal back to identical
+initial payloads. Recovery still confirms historical revision 1 while head is 4.
+
+Full frozen-source Linux ARM64 suite exited 0 at `1dcee62`:
+`/tmp/muhan-bank-command-all.log`, including actual C onboarding and both restore
+profiles. This does not install the callback into bank.c or prove live persisted
+state equality/application. Session/authority selection, pending fences and other
+writers remain prerequisites. No deployment, feature enablement or CI run.
+
 ## Descriptor-bound native money request — 2026-09-07
 
 Source `00c25bb` adds `bank_money_live_native`, a caller-invoked wrapper around

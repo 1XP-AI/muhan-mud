@@ -7,10 +7,12 @@ typedef struct bank_money_coordinate_result {
     unsigned char *frame;
     size_t frame_length;
 } bank_money_coordinate_result;
-/* Fresh command only; args are the same eleven qualified commit arguments.
+/* Fresh command only; args use the eleven qualified commit fields, but amount
+ * may be a <=24-byte decimal/Korean money token, all, or 모두. Rust resolves
+ * against the digest-bound DB pair; only canonical numeric amount is persisted.
  * Reads authoritative state, requires the caller's exact expected revision,
  * plans with Rust, durably prepares and commits. No automatic retry/replanning.
- * Only a new CONFIRMED commit returns owned bytes (caller frees frame).
+ * Only a new CONFIRMED commit returns resolved amount and owned bytes (caller frees frame).
  * Historical RETRY never publishes a wallet snapshot. Existing pending work
  * must be reconciled separately; this is not a recovery entry point.
  * Each phase has its own timeout. On failure discard the borrowed PGconn.
