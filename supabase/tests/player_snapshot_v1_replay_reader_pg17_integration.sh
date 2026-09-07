@@ -7,6 +7,10 @@ set -euo pipefail
 }
 command -v docker >/dev/null || { echo "M5e replay reader integration requires docker" >&2; exit 2; }
 command -v node >/dev/null || { echo "M5e replay reader integration requires a built relay dist" >&2; exit 2; }
+[[ "$(node -p 'process.platform')" == linux ]] || {
+  echo 'M5e replay reader integration requires Linux Node for descriptor-bound outbox reads; run in an isolated Linux environment' >&2
+  exit 2
+}
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 container="m5e-replay-reader-${RANDOM}-${RANDOM}"

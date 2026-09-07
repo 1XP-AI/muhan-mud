@@ -1,5 +1,19 @@
 # Local DB replay check — incomplete
 
+## Root cause established
+
+The remaining INVALID_INPUT is an unsupported host, not demonstrated malformed
+fixture data. `scanImmutableOutboxFilesWithPolicies` in `relay.ts` rejects both
+an actual non-Linux process and a non-Linux platform parameter before opening
+any file. The rehearsal's artifact loader invokes that filesystem and maps its
+rejection to INVALID_INPUT. Both failed reruns used macOS Node 24.
+
+The PG17 harness now verifies actual Node process.platform is linux before
+creating a database. The new platform regression failed with the old harness
+and passes with the preflight. Production descriptor-bound Linux checks remain
+unchanged. The next full rehearsal must run its Node/Rust processes on Linux;
+moving only PostgreSQL into Docker does not satisfy this prerequisite.
+
 At source `9e6029f`, froze the repository under
 `/tmp/muhan-db-replay-check.Tjnmru`, built the Rust release verifier offline,
 and supplied the previously verified relay deployment package. Ran the existing
