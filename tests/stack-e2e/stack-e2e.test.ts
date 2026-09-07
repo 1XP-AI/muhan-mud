@@ -979,6 +979,7 @@ async function main(): Promise<void> {
     await eventually(async () => assert.equal(await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${expiredClaimCorrelation}'`), 'cancelled'))
     assert.equal(await sql(`select count(*) from private.game_character_claim_attempts where correlation_id = '${expiredClaimCorrelation}' and claimed_at is null`), '1')
 
+    const preClaimRevision = Number(await sql(`select revision from private.game_character_legacy_heads where character_id = '${importedClaimCharacterId}'`))
     const claim = await openOnboarding(gateway.address(), importedClaimCorrelation, 'claim')
     claim.send(`${importedClaimName}\n`)
     await eventually(() => assert.match(claim.text(), /암호를 넣어 주십시요/))
@@ -1014,6 +1015,10 @@ async function main(): Promise<void> {
       process.stderr.write(`stack-e2e: claim-file-preservation size-equal=${claimedPlayerBytes.length === importedClaimBytes.length} password-equal=${before.equals(after)} password-before-nonzero=${before.some(value => value !== 0)} password-after-zero=${after.every(value => value === 0)}\n`)
     }
     assert.equal(createHash('sha256').update(claimedPlayerBytes).digest('hex'), importedClaimDigest)
+    const preservedHead = await sql(`select head_sha256 || '|' || revision from private.game_character_legacy_heads where character_id = '${importedClaimCharacterId}'`)
+    const [preservedDigest, preservedRevision] = preservedHead.split('|')
+    assert.equal(preservedDigest, importedClaimDigest)
+    assert.ok(Number(preservedRevision) > preClaimRevision, 'claim must preserve bytes while advancing the authoritative save receipt')
     evidence.events.push({ case: 'legacy-claim', result: 'batch-provenanced-C-password-verified-rpc-handoff-active' })
     evidence.events.push({ case: 'legacy-claim-denials', result: 'missing-member-wrong-password-expired-no-owner-no-normal-admission' })
 

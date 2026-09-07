@@ -65,7 +65,13 @@ struct creature *player;
             &store->last_report);
         return ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_REJECTED;
     }
-    (void)character_save_journal_v2_player_store_save(store, legacy_name, player);
+    /* Claim owns an existing canonical record. Its authentication-only
+     * creature has deliberately erased credentials and is never a save source. */
+    if(bridge->selected.mode == ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM)
+        (void)character_save_journal_v2_player_store_save_existing(store,
+            legacy_name, player);
+    else
+        (void)character_save_journal_v2_player_store_save(store, legacy_name, player);
     /* save is synchronous and always returns its store to IDLE; use the public
      * setter rather than leaving a bridge pointer in the caller-owned store. */
     if(character_save_journal_v2_player_store_set_candidate_resolver(store, 0, 0)) {

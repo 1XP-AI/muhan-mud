@@ -75,6 +75,8 @@ typedef struct character_save_journal_v2_player_store {
     /* Private per-call references used by the protocol serializer callback.
      * They never outlive player_store_save's dynamic extent. */
     struct creature *active_player;
+    int preserve_existing;
+    int existing_copy_attempted;
 } character_save_journal_v2_player_store;
 
 void character_save_journal_v2_player_store_init(
@@ -117,6 +119,10 @@ player_store_ops character_save_journal_v2_player_store_build(
     character_save_journal_v2_player_store *store);
 
 int character_save_journal_v2_player_store_save(
+    void *opaque, char *name, struct creature *player);
+/* CLAIM-only byte-preserving save. Requires a v4 candidate resolver; copies
+ * the authorized existing head and wipes transient copied bytes on return. */
+int character_save_journal_v2_player_store_save_existing(
     void *opaque, char *name, struct creature *player);
 int character_save_journal_v2_player_store_load(
     void *opaque, char *name, struct creature **player);

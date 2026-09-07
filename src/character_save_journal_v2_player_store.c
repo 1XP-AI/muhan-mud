@@ -1,9 +1,11 @@
 #include "character_save_journal_v2_player_store.h"
 
 #include "mstruct.h"
+#include "character_save_journal_v2.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 extern character_save_journal_v2_protocol_result
@@ -57,6 +59,13 @@ static int player_store_configured(const character_save_journal_v2_player_store 
 
 static void player_store_finish(character_save_journal_v2_player_store *store)
 {
+    if(store->existing_copy_attempted) {
+        volatile unsigned char *bytes=(volatile unsigned char *)store->buffer;
+        unsigned long length=store->buffer_capacity;
+        while(length--) *bytes++=0;
+    }
+    store->preserve_existing=0;
+    store->existing_copy_attempted=0;
     store->active_player=0;
     store->buffer_length=0;
     store->state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE;
@@ -89,6 +98,49 @@ static int player_store_serialize_bounded(
     return 0;
 }
 
+static int player_store_copy_existing(character_save_journal_v2_player_store *store,
+    const character_save_journal_v2_writer_tuple *writer,
+    const character_save_journal_v2_bound_route_v3 *route,const char *command_uuid)
+{
+    static const char hex[]="0123456789abcdef";
+    character_save_journal_v2_wire wire;
+    size_t index,length=0;
+    int root_fd=-1,result,close_result;
+
+    if(!writer||!route||!player_store_uuid_valid(command_uuid)||
+       route->head_state!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING||
+       route->head_revision>=(uint64_t)INT64_MAX||
+       !route->legacy_name_length||route->legacy_name_length>CHARACTER_SAVE_JOURNAL_V2_NAME_MAX||
+       !route->storage_format||route->storage_format>UINT16_MAX) return -1;
+    memset(&wire,0,sizeof(wire));
+    wire.state=CHARACTER_SAVE_JOURNAL_V2_PREPARED;
+    memcpy(wire.writer_instance_id,writer->writer_instance_id,sizeof(wire.writer_instance_id));
+    memcpy(wire.world_id,writer->world_id,sizeof(wire.world_id));
+    memcpy(wire.character_id,route->character_id,sizeof(wire.character_id));
+    memcpy(wire.command_uuid,command_uuid,sizeof(wire.command_uuid));
+    memcpy(wire.legacy_shard,route->legacy_shard,sizeof(wire.legacy_shard));
+    for(index=0;index<route->legacy_name_length;index++) {
+        wire.legacy_name_key_hex[index*2]=hex[route->legacy_name[index]>>4];
+        wire.legacy_name_key_hex[index*2+1]=hex[route->legacy_name[index]&15];
+    }
+    wire.writer_epoch=writer->writer_epoch;
+    wire.writer_revision=route->head_revision+1;
+    wire.expected_state=CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING;
+    wire.storage_format=(uint16_t)route->storage_format;
+    memcpy(wire.expected_sha256,route->head_sha256,sizeof(wire.expected_sha256));
+    memcpy(wire.post_sha256,route->head_sha256,sizeof(wire.post_sha256));
+    if(character_save_journal_v2_request_sha256(&wire,wire.request_sha256)||
+       character_save_journal_v2_writer_dup_held_root_fd(store->held_writer,&root_fd)!=
+       CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) return -1;
+    store->existing_copy_attempted=1;
+    result=character_save_journal_v2_copy_existing_at(root_fd,&wire,
+        (unsigned char *)store->buffer,(size_t)store->buffer_capacity,&length);
+    close_result=close(root_fd);
+    if(result||close_result||length>store->buffer_capacity) return -1;
+    store->buffer_length=(unsigned long)length;
+    return 0;
+}
+
 /* v3 receives the already bounded caller buffer.  v4 leaves active_player
  * live until its resolver and stage-route identity checks authorize this
  * callback; that keeps rejected v4 candidates from touching caller bytes. */
@@ -100,15 +152,14 @@ static int player_store_serialized(void *opaque,
     character_save_journal_v2_player_store *store=
         (character_save_journal_v2_player_store *)opaque;
 
-    (void)writer;
-    (void)route;
-    (void)command_uuid;
     if(bytes_out) *bytes_out=0;
     if(length_out) *length_out=0;
     if(!store||!bytes_out||!length_out||!store->buffer||
        store->buffer_length>store->buffer_capacity) return -1;
     if(store->active_player) {
-        if(player_store_serialize_bounded(store)) return -1;
+        if(store->preserve_existing) {
+            if(player_store_copy_existing(store,writer,route,command_uuid)) return -1;
+        } else if(player_store_serialize_bounded(store)) return -1;
         store->active_player=0;
     }
     *bytes_out=(const unsigned char *)store->buffer;
@@ -194,8 +245,8 @@ player_store_ops character_save_journal_v2_player_store_build(
     return operations;
 }
 
-int character_save_journal_v2_player_store_save(
-    void *opaque, char *name, struct creature *player)
+static int player_store_save_internal(
+    void *opaque, char *name, struct creature *player,int preserve_existing)
 {
     character_save_journal_v2_player_store *store=
         (character_save_journal_v2_player_store *)opaque;
@@ -217,8 +268,11 @@ int character_save_journal_v2_player_store_save(
         return PLAYER_STORE_IO_ERROR;
     store->buffer_length=0;
     store->active_player=0;
+    store->preserve_existing=0;
+    store->existing_copy_attempted=0;
     memset(&store->last_report,0,sizeof(store->last_report));
     if(!name||!player) return PLAYER_STORE_IO_ERROR;
+    if(preserve_existing&&!store->resolve_candidate) return PLAYER_STORE_IO_ERROR;
     name_length=player_store_text_length(name,CHARACTER_SAVE_JOURNAL_V2_ROUTE_NAME_MAX);
     player_name_length=player_store_text_length(player->name,sizeof(player->name)-1);
     if(!name_length||name_length>CHARACTER_SAVE_JOURNAL_V2_ROUTE_NAME_MAX||
@@ -226,6 +280,7 @@ int character_save_journal_v2_player_store_save(
         return PLAYER_STORE_IO_ERROR;
 
     store->state=CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING;
+    store->preserve_existing=preserve_existing;
     memset(&tuple,0,sizeof(tuple));
     if(character_save_journal_v2_writer_validate_held(store->held_writer,&tuple)!=
        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) goto failed;
@@ -312,6 +367,18 @@ failed:
         failure_step,(int)store->last_report.reached);
     player_store_finish(store);
     return PLAYER_STORE_IO_ERROR;
+}
+
+int character_save_journal_v2_player_store_save(
+    void *opaque,char *name,struct creature *player)
+{
+    return player_store_save_internal(opaque,name,player,0);
+}
+
+int character_save_journal_v2_player_store_save_existing(
+    void *opaque,char *name,struct creature *player)
+{
+    return player_store_save_internal(opaque,name,player,1);
 }
 
 int character_save_journal_v2_player_store_load(

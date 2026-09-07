@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 typedef enum fake_outcome {
     FAKE_PREPARED,
@@ -24,7 +26,7 @@ typedef struct fixture {
     char actor[37], correlation[37], character[37], command[37], name[32];
     int validate_calls, renew_calls, bootstrap_calls, uuid_calls, serializer_calls;
     int v3_calls, v4_calls, resolver_calls, route_calls, prepared_calls, publish_calls;
-    int candidate_exact;
+    int candidate_exact, original_copy_calls;
     fake_outcome outcome;
 } fixture;
 
@@ -36,6 +38,42 @@ typedef struct fixture {
 
 static fixture *fixtures[2];
 static int fixture_count;
+static fixture *copy_fixture;
+
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_dup_held_root_fd(
+    const character_save_journal_v2_writer_context *writer, int *out)
+{
+    int i;
+    copy_fixture=0;
+    for(i=0;i<fixture_count;i++)
+        if(writer==&fixtures[i]->writer_context) copy_fixture=fixtures[i];
+    if(!copy_fixture || !out) return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+    *out=open("/dev/null",O_RDONLY);
+    return *out>=0 ? CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK:
+        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;
+}
+
+int character_save_journal_v2_request_sha256(
+    const character_save_journal_v2_wire *wire, char out[65])
+{
+    if(!wire || !out) return -1;
+    memset(out,'a',64); out[64]=0; return 0;
+}
+
+int character_save_journal_v2_copy_existing_at(int fd,
+    const character_save_journal_v2_wire *wire, unsigned char *buffer,
+    size_t capacity, size_t *length)
+{
+    static const char original[]="unchanged-original-record";
+    if(fd<0 || !copy_fixture || !wire || !buffer || !length ||
+       capacity<sizeof(original) ||
+       wire->expected_state!=CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ||
+       strcmp(wire->character_id,copy_fixture->character) ||
+       strcmp(wire->command_uuid,copy_fixture->command)) return -1;
+    copy_fixture->original_copy_calls++;
+    memcpy(buffer,original,sizeof(original)); *length=sizeof(original); return 0;
+}
 
 int player_name_is_valid(const unsigned char *name, unsigned long minimum,
                          unsigned long maximum)
@@ -91,6 +129,12 @@ static void make_route(fixture *test,
     strcpy(route->character_id, test->character);
     memcpy(route->legacy_name, test->name, strlen(test->name));
     route->legacy_name_length = strlen(test->name);
+    strcpy(route->world_id,test->tuple.world_id);
+    strcpy(route->legacy_shard,"16");
+    route->storage_format=CHARACTER_SAVE_JOURNAL_V2_ROUTE_STORAGE_LEGACY_C_ABI_V1;
+    route->head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING;
+    route->head_revision=1;
+    memset(route->head_sha256,'a',64); route->head_sha256[64]=0;
 }
 
 static void register_fixture(fixture *test)
@@ -390,6 +434,10 @@ character_save_journal_v2_protocol_save_held_v4(
        operations->serialize(operations->serialize_opaque, &test->tuple, &route,
        candidate.command_uuid, &bytes, &length) || !bytes || !length)
         return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;
+    if(test->original_copy_calls &&
+       (length != sizeof("unchanged-original-record") ||
+        memcmp(bytes,"unchanged-original-record",length)))
+        return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER;
     test->prepared_calls++;
     if(test->outcome == FAKE_PREPARED) {
         report->reached = CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_PREPARED;
@@ -434,7 +482,8 @@ static int test_exact_tuple_and_published_once(void)
         test.candidate_exact &&
         test.v4_calls == 1 && !test.v3_calls &&
         !test.capability.armed && !test.store.resolve_candidate &&
-        !test.store.resolve_candidate_opaque,
+        !test.store.resolve_candidate_opaque && test.serializer_calls == 1 &&
+        !test.original_copy_calls,
         "a published exact V4 candidate consumes its descriptor capability exactly once");
     return failed;
 }
@@ -484,6 +533,9 @@ static int test_claim_published_once(void)
         !test.capability.armed && test.v4_calls == 1 && !test.v3_calls &&
         !test.store.resolve_candidate,
         "claim uses the same explicit V4 gate and consumes only on PUBLISHED");
+    failed += expect(test.original_copy_calls == 1 && !test.serializer_calls &&
+        !test.player.password[0] && !test.buffer[0],
+        "claim preserves original bytes without serializing erased credentials and wipes scratch");
     return failed;
 }
 

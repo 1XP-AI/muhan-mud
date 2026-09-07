@@ -2,9 +2,11 @@
 #include "mstruct.h"
 #include "player_recovery.h"
 #include "player_store.h"
+#include "character_save_journal_v2.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef enum test_mode { TEST_NORMAL, TEST_SERIALIZER_FAILURE, TEST_ROUTE_DRIFT,
     TEST_DEFERRED, TEST_INVALID_FREEZE, TEST_REJECTED_FREEZE,
@@ -28,6 +30,7 @@ typedef struct fixture {
     int serializer_failure,renew_failure,nested_result,revision;
     int recovery_forwarding_required,recovery_forwarding_calls,recovery_forwarding_bad;
     creature *serialized_player;
+    int copy_calls,copy_failure,copy_wire_bad;
     test_mode mode;
     char loaded_name[16];
 } fixture;
@@ -39,6 +42,36 @@ static int expect(int value,const char *what)
 { if(value)return 0; fprintf(stderr,"character_save_journal_v2_player_store: %s\n",what); return 1; }
 static void tuple(character_save_journal_v2_writer_tuple *out)
 { memset(out,0,sizeof(*out)); strcpy(out->world_id,"m3-world"); strcpy(out->writer_instance_id,"10000000-0000-4000-8000-000000000001"); out->writer_epoch=7; }
+
+character_save_journal_v2_writer_context_status
+character_save_journal_v2_writer_dup_held_root_fd(
+    const character_save_journal_v2_writer_context *writer,int *fd)
+{ if(!current||writer!=&current->writer)return CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID;*fd=dup(STDERR_FILENO);return *fd<0?CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_INVALID:CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK; }
+
+int character_save_journal_v2_request_sha256(
+    const character_save_journal_v2_wire *wire,char out[65])
+{ (void)wire;memset(out,'b',64);out[64]=0;return 0; }
+
+int character_save_journal_v2_copy_existing_at(int fd,
+    const character_save_journal_v2_wire *wire,unsigned char *buffer,
+    size_t capacity,size_t *length)
+{
+    static const char original[]="original-record-with-password";
+    current->copy_calls++;
+    if(fd<0||capacity<sizeof(original)||wire->state!=CHARACTER_SAVE_JOURNAL_V2_PREPARED||
+       wire->expected_state!=CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING||
+       wire->writer_epoch!=7||wire->writer_revision!=10||wire->storage_format!=1||
+       strcmp(wire->world_id,"m3-world")||
+       strcmp(wire->writer_instance_id,"10000000-0000-4000-8000-000000000001")||
+       strcmp(wire->character_id,"30000000-0000-4000-8000-000000000002")||
+       strcmp(wire->command_uuid,"20000000-0000-4000-8000-000000000002")||
+       strcmp(wire->legacy_name_key_hex,"4d336865726f")||strcmp(wire->legacy_shard,"66")||
+       strlen(wire->expected_sha256)!=64||wire->expected_sha256[0]!='a'||
+       strcmp(wire->expected_sha256,wire->post_sha256)||wire->request_sha256[0]!='b')
+        current->copy_wire_bad=1;
+    memcpy(buffer,original,sizeof(original));*length=sizeof(original);
+    return current->copy_failure?-1:0;
+}
 
 int character_save_journal_v2_bootstrap_absent_head(const character_save_journal_v2_writer_context *writer,character_save_journal_v2_live_ops *ops,const unsigned char *name,size_t length)
 { (void)writer;(void)ops;(void)name;(void)length;return -1; }
@@ -78,7 +111,7 @@ static int resolve_candidate(void *opaque,
 { fixture *test=(fixture *)opaque;if(!test||test!=current||!writer||!route||!name||name_length!=6||memcmp(name,"M3hero",6)||!candidate)return -1;test->resolver_calls++;if(test->mode==TEST_V4_RESOLVER_ERROR)return -7;if(test->mode==TEST_V4_NO_CANDIDATE)return 0;memset(candidate,0,sizeof(*candidate));strcpy(candidate->command_uuid,"20000000-0000-4000-8000-000000000002");candidate->writer=*writer;strcpy(candidate->character_id,test->mode==TEST_V4_REJECTED?"30000000-0000-4000-8000-000000000003":"30000000-0000-4000-8000-000000000002");memcpy(candidate->canonical_legacy_name,name,name_length);candidate->canonical_legacy_name_length=name_length;return 1; }
 
 character_save_journal_v2_protocol_result character_save_journal_v2_protocol_save_held_v4(const character_save_journal_v2_writer_context *writer,const character_save_journal_v2_protocol_held_request_v3 *request,const character_save_journal_v2_protocol_operations_v4 *operations,character_save_journal_v2_protocol_report *report)
-{ character_save_journal_v2_writer_tuple held;character_save_journal_v2_bound_route_v3 route;character_save_journal_v2_protocol_candidate_v4 candidate;character_save_journal_v2_route_reply_v3 stage;const unsigned char *bytes=0;size_t length=0;char command_uuid[37];int found,serialized;if(!current||writer!=&current->writer||!request||!operations||!report||operations->route_lookup!=character_save_journal_v2_live_ops_route_lookup_v3||operations->route_opaque!=&current->live_ops||operations->resolve_candidate!=resolve_candidate||operations->resolve_candidate_opaque!=current)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;current->protocol_calls++;memset(report,0,sizeof(*report));memset(&held,0,sizeof(held));tuple(&held);memset(&route,0,sizeof(route));strcpy(route.character_id,"30000000-0000-4000-8000-000000000002");memset(&candidate,0,sizeof(candidate));memset(command_uuid,0,sizeof(command_uuid));found=operations->resolve_candidate(operations->resolve_candidate_opaque,&held,&route,request->canonical_legacy_name,request->canonical_legacy_name_length,&candidate);if(found<0){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(found==1&&strcmp(candidate.character_id,route.character_id)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(found==0&&operations->generate_uuid(operations->generate_uuid_opaque,command_uuid)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(operations->route_lookup(operations->route_opaque,held.world_id,request->canonical_legacy_name,request->canonical_legacy_name_length,&stage)!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK||strcmp(stage.character_id,route.character_id)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}serialized=operations->serialize(operations->serialize_opaque,&held,&route,found==1?candidate.command_uuid:command_uuid,&bytes,&length);if(serialized||!bytes||!length)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER;current->prepared_calls++;current->publish_calls++;current->receipt_calls++;report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK; }
+{ character_save_journal_v2_writer_tuple held;character_save_journal_v2_bound_route_v3 route;character_save_journal_v2_protocol_candidate_v4 candidate;character_save_journal_v2_route_reply_v3 stage;const unsigned char *bytes=0;size_t length=0;char command_uuid[37];int found,serialized;if(!current||writer!=&current->writer||!request||!operations||!report||operations->route_lookup!=character_save_journal_v2_live_ops_route_lookup_v3||operations->route_opaque!=&current->live_ops||operations->resolve_candidate!=resolve_candidate||operations->resolve_candidate_opaque!=current)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_INVALID_ARGUMENT;current->protocol_calls++;memset(report,0,sizeof(*report));memset(&held,0,sizeof(held));tuple(&held);memset(&route,0,sizeof(route));strcpy(route.character_id,"30000000-0000-4000-8000-000000000002");strcpy(route.world_id,"m3-world");memcpy(route.legacy_name,"M3hero",6);route.legacy_name_length=6;strcpy(route.legacy_shard,"66");route.storage_format=1;route.head_state=CHARACTER_SAVE_JOURNAL_V2_ROUTE_HEAD_EXISTING;route.head_revision=9;memset(route.head_sha256,'a',64);memset(&candidate,0,sizeof(candidate));memset(command_uuid,0,sizeof(command_uuid));found=operations->resolve_candidate(operations->resolve_candidate_opaque,&held,&route,request->canonical_legacy_name,request->canonical_legacy_name_length,&candidate);if(found<0){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(found==1&&strcmp(candidate.character_id,route.character_id)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(found==0&&operations->generate_uuid(operations->generate_uuid_opaque,command_uuid)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}if(operations->route_lookup(operations->route_opaque,held.world_id,request->canonical_legacy_name,request->canonical_legacy_name_length,&stage)!=CHARACTER_SAVE_JOURNAL_V2_ROUTE_LOOKUP_OK||strcmp(stage.character_id,route.character_id)){report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_ROUTE_EPOCH;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_ROUTE;}serialized=operations->serialize(operations->serialize_opaque,&held,&route,found==1?candidate.command_uuid:command_uuid,&bytes,&length);if(serialized||!bytes||!length)return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_SERIALIZER;if(current->copy_calls&&(length!=sizeof("original-record-with-password")||memcmp(bytes,"original-record-with-password",length)))current->copy_wire_bad=1;current->prepared_calls++;current->publish_calls++;current->receipt_calls++;report->reached=CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_CUTPOINT_DB_ACKED;return CHARACTER_SAVE_JOURNAL_V2_PROTOCOL_OK; }
 
 static int deadline(void *opaque,char output[64])
 { fixture *test=(fixture *)opaque;test->deadline_calls++;strcpy(output,"2026-09-03T00:02:00Z");return 0; }
@@ -200,5 +233,52 @@ static int test_recovery_retry_composes_with_v2_player_store(void)
     return failed;
 }
 
+static int test_save_existing_preserves_and_wipes(void)
+{
+    fixture test;
+    char before[sizeof(test.buffer)];
+    int failed=0;
+    size_t index,mode_index;
+    const test_mode rejected[]={TEST_V4_REJECTED,TEST_V4_RESOLVER_ERROR,
+                                TEST_V4_INTER_BIND_MISMATCH};
+    setup(&test,TEST_V4_FOUND);
+    memset(test.buffer,'P',sizeof(test.buffer));
+    memcpy(before,test.buffer,sizeof(before));
+    failed+=expect(character_save_journal_v2_player_store_save_existing(
+        &test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&
+        !test.protocol_calls&&!test.copy_calls&&!test.serializer_calls&&
+        !memcmp(before,test.buffer,sizeof(before)),"existing save requires the v4 resolver");
+    character_save_journal_v2_player_store_set_candidate_resolver(&test.store,resolve_candidate,&test);
+    failed+=expect(character_save_journal_v2_player_store_save_existing(
+        &test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.copy_calls==1&&
+        !test.copy_wire_bad&&!test.serializer_calls&&test.publish_calls==1&&clean(&test),
+        "existing save publishes exact persisted bytes without serializing scrubbed player");
+    for(index=0;index<sizeof("original-record-with-password");index++)
+        failed+=expect(test.buffer[index]==0,"copied credential bytes are wiped after success");
+    for(mode_index=0;mode_index<sizeof(rejected)/sizeof(rejected[0]);mode_index++) {
+        setup(&test,rejected[mode_index]);
+        memset(test.buffer,'R',sizeof(test.buffer));memcpy(before,test.buffer,sizeof(before));
+        character_save_journal_v2_player_store_set_candidate_resolver(&test.store,resolve_candidate,&test);
+        failed+=expect(character_save_journal_v2_player_store_save_existing(
+            &test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&!test.copy_calls&&
+            !test.serializer_calls&&!memcmp(before,test.buffer,sizeof(before))&&clean(&test),
+            "rejected existing candidate leaves caller bytes untouched");
+    }
+    setup(&test,TEST_V4_NO_CANDIDATE);
+    character_save_journal_v2_player_store_set_candidate_resolver(&test.store,resolve_candidate,&test);
+    failed+=expect(character_save_journal_v2_player_store_save_existing(
+        &test.store,"M3hero",&test.player)==PLAYER_STORE_OK&&test.copy_calls==1&&
+        test.uuid_calls==1&&!test.copy_wire_bad&&!test.serializer_calls&&clean(&test),
+        "existing no-candidate path preserves bytes with native UUID fallback");
+    setup(&test,TEST_V4_FOUND);test.copy_failure=1;
+    character_save_journal_v2_player_store_set_candidate_resolver(&test.store,resolve_candidate,&test);
+    failed+=expect(character_save_journal_v2_player_store_save_existing(
+        &test.store,"M3hero",&test.player)==PLAYER_STORE_IO_ERROR&&test.copy_calls==1&&
+        !test.serializer_calls&&!test.publish_calls&&clean(&test),"copy failure never publishes");
+    for(index=0;index<sizeof("original-record-with-password");index++)
+        failed+=expect(test.buffer[index]==0,"copied credential bytes are wiped after failure");
+    return failed;
+}
+
 int main(void)
-{ return test_normal_and_name_rejection()|test_pre_renew_failure()|test_serializer_failure_and_route_drift()|test_absent_seed_gate()|test_post_publish_outcomes_and_sequential_revision()|test_load_and_reentrant_rejection()|test_stage_observer_forwarding_is_non_authoritative()|test_v4_defers_caller_buffer_until_candidate_stage_identity()|test_recovery_retry_composes_with_v2_player_store(); }
+{ return test_save_existing_preserves_and_wipes()|test_normal_and_name_rejection()|test_pre_renew_failure()|test_serializer_failure_and_route_drift()|test_absent_seed_gate()|test_post_publish_outcomes_and_sequential_revision()|test_load_and_reentrant_rejection()|test_stage_observer_forwarding_is_non_authoritative()|test_v4_defers_caller_buffer_until_candidate_stage_identity()|test_recovery_retry_composes_with_v2_player_store(); }
