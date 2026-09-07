@@ -275,3 +275,11 @@ manifest-first CLI에만 normalized persistence=true를 전달하고 별도 arti
 새 normalized-snapshot-check helper의 테스트를 모듈 부재로 먼저 실패시킨 후 구현했다. MATCH/MISSING_RECORD/예외에서 reader close를 검증하는 3개와 기존 lifecycle 14개, 총 17개가 통과했다. helper 및 테스트 TypeScript strict 검사, migration coverage 44개, shell 구문 및 diff whitespace 검사도 통과했다. 단위 테스트의 artifact는 전달/정리 순서만 보는 대역이며 SQL/C parsing의 증거가 아니다. .github/workflows/ci.yml에 helper 테스트를 연결했다.
 
 전체 변경된 C/Gateway/browser/DB acceptance는 GitHub 결제/한도 차단 때문에 아직 실행하지 못했다. 이 변경은 검증 요구사항을 실제 경로에 연결한 로컬 커밋이며 end-to-end 통과로 보고하지 않는다. 운영 설정/기존 파일 저장 권위/배포 이미지는 변경하지 않았다. 다음은 전체 stack 실행 결과 회수와 발견되는 실제 데이터 호환성 문제 수정이다.
+
+## 현재 testnet 배포 상태와 전체 stack 타입 검사
+
+지정된 testnet-1xp context만 읽기 전용 조회했다. default namespace의 Helm release muhan-mud-testnet은 revision 9, chart muhan-mud-0.1.8, deployed이며 업데이트 시각은 2026-09-05 04:10:57 +0900이다. release label로 선택한 auth/gateway/mud/postgres/postgrest/realtime/web Pod의 모든 container가 Ready였다. ingress 호스트는 muhan.1xp.vc이며 HTTPS / 요청은 HTTP 200이다. 이는 페이지 도달성/Pod readiness 증거이며 로그인·실제 플레이 성공의 증거는 아니다.
+
+실행 중 web imageID는 `docker.io/tech1xp/muhan-mud-testnet@sha256:5f025ee1732981b2cd6d9aaef18ffc858b90905f6cc1e80a9bbf8d141ce174ec`다. 애플리케이션 Pod spec은 latest 태그를 사용한다. Helm의 명시적 user values에서 onboarding.enabled=true지만 image.sourceRevision/image.digest 및 신규 normalizedShadow/normalizedProjection 설정은 존재하지 않았다. 따라서 새 고정 SHA/digest와 normalized 기능을 배포했다고 주장할 수 없다. Helm 전체 values·Secret·DB 내용은 출력하지 않았으며 운영 변경도 없다.
+
+새 helper만이 아니라 전체 tests/stack-e2e/stack-e2e.test.ts를 strict TypeScript 검사했다. 기존 Browser message callback의 data/binary implicit-any 두 오류가 드러나, 기존 변환 동작은 유지하고 unknown/boolean을 명시한 뒤 전체 파일 검사 exit 0을 확인했다. 커밋 4934beb에 이 검사 명령을 CI에 추가했다. 런타임 데이터 처리 변경이나 전체 stack 통과 증거는 아니다. GitHub 결제/한도 및 운영 fixture 준비가 여전히 외부 검증의 선행 조건이다.
