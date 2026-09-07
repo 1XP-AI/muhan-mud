@@ -1,5 +1,34 @@
 # Live bank capture and transaction gap
 
+## Native multi-character registry — 2026-09-08
+
+Source `20a97c7` adds a zero-initialized caller-owned registry exposing the
+actual PlayerStore facade. It routes exact names to configured contexts in one
+world; duplicate bindings, unknown names, inconsistent contexts and capacity
+exhaustion fail closed without FileStore fallback. It uses 64 bounded slots.
+Removal refuses a busy context or one with an in-memory pending request; it
+does not free contexts, delete disk evidence or determine whether gameplay has
+been drained. Caller-owned context lifetimes must cover the active binding.
+
+The C/PG fixture initially failed compilation with the registry absent. It now
+binds two real contexts: Peerhero commits gold 201 and leaves its request
+pending while Savehero completes both save/release/adoption cycles. Exact DB
+bytes, bank preservation and Peerhero's separately keyed pending payload are
+read back by Node. Duplicate registration and unknown-name load are rejected;
+pending Peerhero cannot be removed; drained Savehero is removed and subsequent
+save through its old name is rejected. FileStore callbacks still abort.
+
+Full frozen local ARM64 runner at `20a97c7` exited 0 through its process handle;
+evidence `/tmp/muhan-player-registry.log`. Existing native bank, recovery,
+cross-operation locks, sanitizer/differential, actual C onboarding and both
+restore profiles remain passing.
+
+This is not yet attached to production login or disconnect. Authentication,
+registry admission/removal orchestration, actual savegame/uninit/recovery queue
+integration and sizing for the configured player capacity remain. The current
+test proves two contexts, not a populated-capacity stress test. No production
+grant, push, Actions execution or deployment.
+
 ## Two consecutive native saves — 2026-09-08
 
 Frozen source `0731250` extends the actual C/PG fixture beyond context-only
