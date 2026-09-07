@@ -149,6 +149,8 @@ class ClaimCompletionRaceMudSocket extends EventEmitter {
   private stage = 0
   private ending = false
 
+  constructor(private readonly sendActive = true) { super() }
+
   connect(): void { queueMicrotask(() => this.emit('connect')) }
 
   write(data: Uint8Array | string, callback?: (error?: Error | null) => void): boolean {
@@ -171,7 +173,8 @@ class ClaimCompletionRaceMudSocket extends EventEmitter {
       callback?.()
       queueMicrotask(() => this.emit('data', Buffer.from(`MUD1O VERIFIED|416c696365|${'b'.repeat(64)}\n`)))
     } else if (/^MUD1O ACTIVATED\|[0-9a-f-]+\n$/.test(text)) {
-      callback?.(); setImmediate(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
+      callback?.()
+      if (this.sendActive) setImmediate(() => this.emit('data', Buffer.from(text.replace('ACTIVATED', 'ACTIVE'))))
     } else if (this.stage === 4 && text === `MUD1O CLAIMED|${character}\n`) {
       this.stage = 5
       callback?.()
@@ -1063,6 +1066,53 @@ test('claim completion ignores synchronous C error and end events after CLAIMED'
   assert.deepEqual(authorizer.cancellations, [])
   assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`))
 })
+
+for (const outcome of ['accepted', 'rejected', 'missing ACTIVE'] as const) {
+test(`claim EOF respects deferred snapshot binding (${outcome})`, async (t) => {
+  const bindingFails = outcome === 'rejected'
+  const sendsActive = outcome !== 'missing ACTIVE'
+  const mud = new ClaimCompletionRaceMudSocket(sendsActive)
+  let releaseBinding!: () => void
+  const bindingGate = new Promise<void>((resolve) => { releaseBinding = resolve })
+  const authorizer = new RecordingOnboardingAuthorizer()
+  authorizer.bindSnapshotCommand = async () => {
+    authorizer.calls.push('bind')
+    await bindingGate
+    if (bindingFails) throw new Error('snapshot binding rejected')
+  }
+  const config = loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true', HOST: '127.0.0.1', PORT: '0', ALLOWED_ORIGINS: 'http://localhost:3000', AUTH_TIMEOUT_MS: '500', TCP_CONNECT_TIMEOUT_MS: '500', MUD_ADMISSION_TIMEOUT_MS: '500' })
+  const gateway = createGateway(config, {
+    onboardingAuthorizer: authorizer,
+    characterAuthorizer: authorizer,
+    authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+    connectTcp: () => { mud.connect(); return mud as unknown as Socket },
+  })
+  gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')
+  t.after(async () => { releaseBinding(); await gateway.close() })
+  const ws = new WebSocket(`${gateway.address().replace('http:', 'ws:')}/onboarding`, 'muhan.onboarding.v1', { origin: 'http://localhost:3000' })
+  await once(ws, 'open')
+  const messages: Array<{ data: RawData, binary: boolean }> = []
+  ws.on('message', (data, binary) => messages.push({ data, binary }))
+  const closed = once(ws, 'close')
+  ws.send(JSON.stringify({ type: 'onboarding-auth', accessToken: 'browser-token', mode: 'claim', correlationId: correlation }))
+  await eventually(() => assert.match(binaryText(messages), /기존 이름\? /))
+  ws.send(Buffer.from('Alice\n'))
+  await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
+  ws.send(Buffer.from('old-secret\n'))
+  await eventually(() => assert.ok(sendsActive ? authorizer.calls.includes('bind') :
+    mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|'))))
+  // C closes immediately after ACTIVE. Deliver its EOF while the database
+  // binding is definitely pending, then give the EOF handler a full turn.
+  mud.emit('end')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  releaseBinding()
+  const [code] = await closed as [number]
+  assert.equal(code, !sendsActive ? 1011 : bindingFails ? 1008 : 1000)
+  assert.deepEqual(authorizer.calls, sendsActive ? ['begin', 'challenge', 'claim', 'activate', 'bind'] : ['begin', 'challenge', 'claim', 'activate'])
+  assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`), outcome === 'accepted')
+  assert.equal(messages.some(({ data, binary }) => !binary && JSON.parse(Buffer.from(data).toString()).type === 'error'), outcome !== 'accepted')
+})
+}
 
 test('claim completion drops later C game bytes while ownership finalization is pending', async (t) => {
   const trailingGame = Buffer.from('later C gameplay fragment')

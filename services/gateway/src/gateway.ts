@@ -806,14 +806,19 @@ class OnboardingSession {
     mud.on('drain', () => this.resumeInput())
     mud.on('error', () => { if (!this.closed && !this.normalClosing) this.fail(CLOSE_INTERNAL, 'MUD connection failed') })
     mud.on('end', () => {
-      if (this.closed || this.normalClosing) return
-      if (this.state === 'ready') {
-        this.normalClosing = true
-        this.sendText({ type: 'closed', reason: 'MUD connection closed' })
-        closeSocket(this.ws, CLOSE_NORMAL, 'MUD connection closed')
-        return
-      }
-      this.fail(CLOSE_INTERNAL, 'MUD connection closed')
+      // C claim completion sends ACTIVE and closes immediately. EOF must not
+      // overtake that ordered control's asynchronous snapshot binding RPC.
+      // An EOF without successful completion still fails after prior controls.
+      this.controlQueue = this.track(this.controlQueue.then(() => {
+        if (this.closed || this.normalClosing) return
+        if (this.state === 'ready') {
+          this.normalClosing = true
+          this.sendText({ type: 'closed', reason: 'MUD connection closed' })
+          closeSocket(this.ws, CLOSE_NORMAL, 'MUD connection closed')
+          return
+        }
+        this.fail(CLOSE_INTERNAL, 'MUD connection closed')
+      }).catch(() => this.fail(CLOSE_INTERNAL, 'MUD connection closed')))
     })
   }
   private onMudData(data: Buffer): void {
