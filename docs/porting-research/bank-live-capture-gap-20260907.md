@@ -1,5 +1,39 @@
 # Live bank capture and transaction gap
 
+## Real C provision completion requires fresh admission — 2026-09-07
+
+Source `a6817db` changes the real C provision completion path to emit its exact
+ACTIVE control and disconnect, matching the one-shot claim path. It no longer
+assigns the gameplay command callback to the wizard descriptor. Disconnect
+removes its input buffer and transient identity; the normal admission path is
+required before gameplay. The staged activation still runs once before cleanup.
+
+The actual command1 lifecycle test first failed when required to disconnect
+provision completion. After implementation, runtime-on/off tests and ASan/UBSan
+pass. The real C socket scenario now checks ACTIVE followed by EOF/no game
+output, including a health command coalesced after ACTIVATED. It then reconnects
+with MUD2 tickets and successfully runs health/quit commands for Alice and Staged.
+These tickets use test-peer session IDs, not a live DB lease: this proves C wire
+and socket behavior, not the complete gateway/C/Postgres integration.
+
+Two test-environment assumptions were corrected without deleting the gates:
+- SAVED file SHA is checked before COMMIT. Immediate disconnect performs the
+  existing uninit/save transition, so its later file need not be byte-identical
+  to SAVED. That later output must settle and pass real C re-admission. The
+  immutable SAVED/committed receipt assertions remain; this does not establish
+  that legacy disconnect writes are safe under a future DB authority cutover.
+- The chmod-based FileStore failure test must run unprivileged. The Docker
+  runner now creates an owned private source copy on tmpfs and drops to uid 1000
+  for this scenario. It does not relax host source permissions or skip the test.
+
+Frozen source `3aca42d`: complete local Linux ARM64 runner exited 0, including
+real C scenario, lifecycle sanitizers, qualified money/recovery and both backup
+restore profiles. Evidence: `/tmp/muhan-onboarding-c-close-final.log`.
+Gateway regression suite also passed (146 passed, 5 skipped), and the activation
+static gate passed. No deployment, CI run or production feature flag change.
+Still required: bind the live bank coordinator and all save paths to verified
+session/current DB state and close remaining file-authority gaps.
+
 ## Onboarding-to-session path and completion input barrier — 2026-09-07
 
 Correction to the earlier handoff prerequisite: the existing browser and gateway
