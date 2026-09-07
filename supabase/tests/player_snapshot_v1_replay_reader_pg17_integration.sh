@@ -8,7 +8,7 @@ set -euo pipefail
 command -v docker >/dev/null || { echo "M5e replay reader integration requires docker" >&2; exit 2; }
 command -v node >/dev/null || { echo "M5e replay reader integration requires a built relay dist" >&2; exit 2; }
 
-repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 container="m5e-replay-reader-${RANDOM}-${RANDOM}"
 container_id=""
 reader_password="m5e-reader-${RANDOM}-${RANDOM}"
