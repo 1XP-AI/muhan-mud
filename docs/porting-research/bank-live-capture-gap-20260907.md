@@ -1,5 +1,37 @@
 # Live bank capture and transaction gap
 
+## Descriptor-bound native money request — 2026-09-07
+
+Source `00c25bb` adds `bank_money_live_native`, a caller-invoked wrapper around
+the existing native coordinator. It requires the exact player pointer in its
+current bounded Ply slot, a live io/extra, no onboarding mode, and complete
+canonical actor/character/DB session/gateway fields. It copies these fields from
+descriptor-owned extra; a name, descriptor number alone or admission nonce is
+not accepted as identity. Runtime still supplies world/writer/epoch and immutable
+command/revision/direction/amount; the qualified DB read/commit validates those.
+
+After a positive coordinator result, it rechecks slot ownership, io/extra,
+identity and wallet stability. A changed binding discards returned bytes and
+reports UNKNOWN, retaining the original durable pending request for recovery.
+It never updates the live creature. This is not full persisted-state equality:
+inventory, stats and other writers must still be serialized/fenced by the live
+caller. Initial live wallet equality with the DB snapshot is not established.
+
+Test-first link failed before implementation. Unit ASan/UBSan tests now prove
+exact tuple mapping, successful output, absent MUD1 session, malformed/nonterminated
+identity, another player in the slot, invalid fd, onboarding mode, invalid gateway,
+and changed slot/session/wallet/io during the call. The real PG withdrawal fixture
+now populates a disposable Ply slot and invokes this wrapper, reaching qualified
+read -> Rust -> durable preparation -> commit and exact original-request retry.
+This fixture is not a full user-driven bank command in the running game.
+
+Frozen source `00c25bb` full local ARM64 runner exited 0:
+`/tmp/muhan-bank-live-binding.log`, including native sanitizers, actual C onboarding
+scenario, DB recovery and both restore profiles. No production link/install,
+feature enablement, deployment or CI run. Still required: command parser/all-money
+handling, live current-state/revision validation and application, pending-work
+fences, startup recovery and every other player-save path before authority cutover.
+
 ## Real C provision completion requires fresh admission — 2026-09-07
 
 Source `a6817db` changes the real C provision completion path to emit its exact
