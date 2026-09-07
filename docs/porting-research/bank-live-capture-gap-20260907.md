@@ -1,5 +1,30 @@
 # Live bank capture and transaction gap
 
+## Offline-capable paired-state identity lookup — 2026-09-07
+
+Source `7bb5494` adds closed read-only resolve_player_paired_route(world,name,
+writer,epoch). Unlike M3's legacy file head revision, it returns the actual
+paired-state revision, character/owner UUID and both payload hashes. It requires
+the real mud_writer_login/role, locks writer -> character -> pair, samples lease
+time after locks, and requires active owned format-1 character plus exact stored
+name and a paired state. Missing/ineligible lookup is an error, never a legacy
+selection. This lookup deliberately does not require a live character session;
+it is not permission to execute a money command or arbitrary player save.
+
+The disposable harness proves the function absent before migration, applies it
+twice, grants only inside the test and verifies revocation. Real login queries
+verify initial UUID/revision/hash, missing name, wrong epoch and wrong login
+rejection. After session expiry/writer succession, old writer lookup is rejected
+and successor lookup returns revision 4 without reviving a session. Full frozen
+ARM64 suite at `7bb5494` exited 0: `/tmp/muhan-player-paired-route.log`, including
+bank, onboarding and both restore profiles.
+
+Native C resolver/provider wiring, complete player mutation transactions and
+runtime authority installation remain open. No production grant, deployment or
+Actions run. Lock-wait expiry behavior of this new lookup has not yet received
+its own observed-lock concurrency test; existing money lock tests are not a
+substitute for that coverage.
+
 ## Socket-independent player-store dispatch boundary — 2026-09-07
 
 Source `6934fb5` adds a caller-owned composition adapter for the existing
