@@ -29,11 +29,35 @@ int main(int argc,char **argv)
     ops=player_session_registry_build(&registry);assert(!player_store_bind(&ops,&binding));
     assert(load_ply("Missinghero",&again)==PLAYER_STORE_IO_ERROR&&!again);
     {
-        creature *p=NULL,detached;
+        creature *p=NULL,*decoded=NULL,detached,normalized,before;
+        object pack,blade,pack_before,blade_before;otag inventory,equipment;
+        unsigned char *expected=NULL;size_t expected_length=0;
         assert(load_ply("Peerhero",&p)==PLAYER_STORE_OK);
+        assert(!p->first_obj);
         detached=*p;detached.fd=-1;detached.gold=201;
+        memset(&pack,0,sizeof(pack));memset(&blade,0,sizeof(blade));
+        memset(&inventory,0,sizeof(inventory));memset(&equipment,0,sizeof(equipment));
+        strcpy(pack.name,"Apack");strcpy(blade.name,"Zblade");blade.wearflag=1;
+        inventory.obj=&pack;equipment.obj=&blade;
+        detached.first_obj=&inventory;detached.ready[0]=&blade;
+        // Independently encode the expected persisted, unequipped inventory.
+        normalized=detached;normalized.ready[0]=NULL;inventory.next_tag=&equipment;
+        pack.parent_crt=&normalized;blade.parent_crt=&normalized;
+        assert(!player_snapshot_v1_encode_loaded(&normalized,&expected,&expected_length));
+        inventory.next_tag=NULL;pack.parent_crt=&detached;blade.parent_crt=NULL;
+        before=detached;pack_before=pack;blade_before=blade;
         assert(savegame_nomsg(&detached)==PLAYER_STORE_OK);
+        assert(peer.pending_length==expected_length&&!memcmp(peer.pending,expected,expected_length));
+        assert(!memcmp(&detached,&before,sizeof(detached))&&!memcmp(&pack,&pack_before,sizeof(pack))
+            &&!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
+        assert(!player_snapshot_v1_decode_clone(peer.pending,peer.pending_length,&decoded));
+        assert(decoded->first_obj&&!strcmp(decoded->first_obj->obj->name,"Apack"));
+        assert(decoded->first_obj->next_tag&&!strcmp(decoded->first_obj->next_tag->obj->name,"Zblade"));
+        assert(!decoded->first_obj->next_tag->next_tag&&!decoded->ready[0]);
+        assert(savegame_nomsg(&detached)==PLAYER_STORE_OK&&peer.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+        assert(!memcmp(&detached,&before,sizeof(detached))&&!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
         assert(player_session_registry_remove(&registry,&peer)!=0);
+        free(expected);player_snapshot_v1_free_clone(decoded);
         player_snapshot_v1_free_clone(p);
     }
     memset(&copy,0,sizeof(copy));strcpy(copy.name,argv[2]);
