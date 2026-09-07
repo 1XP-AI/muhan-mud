@@ -1,5 +1,33 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: exact original-byte copy primitive implemented, not wired yet
+
+`4a2444f` adds `character_save_journal_v2_copy_existing_at` to the existing
+descriptor-rooted journal module. It borrows the root descriptor, reuses
+trusted-tree traversal, rejects non-regular/unsafe-mode/multiply-linked leaves,
+checks bounded size and EOF, validates the named inode, and hashes the exact
+buffer returned against the wire's existing-head precondition. Failed copies
+wipe bytes already copied and return length zero. Successful bytes remain
+caller-owned and must be wiped by the future PlayerStore integration.
+
+TDD: a reject-all stub failed the exact-byte preservation test before the
+implementation. Fresh normal and ASan/UBSan journal suites now pass, including
+exact bytes, capacity rejection, hash mismatch cleanup, hardlink/symlink/mode/
+missing-file rejection, renamed held root, borrowed descriptor lifetime and
+injected close failure cleanup. Production link/static check also passed.
+Output: `/tmp/muhan-existing-copy-results.log`.
+Concurrent truncation/mutation fault injection has not been added to this new
+reader yet; runtime has short-read, size and exact-copied-hash rejection.
+
+Next: wire explicit CLAIM-only preserve-existing PlayerStore dispatch inside
+the authorized V4 serializer callback, build its precondition from the bound
+route, and clear transient raw bytes on all exits. Add helper/store integration
+tests proving provision unchanged and claim capability/receipt still consumed.
+Do not call the new reader before V4 candidate/route validation. Then rerun
+the frozen Docker original-file gate and browser acceptance. This commit
+alone does NOT fix claim overwrite; no Docker run, CI dispatch, push or deploy
+was performed in this step. Goal remains active.
+
 ## Latest: actual claim activation erases the persisted credential field
 
 Frozen `03a6d0b` proves the field-level cause on Linux ARM64:
