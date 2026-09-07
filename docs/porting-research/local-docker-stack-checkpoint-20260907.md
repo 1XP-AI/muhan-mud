@@ -1,5 +1,28 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: post-game digest mismatch localized to ordinary runtime state
+
+Frozen `32ea9fd` run `/tmp/muhan-local-stack.f513IS/result.json`, console
+`/tmp/muhan-post-game-fields.log`, reproduced the unchanged SHA assertion.
+Native ABI metadata reports equal length and changed fields exactly
+`fd`, `lasttime`, `parent_rom`; password and other named creature fields
+are unchanged. This diagnostic reports names/booleans only, never values.
+TypeScript and scoped diff checks pass. Whole suite is still 1 PASS / 1 FAIL.
+
+Source corroboration: player.c:110-111 sets save time/interval; :126-130
+rebases all 45 timer timestamps on admission; :395-397 accumulates online
+hours; :627-639 can update the healing timer while HP/MP stay capped.
+room.c sets/clears parent_rom and admission assigns fd. Normal gameplay
+therefore does not promise original raw-byte identity. The prior socket
+claim-only exact preservation assertion still passes and must stay.
+
+Next: TDD a separate post-game invariant: preserve all non-runtime bytes
+(including credentials, padding and serialized inventory), verify bounded
+timer changes rather than masking the entire timer array, and require the
+new file digest to match its authoritative head/receipt. Do not replace the
+failing hash assertion with merely a password check. No production code,
+assertion relaxation, push, CI, or deployment in this investigation.
+
 ## Latest: JSON claims bootstrap fixed; both browser game paths pass
 
 `7be3d7d` diagnostics showed provisioning `finalized|finalized|active` but
