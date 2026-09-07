@@ -528,3 +528,5 @@ for pass in 1 2; do
 done
 run_super --file=/workspace/supabase/tests/bank_snapshot_v1_payload_contract.sql
 echo 'GREEN complete bank payload persistence contract'
+BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
+  node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-payload-local-pg.mjs"
