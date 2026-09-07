@@ -2,6 +2,17 @@
 
 ## Backup/restore gate — valid fixture passed
 
+Restored operation checks at `026b8d3` pass as well (full runner exit 0).
+Log: `/tmp/muhan-restored-runtime-contract.log`. Under the restored database's
+reader session identities, full-payload SELECT remains available without DML,
+while metadata-only reader cannot SELECT payload. These checks use session
+authorization in the isolated fixture, not new external authentication proof.
+Under writer session identity and writer role, manifest/artifact/projection RPCs
+all return EXACT_RETRY for the original immutable command. Complete JSON-row
+fingerprints remain identical after those retries across six private relations:
+artifacts, receipts, level projections, manifests, legacy heads, writer epochs.
+All six contain the expected nonempty fixture; no empty-table success is allowed.
+
 Source `a93180b` passes the full Linux conformance/replay/backup runner (exit 0).
 Log: `/tmp/muhan-valid-backup-writer.log`. The negative comparator database is
 left unchanged. A separate empty database receives its schema, then a valid
