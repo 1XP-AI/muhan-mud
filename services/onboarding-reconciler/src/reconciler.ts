@@ -586,8 +586,8 @@ export class OnboardingReconciler {
     if (receipt.state === 'committed') return { observation: { outcome: 'committed' } }
 
     const fingerprint = [
-      receiptFile.device, receiptFile.inode, receiptFile.byteLength, receiptFile.modifiedAtMs, receiptFile.changedAtMs, receiptFile.sha256,
-      playerFile.device, playerFile.inode, playerFile.byteLength, playerFile.modifiedAtMs, playerFile.changedAtMs, playerFile.sha256,
+      receiptFile.device, receiptFile.inode, receiptFile.byteLength, receiptFile.sha256,
+      playerFile.device, playerFile.inode, playerFile.byteLength, playerFile.sha256,
     ].join(':')
     if (cachedFingerprint === fingerprint) return { observation: { outcome: 'reconciled' }, successfulFingerprint: fingerprint }
     const observation = this.recoverSavedReceiptHandoffs

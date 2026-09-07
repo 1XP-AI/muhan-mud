@@ -301,6 +301,28 @@ test('saved reconciliation calls the exact service RPC once per exact receipt/pl
   assert.equal((calls[0]?.init?.headers as Record<string, string>).authorization, 'Bearer test-service-key')
 })
 
+test('saved reconciliation caches a verified receipt/player identity despite timestamp drift', async (t) => {
+  const data = await fixture()
+  t.after(data.cleanup)
+  const realFs = new NodeReconcilerFilesystem()
+  let timestampDrift = 0
+  const fs: ReconcilerFilesystem = {
+    assertSafeDirectory: (path) => realFs.assertSafeDirectory(path),
+    listReceiptEntries: (path) => realFs.listReceiptEntries(path),
+    readSmallRegularFile: (path, maxBytes) => realFs.readSmallRegularFile(path, maxBytes),
+    sha256RegularFile: async (path, maxBytes) => {
+      const file = await realFs.sha256RegularFile(path, maxBytes)
+      timestampDrift++
+      return { ...file, modifiedAtMs: file.modifiedAtMs + timestampDrift, changedAtMs: file.changedAtMs + timestampDrift }
+    },
+  }
+  let calls = 0
+  const service = reconciler(data.home, async () => { calls++; return rpcResponse() }, { fs })
+  assert.deepEqual(statuses(await service.runOnce()), ['reconciled'])
+  assert.deepEqual(statuses(await service.runOnce()), ['reconciled'])
+  assert.equal(calls, 1)
+})
+
 test('opt-in saved-receipt recovery finalizes evidence before activation and forwards the returned mode across handoff retry states', async (t) => {
   for (const mode of ['provision', 'claim'] as const) {
     const data = await fixture()
