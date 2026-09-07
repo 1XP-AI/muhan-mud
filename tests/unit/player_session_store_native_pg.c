@@ -114,6 +114,15 @@ int main(int argc,char **argv)
         assert(!strcmp(peer.fields[5],"c9300000-0000-0000-0000-000000000002"));
         assert(!memcmp(&detached,&before,sizeof(detached))&&detached.gold==202);
         assert(!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
+        /* The newer state now uses its own command and the adopted DB base. */
+        assert(savegame_nomsg(&detached)==PLAYER_STORE_OK);
+        assert(peer.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&peer.committed_revision==2);
+        assert(!strcmp(peer.fields[6],"1"));
+        assert(savegame_nomsg(&detached)==PLAYER_STORE_OK&&peer.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+        assert(player_session_registry_remove(&registry,&peer)!=0);
+        assert(!player_session_store_finish_pending(&peer,"c9300000-0000-0000-0000-000000000003"));
+        assert(!peer.pending&&!strcmp(peer.fields[6],"2"));
+        assert(!memcmp(&detached,&before,sizeof(detached))&&!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
         free(expected);
         player_snapshot_v1_free_clone(p);
     }
