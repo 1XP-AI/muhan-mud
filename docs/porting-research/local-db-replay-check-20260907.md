@@ -187,3 +187,30 @@ Logs: `/tmp/muhan-db-replay-check.log`,
 `/tmp/muhan-db-replay-realpath-check.log`.
 The harness removes temporary artifact directories on exit; its current cleanup
 therefore limits post-failure inspection. Frozen sources and compile outputs remain.
+# Bank shadow gates and full local replay acceptance
+
+Frozen source `e7aabc0` passed the complete local runner (exit 0), log:
+`/tmp/muhan-bank-contract-complete.log`.
+
+- Relay tests: 163 passed, 0 failed; separate artifact conformance: 1 passed.
+- Native bank snapshot and artifact tests passed.
+- PostgreSQL 17 bank topology and root-value contracts passed, including
+  rejected malformed topology, exact retries, immutable value mismatch and
+  signed-i64 minimum value.
+- Existing read-only replay-reader and comparator contracts passed.
+- Canonical and nested-inventory backup/restore full-row fingerprints matched;
+  restored payloads passed actual C clone roundtrip and digest-bound Rust replay
+  with 0 and 5 inventory nodes respectively.
+
+The bank SQL tests needed actual-execution repairs: psql values cannot be
+expanded inside dollar-quoted bodies; writer-only RPC identity cannot directly
+SELECT private evidence tables; the minimum signed integer must be parsed as
+a signed string to avoid an overflowing positive intermediate cast. A UUID
+typo introduced during the first repair was also corrected. RPC calls still
+run as `mud_writer_login`/`mud_writer`; only evidence inspection runs as the
+disposable test administrator. No production permissions were widened.
+
+This proves bank *shadow evidence* contracts, not canonical bank payload
+persistence or restoration. Bank payload loading and the broader authoritative
+DB migration remain outstanding. All execution was local Docker, with no new
+image build, Actions dispatch, host ports, production database or deployment.
