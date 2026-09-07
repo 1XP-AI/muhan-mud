@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { sql } from './sql-transport.js'
 import test from 'node:test'
+import { createHash } from 'node:crypto'
+import { createBatchIdentity } from '../../services/character-inventory-importer/src/batch-identity.js'
+import { importBatch } from '../../services/character-inventory-importer/src/inventory.js'
+import { PostgresImportStore } from '../../services/character-inventory-importer/src/postgres-store.js'
 import fixture from '../fixtures/admission_identity_conformance_v1.json' with { type: 'json' }
 import { loadConfig } from '../../services/gateway/src/config.js'
 import {
@@ -52,14 +56,27 @@ test('shared admission evidence reaches the real Gateway-to-RPC boundary on disp
   // behavior under test below is the Gateway's production narrow transport,
   // which reaches PostgREST as service_role and cannot use table CRUD.
   await sql(`insert into auth.users (id) values ('${fixture.actorUserId}'::uuid) on conflict (id) do nothing;`)
-  await sql(`insert into public.game_characters (
-    id, world_id, legacy_name, legacy_name_key, legacy_shard, lifecycle,
-    storage_format, imported_file_sha256
-  ) values (
-    '${fixture.characterId}'::uuid, '${fixture.worldId}', '${fixture.canonicalName}',
-    '${fixture.canonicalName}', '${fixture.legacyShard}', 'imported_unclaimed', 1,
-    '${fixture.playerFileSha256}'
-  );`)
+  // Current claims require importer provenance. This remains a synthetic
+  // Gateway/RPC tuple contract; the separate full-stack test creates C files.
+  assert.ok(process.env.STACK_E2E_DATABASE_URL)
+  const importer = new PostgresImportStore(process.env.STACK_E2E_DATABASE_URL)
+  const source = Buffer.from(JSON.stringify(fixture))
+  try {
+    const admitted = await importBatch(importer, [{
+      name: fixture.canonicalName, canonicalNameKey: fixture.canonicalName,
+      relativePath: `player/${fixture.legacyShard}/${fixture.canonicalName}`,
+      observedShard: fixture.legacyShard, expectedShard: fixture.legacyShard,
+      byteSize: 1, sha256: fixture.playerFileSha256,
+    }], {
+      identity: createBatchIdentity({ worldId: fixture.worldId,
+        sourceManifestId: 'admission-conformance-v1', sourceSha256: createHash('sha256').update(source).digest('hex'),
+        sourceByteSize: source.length, parserVersion: '1.0.0', abi: 1, startMarker: 'start', endMarker: 'end' }),
+      streamId: 'admission-conformance', sequence: 0, apply: true,
+    })
+    assert.equal(admitted.inserted, 1)
+  } finally { await importer.close() }
+  const characterId = await sql(`select id from public.game_characters where world_id = '${fixture.worldId}' and legacy_name_key = '${fixture.canonicalName}'`)
+  assert.match(characterId, /^[0-9a-f-]{36}$/)
   await sql(`select status from public.begin_game_character_onboarding(
     '${fixture.actorUserId}'::uuid, '${fixture.correlationId}'::uuid, 'claim',
     clock_timestamp() + interval '10 minutes'
@@ -73,7 +90,7 @@ test('shared admission evidence reaches the real Gateway-to-RPC boundary on disp
   const request = {
     actorUserId: fixture.actorUserId,
     correlationId: fixture.correlationId,
-    characterId: fixture.characterId,
+    characterId,
     mode: 'claim' as const,
     worldId: fixture.worldId,
     evidence: evidence(),
@@ -81,8 +98,8 @@ test('shared admission evidence reaches the real Gateway-to-RPC boundary on disp
 
   await gatewayFinalizer.finalize(request)
   assert.equal(await sql(`select lifecycle || '|' || owner_user_id || '|' || imported_file_sha256
-    from public.game_characters where id = '${fixture.characterId}'::uuid;`),
-  `active|${fixture.actorUserId}|${fixture.playerFileSha256}`,
+    from public.game_characters where id = '${characterId}'::uuid;`),
+  `handoff_pending|${fixture.actorUserId}|${fixture.playerFileSha256}`,
   'accepted canonical evidence must bind the fixture actor and durable file fingerprint')
   assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_shard || '|' || player_file_sha256
     from private.game_character_legacy_identity_evidence
@@ -91,7 +108,7 @@ test('shared admission evidence reaches the real Gateway-to-RPC boundary on disp
   'the SQL ledger must contain exactly the shared canonical tuple')
 
   // The real HTTP transport must accept a finalizer replay after the lifecycle
-  // is active, while a same-correlation tuple conflict remains fail closed.
+  // is handoff_pending, while a same-correlation tuple conflict remains fail closed.
   await gatewayFinalizer.finalize(request)
   await assert.rejects(
     () => gatewayFinalizer.finalize({ ...request, evidence: evidence(fixture.mismatchPlayerFileSha256) }),
@@ -100,9 +117,11 @@ test('shared admission evidence reaches the real Gateway-to-RPC boundary on disp
   assert.equal(await sql(`select lifecycle || '|' || (select player_file_sha256
     from private.game_character_legacy_identity_evidence
     where correlation_id = '${fixture.correlationId}'::uuid)
-    from public.game_characters where id = '${fixture.characterId}'::uuid;`),
-  `active|${fixture.playerFileSha256}`,
-  'a rejected conflicting tuple must not mutate active ownership or immutable evidence')
+    from public.game_characters where id = '${characterId}'::uuid;`),
+  `handoff_pending|${fixture.playerFileSha256}`,
+  'a rejected conflicting tuple must not mutate pending ownership or immutable evidence')
+  assert.equal(await sql(`select status from private.game_character_onboarding_handoffs where correlation_id = '${fixture.correlationId}'`), 'pending',
+    'evidence alone must not bypass C handoff activation')
 
   // Non-ok outcomes are rejected by the SQL RPC itself, not merely filtered by
   // the Gateway client. The runner invokes it as service_role and confirms no

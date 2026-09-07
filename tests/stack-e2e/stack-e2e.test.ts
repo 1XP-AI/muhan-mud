@@ -316,8 +316,13 @@ async function createDisposableLegacyPlayer(port: number, name: string): Promise
   let transcript = ''
   socket.on('data', (data: Buffer) => { transcript = `${transcript}${data.toString('utf8')}`.slice(-16_000) })
   await once(socket, 'connect')
-  const expect = async (pattern: RegExp): Promise<void> => eventually(() => assert.match(transcript, pattern))
+  const expect = async (pattern: RegExp): Promise<void> => {
+    await eventually(() => assert.match(transcript, pattern))
+    transcript = ''
+  }
   try {
+    await expect(/엔터/)
+    socket.write('\n')
     await expect(/당신의 이름은 무엇입니까/)
     socket.write(`${name}\n`)
     await expect(/하시겠습니까/)
