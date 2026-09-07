@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { PlayerSnapshotV1ArtifactEvidence } from './player-snapshot-v1-artifact.js'
+import type { PlayerSnapshotV1ReceiptBoundArtifactEvidence } from './player-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1NormalizedProjection } from './player-snapshot-v1-normalized-projection.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -11,9 +11,11 @@ const MIN_I64 = -9_223_372_036_854_775_808n
 const MAX_U8 = 255
 const MAX_U32 = 4_294_967_295n
 const MAX_ITEMS = 8_192
+const MAX_DEPTH = 64
+const MAX_LIST_ITEMS = 4_096
 
 const ARTIFACT_FIELDS = [
-  'canonicalNameHex', 'characterId', 'commandId', 'payload', 'requestSha256', 'snapshotFormat', 'snapshotOctets',
+  'canonicalNameHex', 'characterId', 'commandId', 'payload', 'receiptRequestSha256', 'snapshotFormat', 'snapshotOctets',
   'snapshotSha256', 'sourceOctets', 'sourcePostSha256', 'storageFormat', 'worldId', 'writerEpoch', 'writerInstanceId', 'writerRevision',
 ]
 const RECORD_FIELDS = [
@@ -103,7 +105,7 @@ function positiveI64(value: unknown): value is string {
   try { return BigInt(value) <= MAX_I64 } catch { return false }
 }
 
-function closedArtifact(value: unknown): value is PlayerSnapshotV1ArtifactEvidence {
+function closedArtifact(value: unknown): value is PlayerSnapshotV1ReceiptBoundArtifactEvidence {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const artifact = value as Record<string, unknown>
   return exactlyKeys(artifact, ARTIFACT_FIELDS)
@@ -111,7 +113,7 @@ function closedArtifact(value: unknown): value is PlayerSnapshotV1ArtifactEviden
     && typeof artifact.characterId === 'string' && UUID_RE.test(artifact.characterId)
     && typeof artifact.commandId === 'string' && UUID_RE.test(artifact.commandId)
     && typeof artifact.canonicalNameHex === 'string' && /^(?:[0-9a-f]{2}){1,14}$/.test(artifact.canonicalNameHex)
-    && typeof artifact.requestSha256 === 'string' && HASH_RE.test(artifact.requestSha256)
+    && typeof artifact.receiptRequestSha256 === 'string' && HASH_RE.test(artifact.receiptRequestSha256)
     && typeof artifact.sourcePostSha256 === 'string' && HASH_RE.test(artifact.sourcePostSha256)
     && typeof artifact.writerInstanceId === 'string' && UUID_RE.test(artifact.writerInstanceId)
     && positiveI64(artifact.writerEpoch) && positiveI64(artifact.writerRevision) && positiveI64(artifact.storageFormat)
@@ -150,6 +152,7 @@ function closedProjection(value: unknown): value is PlayerSnapshotV1NormalizedPr
       || !integer(value.lastUsed, MIN_I64, MAX_I64) || !integer(value.misc, -32768n, 32767n)) return false
   }
   const childCounts = new Uint16Array(player.items.length)
+  const depth = new Uint8Array(player.items.length)
   const ancestors: number[] = []
   let roots = 0
   for (const [index, item] of player.items.entries()) {
@@ -163,16 +166,23 @@ function closedProjection(value: unknown): value is PlayerSnapshotV1NormalizedPr
       || !integer(value.pdice, -32768n, 32767n) || !integer(value.armor, -128n, 127n) || !integer(value.wearFlag, -128n, 127n)
       || !integer(value.magicPower, -128n, 127n) || !integer(value.magicRealm, -128n, 127n) || !integer(value.special, -32768n, 32767n)) return false
     let expected: number
-    if (value.parentIndex === null) { ancestors.length = 0; expected = roots++ }
+    if (value.parentIndex === null) {
+      ancestors.length = 0
+      expected = roots++
+      depth[index] = 1
+      if (roots > MAX_LIST_ITEMS) return false
+    }
     else {
       if (typeof value.parentIndex !== 'number' || !Number.isSafeInteger(value.parentIndex) || value.parentIndex >= index) return false
       const ancestor = ancestors.lastIndexOf(value.parentIndex)
       if (ancestor < 0) return false
       ancestors.length = ancestor + 1
+      depth[index] = depth[value.parentIndex]! + 1
       expected = childCounts[value.parentIndex]!
       childCounts[value.parentIndex]++
+      if (childCounts[value.parentIndex]! > MAX_LIST_ITEMS) return false
     }
-    if (typeof value.childIndex !== 'number' || value.childIndex !== expected || roots > 4096) return false
+    if (typeof value.childIndex !== 'number' || value.childIndex !== expected || depth[index]! > MAX_DEPTH) return false
     ancestors.push(index)
   }
   return canonicalPlayerSnapshotV1NormalizedProjectionDigest(player as PlayerSnapshotV1NormalizedProjection['player']) === projection.canonicalDigest
@@ -231,7 +241,7 @@ export async function comparePlayerSnapshotV1NormalizedProjectionShadow(
   const record = rows[0]
   if (!closedRecord(record)) return 'INVALID_RECORD'
   if (record.worldId !== artifact.worldId || record.characterId !== artifact.characterId || record.commandId !== artifact.commandId
-    || record.receiptRequestSha256 !== artifact.requestSha256 || record.writerInstanceId !== artifact.writerInstanceId
+    || record.receiptRequestSha256 !== artifact.receiptRequestSha256 || record.writerInstanceId !== artifact.writerInstanceId
     || record.writerEpoch !== artifact.writerEpoch || record.writerRevision !== artifact.writerRevision
     || record.sourcePostSha256 !== artifact.sourcePostSha256 || record.sourceOctets !== artifact.sourceOctets
     || record.snapshotSha256 !== artifact.snapshotSha256 || record.snapshotOctets !== artifact.snapshotOctets) return 'EVIDENCE_MISMATCH'

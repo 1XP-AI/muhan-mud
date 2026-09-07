@@ -7,7 +7,8 @@ import { test } from 'node:test'
 import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { projectPlayerSnapshotV1Normalized, type PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
 import { comparePlayerSnapshotV1NormalizedProjectionShadow } from '../src/player-snapshot-v1-normalized-projection-shadow-comparator.js'
-import { parsePlayerSnapshotV1ArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
+import { parsePlayerSnapshotV1ArtifactEvidence, parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
+import { parseManifest } from '../src/manifest.js'
 
 const commandId = '11111111-1111-4111-8111-111111111111'
 const characterId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -86,9 +87,10 @@ test('hermetic post-save shadow proof binds the C artifact projection to one inj
   const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
   const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
   const derived = await projectPlayerSnapshotV1Normalized(payload, { runnerPath, snapshotSha256 })
-  const evidence = parsePlayerSnapshotV1ArtifactEvidence(artifact(payload, snapshotSha256))
+  const filename = `${commandId}.player-snapshot-v1`
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(filename, artifact(payload, snapshotSha256), parseManifest(receipt()))
   const record = {
-    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: requestSha256,
+    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: evidence.receiptRequestSha256,
     writerInstanceId: evidence.writerInstanceId, writerEpoch: evidence.writerEpoch, writerRevision: evidence.writerRevision,
     sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: payload.length, projection: derived,
   }
@@ -97,4 +99,20 @@ test('hermetic post-save shadow proof binds the C artifact projection to one inj
   }, {
     project: (receivedPayload, receivedSha256) => projectPlayerSnapshotV1Normalized(receivedPayload, { runnerPath, snapshotSha256: receivedSha256 }),
   }), 'MATCH')
+})
+
+test('raw native evidence and filename or receipt mismatches cannot reach a shadow MATCH', async () => {
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const wrapped = artifact(payload, snapshotSha256)
+  const rawEvidence = parsePlayerSnapshotV1ArtifactEvidence(wrapped)
+  let reads = 0
+  assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(rawEvidence, {
+    findByCommandId: async () => { reads++; return [] },
+  }, { project: async () => { throw new Error('must not derive raw evidence') } }), 'INVALID_ARTIFACT')
+  assert.equal(reads, 0, 'unbound native evidence cannot reach the reader or MATCH')
+  assert.throws(
+    () => parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`22222222-2222-4222-8222-222222222222.player-snapshot-v1`, wrapped, parseManifest(receipt())),
+    /invalid PlayerSnapshotV1 artifact/,
+  )
 })

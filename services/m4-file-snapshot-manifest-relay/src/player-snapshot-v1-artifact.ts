@@ -50,6 +50,29 @@ export interface PlayerSnapshotV1ArtifactEvidence {
   payload: Uint8Array
 }
 
+/**
+ * Native evidence whose filename and immutable manifest receipt were verified
+ * against its header. This is the only full-evidence shape accepted by the
+ * normalized-projection shadow comparator.
+ */
+export interface PlayerSnapshotV1ReceiptBoundArtifactEvidence {
+  worldId: string
+  characterId: string
+  commandId: string
+  canonicalNameHex: string
+  receiptRequestSha256: string
+  sourcePostSha256: string
+  writerInstanceId: string
+  writerEpoch: string
+  writerRevision: string
+  storageFormat: string
+  snapshotFormat: typeof PLAYER_SNAPSHOT_V1_FORMAT
+  sourceOctets: string
+  snapshotSha256: string
+  snapshotOctets: number
+  payload: Uint8Array
+}
+
 export class InvalidPlayerSnapshotV1ArtifactError extends Error {
   constructor() { super('invalid PlayerSnapshotV1 artifact') }
 }
@@ -189,6 +212,53 @@ export function parsePlayerSnapshotV1ArtifactEvidence(bytes: Uint8Array): Player
   }
 }
 
+function assertReceiptBoundPlayerSnapshotV1Evidence(
+  filename: string,
+  evidence: PlayerSnapshotV1ArtifactEvidence,
+  receipt: Manifest,
+): void {
+  const commandId = commandFromPlayerSnapshotV1Filename(filename)
+  if (!commandId || commandId !== receipt.commandId || evidence.worldId !== receipt.worldId
+    || evidence.characterId !== receipt.characterId || evidence.commandId !== receipt.commandId
+    || evidence.canonicalNameHex !== receipt.canonicalNameHex || evidence.requestSha256 !== receipt.requestSha256
+    || evidence.sourcePostSha256 !== receipt.postSha256 || evidence.writerInstanceId !== receipt.writerInstanceId
+    || evidence.writerEpoch !== receipt.writerEpoch || evidence.writerRevision !== receipt.writerRevision
+    || evidence.storageFormat !== String(receipt.storageFormat) || evidence.sourceOctets !== receipt.snapshotOctets) {
+    throw new InvalidPlayerSnapshotV1ArtifactError()
+  }
+}
+
+/**
+ * Parses native evidence only after binding its filename and manifest receipt
+ * to the native header, retaining the immutable identity required by shadow
+ * comparison without giving raw header evidence receipt authority.
+ */
+export function parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(
+  filename: string,
+  bytes: Uint8Array,
+  receipt: Manifest,
+): PlayerSnapshotV1ReceiptBoundArtifactEvidence {
+  const evidence = parsePlayerSnapshotV1ArtifactEvidence(bytes)
+  assertReceiptBoundPlayerSnapshotV1Evidence(filename, evidence, receipt)
+  return {
+    worldId: evidence.worldId,
+    characterId: evidence.characterId,
+    commandId: evidence.commandId,
+    canonicalNameHex: evidence.canonicalNameHex,
+    receiptRequestSha256: evidence.requestSha256,
+    sourcePostSha256: evidence.sourcePostSha256,
+    writerInstanceId: evidence.writerInstanceId,
+    writerEpoch: evidence.writerEpoch,
+    writerRevision: evidence.writerRevision,
+    storageFormat: evidence.storageFormat,
+    snapshotFormat: evidence.snapshotFormat,
+    sourceOctets: evidence.sourceOctets,
+    snapshotSha256: evidence.snapshotSha256,
+    snapshotOctets: evidence.snapshotOctets,
+    payload: evidence.payload,
+  }
+}
+
 /**
  * Parses native evidence and then binds it to the independently persisted
  * legacy receipt selected by the immutable artifact filename.
@@ -198,21 +268,11 @@ export function parsePlayerSnapshotV1Artifact(
   bytes: Uint8Array,
   receipt: Manifest,
 ): PlayerSnapshotV1Artifact {
-  const commandId = commandFromPlayerSnapshotV1Filename(filename)
-  if (!commandId) throw new InvalidPlayerSnapshotV1ArtifactError()
-  const evidence = parsePlayerSnapshotV1ArtifactEvidence(bytes)
-  if (commandId !== receipt.commandId || evidence.worldId !== receipt.worldId
-    || evidence.characterId !== receipt.characterId || evidence.commandId !== receipt.commandId
-    || evidence.canonicalNameHex !== receipt.canonicalNameHex || evidence.requestSha256 !== receipt.requestSha256
-    || evidence.sourcePostSha256 !== receipt.postSha256 || evidence.writerInstanceId !== receipt.writerInstanceId
-    || evidence.writerEpoch !== receipt.writerEpoch || evidence.writerRevision !== receipt.writerRevision
-    || evidence.storageFormat !== String(receipt.storageFormat) || evidence.sourceOctets !== receipt.snapshotOctets) {
-    throw new InvalidPlayerSnapshotV1ArtifactError()
-  }
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(filename, bytes, receipt)
   return {
     characterId: evidence.characterId,
     commandId: evidence.commandId,
-    receiptRequestSha256: evidence.requestSha256,
+    receiptRequestSha256: evidence.receiptRequestSha256,
     sourcePostSha256: evidence.sourcePostSha256,
     sourceOctets: evidence.sourceOctets,
     snapshotFormat: evidence.snapshotFormat,

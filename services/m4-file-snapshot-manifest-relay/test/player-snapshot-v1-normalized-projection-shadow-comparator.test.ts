@@ -6,7 +6,7 @@ import {
   comparePlayerSnapshotV1NormalizedProjectionShadow,
   type ImmutablePlayerSnapshotV1NormalizedProjectionRecordReader,
 } from '../src/player-snapshot-v1-normalized-projection-shadow-comparator.js'
-import type { PlayerSnapshotV1ArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
+import type { PlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
 import type { PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
 
 const commandId = '11111111-1111-4111-8111-111111111111'
@@ -25,10 +25,10 @@ const projection: PlayerSnapshotV1NormalizedProjection = {
   canonicalDigest: canonicalPlayerSnapshotV1NormalizedProjectionDigest(player), player,
 }
 
-function artifact(): PlayerSnapshotV1ArtifactEvidence {
+function artifact(): PlayerSnapshotV1ReceiptBoundArtifactEvidence {
   const payload = Buffer.alloc(48, 1)
   return {
-    worldId: 'muhan-01', characterId, commandId, canonicalNameHex: '4d3341', requestSha256: 'a'.repeat(64),
+    worldId: 'muhan-01', characterId, commandId, canonicalNameHex: '4d3341', receiptRequestSha256: 'a'.repeat(64),
     sourcePostSha256: 'b'.repeat(64), writerInstanceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     writerEpoch: '7', writerRevision: '9', storageFormat: '1', snapshotFormat: 'player-snapshot-v1',
     sourceOctets: '123', snapshotSha256: createHash('sha256').update(payload).digest('hex'), snapshotOctets: payload.length, payload,
@@ -39,7 +39,7 @@ function record(overrides: Record<string, unknown> = {}): Record<string, unknown
   const source = artifact()
   return {
     worldId: source.worldId, characterId: source.characterId, commandId: source.commandId,
-    receiptRequestSha256: source.requestSha256, writerInstanceId: source.writerInstanceId,
+    receiptRequestSha256: source.receiptRequestSha256, writerInstanceId: source.writerInstanceId,
     writerEpoch: source.writerEpoch, writerRevision: source.writerRevision,
     sourcePostSha256: source.sourcePostSha256, sourceOctets: source.sourceOctets,
     snapshotSha256: source.snapshotSha256, snapshotOctets: source.snapshotOctets,
@@ -98,4 +98,47 @@ test('fails closed when the immutable evidence or derived projection is invalid,
   assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
     findByCommandId: async () => { throw new Error('reader failure') },
   }, { project: async () => projection }), 'RECORD_READ_ERROR')
+})
+
+function item(parentIndex: number | null, childIndex: number): PlayerSnapshotV1NormalizedProjection['player']['items'][number] {
+  return {
+    parentIndex, childIndex, value: 7n, weight: 8, typeCode: 9, adjustment: 10,
+    shotsMax: 11, shotsCurrent: 10, ndice: 12, sdice: 13, pdice: 14, armor: 15,
+    wearFlag: 16, magicPower: 17, magicRealm: 18, special: 19,
+  }
+}
+
+function topologyProjection(items: PlayerSnapshotV1NormalizedProjection['player']['items']): PlayerSnapshotV1NormalizedProjection {
+  const value = { ...player, items }
+  return projected(value)
+}
+
+test('rejects Rust-invalid depth-65 and 4,097-item root or child lists before a comparison can match', async () => {
+  const cases: Array<[string, PlayerSnapshotV1NormalizedProjection]> = [
+    ['depth 65', topologyProjection(Array.from({ length: 65 }, (_, index) => item(index === 0 ? null : index - 1, 0)))],
+    ['4,097 roots', topologyProjection(Array.from({ length: 4097 }, (_, index) => item(null, index)))],
+    ['4,097 children', topologyProjection([item(null, 0), ...Array.from({ length: 4097 }, (_, index) => item(0, index))])],
+  ]
+  for (const [name, malformed] of cases) {
+    let reads = 0
+    const result = await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
+      findByCommandId: async () => { reads++; return [record({ projection: malformed })] },
+    }, { project: async () => malformed })
+    assert.equal(result, 'PROJECTION_DERIVATION_FAILED', name)
+    assert.equal(reads, 0, `${name} must fail before comparison can reach MATCH`)
+  }
+})
+
+test('preserves valid Rust topology boundaries: depth 64 and 4,096 roots or children', async () => {
+  const cases: Array<[string, PlayerSnapshotV1NormalizedProjection]> = [
+    ['depth 64', topologyProjection(Array.from({ length: 64 }, (_, index) => item(index === 0 ? null : index - 1, 0)))],
+    ['4,096 roots', topologyProjection(Array.from({ length: 4096 }, (_, index) => item(null, index)))],
+    ['4,096 children', topologyProjection([item(null, 0), ...Array.from({ length: 4096 }, (_, index) => item(0, index))])],
+  ]
+  for (const [name, bounded] of cases) {
+    const result = await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), reader([record({ projection: bounded })]), {
+      project: async () => bounded,
+    })
+    assert.equal(result, 'MATCH', name)
+  }
 })
