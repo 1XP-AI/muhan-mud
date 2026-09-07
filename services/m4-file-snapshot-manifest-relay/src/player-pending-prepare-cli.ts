@@ -1,5 +1,6 @@
-// Internal durable record helper, not per-character authority/fencing.
-import {preparePlayerPending} from './player-pending-request.js'
+// New senders must share one private pending directory for both operations.
+import {preparePlayerPending,claimPlayerCharacterFence,visitPlayerPending} from './player-pending-request.js'
+import {visitMoneyPending} from './money-pending-request.js'
 async function main() {
   const [mode,root,...args]=process.argv.slice(2)
   if(mode!=='--prepare'||!root||args.length!==8) throw new Error('invalid player preparation')
@@ -10,6 +11,17 @@ async function main() {
     chunks.push(bytes)
   }
   const payload=Buffer.concat(chunks)
+  let conflict=false
+  const playersTruncated=await visitPlayerPending(root,async r=>{
+    if(!r) {conflict=true;return}
+    if(r.args[0]===args[0]&&r.args[4]===args[4]
+       &&(JSON.stringify(r.args)!==JSON.stringify(args)||!r.payload.equals(payload))) conflict=true
+  })
+  const moneyTruncated=await visitMoneyPending(root,async r=>{
+    if(!r||(r.args[1]===args[0]&&r.args[0]===args[4])) conflict=true
+  },1000,true)
+  if(conflict||playersTruncated||moneyTruncated) throw new Error('pending recovery required')
+  await claimPlayerCharacterFence(root,args,payload)
   await preparePlayerPending(root,args,payload)
   process.stdout.write(payload)
 }

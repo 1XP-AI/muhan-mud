@@ -2,9 +2,8 @@
 // independently confirmed commit/retry is reconciled; never rewrite on retry.
 import {constants} from 'node:fs'
 import {open,link,unlink,opendir} from 'node:fs/promises'
-import {spawnSync} from 'node:child_process'
 import {createHash,randomUUID} from 'node:crypto'
-import {pendingDirectory as directory,readPendingBytes,publishPendingBytes} from './pending-record-store.js'
+import {pendingDirectory as directory,readPendingBytes,publishPendingBytes,characterPendingLock as moneyLock,requirePendingAbsent} from './pending-record-store.js'
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const hash=(body:string)=>createHash('sha256').update(body).digest('hex')
 function validate(args:string[],frame:Buffer):void {
@@ -45,21 +44,6 @@ export async function readMoneyPending(root:string,command:string) {
   try { return (await readAt(`/proc/self/fd/${dir.fd}`,command)).result }
   finally { await dir.close() }
 }
-async function moneyLock(base:string,key:string) {
-  const fd=await open(`${base}/${key}.money-lock`,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600)
-  try {
-    const stat=await fd.stat()
-    if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size!==0) throw new Error('invalid money lock')
-    // Linux flock belongs to the shared open-file description. The child locks
-    // our inherited descriptor, then exits; this FileHandle retains that lock
-    // until close/process death. Never unlink the stable lock inode.
-    const result=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','3'],{
-      stdio:['ignore','ignore','ignore',fd.fd],env:{LANG:'C'},timeout:2000,killSignal:'SIGKILL',
-    })
-    if(result.error||result.status!==0) throw new Error('money lock unavailable')
-    return fd
-  } catch(error) {await fd.close();throw error}
-}
 // Durable reservation plus kernel-owned claim/release exclusion. The lock file
 // remains, but the kernel releases ownership on process death; no age/PID guess.
 // Unlike a directory scan, the exclusive link serializes competing processes.
@@ -71,6 +55,7 @@ export async function claimMoneyCharacterFence(root:string,args:string[],frame:B
   let created=false,lock:Awaited<ReturnType<typeof moneyLock>>|undefined
   try {
     lock=await moneyLock(base,key);await dir.sync()
+    await requirePendingAbsent(base,`${key}.player-fence`)
     try {
       await readRecordAt(base,`${args[7]}.money-resolved`,args[7])
       throw new Error('money command already resolved')

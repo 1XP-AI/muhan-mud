@@ -3,6 +3,7 @@ import {constants} from 'node:fs'
 import {open,link,unlink} from 'node:fs/promises'
 import {isAbsolute} from 'node:path'
 import {randomUUID} from 'node:crypto'
+import {spawnSync} from 'node:child_process'
 const MAX=12*1024*1024
 export async function pendingDirectory(root:string) {
   if(process.platform!=='linux'||!isAbsolute(root)) throw new Error('pending store requires absolute Linux directory')
@@ -33,9 +34,13 @@ export async function readPendingBytes(base:string,name:string):Promise<Buffer> 
   } finally {await fd.close()}
 }
 export async function publishPendingBytes(root:string,name:string,bytes:Buffer):Promise<'PREPARED'|'EXACT_RETRY'> {
+  const dir=await pendingDirectory(root)
+  try {return await publishPendingBytesAt(dir,name,bytes)} finally {await dir.close()}
+}
+export async function publishPendingBytesAt(dir:Awaited<ReturnType<typeof pendingDirectory>>,name:string,bytes:Buffer):Promise<'PREPARED'|'EXACT_RETRY'> {
   filename(name)
   if(bytes.length<1||bytes.length>MAX) throw new Error('invalid record size')
-  const dir=await pendingDirectory(root),base=`/proc/self/fd/${dir.fd}`
+  const base=`/proc/self/fd/${dir.fd}`
   const temp=`${base}/.${randomUUID()}.tmp`;let created=false
   try {
     const fd=await open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
@@ -50,6 +55,28 @@ export async function publishPendingBytes(root:string,name:string,bytes:Buffer):
     await unlink(temp);created=false;await dir.sync();return outcome
   } finally {
     if(created) await unlink(temp).catch(()=>{})
-    await dir.close()
   }
+}
+// Preserve the established money-lock inode for mixed-operation exclusion.
+// Every new sender uses this lock; old unfenced senders must be stopped first.
+export async function characterPendingLock(base:string,key:string) {
+  if(!/^[0-9a-f]{64}$/.test(key)) throw new Error('invalid character lock key')
+  const fd=await open(`${base}/${key}.money-lock`,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600)
+  try {
+    const stat=await fd.stat()
+    if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size!==0) throw new Error('invalid money lock')
+    // Inherited open-file description retains flock until parent close/death.
+    // Never unlink this inode, remove another process's lock, or guess by age.
+    const result=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','3'],{
+      stdio:['ignore','ignore','ignore',fd.fd],env:{LANG:'C'},timeout:2000,killSignal:'SIGKILL',
+    })
+    if(result.error||result.status!==0) throw new Error('money lock unavailable')
+    return fd
+  } catch(error) {await fd.close();throw error}
+}
+export async function requirePendingAbsent(base:string,name:string) {
+  try {
+    await readPendingBytes(base,name)
+    throw new Error('character has another pending operation')
+  } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
 }
