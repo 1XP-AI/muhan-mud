@@ -547,7 +547,10 @@ done
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"
-run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex")" --file=/workspace/supabase/tests/replay_backup_valid_seed.sql
+# Reuse the fully constrained seed under a separate identity namespace: the
+# historical reader-negative fixtures intentionally already occupy 9500000.
+sed -e 's/9500000/9220000/g' -e 's/backup-contract/paired-baseline/g' "$repo_root/supabase/tests/replay_backup_valid_seed.sql" |
+  run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex")" --file=-
 if run_super --file=/workspace/supabase/tests/paired_snapshot_baseline_contract.sql; then
   echo 'RED unexpectedly passed before paired baseline migration' >&2
   exit 1

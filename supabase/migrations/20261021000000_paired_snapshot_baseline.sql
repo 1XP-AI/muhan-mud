@@ -39,6 +39,8 @@ begin
      or c.lifecycle not in ('active','imported_unclaimed') or c.storage_format<>1
      or r.request_sha256<>p_request or r.world_id<>c.world_id or r.legacy_name_key<>c.legacy_name_key
      or r.storage_format<>c.storage_format
+     or substring(p.payload from 24 for 80) is distinct from
+        (convert_to(c.legacy_name,'UTF8') || decode(repeat('00',greatest(0,80-octet_length(convert_to(c.legacy_name,'UTF8')))),'hex'))
      or h.head_state<>'existing' or h.head_sha256 is distinct from r.post_sha256
      or h.revision<>r.writer_revision or h.writer_epoch is distinct from r.writer_epoch or h.storage_format<>r.storage_format
      or row(p.world_id,p.legacy_name_key,p.receipt_request_sha256,p.writer_instance_id,p.writer_epoch,p.writer_revision,p.source_post_sha256,p.storage_format)

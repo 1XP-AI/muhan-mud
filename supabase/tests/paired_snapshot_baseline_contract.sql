@@ -1,7 +1,7 @@
 \set ON_ERROR_STOP on
 begin;
 do $$
-declare cid uuid:='a9500000-0000-0000-0000-000000000001'; cmd uuid:='c9500000-0000-0000-0000-000000000001';
+declare cid uuid:='a9220000-0000-0000-0000-000000000001'; cmd uuid:='c9220000-0000-0000-0000-000000000001';
   request text; before_state jsonb; result text;
 begin
   select request_sha256 into strict request from private.game_character_shadow_receipts where character_id=cid and command_id=cmd;
