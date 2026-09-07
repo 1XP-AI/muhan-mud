@@ -632,21 +632,40 @@ async function main(): Promise<void> {
     }
     const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config)
     let finalizeObservedSaved = false
+    let completionPhase = 'not-started'
     const onboardingAuthorizer: OnboardingAuthorizer = {
       begin: (request) => actualOnboardingAuthorizer.begin(request),
       cancelUnreserved: (request) => actualOnboardingAuthorizer.cancelUnreserved(request),
       reserve: (request) => actualOnboardingAuthorizer.reserve(request),
       challenge: (request) => actualOnboardingAuthorizer.challenge(request),
       finalize: async (request) => {
+        completionPhase = 'finalize-receipt-check'
         const savedReceipt = await readFile(join(fixture, 'onboarding-receipts', `${request.correlationId}.receipt`), 'utf8')
         assert.match(savedReceipt, /state=saved\n/)
         finalizeObservedSaved = true
-        return actualOnboardingAuthorizer.finalize(request)
+        completionPhase = 'finalize-rpc'
+        const result = await actualOnboardingAuthorizer.finalize(request)
+        completionPhase = 'finalize-ok'
+        return result
       },
-      reconcile: (request) => actualOnboardingAuthorizer.reconcile(request),
+      reconcile: async (request) => {
+        completionPhase = 'reconcile-rpc'
+        const result = await actualOnboardingAuthorizer.reconcile(request)
+        completionPhase = 'reconcile-ok'
+        return result
+      },
       claim: (request) => actualOnboardingAuthorizer.claim(request),
-      activateHandoff: (request) => actualOnboardingAuthorizer.activateHandoff(request),
-      bindSnapshotCommand: (request) => actualOnboardingAuthorizer.bindSnapshotCommand(request),
+      activateHandoff: async (request) => {
+        completionPhase = 'activate-rpc'
+        const result = await actualOnboardingAuthorizer.activateHandoff(request)
+        completionPhase = 'activate-ok'
+        return result
+      },
+      bindSnapshotCommand: async (request) => {
+        completionPhase = 'bind-rpc'
+        await actualOnboardingAuthorizer.bindSnapshotCommand(request)
+        completionPhase = 'bind-ok'
+      },
     }
     gateway = createGateway(config, { authenticator, characterAuthorizer: new SupabaseCharacterAuthorizer(config), onboardingAuthorizer })
     gateway.server.listen(0, '127.0.0.1')
@@ -687,7 +706,12 @@ async function main(): Promise<void> {
       const shards = await readdir(join(fixture, 'player'))
       throw new Error(redact(`first save incomplete; C=${mudDiagnostics}; controls=${JSON.stringify(controls)}; journal=${JSON.stringify(journal)}; stage=${JSON.stringify(stage)}; playerDirectories=${JSON.stringify(shards)}; terminal=${browser.text()}`))
     }
-    await eventually(() => assert.ok(browser.json('provisioned'), redact(`provision completion missing; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`)))
+    try {
+      await eventually(() => assert.ok(browser.json('provisioned')))
+    } catch {
+      const dbState = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || coalesce(h.status, 'none') from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id left join private.game_character_onboarding_handoffs h on h.correlation_id = i.correlation_id where i.correlation_id = '${correlation}'`)
+      throw new Error(redact(`provision completion missing; phase=${completionPhase}; db=${dbState}; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`))
+    }
     assert.equal(finalizeObservedSaved, true)
 
     const player = join(fixture, 'player', createHash('sha1').update(canonicalName).digest('hex').slice(0, 2), canonicalName)
