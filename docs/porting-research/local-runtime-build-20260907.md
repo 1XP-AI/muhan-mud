@@ -2,6 +2,33 @@
 
 ## Latest execution
 
+### Storage diagnosis after the failed build
+
+A read-only container from retained successful test image
+`muhan-local-stack-1788771444-98899:local` reports the Docker filesystem as
+32 GB total, 31 GB used, **0 available / 100%**, with inode usage only 64%.
+Host free space is not evidence of free Docker VM space.
+
+After checking `docker ps -a --filter ancestor=...` returned no users, removed
+only these two older task-created image tags with non-forced image removal:
+
+- `muhan-local-stack-1788771377-97292:local`
+- `muhan-local-stack-1788770502-83305:local`
+
+Both image IDs were removed, but available space still reads zero. The latest
+successful image and all test evidence remain; removed images are rebuildable.
+No shared cache, volume, other project image, or other process was deleted.
+
+Diagnostic apt-get update in the retained test image, with read-only root and
+bounded tmpfs for apt lists/cache and /tmp, passed normal signature verification
+for both arm64 and amd64 package indexes from all three Bookworm repositories.
+This strongly points to storage pressure rather than an unsigned upstream
+repository, but is not a same-image reproduction: the failed production stage
+uses a different base image. Do not claim the production build is fixed.
+Do not repeatedly retry the full build while VM capacity remains zero.
+Next required environment step is additional Docker VM capacity or owner-scoped
+cleanup approved for the remaining storage. Broad cache pruning is not allowed.
+
 The local runtime build ran in session `36085` with source
 `2cfedc036f613fd8c902257aa1125c4222928b5b`. Evidence directory:
 `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/muhan-runtime-build.RNIORD`.
