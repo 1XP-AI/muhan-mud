@@ -600,6 +600,12 @@ fi
 for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261026000000_player_snapshot_save.sql
 done
+if run_super --command="select 'private.reconcile_player_snapshot(text,text,uuid,bigint,uuid,uuid,bigint,text,bytea,uuid,bigint)'::regprocedure"; then
+  echo 'RED unexpectedly passed before player recovery migration' >&2; exit 1
+fi
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261027000000_player_save_reconciliation.sql
+done
 cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --includedir)" \
   -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
   "$repo_root/src/bank_money_read_native.c" "$repo_root/tests/unit/bank_money_read_native_pg.c" \

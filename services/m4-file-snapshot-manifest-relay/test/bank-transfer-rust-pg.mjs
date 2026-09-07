@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../dist/money-pending-request.js'
 import {releaseConfirmedMoney} from '../dist/money-pending-release.js'
-import {preparePlayerPending,readPlayerPending} from '../dist/player-pending-request.js'
+import {preparePlayerPending,readPlayerPending,claimPlayerCharacterFence} from '../dist/player-pending-request.js'
+import {recoverPlayerPendingOnce} from '../dist/player-pending-recovery.js'
 import {fileURLToPath} from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
@@ -45,6 +46,8 @@ const recoverySignature='private.reconcile_money_transfer(uuid,text,uuid,uuid,te
 const playerRouteSignature='private.resolve_player_paired_route(text,text,uuid,bigint)'
 const playerLoadSignature='private.read_player_paired_snapshot(text,text,uuid,bigint,uuid,bigint)'
 const playerSaveSignature='private.commit_player_snapshot(text,text,uuid,bigint,uuid,uuid,bigint,text,bytea)'
+const playerRecoverySignature='private.reconcile_player_snapshot(text,text,uuid,bigint,uuid,uuid,bigint,text,bytea,uuid,bigint)'
+const playerRecoverySql='select * from private.reconcile_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)'
 const playerRouteSql='select * from private.resolve_player_paired_route($1,$2,$3,$4)'
 const nativeRoute=values=>{
   assert.ok(process.env.PLAYER_PAIRED_ROUTE_NATIVE?.startsWith('/'))
@@ -59,7 +62,7 @@ const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_R
     ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
   timeout:5000,maxBuffer:9*1024*1024,
 })
-let login
+let login,playerRecoveryRequest
 const read=async()=> (await db.query("select revision::text,player_payload,bank_payload,encode(public.digest(player_payload,'sha256'),'hex') player_hash,encode(public.digest(bank_payload,'sha256'),'hex') bank_hash from private.game_character_paired_snapshot_states where character_id=$1",[id])).rows[0]
 try {
   await db.connect()
@@ -106,6 +109,8 @@ try {
     await db.query(`grant execute on function ${playerLoadSignature} to mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerSaveSignature,'EXECUTE'])).rows[0].allowed,false)
     await db.query(`grant execute on function ${playerSaveSignature} to mud_writer`)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRecoverySignature,'EXECUTE'])).rows[0].allowed,false)
+    await db.query(`grant execute on function ${playerRecoverySignature} to mud_writer`)
     {
       const saveId='a9260000-0000-0000-0000-000000000001',name='Savehero'
       const body=Buffer.from(player.subarray(16,-32));body.fill(0,7,87);body.write(name,7,'utf8')
@@ -115,6 +120,7 @@ try {
       await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[saveId,initial,bank])
       const sql='select * from private.commit_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9)'
       const request=[world,name,writer,'1',saveId,'c9260000-0000-0000-0000-000000000001','0',sha(initial).toString('hex'),changed]
+      playerRecoveryRequest=request
       const nativeSave=(args,expected,root)=>{
         assert.ok(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE?.startsWith('/'))
         const extra=root?[process.execPath,fileURLToPath(new URL('../dist/player-pending-prepare-cli.js',import.meta.url)),root]:[]
@@ -181,6 +187,16 @@ try {
         assert.deepEqual(await state(),latest)
       } finally {await peer.end()}
       assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,2)
+      const recovery=[...request,writer,'1'],stable=await state()
+      assert.deepEqual((await login.query(playerRecoverySql,recovery)).rows,[{outcome:'CONFIRMED',committed_revision:'1'}])
+      await assert.rejects(db.query(playerRecoverySql,recovery),e=>e.code==='P0001')
+      const unknown=[...recovery];unknown[5]='c9270000-0000-0000-0000-000000000099'
+      assert.deepEqual((await login.query(playerRecoverySql,unknown)).rows,[{outcome:'UNRESOLVED',committed_revision:null}])
+      for(const [index,value] of [[3,'2'],[6,'1'],[7,'0'.repeat(64)],[8,playerGold(initial,999n)]]) {
+        const mismatch=[...recovery];mismatch[index]=value
+        await assert.rejects(login.query(playerRecoverySql,mismatch),e=>e.code==='P0001')
+      }
+      assert.deepEqual(await state(),stable)
       await assert.rejects(db.query('delete from private.game_character_player_save_intents where character_id=$1',[saveId]),e=>e.code==='P0001')
       console.log('GREEN general player snapshot save: bank preserved, immutable exact retry, invalid/stale rollback and one concurrent CAS winner')
     }
@@ -507,6 +523,25 @@ try {
     await db.query("update private.game_character_writer_epochs set expires_at=clock_timestamp()-interval '1 millisecond' where world_id=$1",[world])
     const successor='b9240000-0000-0000-0000-000000000001'
     assert.equal((await db.query("select * from private.acquire_game_world_writer_epoch($1,$2,clock_timestamp()+interval '3 minutes')",[world,successor])).rows[0].writer_epoch,'2')
+    {
+      const old=[...playerRecoveryRequest,writer,'1'],current=[...playerRecoveryRequest,successor,'2']
+      await assert.rejects(login.query(playerRecoverySql,old),e=>e.code==='P0001')
+      assert.deepEqual((await login.query(playerRecoverySql,current)).rows,[{outcome:'CONFIRMED',committed_revision:'1'}])
+      const playerState=async()=>(await db.query('select * from private.game_character_paired_snapshot_states where character_id=$1',[playerRecoveryRequest[4]])).rows
+      const before=await playerState(),root=await mkdtemp(join(tmpdir(),'muhan-player-recovery-'))
+      try {
+        await claimPlayerCharacterFence(root,playerRecoveryRequest.slice(0,8),playerRecoveryRequest[8])
+        const expected={confirmed:1,unresolved:0,invalid:0,errors:0,truncated:false}
+        assert.deepEqual(await recoverPlayerPendingOnce(root,world,successor,'2',login),expected)
+        // Fence-only crash evidence and its later request copy count once.
+        await preparePlayerPending(root,playerRecoveryRequest.slice(0,8),playerRecoveryRequest[8])
+        assert.deepEqual(await recoverPlayerPendingOnce(root,world,successor,'2',login),expected)
+        await appendFile(join(root,`${playerRecoveryRequest[5]}.player-request`),'corrupt')
+        assert.deepEqual(await recoverPlayerPendingOnce(root,world,successor,'2',login),{...expected,invalid:1})
+        assert.deepEqual(await playerState(),before)
+      } finally {await rm(root,{recursive:true,force:true})}
+      console.log('GREEN player recovery: successor confirms old request, fence-only discovery deduplicates, corruption preserved, no state replay')
+    }
     const offlineName=(await db.query('select legacy_name from public.game_characters where id=$1',[id])).rows[0].legacy_name
     await assert.rejects(login.query(playerRouteSql,[world,offlineName,writer,1]),e=>e.code==='P0001')
     const offlineRoute=(await login.query(playerRouteSql,[world,offlineName,successor,2])).rows
@@ -574,12 +609,14 @@ try {
     await db.query(`revoke execute on function ${playerRouteSignature} from mud_writer`)
     await db.query(`revoke execute on function ${playerLoadSignature} from mud_writer`)
     await db.query(`revoke execute on function ${playerSaveSignature} from mud_writer`)
+    await db.query(`revoke execute on function ${playerRecoverySignature} from mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRouteSignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerLoadSignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerSaveSignature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRecoverySignature,'EXECUTE'])).rows[0].allowed,false)
   }
   await db.end()
 }
