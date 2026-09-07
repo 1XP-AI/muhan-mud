@@ -15,6 +15,9 @@ RUN npm run build
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
+# Explicit runtime prerequisite for inherited-descriptor money reservation locks.
+RUN apt-get update && apt-get install -y --no-install-recommends util-linux \
+    && test -x /usr/bin/flock
 COPY services/m4-file-snapshot-manifest-relay/package.json services/m4-file-snapshot-manifest-relay/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --from=relay-build /build/services/m4-file-snapshot-manifest-relay/dist ./dist

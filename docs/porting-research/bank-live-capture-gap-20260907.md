@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Process-death-safe kernel money locks — 2026-09-07
+
+Test-first `4baa214` reproduced a stale directory lock after SIGKILL: the next
+process could not reacquire the same immutable reservation. Source `8f71f37`
+uses Linux flock on a validated, owned, mode-0600, zero-length, single-link
+stable file. A bounded nonblocking `/usr/bin/flock` child receives only the
+explicit inherited descriptor; the parent FileHandle retains the shared open-file
+description lock after the child exits. Closing the handle or process death
+releases ownership. The stable inode is never unlinked or reclaimed by age/PID.
+Existing legacy directory locks fail closed and require offline migration.
+
+The independent-process test acquires a release lock, blocks another process,
+SIGKILLs the holder, waits for actual exit, then successfully reacquires the same
+reservation without deleting its bytes. Existing concurrency, old-release/new-
+reservation, DB confirmation and same-directory sequential transaction gates
+still pass. Full frozen ARM64 suite at `8f71f37` exited 0:
+`/tmp/muhan-money-kernel-lock.log`, including C onboarding and both restore profiles.
+
+Relay Dockerfile now explicitly installs util-linux and checks `/usr/bin/flock`.
+The tested retained image has util-linux 2.38.1; the changed deployment Dockerfile
+was not rebuilt, and no image was pushed/deployed. Full filesystem power-loss
+fault injection and production runtime/source-adoption wiring remain incomplete.
+No Actions run or broad resource cleanup was performed.
+
 ## Verified serialized release restores sequential money commands — 2026-09-07
 
 Source `432f3f1` resolves the preceding real-PG regression without changing
