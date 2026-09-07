@@ -1,15 +1,19 @@
 #include "player_session_store_native.h"
 #include "player_session_registry.h"
 #include "player_snapshot_v1.h"
+#include "player_recovery.h"
 #include <libpq-fe.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/socket.h>
 extern int savegame_nomsg(creature *);
 static int save_errors;
 void merror(char *message,char kind)
 {(void)message;if(kind==FATAL) abort();save_errors++;}
+void log_f(char *message,...) {(void)message;}
+void del_active(creature *player) {(void)player;abort();}
 int file_player_store_save(char *name,creature *p) {(void)name;(void)p;abort();}
 int file_player_store_load(char *name,creature **p) {(void)name;(void)p;abort();}
 int main(int argc,char **argv)
@@ -57,7 +61,29 @@ int main(int argc,char **argv)
         assert(savegame_nomsg(&detached)==PLAYER_STORE_OK&&peer.status==PLAYER_SNAPSHOT_SAVE_RETRY);
         assert(!memcmp(&detached,&before,sizeof(detached))&&!memcmp(&blade,&blade_before,sizeof(blade))&&!inventory.next_tag);
         assert(player_session_registry_remove(&registry,&peer)!=0);
-        free(expected);player_snapshot_v1_free_clone(decoded);
+        {
+            PGconn *broken=PQconnectdb("host=127.0.0.1 dbname=postgres user=mud_writer_login connect_timeout=3");
+            assert(PQstatus(broken)==CONNECTION_OK);
+            // Shut down only this fixture-owned connection, not the DB server.
+            assert(!shutdown(PQsocket(broken),SHUT_RDWR));peer.connection=broken;
+            assert(!player_recovery_enqueue(decoded));
+            assert(!player_recovery_enqueue(decoded)); /* same pointer: no duplicate ownership */
+            assert(decoded->fd==-1&&player_recovery_pending()==1&&player_recovery_login_blocked());
+            assert(player_recovery_retry_one()==PLAYER_STORE_IO_ERROR);
+            assert(peer.status==PLAYER_SNAPSHOT_SAVE_UNKNOWN);
+            assert(player_recovery_pending()==1&&player_recovery_login_blocked());
+            assert(peer.pending_length==expected_length&&!memcmp(peer.pending,expected,expected_length));
+            assert(player_session_registry_remove(&registry,&peer)!=0);
+            PQfinish(broken);peer.connection=db;
+            assert(player_recovery_retry_one()==PLAYER_STORE_OK);
+            assert(peer.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+            decoded=NULL; /* actual free_crt owns destruction after confirmed save */
+            assert(!player_recovery_pending()&&!player_recovery_login_blocked());
+            assert(player_recovery_retry_one()==PLAYER_STORE_NOT_FOUND);
+            assert(peer.pending_length==expected_length&&!memcmp(peer.pending,expected,expected_length));
+            assert(player_session_registry_remove(&registry,&peer)!=0); /* durable lifecycle still unresolved */
+        }
+        free(expected);
         player_snapshot_v1_free_clone(p);
     }
     memset(&copy,0,sizeof(copy));strcpy(copy.name,argv[2]);

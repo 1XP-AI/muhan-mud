@@ -636,7 +636,7 @@ for gameplay_source in command8 player; do
 done
 cc -std=gnu89 -fcommon -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --includedir)" \
   -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
-  "$repo_root/src/player_store.c" "$repo_root/src/player_session_store_native.c" "$repo_root/src/player_session_registry.c" \
+  "$repo_root/src/player_store.c" "$repo_root/src/player_session_store_native.c" "$repo_root/src/player_session_registry.c" "$repo_root/src/player_recovery.c" \
   "$repo_root/src/bank_money_read_native.c" "$repo_root/src/bank_money_plan_native.c" "$repo_root/src/player_snapshot_save_native.c" \
   "$repo_root/src/player_paired_route_native.c" "$repo_root/src/player_paired_load_native.c" "$repo_root/src/bank_money_live_snapshot.c" \
   "$repo_root/tests/unit/player_session_store_native_pg.c" "${bank_codec_objects[@]}" "${session_gameplay_objects[@]}" \
