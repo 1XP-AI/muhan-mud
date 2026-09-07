@@ -158,6 +158,31 @@ writer epoch, command intent (direction/amount), exact baseline digests and
 revision, and enforce transfer-only changes before obtaining runtime grants.
 This integration is an administrator-only test of the calculation/persistence
 path, not production authorization or authority cutover.
+
+## Database-enforced money semantics
+
+Migration `20261018000000_money_transfer_semantics.sql` adds an unexposed
+money-specific entrypoint on top of the atomic pair kernel. It validates both
+canonical payload schemas, then compares every non-money field byte-for-byte
+(excluding only envelope digests that must be recomputed). SQL independently
+checks exact direction/amount arithmetic, nonnegative balances and the legacy
+deposit ceiling using numeric arithmetic to avoid i64 overflow during checks.
+The immutable intent row binds direction and amount to the command; changing
+either on an otherwise identical retry is rejected.
+
+Source `d9d593f` full local runner exit 0:
+`/tmp/muhan-money-policy-rollback.log`.
+The DB/Rust E2E now commits through this money-specific entrypoint. Tests reject
+canonical player-name and bank-root-name substitutions, unrequested gold,
+changed retry amount/direction, cap overflow, insufficient funds, wrapped i64
+overflow, zero amount and null direction. They accept the exact cap boundary.
+An injected failure on the final intent INSERT rolls back the already-executed
+pair update and command INSERT. Retrying afterward commits normally.
+
+No runtime grants were added. Actor ownership, current lease/world/writer-epoch
+qualification, audited baseline enrollment and gameplay wiring are still needed.
+The internal generic pair kernel remains inaccessible to runtime roles so it
+cannot bypass this money-only policy. Item transfer semantics remain separate.
 Live command integration and C/Rust command-level differential tests remain.
 
 ## Actual C / Rust command differential verified
