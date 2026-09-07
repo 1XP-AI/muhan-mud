@@ -2,12 +2,15 @@
 
 ## Latest execution
 
-The local runtime build is now running in session `36085` with source
+The local runtime build ran in session `36085` with source
 `2cfedc036f613fd8c902257aa1125c4222928b5b`. Evidence directory:
 `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/muhan-runtime-build.RNIORD`.
 BuildKit confirms the default docker driver and loads the named local source
 context (42.80 MB); the private-fetch stage is bypassed without credentials.
-Image build completion and runtime binary tests are still pending.
+It exited 1 during runtime apt-get update: Debian Bookworm repositories
+reported invalid signatures (apt exit 100). No runtime image was produced.
+The cause of the signature failures is not yet established; do not bypass
+signature validation. Image completion and runtime binary tests remain pending.
 
 The investigation found the original inspection process had the shared
 `~/.docker/buildx/.lock` open, alongside other projects and Docker Desktop.
