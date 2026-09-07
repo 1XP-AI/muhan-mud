@@ -93,6 +93,12 @@ unsigned int length;
 void onboarding_fail(fd)
 int fd;
 {
+	/* Numeric lifecycle diagnostics only: never log the consumed control line. */
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr && Ply[fd].io)
+		fprintf(stderr, "MUD onboarding failure: mode=%d state=%d phase=%d\n",
+			(int)Ply[fd].extr->onboarding_mode,
+			(int)Ply[fd].extr->onboarding_state,
+			(int)Ply[fd].io->fnparam);
 	/* Do not let disconnect() turn a failed onboarding wizard into a retrying
 	 * save.  A successfully saved file has already been atomically published
 	 * and is intentionally left alone. */
@@ -228,6 +234,9 @@ const char *canonical_name;
 		Ply[fd].extr->onboarding_actor_id,
 		Ply[fd].extr->onboarding_correlation_id,
 		Ply[fd].extr->onboarding_character_id, mode, command_id, canonical_name);
+	if(result != ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+	   result != ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED)
+		fprintf(stderr, "MUD activation capture rejected: result=%d\n", (int)result);
 	return result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK ||
 		result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED ? 0:-1;
 }

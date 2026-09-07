@@ -1,6 +1,7 @@
 #include "onboarding_activation_gate.h"
 
 #include <string.h>
+#include <stdio.h>
 
 static character_save_journal_v2_process_owner *activation_gate_owner;
 static int activation_gate_reservation_directory_fd=-1;
@@ -72,13 +73,17 @@ struct creature *player;
     reservation_result=onboarding_activation_reservation_owner_attempt(
         activation_gate_owner,activation_gate_reservation_directory_fd,&expected,
         capability,canonical_name,&bridge);
-    if(reservation_result!=ONBOARDING_ACTIVATION_RESERVATION_OWNER_READY)
+    if(reservation_result!=ONBOARDING_ACTIVATION_RESERVATION_OWNER_READY) {
+        fprintf(stderr,"MUD activation reservation rejected: result=%d\n",
+            (int)reservation_result);
         return ONBOARDING_ACTIVATION_GATE_REJECTED;
+    }
     result=onboarding_activation_save_runtime_helper_attempt_bridge(
         activation_gate_owner,&bridge,legacy_name,player);
     if(result==ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_CONSUMED)
         return ONBOARDING_ACTIVATION_GATE_CONSUMED;
     if(result==ONBOARDING_ACTIVATION_SAVE_RUNTIME_HELPER_RETAINED)
         return ONBOARDING_ACTIVATION_GATE_RETAINED;
+    fprintf(stderr,"MUD activation save rejected: result=%d\n",(int)result);
     return ONBOARDING_ACTIVATION_GATE_REJECTED;
 }

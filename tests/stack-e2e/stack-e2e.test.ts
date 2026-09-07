@@ -990,6 +990,8 @@ async function main(): Promise<void> {
       const headCount = await sql(`select count(*) from private.game_character_legacy_heads where character_id = '${importedClaimCharacterId}'`)
       const saveFailures = mudDiagnostics.match(/M3 player save failed: step=[a-z-]+ cutpoint=[0-9]+/g) ?? []
       process.stderr.write(`stack-e2e: positive-claim heads=${headCount} save-failures=${JSON.stringify(saveFailures)}\n`)
+      const activationFailures = mudDiagnostics.match(/MUD (?:onboarding failure: mode=-?[0-9]+ state=-?[0-9]+ phase=-?[0-9]+|activation (?:capture|reservation|save) rejected: result=-?[0-9]+)/g) ?? []
+      process.stderr.write(`stack-e2e: positive-claim activation-failures=${JSON.stringify(activationFailures)}\n`)
       throw error
     }
     process.stderr.write('stack-e2e: claim-rpc-green\n')
