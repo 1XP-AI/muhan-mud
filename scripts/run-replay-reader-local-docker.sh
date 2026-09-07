@@ -35,6 +35,7 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     ln -s /repo/node_modules /work/node_modules
     ln -s /repo/services/m4-file-snapshot-manifest-relay/node_modules /work/services/m4-file-snapshot-manifest-relay/node_modules
     cd /work
+    test -x /usr/bin/flock
     # Compile the real login consumer after transient admission struct changes.
     cc -std=gnu89 -fcommon -Isrc -c src/command1.c -o /tmp/session-command1.o
     cc -std=gnu89 -fcommon -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \

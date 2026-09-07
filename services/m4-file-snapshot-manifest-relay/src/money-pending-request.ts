@@ -1,7 +1,8 @@
 // Durable transport request, not a second gameplay database. Retain until an
 // independently confirmed commit/retry is reconciled; never rewrite on retry.
 import {constants} from 'node:fs'
-import {open,link,unlink,opendir,mkdir,rmdir} from 'node:fs/promises'
+import {open,link,unlink,opendir} from 'node:fs/promises'
+import {spawnSync} from 'node:child_process'
 import {isAbsolute} from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
 const MAX=12*1024*1024
@@ -67,18 +68,32 @@ export async function readMoneyPending(root:string,command:string) {
   try { return (await readAt(`/proc/self/fd/${dir.fd}`,command)).result }
   finally { await dir.close() }
 }
-// Durable per-character reservation primitive. Shared claim/release lock is
-// fail-closed after process death; never reclaim a stale lock automatically.
+async function moneyLock(base:string,key:string) {
+  const fd=await open(`${base}/${key}.money-lock`,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600)
+  try {
+    const stat=await fd.stat()
+    if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size!==0) throw new Error('invalid money lock')
+    // Linux flock belongs to the shared open-file description. The child locks
+    // our inherited descriptor, then exits; this FileHandle retains that lock
+    // until close/process death. Never unlink the stable lock inode.
+    const result=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','3'],{
+      stdio:['ignore','ignore','ignore',fd.fd],env:{LANG:'C'},timeout:2000,killSignal:'SIGKILL',
+    })
+    if(result.error||result.status!==0) throw new Error('money lock unavailable')
+    return fd
+  } catch(error) {await fd.close();throw error}
+}
+// Durable reservation plus kernel-owned claim/release exclusion. The lock file
+// remains, but the kernel releases ownership on process death; no age/PID guess.
 // Unlike a directory scan, the exclusive link serializes competing processes.
 export async function claimMoneyCharacterFence(root:string,args:string[],frame:Buffer):Promise<'CLAIMED'|'EXACT_RETRY'> {
   const bytes=encode(args,frame)
   const key=hash(JSON.stringify([args[1],args[0]]))
   const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
   const target=`${base}/${key}.money-fence`,temp=`${base}/.${key}.${randomUUID()}.tmp`
-  const lock=`${base}/${key}.money-lock`
-  let created=false,locked=false
+  let created=false,lock:Awaited<ReturnType<typeof moneyLock>>|undefined
   try {
-    await mkdir(lock,{mode:0o700});locked=true;await dir.sync()
+    lock=await moneyLock(base,key);await dir.sync()
     try {
       await readRecordAt(base,`${args[7]}.money-resolved`,args[7])
       throw new Error('money command already resolved')
@@ -110,7 +125,7 @@ export async function claimMoneyCharacterFence(root:string,args:string[],frame:B
     await unlink(temp);created=false;await dir.sync();return outcome
   } finally {
     if(created) await unlink(temp).catch(()=>{})
-    try {if(locked) {await rmdir(lock);await dir.sync()}} finally {await dir.close()}
+    try {await lock?.close()} finally {await dir.close()}
   }
 }
 // Internal storage operation: verifier must independently establish exact DB
@@ -118,11 +133,11 @@ export async function claimMoneyCharacterFence(root:string,args:string[],frame:B
 // resolution record before unlinking only the serialized matching reservation.
 export async function resolveMoneyCharacterFence(root:string,args:string[],frame:Buffer,verify:()=>Promise<void>):Promise<void> {
   const bytes=encode(args,frame),key=hash(JSON.stringify([args[1],args[0]]))
-  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`,lock=`${base}/${key}.money-lock`
+  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
   const temp=`${base}/.${key}.${randomUUID()}.tmp`
-  let locked=false,created=false
+  let lock:Awaited<ReturnType<typeof moneyLock>>|undefined,created=false
   try {
-    await mkdir(lock,{mode:0o700});locked=true;await dir.sync()
+    lock=await moneyLock(base,key);await dir.sync()
     const fence=await readRecordAt(base,`${key}.money-fence`)
     if(!fence.bytes.equals(bytes)) throw new Error('different active money reservation')
     await verify()
@@ -138,7 +153,7 @@ export async function resolveMoneyCharacterFence(root:string,args:string[],frame
     await unlink(`${base}/${key}.money-fence`);await dir.sync()
   } finally {
     if(created) await unlink(temp).catch(()=>{})
-    try {if(locked) {await rmdir(lock);await dir.sync()}} finally {await dir.close()}
+    try {await lock?.close()} finally {await dir.close()}
   }
 }
 // Bounded sequential visitor: never hold many multi-megabyte requests in memory.

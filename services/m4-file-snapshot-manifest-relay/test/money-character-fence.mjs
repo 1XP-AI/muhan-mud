@@ -36,7 +36,7 @@ if(process.argv[2]==='--hold') {
   const results=await Promise.all(commands.map(c=>child(c)))
   assert.equal(results.filter(r=>r.code===0).length,1)
   const winner=results.findIndex(r=>r.code===0)
-  const files=await readdir(root);assert.equal(files.length,1);assert.ok(files[0].endsWith('.money-fence'))
+  const files=(await readdir(root)).filter(name=>name.endsWith('.money-fence'));assert.equal(files.length,1)
   const saved=await readFile(join(root,files[0]))
   assert.deepEqual(await child(commands[winner]),{code:0,output:'EXACT_RETRY\n'})
   assert.equal((await child(commands[(winner+1)%8])).code,2)
