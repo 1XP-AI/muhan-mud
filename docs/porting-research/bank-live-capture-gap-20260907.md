@@ -21,6 +21,13 @@ Host disk exhaustion prevented the initial commit/full-run attempt; there
 was no new full-run log or live process. On recheck space recovered to 2.4GiB,
 but the Docker daemon socket was absent. No unrelated data was deleted.
 
+The test/runner change was subsequently committed at `20ae685`. Docker Desktop
+start reported already running, but the engine socket remained absent. Its
+status query hung; only that task-owned diagnostic process was terminated.
+The backend/app was not killed or restarted. Full-suite verification remains
+pending engine recovery; the earlier standalone sanitizer pass is the only
+new runtime evidence for this fixture.
+
 ## Persist newer equipped state after finishing the old request — 2026-09-08
 
 RED source `e966f11` strengthens the independent Node DB checks to require
