@@ -1,5 +1,33 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: real browser login/empty roster pass; onboarding socket next
+
+Browser diagnostics established `auth-visible=true`, no roster responses,
+`Failed to fetch`, and no auth-fixture interception. The web CSP permits
+same-origin HTTP only, but the fixture configured a different PostgREST port.
+`1f839f7` uses the browser's own origin for its Supabase URL and routes
+`/rest/v1/**` via Playwright's HTTP client to actual disposable PostgREST,
+preserving request headers/token and using its real response. This models
+the ingress prefix without weakening production CSP or mocking roster data.
+Deterministic Auth responses remain the pre-existing test boundary, not a
+real Supabase Auth acceptance claim.
+
+Fresh frozen run prints `auth-fixture method=POST`, passes sign-in, empty
+roster and opens new-character wizard. It now fails the first enabled-input
+assertion at web-stack-ui.ts365 / caller446 (onboarding input disabled).
+Evidence `/tmp/muhan-local-stack.WCNKGp/result.json`; retained console output
+`/tmp/muhan-browser-same-origin.log`. Next inspect onboarding WebSocket status:
+source has fixed `origin=http://localhost:3000` in claim Gateway allowlist,
+while the actual web server uses random `http://127.0.0.1:<port>`.
+Use exact fixture origin, never wildcard or disabled origin validation.
+
+Stack TypeScript compilation and all 14 web lifecycle tests pass. Direct
+standalone web-stack-ui.ts tsc lacks Node ambient types; checking the existing
+stack entrypoint resolves them and passes. One run failed before tests with
+Docker ENOSPC. Removed five explicitly identified unused task-owned diagnostic
+images only; no other caches/volumes/containers were pruned. Latest test cleanup
+completed. Full stack remains 1 PASS / 1 FAIL. No CI dispatch/push/deploy.
+
 ## Latest: claim preservation and gameplay pass; browser empty-roster gate next
 
 `4736e35` wires explicit CLAIM-only `player_store_save_existing` through the
