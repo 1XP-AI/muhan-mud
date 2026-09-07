@@ -1183,14 +1183,14 @@ fn sha256(input: &[u8]) -> [u8; DIGEST_LENGTH] {
     bytes.resize(input.len() + 1 + padding, 0);
     bytes.extend_from_slice(&bit_length.to_be_bytes());
     let mut state = INITIAL;
-    let (blocks, remainder) = bytes.as_chunks::<64>();
-    debug_assert!(remainder.is_empty());
+    let blocks = bytes.chunks_exact(64);
+    debug_assert!(blocks.remainder().is_empty());
     for block in blocks {
         let mut words = [0u32; 64];
-        let (chunks, remainder) = block.as_chunks::<4>();
-        debug_assert!(remainder.is_empty());
-        for (index, chunk) in chunks.iter().enumerate() {
-            words[index] = u32::from_be_bytes(*chunk);
+        let chunks = block.chunks_exact(4);
+        debug_assert!(chunks.remainder().is_empty());
+        for (index, chunk) in chunks.enumerate() {
+            words[index] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         for index in 16..64 {
             let small0 = words[index - 15].rotate_right(7)

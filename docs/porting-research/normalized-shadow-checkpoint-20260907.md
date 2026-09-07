@@ -101,3 +101,17 @@ macOS 실행에서는 CLI MATCH가 INVALID_INPUT으로 실패했다. 기존 file
 relay Dockerfile이 기존 replay verifier만 포함하고 normalized projector를 포함하지 않는 것도 확인했다. 같은 Rust build에 `player_snapshot_v1_normalized_project`를 추가하고 최종 이미지의 `/usr/local/libexec/muhan/`으로 복사하도록 수정했다. 로컬 이미지 `muhan-normalized-e2e:local` 빌드를 시도했으나 Rust base image unpack 단계에서 `no space left on device`로 실패했다. 이미지 빌드/CLI E2E 통과나 배포 완료로 계산하지 않는다.
 
 Docker 사용량은 이미지 21.01GB(회수 가능 10.84GB), build cache 12.17GB(회수 가능 630.9MB)로 보고됐다. 다른 프로젝트 리소스와 캐시는 삭제하지 않았다. 이번 임시 DB `muhan-normalized-cli-392a41`만 라벨/ID 확인 후 종료·auto-remove·목록 부재를 확인했다. 최신 문법 검사와 guard tests 2개는 통과했다. Linux E2E 재시도에는 Docker 공간 확보가 필요하다.
+
+## 공간 확보 후 Linux CLI E2E 통과
+
+사용자의 공간 정리 완료 응답 후 Docker 이미지 사용량이 9.977GB로 줄어든 것을 확인했다. 추가 사용자 이미지를 삭제하지 않고 빌드를 재시도했다. Rust 1.85 image에서는 SHA-256 코드의 `slice::as_chunks`가 아직 안정화되지 않아 컴파일에 실패했다. 동일한 64/4 byte 분할과 big-endian word 구성을 `chunks_exact`로 표현해 고정된 toolchain을 유지했다. 기존 SHA 표준 벡터를 포함한 Rust library tests 25개가 통과하고 Rust 1.85 기반 Docker release build도 통과했다.
+
+검증 이미지: 로컬 `muhan-normalized-e2e:local`, build manifest list `sha256:1fa44554e48f226366075e2552658856a9aa44234d474f9e36456aecd851cfc2`. 이 이미지는 registry에 push하거나 k8s에 배포하지 않았다.
+
+새 PostgreSQL 17 인스턴스에 게임 migration과 실제 tree fixture projection을 저장했다. 최종 이미지의 기본 `node` 사용자로, read-only root filesystem과 임시 `/tmp`를 사용해 integration 실행기를 실행했다. 테스트 파일/fixture만 read-only mount하고 별도 이미지 안의 `/app` 산출물과 Linux Rust projector를 사용했다. DB 컨테이너 network namespace에 연결하여 다음이 모두 통과했다:
+
+- 실제 SQL reader, 전용 연결 pool 재사용, Rust와 저장 projection의 정확한 일치.
+- 실제 파일 scanner → receipt-bound parser → Rust → DB → CLI JSON/exit code: MATCH(0), INVALID_INPUT(1), MISSING_RECORD(1).
+- 각 실행 후 artifact/receipt 파일 byte 불변 확인 및 raw payload SELECT 거부.
+
+테스트 runner는 auto-remove되었으며 임시 DB `muhan-linux-e2e-db-72c54a`도 ID/label 확인 후 종료·auto-remove·목록 부재를 확인했다. 합성 데이터는 제거되었고 로컬 검증 이미지는 후속 검증을 위해 남겨 두었다. 기존 공간 부족 및 Linux CLI E2E 차단은 해소됐다. 독립 리뷰, chart/job 연결, 실제 게임 onboarding 및 DB 저장 권위 전환은 여전히 미완료다.
