@@ -326,6 +326,33 @@ write evidence, stop legacy saves or activate DB authority. Those prerequisites
 must be provided by the eventual runtime coordinator, not inferred from a
 passing codec test.
 
+### Actual bank command routing seam
+
+Source `5b46efb` inserts a compile-gated route into actual `deposit` and
+`withdraw` after room/argument-count checks, before any legacy bank load or
+wallet mutation. Authority selection is separate from transaction outcome:
+only explicit legacy selection continues the old path. Selected DB routing
+with an unavailable handler, rejection, unknown result or selection error
+returns without any legacy read/save. Only confirmed commit status with valid
+nonnegative returned balances updates the in-memory wallet and prints success.
+
+The real `bank.c` command characterization harness now runs both old default
+scenarios and selected-route scenarios under ASan/UBSan. Its injected
+coordinator checks both directions and status -1/0/1/2, missing handler and
+selection error, asserting zero bank loads, bank saves and player saves after
+DB selection. Failed results leave the wallet unchanged. The original known
+legacy failure baseline remains explicitly characterized, not silently fixed.
+
+Full local replay runner passed exit 0:
+`/tmp/muhan-bank-command-route-final.log`, including C/Rust and restored DB
+profiles. The production object list includes the route module, but
+`MUHAN_BANK_MONEY_ROUTING` is NOT enabled by default and no production
+coordinator is installed. The handler in this test is a test double, not an
+actual database connection. Parsing, command/receipt identity, uncertain-commit
+reconciliation, deadlines and session/writer binding belong to the next real
+coordinator implementation. Other character saves and item-bank commands must
+also be fenced before enabling any DB-authoritative character in live play.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
