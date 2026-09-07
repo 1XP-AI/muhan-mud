@@ -40,3 +40,11 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 기존 `mud_replay_reader_login`은 메타데이터 컬럼의 닫힌 권한 계약을 가진다. 이를 넓히지 않도록 `20261014000000_player_snapshot_normalized_v1_replay_reader.sql`에 별도 `mud_normalized_replay_reader_login` 후보를 추가했다. 7개 관계의 비교용 컬럼만 SELECT하고 raw artifact payload는 제외한다. 기본 read-only 세션과 SELECT용 RLS 정책을 설정하며 기존 운영 비밀번호는 replay 시 유지한다. 게임 권위나 consumer를 활성화하지 않는다.
 
 먼저 작성한 `supabase/tests/player_snapshot_normalized_v1_replay_reader_contract.sql`은 전용 계정 속성, 역할 membership 부재, 정확한 조회 컬럼, RLS, 쓰기 권한 부재 및 payload 미노출을 검사한다. **이 SQL 계약 테스트와 migration은 아직 PostgreSQL에서 실행하지 않았다. RED/GREEN 통과로 계산하지 않는다.** 로컬 정적 검사는 adapter의 143개 컬럼 참조가 7개 관계의 grant 목록에 포함되는지만 확인했다. 다음 단계는 disposable PostgreSQL에서 migration·계약·실제 adapter SELECT를 함께 실행하고, 검증된 전용 세션을 runtime 비교기에 연결하는 것이다.
+
+## 실제 조회 integration 실행기
+
+`supabase/tests/player_snapshot_normalized_v1_replay_reader_integration.mjs`는 이미 migration과 fixture 저장이 끝난 disposable DB를 대상으로 한다. 데이터나 계정을 만들지 않으며 `DATABASE_URL`로 fallback하지 않는다. 전용 login의 current/session user와 기본 read-only 설정을 확인하고 독점 connection의 read-only transaction에서 실제 adapter를 실행한다. 저장된 projection을 tree inventory fixture의 실제 Rust 변환 결과와 비교하고 snapshot hash/크기, 다른 world 조회 부재, raw payload SELECT 거부, 오류 후 재조회까지 검사한다. 종료 시 rollback과 connection 종료를 시도한다.
+
+실행 전 relay의 `dist`와 Rust normalized projector가 빌드되어 있어야 한다. `NORMALIZED_READER_ALLOW_DISPOSABLE=1`, `NORMALIZED_READER_TEST_DATABASE_URL`(전용 login), `NORMALIZED_READER_TEST_WORLD_ID`, `NORMALIZED_READER_TEST_CHARACTER_ID`, `NORMALIZED_READER_TEST_COMMAND_ID`, `M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER`(절대 경로)를 명시한 뒤 Node로 실행한다. 해당 identity에는 checked-in tree fixture 및 **그 fixture에서 Rust가 실제로 계산한 projection**이 receipt/manifest/artifact/normalized recorder 경로로 미리 저장되어 있어야 한다. 기존 persistence SQL 계약의 인위적인 i64 극값 projection은 이 positive fixture를 대신할 수 없다.
+
+검증: Node 문법 검사 통과, DB에 연결하지 않는 guard tests 2개 통과(필수 설정별 누락 및 잘못된 계정 거부). **실제 integration은 아직 실행하지 않았다.** disposable fixture seed 연결, PostgreSQL 실행 증거, production runtime consumer와 배포 검증은 남아 있다.
