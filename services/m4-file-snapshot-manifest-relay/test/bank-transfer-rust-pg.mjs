@@ -35,6 +35,10 @@ const actor='e9210000-0000-0000-0000-000000000001',session='f9210000-0000-0000-0
 const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea)'
 const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
 const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
+const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_READER,args.map(String),{
+  env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options},
+  timeout:5000,maxBuffer:9*1024*1024,
+})
 let login
 const read=async()=> (await db.query("select revision::text,player_payload,bank_payload,encode(public.digest(player_payload,'sha256'),'hex') player_hash,encode(public.digest(bank_payload,'sha256'),'hex') bank_hash from private.game_character_paired_snapshot_states where character_id=$1",[id])).rows[0]
 try {
@@ -80,17 +84,38 @@ try {
     await assert.rejects(db.query(readSql,[id,...authority]),e=>e.code==='P0001')
     const wrong=[id,...authority]; wrong[2]='e9210000-0000-0000-0000-000000000099'
     await assert.rejects(login.query(readSql,wrong),e=>e.code==='P0001')
+    assert.ok(process.env.BANK_TRANSFER_NATIVE_READER?.startsWith('/'))
+    const denied=nativeRead(wrong)
+    assert.equal(denied.status,1); assert.equal(denied.stdout.length,0)
+    await db.query('begin')
+    try {
+      await db.query('select character_id from private.game_character_paired_snapshot_states where character_id=$1 for update',[id])
+      const start=Date.now()
+      const timeout=nativeRead([id,...authority],'-c lock_timeout=0 -c statement_timeout=0')
+      assert.equal(timeout.status,1,'native reader must terminate on its own deadline')
+      assert.equal(timeout.stdout.length,0)
+      assert.ok(Date.now()-start<4500,'native deadline must precede the process watchdog')
+    } finally { await db.query('rollback') }
   }
   const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
   assert.equal((await db.query("select has_function_privilege('mud_writer','private.commit_money_transfer_candidate(uuid,uuid,bigint,text,bigint,bytea,bytea)','EXECUTE') allowed")).rows[0].allowed,false)
   for(const [index,direction] of ['deposit','withdraw'].entries()) {
     const before=qualified?(await login.query(readSql,[id,...authority])).rows[0]:await read()
     assert.deepEqual(before,await read(),'qualified writer reads the exact same pair and digests without table SELECT')
-    for(const negative of [planned(before,direction,25,true),planned(before,direction,999999)]) {
+    let input=before
+    if(qualified) {
+      const native=nativeRead([id,...authority])
+      assert.equal(native.status,0,native.stderr.toString())
+      const pl=native.stdout.readUInt32BE(0),bl=native.stdout.readUInt32BE(4)
+      assert.equal(native.stdout.length,8+pl+bl)
+      input={...before,player_payload:native.stdout.subarray(8,8+pl),bank_payload:native.stdout.subarray(8+pl)}
+      assert.deepEqual(input,before)
+    }
+    for(const negative of [planned(input,direction,25,true),planned(input,direction,999999)]) {
       assert.equal(negative.status,1); assert.equal(negative.stdout.length,0)
     }
     assert.deepEqual(await read(),before)
-    const out=planned(before,direction,25)
+    const out=planned(input,direction,25)
     assert.equal(out.status,0,out.stderr.toString())
     const pl=out.stdout.readUInt32BE(0),bl=out.stdout.readUInt32BE(4)
     assert.equal(out.stdout.length,8+pl+bl)
