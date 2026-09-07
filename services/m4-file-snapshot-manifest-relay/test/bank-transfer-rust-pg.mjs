@@ -119,6 +119,12 @@ try {
       await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format,owner_user_id,claimed_at)
         values($1,$2,$3,$3,substr(encode(public.digest(convert_to($3,'UTF8'),'sha1'),'hex'),1,2),'active',1,$4,clock_timestamp())`,[saveId,world,name,actor])
       await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[saveId,initial,bank])
+      const peerId='a9300000-0000-0000-0000-000000000001',peerName='Peerhero'
+      const peerBody=Buffer.from(player.subarray(16,-32));peerBody.fill(0,7,87);peerBody.write(peerName,7,'utf8')
+      const peerInitial=rebody(player,peerBody)
+      await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format,owner_user_id,claimed_at)
+        values($1,$2,$3,$3,substr(encode(public.digest(convert_to($3,'UTF8'),'sha1'),'hex'),1,2),'active',1,$4,clock_timestamp())`,[peerId,world,peerName,actor])
+      await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[peerId,peerInitial,bank])
       const sql='select * from private.commit_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9)'
       const request=[world,name,writer,'1',saveId,'c9260000-0000-0000-0000-000000000001','0',sha(initial).toString('hex'),changed]
       playerRecoveryRequest=request
@@ -193,6 +199,10 @@ try {
           child.on('close',code=>{clearTimeout(timer);if(failure||code!==0||releases!==2) reject(failure??new Error(`native adoption ${code}: ${errors}`));else resolve()})
         })
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
+        const peerState=(await db.query('select revision::text,player_payload,bank_payload from private.game_character_paired_snapshot_states where character_id=$1',[peerId])).rows[0]
+        assert.deepEqual(peerState,{revision:'1',player_payload:playerGold(peerInitial,201n),bank_payload:bank})
+        const peerPending=await readPlayerPending(pending,'c9300000-0000-0000-0000-000000000001')
+        assert.equal(peerPending.args[4],peerId);assert.deepEqual(peerPending.payload,peerState.player_payload)
         nativeSave(request,'2 1\n')
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
