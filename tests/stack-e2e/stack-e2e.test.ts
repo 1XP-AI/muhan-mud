@@ -7,6 +7,7 @@ import { once } from 'node:events'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 import { assertPostGameClaim, type PostGameLayout } from './post-game-claim-check.js'
+import { readLocalOnboardingEvidence } from './local-onboarding-evidence.js'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { loadConfig } from '../../services/gateway/src/config.js'
@@ -242,14 +243,14 @@ async function assertM3OnboardingEvidence({
   assert.equal(fulfillmentBoundCommand, 'true', 'the fulfillment must retain the immutable bound command')
 
   const outbox = join(fixture, 'character-player-snapshot-v1-outbox')
-  const [artifact, manifest, receipt] = await Promise.all([
+  const [artifact, manifest, localEvidence] = await Promise.all([
     readFile(join(outbox, `${commandId}.player-snapshot-v1`)),
     readFile(join(outbox, `${commandId}.manifest`), 'utf8'),
-    readFile(join(fixture, 'onboarding-receipts', `${correlationId}.receipt`), 'utf8'),
+    readLocalOnboardingEvidence(fixture, { actorUserId, correlationId, characterId: characterId!, commandId: commandId!, mode: expectedMode }),
   ])
   assertNoPlaintextSecrets('PlayerSnapshotV1 artifact', artifact, secrets)
   assertNoPlaintextSecrets('M3 receipt manifest', manifest, secrets)
-  assertNoPlaintextSecrets('onboarding receipt', receipt, secrets)
+  for (const entry of localEvidence) assertNoPlaintextSecrets('local onboarding evidence', entry, secrets)
   const readerUrl = process.env.STACK_E2E_NORMALIZED_READER_URL
   const projectorPath = process.env.STACK_E2E_NORMALIZED_PROJECTOR
   assert.ok(readerUrl, 'runner must provide a dedicated normalized reader login')
