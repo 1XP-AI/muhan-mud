@@ -1,5 +1,27 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest restart investigation: failing local regression reproduced
+
+Frozen `77cf875` narrows restart failure to owner startup 7 / recovery 8
+(RECOVERY / INCOMPLETE), not DB transport or writer bootstrap. Evidence:
+`/tmp/muhan-local-stack.VpRxMC/result.json`.
+
+Added an intentionally RED assertion, currently uncommitted, to
+`test_same_character_revision_order` in the recovery unit test: after replaying
+and acknowledging a two-generation same-character chain, replay that complete
+history again. `make -C src character-save-journal-v2-recovery-test` fails only
+this new assertion. The old test checked the first pass but never replayed
+history after the successor had replaced the current file. Next inspect the
+publish/ACK historical evidence rules and implement a verified replay path;
+do not skip history merely because an `.acked` filename exists.
+
+Frozen `35a5609` adds numeric publish/ACK diagnostics but did not reach restart:
+fixture copy failed. A read-only local Docker `df` confirms overlay 32G / 30G,
+5.1M available, 100%. Runner-specific images accumulated (all are rebuildable);
+no broad prune or unrelated volume/image deletion was performed. Stop heavy
+Docker reruns until scoped test-artifact cleanup, and continue the lightweight
+host unit regression. This is progress, not a goal-level impasse.
+
 ## Latest: provision-to-gameplay path verified; restart remains
 
 Frozen `0aa8ae7` now passes real C character creation, first-save evidence,
