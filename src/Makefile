@@ -152,7 +152,10 @@ mud1c-admission-context-sanitizer-test: mud1c-admission-context-static-test
 	$(CC) -std=gnu89 -fcommon -Wall -Wextra -Werror $(CDTO_V1_TEST_WARN_FLAGS) -DMUD1C_ADMISSION_CONTEXT_ENABLED=1 -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -I. ../tests/unit/mud1c_admission_context_test.c mud1c_admission_context.c -o /tmp/muhan-unit/mud1c_admission_context_sanitizer_test
 	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 /tmp/muhan-unit/mud1c_admission_context_sanitizer_test
 
-unit-test:
+info-alignment-utf8-test:
+	CC="$(CC)" python3 ../tests/unit/info_alignment_utf8_test.py
+
+unit-test: info-alignment-utf8-test
 	mkdir -p /tmp/muhan-unit
 	python3 ../tests/unit/resource_tree_manifest_test.py
 	$(MAKE) bank-store-test

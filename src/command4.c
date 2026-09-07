@@ -250,7 +250,7 @@ int info(ply_ptr, cmnd)
 creature        *ply_ptr;
 cmd             *cmnd;
 {
-        char    alstr[16];
+        const char *alstr;
         int     fd, cnt;
         long    expneeded, lv;
 
@@ -264,11 +264,11 @@ cmd             *cmnd;
                 expneeded = needed_exp[MAXALVL-2]+(ply_ptr->level-MAXALVL+1)*5000000;
 
         if(ply_ptr->alignment < -100)
-                strcpy(alstr, " (악합니다)");
+                alstr = " (악합니다)";
         else if(ply_ptr->alignment < 101)
-                strcpy(alstr, " (평범합니다)");
+                alstr = " (평범합니다)";
         else
-                strcpy(alstr, " (선합니다) ");
+                alstr = " (선합니다) ";
 
         for(lv=0,cnt=0; lv<MAXWEAR; lv++)
                 if(ply_ptr->ready[lv]) cnt++;
