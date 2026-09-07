@@ -998,7 +998,21 @@ async function main(): Promise<void> {
     await closeAndWait(claim.ws)
     const claimState = await sql(`select i.status || '|' || c.lifecycle || '|' || c.owner_user_id || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join public.game_characters c on c.id = '${importedClaimCharacterId}' where i.correlation_id = '${importedClaimCorrelation}'`)
     assert.equal(claimState, `finalized|active|${actor}|${importedClaimName}`)
-    assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
+    const claimedPlayerBytes = await readFile(importedClaimPlayer)
+    if (!claimedPlayerBytes.equals(importedClaimBytes)) {
+      // Derive offsets from the same native ABI as C, not guessed x64 offsets.
+      // Emit only booleans; never expose credential bytes or their digests.
+      const layoutBinary = join(root, `player-layout-${process.pid}`)
+      await run('cc', ['-I', join(root, 'src'), join(root, 'tests/stack-e2e/player-record-layout.c'), '-o', layoutBinary])
+      const { stdout } = await run(layoutBinary)
+      const layout = JSON.parse(stdout) as { passwordOffset: number; passwordLength: number }
+      const before = importedClaimBytes.subarray(layout.passwordOffset, layout.passwordOffset + layout.passwordLength)
+      const after = claimedPlayerBytes.subarray(layout.passwordOffset, layout.passwordOffset + layout.passwordLength)
+      assert.equal(before.length, layout.passwordLength)
+      assert.equal(after.length, layout.passwordLength)
+      process.stderr.write(`stack-e2e: claim-file-preservation size-equal=${claimedPlayerBytes.length === importedClaimBytes.length} password-equal=${before.equals(after)} password-before-nonzero=${before.some(value => value !== 0)} password-after-zero=${after.every(value => value === 0)}\n`)
+    }
+    assert.equal(createHash('sha256').update(claimedPlayerBytes).digest('hex'), importedClaimDigest)
     evidence.events.push({ case: 'legacy-claim', result: 'batch-provenanced-C-password-verified-rpc-handoff-active' })
     evidence.events.push({ case: 'legacy-claim-denials', result: 'missing-member-wrong-password-expired-no-owner-no-normal-admission' })
 
