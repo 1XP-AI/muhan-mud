@@ -795,6 +795,66 @@ const char *root;
     return failed;
 }
 
+static int test_copy_existing(const char *root)
+{
+    character_save_journal_v2_wire wire;
+    char path[512], other[512], moved[512];
+    unsigned char buffer[64], zero[64];
+    const char payload[]="original-credential-and-state";
+    size_t length;
+    int fd, held, failed=0;
+    fixture(&wire,"33333333-3333-4333-8333-333333333333");
+    wire.expected_state=CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING;
+    if(hash_bytes(root,payload,sizeof(payload),wire.expected_sha256)) return 1;
+    strcpy(wire.post_sha256,wire.expected_sha256);
+    if(character_save_journal_v2_request_sha256(&wire,wire.request_sha256) ||
+       join(path,sizeof(path),root,"player/16/Terra") ||
+       join(other,sizeof(other),root,"player/16/other")) return 1;
+    fd=open(path,O_CREAT|O_EXCL|O_WRONLY,0600);
+    if(fd<0 || write_all(fd,payload,sizeof(payload))) return 1;
+    close(fd); held=open(root,O_RDONLY|O_DIRECTORY);
+    if(held<0) return 1;
+    memset(buffer,0,sizeof(buffer)); memset(zero,0,sizeof(zero));
+    failed+=expect(!character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length) && length==sizeof(payload) &&
+        !memcmp(buffer,payload,length),"existing copy must preserve exact bytes");
+    if(snprintf(moved,sizeof(moved),"%s-held",root)<0 || rename(root,moved))
+        return failed+1;
+    failed+=expect(!character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length) && length==sizeof(payload) &&
+        !memcmp(buffer,payload,length),"renamed root must still use held descriptor");
+    if(rename(moved,root)) return failed+1;
+    failed+=expect(fcntl(held,F_GETFD)>=0,"copy must not close borrowed root");
+    memset(buffer,0,sizeof(buffer));
+    character_save_journal_v2_fail_close_once_for_test(2);
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0 && !length &&
+        !memcmp(buffer,zero,sizeof(buffer)),"uncertain close must wipe original bytes");
+    character_save_journal_v2_fail_close_once_for_test(0);
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,2,&length)<0 && !length,"oversized copy must reject");
+    memset(buffer,0,sizeof(buffer)); wire.expected_sha256[0]=
+        wire.expected_sha256[0]=='a'?'b':'a';
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0 && !length &&
+        !memcmp(buffer,zero,sizeof(buffer)),"hash mismatch must wipe copied bytes");
+    strcpy(wire.expected_sha256,wire.post_sha256);
+    if(link(path,other)) return failed+1;
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0,"hardlinked original must reject");
+    unlink(other); chmod(path,0644);
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0,"unsafe file mode must reject");
+    chmod(path,0600); unlink(path);
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0,"missing original must reject");
+    if(symlink("other",path)) return failed+1;
+    failed+=expect(character_save_journal_v2_copy_existing_at(held,&wire,
+        buffer,sizeof(buffer),&length)<0,"symlink original must reject");
+    unlink(path); close(held);
+    return failed;
+}
+
 int main(void)
 {
     char temporary_base[PATH_MAX], root[PATH_MAX];
@@ -807,7 +867,7 @@ int main(void)
        make_dir(root, "player") || make_dir(root, "player/16") ||
        make_dir(root, "character-save-journal") || make_dir(root, "character-save-stage")) return 1;
     character_save_journal_v2_set_trusted_uid_for_test(getuid());
-    failed = test_sql_golden_and_name_validation() +
+    failed = test_copy_existing(root) + test_sql_golden_and_name_validation() +
              test_descriptor_rejections(root) + test_wire_stage_and_fsync(root) +
              test_growth_and_faults(root) +
              test_hash_cap_boundaries(root) +

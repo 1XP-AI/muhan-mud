@@ -57,6 +57,12 @@ int character_save_journal_v2_stage_at(int root_fd,
                                        size_t stage_length);
 int character_save_journal_v2_live_precondition_at(
     int root_fd, const character_save_journal_v2_wire *wire);
+/* Copies only an existing canonical file matching expected_sha256. No writes
+ * or root pathname reopen. Caller owns/wipes successful output; errors wipe
+ * copied bytes and return length zero. */
+int character_save_journal_v2_copy_existing_at(int root_fd,
+    const character_save_journal_v2_wire *wire, unsigned char *buffer,
+    size_t capacity, size_t *length_out);
 /* Prepare only the validated absent route's shard under the held root.
  * Existing components are validated, never chmod'd or replaced. */
 int character_save_journal_v2_prepare_absent_shard_at(

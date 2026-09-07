@@ -526,6 +526,58 @@ done:
     return result;
 }
 
+int character_save_journal_v2_copy_existing_at(int root_fd,
+    const character_save_journal_v2_wire *wire, unsigned char *buffer,
+    size_t capacity, size_t *length_out)
+{
+    v2_tree tree;
+    struct stat before, after, named;
+    char leaf[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX+1], digest[65];
+    unsigned char raw[32], extra;
+    v2_sha256 sha;
+    size_t total=0, i;
+    ssize_t count;
+    int fd=-1, result=-1;
+    if(length_out) *length_out=0;
+    if(!length_out || !buffer || !capacity ||
+       capacity>CHARACTER_SAVE_JOURNAL_V2_READ_MAX_BYTES ||
+       !v2_wire_valid(wire,1) ||
+       wire->expected_state!=CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ||
+       v2_decode_live_leaf(wire,leaf) ||
+       v2_tree_open_fd(root_fd,wire->legacy_shard,&tree)) return -1;
+    fd=openat(tree.shard_fd,leaf,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
+    if(fd<0 || fstat(fd,&before) || !v2_stat_file_ok(&before,1) ||
+       before.st_size<=0 || (uint64_t)before.st_size>(uint64_t)capacity) goto done;
+    while(total<(size_t)before.st_size) {
+        count=read(fd,buffer+total,(size_t)before.st_size-total);
+        if(count<0 && errno==EINTR) continue;
+        if(count<=0) goto done;
+        total+=(size_t)count;
+    }
+    do count=read(fd,&extra,1); while(count<0 && errno==EINTR);
+    if(count!=0 || fstat(fd,&after) || !v2_stat_file_ok(&after,1) ||
+       before.st_size!=after.st_size ||
+       fstatat(tree.shard_fd,leaf,&named,AT_SYMLINK_NOFOLLOW) ||
+       !v2_stat_file_ok(&named,1) || named.st_dev!=after.st_dev ||
+       named.st_ino!=after.st_ino) goto done;
+    /* Hash the bytes returned, not a second read of a mutable file. */
+    v2_sha_init(&sha); v2_sha_update(&sha,buffer,total);
+    v2_sha_final(&sha,raw); v2_hex(raw,digest);
+    if(strcmp(digest,wire->expected_sha256)) goto done;
+    if(v2_close_file(fd,2)) { fd=-1; goto done; }
+    fd=-1; *length_out=total; result=0;
+done:
+    if(fd>=0) close(fd);
+    v2_tree_close(&tree);
+    if(result) {
+        volatile unsigned char *wipe=buffer;
+        for(i=0;i<total;i++) wipe[i]=0;
+    }
+    memset(raw,0,sizeof(raw)); memset(&sha,0,sizeof(sha));
+    memset(digest,0,sizeof(digest));
+    return result;
+}
+
 static int v2_format(w,out,out_size)
 const character_save_journal_v2_wire *w; char *out; size_t out_size;
 { char leaf[44]; int n; if(character_save_journal_v2_stage_leaf(w->command_uuid,leaf,sizeof(leaf))!=0)return -1; n=snprintf(out,out_size,"version=2\nstate=PREPARED\nwriter_instance_id=%s\ncharacter_id=%s\nrequest_sha256=%s\nworld_id=%s\nlegacy_name_key_hex=%s\nlegacy_shard=%s\ncommand_uuid=%s\nwriter_epoch=%" PRIu64 "\nwriter_revision=%" PRIu64 "\nexpected_state=%s\nexpected_sha256=%s\npost_sha256=%s\nstorage_format=%u\nstaged_leaf=%s\n",w->writer_instance_id,w->character_id,w->request_sha256,w->world_id,w->legacy_name_key_hex,w->legacy_shard,w->command_uuid,w->writer_epoch,w->writer_revision,v2_expected_name(w->expected_state),w->expected_state==CHARACTER_SAVE_JOURNAL_V2_EXPECT_ABSENT?"-":w->expected_sha256,w->post_sha256,(unsigned int)w->storage_format,leaf);return n<0||(size_t)n>=out_size?-1:n; }
