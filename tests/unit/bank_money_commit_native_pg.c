@@ -55,6 +55,7 @@ int main(int argc,char **argv)
       memset(&ops,0,sizeof(ops)); ops.select=selected; ops.transfer=bank_money_command_native; ops.context=&context;
       bank_money_route_set(&ops);
       status=bank_money_route_dispatch(player,&command,!strcmp(argv[10],"withdraw"),&ack);
+      if((context.status==BANK_MONEY_COMMIT_CONFIRMED)!=(status==BANK_MONEY_COMMITTED)) abort();
       if(status==BANK_MONEY_COMMITTED) {
         if(player->gold!=ack.player_gold||player->gold==before) abort();
       } else if(player->gold!=before) abort();
