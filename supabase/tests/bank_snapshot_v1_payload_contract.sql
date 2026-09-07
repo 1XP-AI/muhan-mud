@@ -8,6 +8,10 @@ $$;
 select pg_temp.envelope(6,decode('00010300000004000000010002090000015d00000000ffffffff00000000','hex') || decode(repeat('00',337),'hex')) as graph \gset
 select pg_temp.envelope(8,decode('000109','hex') || int4send(octet_length(:'graph'::bytea)) || :'graph'::bytea) as payload \gset
 select encode(public.digest(:'payload'::bytea,'sha256'),'hex') as bank_hash \gset
+-- A separately valid bank with a changed root name and recomputed digests.
+select pg_temp.envelope(6,set_byte(substring(:'graph'::bytea from 17 for octet_length(:'graph'::bytea)-48),30,65)) as changed_graph \gset
+select pg_temp.envelope(8,decode('000109','hex') || int4send(octet_length(:'changed_graph'::bytea)) || :'changed_graph'::bytea) as changed_payload \gset
+select pg_temp.assert_true(private.bank_snapshot_v1_payload_nodes(:'changed_payload'::bytea) is not null,'conflict fixture is independently canonical');
 select pg_temp.assert_true(private.bank_snapshot_v1_payload_nodes(:'payload'::bytea)='[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0}]'::jsonb,'payload yields its own canonical topology');
 select pg_temp.expect_state('22023',format('select private.bank_snapshot_v1_payload_nodes(%L::bytea)',:'graph'));
 select pg_temp.expect_state('22023','select private.bank_snapshot_v1_payload_nodes(null)');
@@ -31,6 +35,7 @@ select pg_temp.expect_state('22023','select pg_temp.record_payload(null)');
 select pg_temp.expect_state('22023',format('select pg_temp.record_payload(%L::bytea,%L)',:'payload',repeat('0',64)));
 select pg_temp.assert_true(pg_temp.record_payload()='RECORDED','complete payload is persisted');
 select pg_temp.assert_true(pg_temp.record_payload()='EXACT_RETRY','complete payload exact retry');
+select pg_temp.expect_state('P0001',format('select pg_temp.record_payload(%L::bytea,%L)',:'changed_payload',encode(public.digest(:'changed_payload'::bytea,'sha256'),'hex')));
 select pg_temp.expect_state('P0001',format('select pg_temp.record_payload(%L::bytea,%L,%L)',:'payload',:'bank_hash',repeat('f',64)));
 select pg_temp.expect_state('42501','select payload from private.game_character_bank_snapshot_v1_payloads');
 reset role;
