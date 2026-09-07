@@ -403,6 +403,35 @@ default runtime object list. Native commit transport, command identity and
 uncertain-result recovery, live session binding and exclusive write fencing
 remain required before installing this into the actual game coordinator.
 
+### Native C qualified commit transport
+
+Source `e8fd6c0` adds the native commit adapter and shares the bounded
+nonblocking exchange with the native reader. Eleven text parameters and two
+binary bytea payloads call the qualified commit RPC. A successful response must
+have the exact two-column binary shape, COMMITTED or EXACT_RETRY, and expected
+revision + 1. Only those outcomes publish a revision. Local malformed frames
+are invalid; explicit recognized server rollback/error states are rejected;
+transport timeout, absent/malformed acknowledgement and unrecognized errors
+remain UNKNOWN. Unknown outcomes require retaining the same command/payload
+and discarding the connection, never generating a replacement command.
+
+The actual integration now runs native C read -> Rust planner -> native C
+commit against the disposable DB for deposit and withdrawal. A fresh native
+process reconnects with the same arguments and gets EXACT_RETRY, with two total
+intents and matching authority records after the two operations. Wrong actor
+gets rejection and no success output. With server timeouts disabled and the
+pair locked, the native two-second deadline reports UNKNOWN with no output,
+before the process watchdog. That timeout probe deliberately uses a wrong
+actor to prevent a late commit; it proves classification and bounded waiting,
+NOT post-commit acknowledgement-loss recovery.
+
+Both native adapters and real-PG harnesses are ASan/UBSan instrumented. Full
+local runner passed exit 0: `/tmp/muhan-native-money-commit.log`, including all
+existing C/Rust and restored-DB profiles. The native transport is still not
+installed into the live command coordinator. Durable pending-request recovery,
+actual acknowledgement loss, native planner invocation, command/session
+binding and legacy write fencing remain before activation.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
