@@ -201,3 +201,9 @@ careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remov
 `docker buildx build --builder desktop-linux --load --platform linux/amd64 --build-context source=/tmp/muhan-amd64-source.DRusdR --build-arg SOURCE_REVISION=03c677fa660c3e2c21214aa2728ebbe21223dfa9 -t muhan-integrated-amd64:local -f muhan-mud/Dockerfile muhan-mud`는 Docker frontend `docker/dockerfile:1.7` metadata 취득의 DeadlineExceeded로 종료했다. 소스 컴파일까지 진행하지 않았으므로 통합 이미지 통과/실패로 해석하지 않는다.
 
 대안으로 같은 frontend 이미지의 `docker pull docker/dockerfile:1.7`을 실행했고 현재 exec session `64431`이 실행 중이며 마지막 30초 wait에서도 종료되지 않았다. 새 pull을 시작하지 말고 이 세션을 먼저 재확인한다. 이전 build session `9481`은 exit 1로 끝났다. 임시 소스 폴더는 재시도를 위해 보존했고 다른 이미지/캐시는 삭제하지 않았다. push/배포는 없다.
+
+## 내장 frontend 대안도 registry metadata에서 중단
+
+다음 턴에 pull session `64431`을 재확인했고 여전히 실행 중이었다. 중복 pull은 시작하지 않았다. 운영 Dockerfile을 수정하지 않고 입력의 첫 syntax 지시문만 제외해 내장 frontend로 같은 amd64 검증을 시도했다. exec session `65830`은 named source context 로딩까지 진행했지만 `gcc:14` metadata 취득에서 DeadlineExceeded로 종료했고 node/rust metadata 요청은 함께 취소됐다. 따라서 외부 frontend 이미지만의 문제로 좁힐 수 없고, 아직 C/Rust/Node 컴파일 증거는 없다.
+
+호스트의 bounded HTTPS 확인은 Docker registry `/v2/`에서 0.6초 내 HTTP 401 응답을 받았다(익명 요청에 대한 인증 요구 응답). 이것은 호스트 경로 도달성 증거일 뿐 Docker 내부 DNS/proxy/credential 경로의 정상 증거는 아니다. 원인을 단정하거나 Docker 설정·로그인·daemon을 변경하지 않았다. 마지막 pull 재조회도 session `64431` 실행 중/새 출력 없음이었다. 두 build 시도는 모두 terminal failure이므로 자동으로 새 build를 반복하지 않는다. 임시 소스는 여전히 `/tmp/muhan-amd64-source.DRusdR`에 보존되어 있다.
