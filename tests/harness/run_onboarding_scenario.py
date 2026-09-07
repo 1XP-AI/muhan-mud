@@ -986,8 +986,11 @@ def main() -> int:
         if fixture is not None and os.environ.get("KEEP_TEST_FIXTURE") != "1":
             shutil.rmtree(fixture, ignore_errors=True)
 
-    print(json.dumps({"status": result["status"], "scenario": "onboarding-real-c",
-                      "duration_ms": result["duration_ms"]}))
+    summary = {"status": result["status"], "scenario": "onboarding-real-c",
+               "duration_ms": result["duration_ms"]}
+    if result["status"] != "passed":
+        summary.update({key: result[key] for key in ("error", "detail") if key in result})
+    print(json.dumps(summary))
     return 0 if result["status"] == "passed" else 1
 
 
