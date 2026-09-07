@@ -118,6 +118,7 @@ async function prepareFixture(): Promise<void> {
   // The native writer deliberately opens an existing private journal root;
   // it must not manufacture a deployment root during ownership acquisition.
   await mkdir(join(fixture, 'character-save-journal'), { mode: 0o700 })
+  await mkdir(join(fixture, 'character-save-stage'), { mode: 0o700 })
   assert.equal((await stat(join(fixture, 'character-save-journal'))).mode & 0o777, 0o700)
   for (const directory of ['rooms', 'objmon', 'help', 'post']) {
     await cp(join(root, directory), join(fixture, directory), { recursive: true })
@@ -677,7 +678,8 @@ async function main(): Promise<void> {
     browser.send('7\n')
     await eventually(() => assert.match(browser.text(), /새 암호를/))
     browser.send(`${password}\n`)
-    await eventually(async () => assert.match(await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8'), /state=(saved|committed)\n/))
+    await eventually(async () => assert.match(await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8'), /state=(saved|committed)\n/,
+      redact(`C diagnostics: ${mudDiagnostics}; terminal: ${browser.text()}`)))
     await eventually(() => assert.ok(browser.json('provisioned')))
     assert.equal(finalizeObservedSaved, true)
 
