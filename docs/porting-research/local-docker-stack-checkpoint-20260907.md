@@ -99,3 +99,39 @@ assertions. Also audit other plain-char runtime sentinels (e.g. commands=-1)
 as a separate portability concern; fnparam alone is not a complete ARM audit.
 The real browser phase has still not been reached, and no production rollout,
 remote push, Actions job, or cloud build was performed.
+
+## First shadow save now crosses the saved-receipt gate
+
+Verified progress in this continuation:
+
+- Added redacted test failure evidence (control frames and journal/stage names)
+  and fixed-label native save diagnostics. Runtime reported
+  `step=absent-head-bootstrap cutpoint=0`; the target shard did not exist.
+- The file-only PlayerStore calls player_path_ensure_dir before saving. The
+  M3 adapter instead reached descriptor-based absent observation without
+  preparing the first character's shard. Existing tests always supplied it.
+- Added a missing-shard regression, demonstrated RED, then implemented
+  character_save_journal_v2_prepare_absent_shard_at (b94ad9d). It validates the
+  canonical absent wire and existing private root/player/journal/stage tree,
+  creates only the route's shard through the held root descriptor, validates
+  ownership/mode/no-follow, and fsyncs shard and parent. Existing entries are
+  never chmod'd or replaced. No player bytes or DB head are created by this
+  preparation; the original absent-file and exact-rebind gates still run.
+- Added existing-shard symlink and permissive-mode rejection cases. Bootstrap
+  tests and ASan/UBSan tests passed. Existing v2 journal, v2 sanitizer,
+  PlayerStore and protocol test targets also passed with exit 0.
+- Actual C full-stack run crossed `state=(saved|committed)` after submitting
+  the provision password, without fixture pre-creation of the target shard.
+  The earlier pending-receipt defect is fixed in the exercised scenario.
+
+Latest run source: 78fa283a65ad0349b0cbd8ea3bc5dc6d0a72d1e7.
+Evidence: /tmp/muhan-local-stack.FM5ETN/result.json.
+The standalone Gateway/Postgres contract passes. Full stack still fails at
+the next `browser.json('provisioned')` gate. C stderr is empty and the Gateway
+returns its generic `onboarding failed` control after saving.
+
+Next: determine which post-save boundary rejects (finalize/reconcile, snapshot
+command binding, or C/DB handoff activation). Inspect actual DB lifecycle and
+the exact authorizer failure phase in the disposable run. Do not treat a
+saved file as active gameplay, weaken handoff requirements, or mark the full
+browser/normalized acceptance complete. No deployment or external CI occurred.
