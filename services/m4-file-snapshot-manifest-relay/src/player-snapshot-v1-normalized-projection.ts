@@ -400,7 +400,9 @@ function calculatedCanonicalDigest(player: PlayerSnapshotV1NormalizedProjection[
   return createHash('sha256').update(Buffer.concat(bytes)).digest('hex')
 }
 
-function parseProjection(stdout: Uint8Array): PlayerSnapshotV1NormalizedProjection {
+/** Shared lossless wire decoder for Rust output and explicit read-only SQL projections. */
+export function parsePlayerSnapshotV1NormalizedProjection(stdout: Uint8Array): PlayerSnapshotV1NormalizedProjection {
+  if (stdout.byteLength > MAX_OUTPUT_BYTES) throw invalid()
   const text = decodeUtf8(stdout)
   if (!text.endsWith('\n') || text.includes('\r') || text.indexOf('\n') !== text.length - 1) throw invalid()
   const root = closedObject(new JsonParser(text.slice(0, -1)).parse(), ['algorithm', 'canonical_digest', 'format', 'player', 'version'])
@@ -496,7 +498,7 @@ export async function projectPlayerSnapshotV1Normalized(
       if (code !== 0 || signal !== null) { fail(); return }
       try {
         if (decodeUtf8(Buffer.concat(stderr)).length !== 0) { fail(); return }
-        const projection = parseProjection(Buffer.concat(stdout))
+        const projection = parsePlayerSnapshotV1NormalizedProjection(Buffer.concat(stdout))
         settled = true
         cleanupAfterClose()
         resolve(projection)

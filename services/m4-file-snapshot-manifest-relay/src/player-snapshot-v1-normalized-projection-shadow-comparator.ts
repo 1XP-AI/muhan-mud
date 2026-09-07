@@ -190,7 +190,7 @@ function closedProjection(value: unknown): value is PlayerSnapshotV1NormalizedPr
   return canonicalPlayerSnapshotV1NormalizedProjectionDigest(player as PlayerSnapshotV1NormalizedProjection['player']) === projection.canonicalDigest
 }
 
-function closedRecord(value: unknown): value is ImmutablePlayerSnapshotV1NormalizedProjectionRecord {
+export function isImmutableNormalizedProjectionRecord(value: unknown): value is ImmutablePlayerSnapshotV1NormalizedProjectionRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   return exactlyKeys(record, RECORD_FIELDS)
@@ -243,7 +243,7 @@ export async function comparePlayerSnapshotV1NormalizedProjectionShadow(
   if (rows.length === 0) return 'MISSING_RECORD'
   if (rows.length !== 1) return 'UNEXPECTED_DUPLICATE'
   const record = rows[0]
-  if (!closedRecord(record)) return 'INVALID_RECORD'
+  if (!isImmutableNormalizedProjectionRecord(record)) return 'INVALID_RECORD'
   if (record.worldId !== artifact.worldId || record.characterId !== artifact.characterId || record.commandId !== artifact.commandId
     || record.receiptRequestSha256 !== artifact.receiptRequestSha256 || record.writerInstanceId !== artifact.writerInstanceId
     || record.writerEpoch !== artifact.writerEpoch || record.writerRevision !== artifact.writerRevision
