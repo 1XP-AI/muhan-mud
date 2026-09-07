@@ -11,11 +11,18 @@ static iobuf io;
 static int calls,change;
 static bank_money_live_request request={"muhan","33333333-3333-4333-8333-333333333333","1",
     "44444444-4444-4444-8444-444444444444","7","deposit","25"};
-int bank_money_coordinate_native(void *c,const char *planner,const char *node,const char *script,const char *root,
-    const char *const args[11],int ms,bank_money_coordinate_result *out)
+int bank_money_live_snapshot(const creature *p,unsigned char **out,size_t *length)
+{
+    *out=malloc(sizeof(p->gold)+sizeof(p->level)); assert(*out);
+    *length=sizeof(p->gold)+sizeof(p->level);
+    memcpy(*out,&p->gold,sizeof(p->gold)); memcpy(*out+sizeof(p->gold),&p->level,sizeof(p->level)); return 0;
+}
+int bank_money_coordinate_checked_native(void *c,const char *planner,const char *node,const char *script,const char *root,
+    const char *const args[11],int ms,const unsigned char *expected,size_t expected_length,bank_money_coordinate_result *out)
 {
     assert(c==(void *)1 && ms==2000); (void)planner;(void)node;(void)script;(void)root;
     calls++;
+    assert(expected && expected_length==sizeof(player.gold)+sizeof(player.level));
     assert(!strcmp(args[0],ext.character_id) && !strcmp(args[2],ext.auth_user_id));
     assert(!strcmp(args[3],ext.db_session_id) && !strcmp(args[4],ext.db_gateway_instance_id));
     assert(!strcmp(args[1],request.world_id) && !strcmp(args[5],request.writer_id));
@@ -25,6 +32,7 @@ int bank_money_coordinate_native(void *c,const char *planner,const char *node,co
     if(change==2) ext.db_session_id[0]='a';
     if(change==3) player.gold++;
     if(change==4) Ply[1].io=NULL;
+    if(change==5) player.level++;
     out->frame=malloc(1); out->frame_length=1; out->revision=8;
     return BANK_MONEY_COMMIT_CONFIRMED;
 }
@@ -43,7 +51,7 @@ int main(void)
 {
     bank_money_coordinate_result out; int i;
     setup(); assert(run(&out)==BANK_MONEY_COMMIT_CONFIRMED && calls==1 && out.revision==8); free(out.frame);
-    for(i=1;i<=4;i++) { setup(); change=i; assert(run(&out)==BANK_MONEY_COMMIT_UNKNOWN && calls==1 && !out.frame && !out.revision); }
+    for(i=1;i<=5;i++) { setup(); change=i; assert(run(&out)==BANK_MONEY_COMMIT_UNKNOWN && calls==1 && !out.frame && !out.revision); }
     for(i=0;i<7;i++) {
         setup();
         if(i==0) ext.db_session_id[0]=0;

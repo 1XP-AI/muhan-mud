@@ -18,4 +18,7 @@ typedef struct bank_money_coordinate_result {
  * Each phase has its own timeout. On failure discard the borrowed PGconn.
  * Does not mutate live creatures or install the bank command route. */
 int bank_money_coordinate_native(void *,const char *,const char *,const char *,const char *,const char *const [11],int,bank_money_coordinate_result *);
+/* Live entry requires a canonical normalized player image, equal byte-for-byte
+ * to the DB-read source before any planning/preparation/commit. */
+int bank_money_coordinate_checked_native(void *,const char *,const char *,const char *,const char *,const char *const [11],int,const unsigned char *,size_t,bank_money_coordinate_result *);
 #endif

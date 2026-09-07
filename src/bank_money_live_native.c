@@ -1,6 +1,7 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "bank_money_live_native.h"
+#include "bank_money_live_snapshot.h"
 #include <stdlib.h>
 #include <string.h>
 typedef struct live_binding {
@@ -43,21 +44,26 @@ int bank_money_live_native(void *connection,const creature *player,const bank_mo
     const char *planner,const char *node,const char *script,const char *root,int timeout_ms,bank_money_coordinate_result *out)
 {
     live_binding before,after; const char *args[11]; int fd,status;
+    unsigned char *expected=NULL,*current=NULL; size_t expected_length=0,current_length=0;
     if(!out) return BANK_MONEY_COMMIT_INVALID;
     memset(out,0,sizeof(*out));
     if(!player||!request) return BANK_MONEY_COMMIT_NOT_SENT;
     fd=player->fd;
     if(capture(fd,player,&before)) return BANK_MONEY_COMMIT_NOT_SENT;
+    if(bank_money_live_snapshot(player,&expected,&expected_length)) return BANK_MONEY_COMMIT_NOT_SENT;
     args[0]=before.character; args[1]=request->world_id; args[2]=before.actor;
     args[3]=before.session; args[4]=before.gateway; args[5]=request->writer_id;
     args[6]=request->writer_epoch; args[7]=request->command_id; args[8]=request->expected_revision;
     args[9]=request->direction; args[10]=request->amount;
-    status=bank_money_coordinate_native(connection,planner,node,script,root,args,timeout_ms,out);
+    status=bank_money_coordinate_checked_native(connection,planner,node,script,root,args,timeout_ms,expected,expected_length,out);
     if(status>0 && (capture(fd,player,&after)||before.ext!=after.ext||before.io!=after.io||before.gold!=after.gold
        ||strcmp(before.character,after.character)||strcmp(before.actor,after.actor)
-       ||strcmp(before.session,after.session)||strcmp(before.gateway,after.gateway))) {
+       ||strcmp(before.session,after.session)||strcmp(before.gateway,after.gateway)
+       ||bank_money_live_snapshot(player,&current,&current_length)
+       ||current_length!=expected_length||memcmp(current,expected,expected_length))) {
         free(out->frame); memset(out,0,sizeof(*out));
-        return BANK_MONEY_COMMIT_UNKNOWN;
+        status=BANK_MONEY_COMMIT_UNKNOWN;
     }
+    free(expected); free(current);
     return status;
 }

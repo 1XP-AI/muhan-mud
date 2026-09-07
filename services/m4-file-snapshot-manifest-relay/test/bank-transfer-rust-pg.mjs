@@ -105,13 +105,14 @@ try {
     } finally { await db.query('rollback') }
   }
   const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
-  const nativeCommit=(args,overrideAuthority=authority,options='',pendingRoot='',coordinate=false)=>{
+  const nativeCommit=(args,overrideAuthority=authority,options='',pendingRoot='',coordinate=false,drift='')=>{
     const lengths=Buffer.alloc(8); lengths.writeUInt32BE(args[5].length); lengths.writeUInt32BE(args[6].length,4)
     return spawnSync(process.env.BANK_TRANSFER_NATIVE_COMMIT,[args[0],...overrideAuthority,...args.slice(1,5)].map(String),{
       input:Buffer.concat([lengths,args[5],args[6]]),timeout:5000,maxBuffer:1024,
       env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
         BANK_TRANSFER_PENDING_ROOT:pendingRoot,BANK_TRANSFER_PENDING_NODE:process.execPath,
         BANK_TRANSFER_COORDINATE:coordinate?'1':'0',
+        BANK_TRANSFER_LIVE_DRIFT:drift,
         BANK_TRANSFER_PENDING_CLI:new URL('../dist/money-pending-prepare-cli.js',import.meta.url).pathname,
         ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
     })
@@ -309,6 +310,12 @@ try {
         assert.equal(refused.status,4,refused.stderr.toString()); assert.equal(refused.stdout.length,0)
         assert.deepEqual(await read(),unchanged)
         if(index===1) {
+          for(const drift of ['gold','level']) {
+            const rejected=nativeCommit(args,authority,'',nativePending,true,drift)
+            assert.equal(rejected.status,4,rejected.stderr.toString()); assert.equal(rejected.stdout.length,0)
+            assert.deepEqual(await read(),unchanged)
+            await assert.rejects(readMoneyPending(nativePending,args[1]),{code:'ENOENT'})
+          }
           const stale=[...args]; stale[2]=0
           const result=nativeCommit(stale,authority,'',nativePending,true)
           assert.equal(result.status,4,result.stderr.toString()); assert.equal(result.stdout.length,0)

@@ -45,6 +45,8 @@ int main(void)
     phase=0; fail_read=1; assert(run(&out)==BANK_MONEY_COMMIT_NOT_SENT && phase==1 && !out.frame);
     phase=0; fail_read=0; fail_plan=1; assert(run(&out)==BANK_MONEY_COMMIT_NOT_SENT && phase==2 && !out.frame);
     phase=0; fail_plan=0; request[8]="6"; assert(run(&out)==BANK_MONEY_COMMIT_NOT_SENT && phase==1 && !out.frame);
+    phase=0; request[8]="7";
+    assert(bank_money_coordinate_checked_native((void *)1,"/planner","/node","/prepare","/pending",request,2000,(const unsigned char *)"different",9,&out)==BANK_MONEY_COMMIT_NOT_SENT && phase==1 && !out.frame);
     phase=0; request[8]="7"; request[10]=NULL; assert(run(&out)==BANK_MONEY_COMMIT_INVALID && phase==0 && !out.frame);
     return 0;
 }
