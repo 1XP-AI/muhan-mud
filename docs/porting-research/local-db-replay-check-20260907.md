@@ -255,3 +255,28 @@ authorized read path, persist nonempty bank payloads in backup fixtures and
 verify restored bytes through C and Rust. Existing player restore success does
 NOT prove bank payload restoration. No migration was applied to testnet and
 no legacy bank authority was switched.
+# Opt-in full bank payload relay
+
+Source `4247fc8` adds a separate full-payload relay, PostgreSQL adapter and
+`bank-payload` package command. Run only with `--once`,
+`M4_BANK_SNAPSHOT_V1_PAYLOAD_ENABLED=true`, an absolute
+`M4_BANK_SNAPSHOT_V1_PAYLOAD_OUTBOX_DIR`, and
+`M4_BANK_SNAPSHOT_V1_PAYLOAD_DATABASE_URL` for the writer login.
+Default manifest/topology entrypoints and deployment settings are unchanged.
+
+The existing descriptor-rooted scanner pairs immutable bank files with their
+M3 manifests. The new lane owns a byte copy, validates header/receipt/graph,
+and sends the complete payload through the parameterized seven-argument RPC.
+The adapter checks byte count and digest again and releases its connection on
+all query outcomes. CLI output contains counters, not payloads.
+
+New test first failed with the missing implementation. Focused tests now pass
+(8), as does TypeScript checking. The local Linux full runner passed exit 0:
+`/tmp/muhan-bank-payload-relay-regression.log` (165 relay tests plus separate
+artifact conformance, SQL bank persistence and existing player restores).
+
+Evidence limit: adapter parameter mapping was tested with an injected client;
+the SQL RPC was tested against actual Postgres separately. A real filesystem
+through new adapter to Postgres end-to-end run, bank backup/restore, and C/Rust
+verification of those restored bank bytes remain to be implemented and run.
+No production activation or testnet deployment was performed.
