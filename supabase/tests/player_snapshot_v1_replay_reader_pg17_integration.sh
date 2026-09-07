@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
-# Only a source line number is emitted; never expand the failed command or env.
-trap 'printf "replay reader harness failed at line %s\n" "$LINENO" >&2' ERR
+set -euo pipefail
 
 [[ "${PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE:-}" == 1 ]] || {
   echo "M5e replay reader PG17 integration skipped (set PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1)"

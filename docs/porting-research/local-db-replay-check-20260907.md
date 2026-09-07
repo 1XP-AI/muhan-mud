@@ -1,4 +1,30 @@
-# Local DB replay check — incomplete
+# Local DB replay check — passed on Linux
+
+## Verified result
+
+Source `c6bf3e9` completed the full isolated Linux/PG17 harness with exit 0.
+Log: `/tmp/muhan-linux-replay-digest-fix.log`. Current frozen TypeScript and
+Rust sources were compiled inside the reused Linux test image; PostgreSQL used
+tmpfs and no published ports or Docker socket. Owned containers were cleaned up.
+
+Root cause of the final DECODE_MISMATCH: the rehearsal CLI omitted mandatory
+`snapshotSha256` when invoking the Rust process adapter. A new regression first
+failed, then passed after binding both local and database verifier calls to the
+immutable artifact digest. Related unit suites pass 14/14; typecheck passes.
+No digest, receipt, filesystem or database-read checks were relaxed.
+
+Actual coverage includes pre-migration DB_READ_ERROR, post-migration full-payload
+MATCH using real Rust, actual reader login/role/read-only assertions, forbidden
+reads/writes, comparator match/mismatch/missing/duplicate/read-error/sanitization
+cases, and unchanged artifact/projection fingerprints. This is seeded immutable
+replay evidence, not a live gameplay loader, backup restore, production image,
+or DB-authoritative gameplay cutover.
+
+Removed the temporary general ERR trap after diagnosis: expected negative cases
+also triggered it and printed misleading failure lines in the successful log.
+The specific aggregate full-payload diagnostic remains for real failures.
+
+## Earlier failure history
 
 ## Linux execution now available
 
