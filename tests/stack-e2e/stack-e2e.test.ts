@@ -909,7 +909,7 @@ async function main(): Promise<void> {
     // The real browser emits its actual ephemeral origin, not the synthetic
     // origin used by Node WebSocket fixtures. Authorize that exact origin only.
     const webPort = await choosePort()
-    claimConfig.allowedOrigins.add(`http://127.0.0.1:${webPort}`)
+    claimConfig.allowedOrigins = new Set([...claimConfig.allowedOrigins, `http://127.0.0.1:${webPort}`])
     let claimCompletionPhase = 'before-claim'
     const expiringClaimAuthorizer: OnboardingAuthorizer = {
       begin: (request) => claimAuthorizer.begin(request),
