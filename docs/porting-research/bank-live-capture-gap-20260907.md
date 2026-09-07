@@ -457,6 +457,35 @@ The test retains command bytes in its parent process; durable recovery after
 the entire runtime restarts, expired session/writer reconciliation, live command
 installation and exclusive legacy-write fencing remain outstanding.
 
+### Durable request and fresh-process replay
+
+Source `96448e2` adds a Linux pending-request store containing the exact eleven
+commit arguments and proposed paired frame in a canonical digest-bound record.
+It checks bounded identity/numeric/frame shape; gameplay semantics remain the
+Rust/DB responsibility. An owned mode-0700 directory is held by descriptor;
+operations use its `/proc/self/fd` capability, final symlinks are refused, and
+records must be regular owned mode-0600 single-link files. Publication writes
+and fsyncs a private temporary file, links without replacing an existing command,
+removes its own temporary link, then fsyncs the directory. Identical prepare is
+an exact retry; changed command content conflicts. No credential is recorded,
+and no production delete/acknowledge lifecycle is implemented yet.
+
+The actual lost-ack integration prepares the request before sending. After
+the native sender exits UNKNOWN, a fresh Node process receives only the private
+directory and command filename, reloads the recorded arguments/bytes, launches
+a new native commit process, and gets EXACT_RETRY. It is not supplied the old
+frame or authority tuple by the parent. Changed intent is rejected without
+overwrite; appending corruption prevents replay and emits no success output.
+The database still has one deposit intent, followed by the normal withdrawal.
+
+Full local runner passed exit 0: `/tmp/muhan-money-pending-recovery.log`. This
+proves file-backed recovery across sender/replayer process lifetimes while the
+test coordinator and original authority remain available. It does not yet
+prove machine/power-loss recovery at every fsync boundary, discovery/draining
+after complete service restart, expired-authority reconciliation, or wiring
+into live C command handling. The existing legacy journal was not reused
+because it encodes legacy-file promotion rather than a two-payload DB command.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
