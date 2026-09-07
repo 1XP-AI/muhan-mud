@@ -18,6 +18,8 @@ static const char COMMAND_B[] = "20000000-0000-0000-0000-000000000002";
 static const char COMMAND_C[] = "30000000-0000-0000-0000-000000000003";
 static const char COMMAND_REVISION_2[] = "00000000-0000-0000-0000-000000000004";
 static const char COMMAND_REVISION_1[] = "f0000000-0000-0000-0000-000000000005";
+static const char COMMAND_REVISION_3[] = "e0000000-0000-0000-0000-000000000009";
+static const char COMMAND_REVISION_4[] = "d0000000-0000-0000-0000-000000000010";
 static const char CHARACTER_REVISION[] = "90000000-0000-0000-0000-000000000006";
 static const char COMMAND_INDEPENDENT[] = "40000000-0000-0000-0000-000000000007";
 static const char CHARACTER_INDEPENDENT[] = "a0000000-0000-0000-0000-000000000008";
@@ -49,6 +51,18 @@ typedef struct observed_recovery {
     unsigned int event_count;
     char events[8];
 } observed_recovery;
+
+typedef struct history_receipt_state {
+    mock receipts;
+    const char *root;
+    const char *anchor_command;
+    character_save_journal_v2_wire expected[8];
+    const char *expected_names[8];
+    unsigned int expected_count;
+    int mismatch;
+    int mutate_live;
+    int mutate_anchor_marker;
+} history_receipt_state;
 
 static int bad(condition, message)
 int condition;
@@ -165,6 +179,117 @@ const character_save_journal_v2_recovery_report *report;
 static character_save_journal_v2_receipt_result receipt(opaque, value)
 void *opaque; const character_save_journal_v2_receipt *value;
 { mock *state=opaque;int index=state->calls;if(index<(int)(sizeof(state->order)/sizeof(state->order[0])))strcpy(state->order[index],value->command_id);state->calls++;if(state->add_prepared){state->add_prepared=0;if(!state->root||prepare(state->root,COMMAND_C,NAME_C,"C",1))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}if(state->reopen_writer){state->reopen_writer=0;if(!state->root||!state->writer||character_save_journal_v2_writer_close(state->writer)||character_save_journal_v2_writer_open(state->root,WORLD,state->writer))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}if(state->close_writer){state->close_writer=0;if(!state->writer||character_save_journal_v2_writer_close(state->writer))return CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;}return index>=(int)(sizeof(state->results)/sizeof(state->results[0]))?CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE:state->results[index]; }
+
+static int receipt_matches_wire(value, wire, legacy_name)
+const character_save_journal_v2_receipt *value;
+const character_save_journal_v2_wire *wire;
+const char *legacy_name;
+{
+    const char *expected_state;
+    size_t name_length;
+    if(!value || !wire || !legacy_name || !value->world_id ||
+       !value->character_id || !value->command_id || !value->writer_instance_id ||
+       !value->request_sha256 || !value->expected_state || !value->post_sha256)
+        return 0;
+    name_length = strlen(legacy_name);
+    expected_state = wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ?
+        "existing" : "absent";
+    if(value->legacy_name_key_length != name_length || !value->legacy_name_key ||
+       memcmp(value->legacy_name_key, legacy_name, name_length) ||
+       strcmp(value->world_id, wire->world_id) ||
+       strcmp(value->character_id, wire->character_id) ||
+       strcmp(value->command_id, wire->command_uuid) ||
+       strcmp(value->writer_instance_id, wire->writer_instance_id) ||
+       strcmp(value->request_sha256, wire->request_sha256) ||
+       value->writer_epoch != (unsigned long long)wire->writer_epoch ||
+       value->writer_revision != (unsigned long long)wire->writer_revision ||
+       strcmp(value->expected_state, expected_state) ||
+       strcmp(value->post_sha256, wire->post_sha256) ||
+       value->storage_format != (unsigned int)wire->storage_format)
+        return 0;
+    if(wire->expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING)
+        return value->expected_sha256 &&
+            !strcmp(value->expected_sha256, wire->expected_sha256);
+    return value->expected_sha256 == 0;
+}
+
+static character_save_journal_v2_receipt_result history_receipt(opaque, value)
+void *opaque;
+const character_save_journal_v2_receipt *value;
+{
+    history_receipt_state *state = opaque;
+    character_save_journal_v2_receipt_result result;
+    unsigned int index = (unsigned int)state->receipts.calls;
+    char relative[128];
+
+    if(index >= state->expected_count ||
+       !receipt_matches_wire(value, &state->expected[index],
+                             state->expected_names[index]))
+        state->mismatch = 1;
+    result = receipt(&state->receipts, value);
+    if(index == 0 && result == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED) {
+        if(state->mutate_live &&
+           (!state->root || leaf(state->root, "player/b2/M3beta", "mutated", 7)))
+            state->mismatch = 1;
+        if(state->mutate_anchor_marker) {
+            if(!state->root || !state->anchor_command ||
+               journal_relative(relative, sizeof(relative), state->anchor_command,
+                                "published") ||
+               leaf(state->root, relative, "malformed", 9))
+                state->mismatch = 1;
+        }
+    }
+    return result;
+}
+
+static int history_load_expected(root, ids, names, count, wires)
+const char *root;
+const char *const *ids;
+const char *const *names;
+size_t count;
+character_save_journal_v2_wire *wires;
+{
+    size_t i;
+    if(!root || !ids || !names || !wires) return -1;
+    for(i = 0; i < count; i++)
+        if(character_save_journal_v2_read_prepared(root, ids[i], &wires[i]))
+            return -1;
+    return 0;
+}
+
+static int prepare_history_three_acked(root, writer)
+const char *root;
+character_save_journal_v2_writer_context *writer;
+{
+    char hash1[65], hash2[65], hash3[65];
+    mock state;
+
+    if(prepare_published_first(root, writer, COMMAND_REVISION_1,
+                               CHARACTER_REVISION, NAME_B, "1", 1, hash1))
+        return -1;
+    memset(&state, 0, sizeof(state));
+    if(character_save_journal_v2_ack(writer, COMMAND_REVISION_1, receipt,
+                                     &state) != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED)
+        return -1;
+    if(prepare_revision_existing(root, COMMAND_REVISION_2, CHARACTER_REVISION, 2,
+                                 NAME_B, "2", 1, hash1, hash2) ||
+       character_save_journal_v2_publish_recover(writer, COMMAND_REVISION_2) !=
+           CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK)
+        return -1;
+    memset(&state, 0, sizeof(state));
+    if(character_save_journal_v2_ack(writer, COMMAND_REVISION_2, receipt,
+                                     &state) != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED)
+        return -1;
+    if(prepare_revision_existing(root, COMMAND_REVISION_3, CHARACTER_REVISION, 3,
+                                 NAME_B, "3", 1, hash2, hash3) ||
+       character_save_journal_v2_publish_recover(writer, COMMAND_REVISION_3) !=
+           CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK)
+        return -1;
+    memset(&state, 0, sizeof(state));
+    return character_save_journal_v2_ack(writer, COMMAND_REVISION_3, receipt,
+                                         &state) == CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED ?
+        0 : -1;
+}
 
 static character_save_journal_v2_receipt_result observed_receipt(opaque, value)
 void *opaque;
@@ -521,5 +646,160 @@ static int test_malformed_marker_callback_replay(void)
     return failed;
 }
 
+static int test_history_replay_receipts(void)
+{
+    char root[PATH_MAX], hash1[65], hash2[65], hash3[65], hash4[65];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_recovery_report report;
+    character_save_journal_v2_wire expected[4];
+    history_receipt_state state;
+    mock setup_state;
+    const char *three_ids[3] = {
+        COMMAND_REVISION_1, COMMAND_REVISION_2, COMMAND_REVISION_3
+    };
+    const char *four_ids[4] = {
+        COMMAND_REVISION_1, COMMAND_REVISION_2, COMMAND_REVISION_3,
+        COMMAND_REVISION_4
+    };
+    const char *three_names[3] = { NAME_B, NAME_B, NAME_B };
+    const char *four_names[4] = { NAME_B, NAME_B, NAME_B, NAME_B };
+    int failed = 0;
+
+    if(setup(root, "history-replay-acked", &writer) ||
+       prepare_history_three_acked(root, &writer) ||
+       history_load_expected(root, three_ids, three_names, 3, expected)) {
+        teardown(&writer, root);
+        return 1;
+    }
+    memset(&state, 0, sizeof(state));
+    state.root = root;
+    state.expected_count = 3;
+    memcpy(state.expected, expected, 3 * sizeof(expected[0]));
+    state.expected_names[0] = three_names[0];
+    state.expected_names[1] = three_names[1];
+    state.expected_names[2] = three_names[2];
+    memset(&report, 0, sizeof(report));
+    failed += bad(character_save_journal_v2_recovery_run(
+        &writer, history_receipt, &state, &report) ==
+            CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK &&
+        state.receipts.calls == 3 && !state.mismatch &&
+        !strcmp(state.receipts.order[0], COMMAND_REVISION_1) &&
+        !strcmp(state.receipts.order[1], COMMAND_REVISION_2) &&
+        !strcmp(state.receipts.order[2], COMMAND_REVISION_3) &&
+        report.discovered == 3 && report.visited == 3 &&
+        report.publish_attempted == 1 &&
+        report.publish_results[CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK] == 1 &&
+        report.ack_attempted == 3 &&
+        report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED] == 3 &&
+        report_totals_match(&report),
+        "three fully published and ACKed revisions replay exact receipts");
+    if(teardown(&writer, root)) return failed + 1;
+
+    if(setup(root, "history-replay-staged", &writer) ||
+       prepare_published_first(root, &writer, COMMAND_REVISION_1,
+                               CHARACTER_REVISION, NAME_B, "1", 1, hash1)) {
+        teardown(&writer, root);
+        return failed + 1;
+    }
+    memset(&setup_state, 0, sizeof(setup_state));
+    if(character_save_journal_v2_ack(&writer, COMMAND_REVISION_1, receipt,
+                                     &setup_state) != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED ||
+       prepare_revision_existing(root, COMMAND_REVISION_2, CHARACTER_REVISION, 2,
+                                 NAME_B, "2", 1, hash1, hash2) ||
+       character_save_journal_v2_publish_recover(&writer, COMMAND_REVISION_2) !=
+           CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK) {
+        teardown(&writer, root);
+        return failed + 1;
+    }
+    memset(&setup_state, 0, sizeof(setup_state));
+    if(character_save_journal_v2_ack(&writer, COMMAND_REVISION_2, receipt,
+                                     &setup_state) != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED ||
+       prepare_revision_existing(root, COMMAND_REVISION_3, CHARACTER_REVISION, 3,
+                                 NAME_B, "3", 1, hash2, hash3) ||
+       leaf(root, "player/b2/M3beta", "3", 1) ||
+       prepare_revision_existing(root, COMMAND_REVISION_4, CHARACTER_REVISION, 4,
+                                 NAME_B, "4", 1, hash3, hash4) ||
+       leaf(root, "player/b2/M3beta", "2", 1) ||
+       history_load_expected(root, four_ids, four_names, 4, expected)) {
+        teardown(&writer, root);
+        return failed + 1;
+    }
+    memset(&state, 0, sizeof(state));
+    state.root = root;
+    state.expected_count = 4;
+    memcpy(state.expected, expected, 4 * sizeof(expected[0]));
+    state.expected_names[0] = four_names[0];
+    state.expected_names[1] = four_names[1];
+    state.expected_names[2] = four_names[2];
+    state.expected_names[3] = four_names[3];
+    memset(&report, 0, sizeof(report));
+    failed += bad(character_save_journal_v2_recovery_run(
+        &writer, history_receipt, &state, &report) ==
+            CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK &&
+        state.receipts.calls == 4 && !state.mismatch &&
+        !strcmp(state.receipts.order[0], COMMAND_REVISION_1) &&
+        !strcmp(state.receipts.order[1], COMMAND_REVISION_2) &&
+        !strcmp(state.receipts.order[2], COMMAND_REVISION_3) &&
+        !strcmp(state.receipts.order[3], COMMAND_REVISION_4) &&
+        report.discovered == 4 && report.visited == 4 &&
+        report.publish_attempted == 3 &&
+        report.publish_results[CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK] == 3 &&
+        report.ack_attempted == 4 &&
+        report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED] == 4 &&
+        report_totals_match(&report),
+        "two published revisions and two staged tails replay exact receipts");
+    if(teardown(&writer, root)) return failed + 1;
+    return failed;
+}
+
+static int test_history_replay_callback_mutations(void)
+{
+    char root[PATH_MAX];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_recovery_report report;
+    character_save_journal_v2_wire expected[3];
+    history_receipt_state state;
+    const char *ids[3] = {
+        COMMAND_REVISION_1, COMMAND_REVISION_2, COMMAND_REVISION_3
+    };
+    const char *names[3] = { NAME_B, NAME_B, NAME_B };
+    int failed = 0, mode;
+
+    for(mode = 0; mode < 2; mode++) {
+        if(setup(root, "history-replay-mutation", &writer) ||
+           prepare_history_three_acked(root, &writer) ||
+           history_load_expected(root, ids, names, 3, expected)) {
+            teardown(&writer, root);
+            return failed + 1;
+        }
+        memset(&state, 0, sizeof(state));
+        state.root = root;
+        state.anchor_command = COMMAND_REVISION_3;
+        state.expected_count = 3;
+        memcpy(state.expected, expected, 3 * sizeof(expected[0]));
+        state.expected_names[0] = names[0];
+        state.expected_names[1] = names[1];
+        state.expected_names[2] = names[2];
+        if(mode == 0) state.mutate_live = 1;
+        else state.mutate_anchor_marker = 1;
+        memset(&report, 0, sizeof(report));
+        failed += bad(character_save_journal_v2_recovery_run(
+            &writer, history_receipt, &state, &report) ==
+                CHARACTER_SAVE_JOURNAL_V2_RECOVERY_INCOMPLETE &&
+            state.receipts.calls == 1 && !state.mismatch &&
+            !strcmp(state.receipts.order[0], COMMAND_REVISION_1) &&
+            report.discovered == 3 && report.visited == 1 &&
+            report.publish_attempted == 0 && report.ack_attempted == 1 &&
+            report.ack_results[
+                CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE] == 1 &&
+            report_totals_match(&report),
+            mode == 0 ?
+                "historical ACKed receipt detects callback live-byte mutation" :
+                "historical ACKed receipt detects callback anchor-marker mutation");
+        if(teardown(&writer, root)) return failed + 1;
+    }
+    return failed;
+}
+
 int main(void)
-{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_history_anchor_variants();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();failed+=test_stage_observer_is_pre_publish_and_non_authoritative();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }
+{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_history_anchor_variants();failed+=test_history_replay_receipts();failed+=test_history_replay_callback_mutations();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();failed+=test_stage_observer_is_pre_publish_and_non_authoritative();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }

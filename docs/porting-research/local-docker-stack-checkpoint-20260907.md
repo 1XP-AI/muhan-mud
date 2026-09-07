@@ -1,5 +1,28 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest diagnosis: rejected claim permanently skips cancellation
+
+Frozen `fe3edfc` reproduces `missing-member-intent-after-close=started`, then
+the next claim returns an error frame and closed socket instead of readiness.
+Evidence: `/tmp/muhan-local-stack.qFxEZQ/result.json`. Gateway clears
+`unreservedIntentMayExist` before awaiting challenge (gateway.ts:932), but
+the membership-gate SQL rejects before writing a claim attempt. Therefore
+finish never schedules cancellation; this is not an asynchronous cleanup lag.
+Latest begin rejects a new correlation while that started intent is unexpired.
+
+Next implementation must preserve durable claim evidence: guarded cancellation
+shares the existing intent row lock with challenge. A rejected/no-ledger
+challenge should release its intent; an indeterminate committed challenge
+must not erase its ledger or allow an invalid ownership transition. A separate
+explicit abort policy is needed for allowed-but-unclaimed attempts (wrong
+password/disconnect), retaining attempt history and rate limits. Do not hide
+the retry bug by using different actors for each negative E2E case.
+
+Luna added exact receipt-scalar, three-generation, multiple staged-tail, and
+callback-time live/published-marker mutation regression tests. Root reran
+normal recovery and ASan/UBSan targets successfully. Astra and Luna finished;
+no worker remains assigned work. No deployment or remote CI dispatch this turn.
+
 ## Latest full-stack: restart and recovered gameplay pass; claim readiness next
 
 Frozen `e8926aa` actually passed the previously failing C restart. The next
