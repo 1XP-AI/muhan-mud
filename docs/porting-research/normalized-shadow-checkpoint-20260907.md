@@ -149,3 +149,13 @@ Luna/max의 제한적 독립 정적 점검 `task_1416f14fae81` / `ctx_b7da02f59d
 배포 커밋 `e9ffe418`에서 normalized comparison을 기존 component-only DB allowlist에서 제거하고 같은 앱·release·component를 모두 요구하는 별도 TCP 5432 ingress 항목으로 옮겼다. 다른 기존 consumer 규칙은 변경하지 않았다. 비교 Job의 network policy가 활성화되는 기존 조건(enabled + run)을 그대로 따른다. 회귀 테스트를 먼저 변경해 broad allowlist가 남아 있는 실패를 확인하고 구현 후 prerequisite/normalized/chart 50개 통과를 확인했다. default/schema-only에는 새 ingress가 없으며 같은 release selector와 5432 포트가 렌더링되는 것을 검사한다. 실제 CNI 트래픽 검증은 수행하지 않았다.
 
 실행 순서 문제는 여전히 남아 있다. migration Job은 post-install/post-upgrade hook이면서 성공 즉시 삭제되므로, 후속 도구가 단순히 이름으로 완료 Job을 기다리는 방식은 사용할 수 없다. 비교 Job만 무조건 post-hook으로 바꾸면 일상적인 upgrade마다 실행될 수 있어 기존 명시적 단발 실행 계약도 검토해야 한다. 스키마 준비 성공을 실제로 확인한 뒤 별도 실행을 허용하는 수명주기 설계와 retained Job의 upgrade 검증이 다음 작업이다. 소스 커밋 검증 기준 불일치, amd64 통합 이미지 및 운영 검증도 여전히 미완료다.
+
+## 수동 Helm test로 실행 분리
+
+배포 커밋 `0bd8dd80`은 비교 Job을 일반 release 리소스에서 `helm.sh/hook: test`로 바꿨다. `normalizedShadow.run=true`는 이제 수동 test 등록만 한다. 설치/업그레이드가 비교 작업을 자동 실행하지 않으며 일반 리소스의 immutable Job template 갱신 대상에서도 빠진다. 자동 성공/실패 삭제나 TTL은 없다. 단, 직접 Helm test를 재실행하면 before-hook-creation 정책으로 같은 이름의 이전 Job이 교체될 수 있다.
+
+이를 방지하는 `muhan-mud/scripts/run-normalized-shadow.mjs` 실행기를 추가했다. 명시적인 context/namespace/release/job/source/digest를 받고, 기본은 원격 조회 preflight만 수행하며 `--execute`일 때 선택한 test 하나만 실행한다. Helm release JSON의 deployed 상태·identity·설정, 이번 last_deployed 이후 완료된 migration 성공 기록 및 로컬 normalized SQL checksum, 미실행 test를 확인한다. 기존 Job이 있으면 거부하고 실행 직전 release revision을 재검사한다. 원시 Helm 출력/오류는 노출하지 않는다. 이 실행기를 실제 클러스터에 호출하지는 않았다.
+
+테스트부터 작성해 기존 hook 부재와 새 모듈 부재로 실패한 뒤 구현했다. readiness/runner mock과 chart/prerequisite 검사 55개가 통과했다. 실제 Helm v3.16.4의 install/upgrade `--no-hooks` 렌더링에서 비교 Job이 일반 리소스 목록에 없는 것도 확인했다. 공식 Helm hook 문서와 v3.16.4 hook JSON 구조를 대조했으나 실제 release JSON 및 cluster test 실행 검증은 아직 없다. release 작업 직렬 실행이 필요하고 revision 재검사는 분산 잠금을 대체하지 않는다. 기존 일반 Job 버전에서 전환 시 결과 보관 필요사항도 운영 문서에 명시했다.
+
+다음 검증은 실제 Helm 형식과 checksum 연결, CLI 프로세스 경계, 독립 리뷰 및 amd64 통합 이미지다. 소스 검토 기준 SHA 불일치는 여전히 미해결이며 전체 포팅·웹 게임 onboarding·DB 권위 전환·운영 배포가 완료된 것은 아니다. 두 저장소의 변경은 로컬 커밋이다.
