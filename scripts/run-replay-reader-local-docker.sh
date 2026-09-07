@@ -19,7 +19,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-pg="$(docker create --network none --tmpfs /var/lib/postgresql/data:rw,size=192m \
+pg="$(docker create --label muhan.replay-disposable=true --network none --tmpfs /var/lib/postgresql/data:rw,size=384m \
   -e POSTGRES_PASSWORD=contract-only-password postgres:17-alpine)"
 created+=("$pg")
 docker start "$pg" >/dev/null
@@ -43,3 +43,4 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
   ')"
 created=("$runner" "${created[@]}")
 docker start -ai "$runner"
+bash "$root/scripts/verify-replay-db-backup-local.sh" --allow-disposable "$pg"
