@@ -2,6 +2,7 @@
 #include "bank_money_coordinate_native.h"
 #include "bank_money_live_native.h"
 #include "bank_money_result_native.h"
+#include "bank_money_command_native.h"
 #include "player_snapshot_v1.h"
 #include "bank_money_read_native.h"
 #include <libpq-fe.h>
@@ -11,6 +12,7 @@
 /* Disposable descriptor fixture; production owns these globals in global.c. */
 struct { creature *ply; iobuf *io; extra *extr; } Ply[PMAX];
 int Tablesize=1;
+static int selected(void *ctx,const creature *p) {(void)ctx;(void)p;return 1;}
 int main(int argc,char **argv)
 {
     unsigned char *frame;
@@ -26,7 +28,7 @@ int main(int argc,char **argv)
     if(PQresultStatus(role)!=PGRES_COMMAND_OK) { free(frame); PQclear(role); PQfinish(c); return 2; }
     PQclear(role);
     if(getenv("BANK_TRANSFER_COORDINATE") && !strcmp(getenv("BANK_TRANSFER_COORDINATE"),"1")) {
-      bank_money_coordinate_result output;
+      bank_money_command_context context; bank_money_route_ops ops; bank_money_ack ack; cmd command; long before;
       creature *player=NULL; extra ext; iobuf io;
       bank_money_read_result current; size_t pl;
       bank_money_live_request request;
@@ -44,14 +46,19 @@ int main(int argc,char **argv)
       Ply[0].ply=player; Ply[0].io=&io; Ply[0].extr=&ext;
       request.world_id=argv[2]; request.writer_id=argv[6]; request.writer_epoch=argv[7];
       request.command_id=argv[8]; request.expected_revision=argv[9]; request.direction=argv[10]; request.amount=argv[11];
-      status=bank_money_live_native(c,player,&request,getenv("BANK_TRANSFER_PLANNER"),getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),2000,&output);
-      revision=output.revision;
-      if(status==BANK_MONEY_COMMIT_CONFIRMED) {
-        bank_money_ack ack; char *end; unsigned long long expected=strtoull(argv[9],&end,10);
-        if(*end||!bank_money_result_native(player,status,(uint64_t)expected,!strcmp(argv[10],"withdraw"),&output,&ack))
-          status=BANK_MONEY_COMMIT_UNKNOWN;
-      }
-      free(output.frame);
+      memset(&context,0,sizeof(context)); memset(&command,0,sizeof(command));
+      context.connection=c; context.request=request; context.timeout_ms=2000;
+      context.planner=getenv("BANK_TRANSFER_PLANNER"); context.node=getenv("BANK_TRANSFER_PENDING_NODE");
+      context.script=getenv("BANK_TRANSFER_PENDING_CLI"); context.root=getenv("BANK_TRANSFER_PENDING_ROOT");
+      if(strlen(argv[11])>24) {free(frame); player_snapshot_v1_free_clone(player); PQfinish(c);return 2;}
+      command.num=2; strcpy(command.str[1],argv[11]); before=player->gold;
+      memset(&ops,0,sizeof(ops)); ops.select=selected; ops.transfer=bank_money_command_native; ops.context=&context;
+      bank_money_route_set(&ops);
+      status=bank_money_route_dispatch(player,&command,!strcmp(argv[10],"withdraw"),&ack);
+      if(status==BANK_MONEY_COMMITTED) {
+        if(player->gold!=ack.player_gold||player->gold==before) abort();
+      } else if(player->gold!=before) abort();
+      status=context.status; revision=context.revision; bank_money_route_reset();
       memset(Ply,0,sizeof(Ply));
       player_snapshot_v1_free_clone(player);
     } else if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])
