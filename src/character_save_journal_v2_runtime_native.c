@@ -11,6 +11,7 @@
 
 #if defined(__linux__) && !defined(CHARACTER_SAVE_JOURNAL_V2_RUNTIME_PROBE_ONLY)
 #include <stdlib.h>
+#include <stdio.h>
 #include <limits.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -319,7 +320,13 @@ static int runtime_native_shadow_start(void *opaque, const char *muhan_home,
     }
     character_save_journal_v2_process_owner_init(&native->process_owner,&configuration);
     if(character_save_journal_v2_process_owner_start(&native->process_owner)!=
-       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) goto failed;
+       CHARACTER_SAVE_JOURNAL_V2_PROCESS_OWNER_STARTUP_OK) {
+        /* Fixed numeric outcomes only: never print connection or player data. */
+        fprintf(stderr,"M3 owner startup failed: startup=%d recovery=%d\n",
+            (int)native->process_owner.startup_result,
+            (int)native->process_owner.recovery_result);
+        goto failed;
+    }
     native->shadow_active=1;
     runtime_native_read_rehearsal_arm(native);
     if(native->snapshot_handoff_enabled)
