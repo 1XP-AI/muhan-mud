@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash, createHmac } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { chmod, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import test from 'node:test'
 import { createRequire } from 'node:module'
@@ -678,8 +678,14 @@ async function main(): Promise<void> {
     browser.send('7\n')
     await eventually(() => assert.match(browser.text(), /새 암호를/))
     browser.send(`${password}\n`)
-    await eventually(async () => assert.match(await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8'), /state=(saved|committed)\n/,
-      redact(`C diagnostics: ${mudDiagnostics}; terminal: ${browser.text()}`)))
+    try {
+      await eventually(async () => assert.match(await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8'), /state=(saved|committed)\n/))
+    } catch {
+      const controls = browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8'))
+      const journal = await readdir(join(fixture, 'character-save-journal'))
+      const stage = await readdir(join(fixture, 'character-save-stage'))
+      throw new Error(redact(`first save incomplete; C=${mudDiagnostics}; controls=${JSON.stringify(controls)}; journal=${JSON.stringify(journal)}; stage=${JSON.stringify(stage)}; terminal=${browser.text()}`))
+    }
     await eventually(() => assert.ok(browser.json('provisioned')))
     assert.equal(finalizeObservedSaved, true)
 
