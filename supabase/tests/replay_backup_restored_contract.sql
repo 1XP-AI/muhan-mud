@@ -39,3 +39,20 @@ select pg_temp.assert_true((select outcome = 'EXACT_RETRY' from private.record_p
 select pg_temp.assert_true((select outcome = 'EXACT_RETRY' from private.record_player_snapshot_v1_level_projection_for_receipt(
   'a9500000-0000-0000-0000-000000000001', 'c9500000-0000-0000-0000-000000000001',
   :'request', repeat('a',64), 9)));
+reset role;
+reset session authorization;
+select pg_temp.assert_true(private.enroll_paired_snapshot_baseline(
+  'a9500000-0000-0000-0000-000000000001','c9500000-0000-0000-0000-000000000001',:'request')='EXACT_RETRY');
+select pg_temp.assert_true((select revision=1 from private.game_character_paired_snapshot_states
+  where character_id='a9500000-0000-0000-0000-000000000001'));
+select pg_temp.assert_true((select outcome='EXACT_RETRY' and committed_revision=1
+  from private.game_character_paired_snapshot_states s,
+  lateral private.commit_paired_snapshot_candidate(s.character_id,'d9500000-0000-0000-0000-000000000001',0,s.player_payload,s.bank_payload)
+  where s.character_id='a9500000-0000-0000-0000-000000000001'));
+select pg_temp.assert_true(not exists(
+  select 1 from unnest(array['anon','authenticated','service_role','mud_writer','mud_writer_login']) r(role_name)
+  where has_function_privilege(role_name,'private.enroll_paired_snapshot_baseline(uuid,uuid,text)','EXECUTE')
+     or has_table_privilege(role_name,'private.game_character_paired_snapshot_states','INSERT')
+     or has_table_privilege(role_name,'private.game_character_paired_snapshot_states','UPDATE')
+     or has_table_privilege(role_name,'private.game_character_paired_snapshot_baselines','UPDATE')
+));
