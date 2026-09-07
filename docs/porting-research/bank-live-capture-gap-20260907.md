@@ -1,5 +1,31 @@
 # Live bank capture and transaction gap
 
+## Never-committed queue recovery — 2026-09-08
+
+Source `47b686c` adds the previously missing first-commit recovery case. Before
+Peerhero's first actual savegame call, a separate fixture-owned DB connection
+is shut down. Save returns UNKNOWN/IO_ERROR with a durably prepared request.
+A healthy independent qualified read proves revision 0, gold 100 and empty
+inventory still exist: this is not just a lost acknowledgement of a commit.
+The real queue retains the decoded candidate while disconnected; restoring
+the healthy connection produces COMMITTED revision 1 and releases its owned
+clone. Later exact retries and the existing post-commit outage scenario yield
+one immutable DB intent total, with the equipped-derived payload preserved.
+
+Frozen full local ARM64 runner at `47b686c` exited 0 via its process handle;
+evidence `/tmp/muhan-player-first-recovery.log`. Existing two-character save/
+release/adoption, native money/recovery, sanitizer/differential, real C
+onboarding and restore profiles remain passing.
+
+Disconnect source inspection also confirms io.c frees io/extr before calling
+uninit_ply and save_ply, then transfers failed players to the recovery queue.
+uninit_ply invokes update_ply, which updates LT_HOURS and may expire effects.
+Consequently a pending pre-disconnect payload can differ from post-uninit
+state: runtime orchestration must reconcile the former before freezing a new
+command, not overwrite the pending request or use a new UUID blindly. Actual
+io/uninit execution has not yet been integrated in this fixture; this remains
+a production cutover gap. No production grant, push, Actions or deployment.
+
 ## Actual recovery queue with DB connection loss — 2026-09-08
 
 Source `2b19d85` links real player_recovery.c into the C/PG registry fixture.
