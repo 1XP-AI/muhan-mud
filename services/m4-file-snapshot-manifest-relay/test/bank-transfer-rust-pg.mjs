@@ -113,6 +113,14 @@ try {
       await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[saveId,initial,bank])
       const sql='select * from private.commit_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9)'
       const request=[world,name,writer,'1',saveId,'c9260000-0000-0000-0000-000000000001','0',sha(initial).toString('hex'),changed]
+      const nativeSave=(args,expected)=>{
+        assert.ok(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE?.startsWith('/'))
+        const result=spawnSync(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE,args.slice(0,8).map(String),{
+          input:args[8],env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
+            ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},timeout:5000,maxBuffer:8192,
+        })
+        assert.equal(result.status,0,result.stderr.toString());assert.equal(result.stdout.toString(),expected)
+      }
       const state=async()=>(await db.query('select revision::text,player_payload,bank_payload from private.game_character_paired_snapshot_states where character_id=$1',[saveId])).rows[0]
       await assert.rejects(db.query(sql,request),e=>e.code==='P0001')
       // A well-formed payload/digest is not permission to save another identity.
@@ -128,8 +136,13 @@ try {
       assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,0)
       const wrong=[...request];wrong[7]='0'.repeat(64)
       await assert.rejects(login.query(sql,wrong),e=>e.code==='40001')
+      nativeSave(wrong,'-1 0\n')
+      const invalidRevision=[...request];invalidRevision[6]='00'
+      nativeSave(invalidRevision,'-2 0\n')
+      invalidRevision[6]='9223372036854775806';nativeSave(invalidRevision,'-2 0\n')
       assert.equal((await state()).revision,'0')
-      assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'COMMITTED',committed_revision:'1'}])
+      nativeSave(request,'1 1\n')
+      nativeSave(request,'2 1\n')
       assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
       const after=await state();assert.deepEqual(after,{revision:'1',player_payload:changed,bank_payload:bank})
       await assert.rejects(login.query(sql,[...request.slice(0,8),playerGold(initial,102n)]),e=>e.code==='P0001')
@@ -137,6 +150,7 @@ try {
       await assert.rejects(login.query(sql,stale),e=>e.code==='40001')
       const bad=[...stale];bad[6]='1';bad[7]=sha(changed).toString('hex');bad[8]=Buffer.from(changed);bad[8][bad[8].length-1]^=1
       await assert.rejects(login.query(sql,bad),e=>e.code==='22023')
+      nativeSave(bad,'-2 0\n')
       assert.deepEqual(await state(),after)
       const peer=new Client({connectionString:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`,connectionTimeoutMillis:2000,statement_timeout:3000})
       try {
@@ -148,6 +162,7 @@ try {
         assert.equal(outcomes.find(x=>x.status==='rejected').reason.code,'40001')
         const latest=await state();assert.equal(latest.revision,'2');assert.deepEqual(latest.bank_payload,bank)
         assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
+        nativeSave(request,'2 1\n')
         assert.deepEqual(await state(),latest)
       } finally {await peer.end()}
       assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,2)
