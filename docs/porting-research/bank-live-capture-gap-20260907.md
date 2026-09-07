@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Revalidated detached native DB player load — 2026-09-07
+
+Source `db05b82` adds closed read_player_paired_snapshot and a PlayerStore-shaped
+native load callback. The SQL re-resolves the fenced writer/name route within
+the same transaction and requires exact expected character ID and paired revision
+before returning payload/hash. C validates bounded binary columns and the selected
+payload hash, then decodes the complete canonical player and requires exact name
+agreement before publishing the owned clone. Failure returns no player and never
+calls FileStore. This does not attach the clone to Ply or mutate live state.
+
+The harness proves the RPC absent before migration and replays migration twice.
+Actual C/PG tests reject an intentionally wrong revision with null output, then
+load the expected player name/gold at initial and post-session-expiry successor
+revisions. Test grants are revoked afterward. Full frozen ARM64 suite at
+`db05b82` exited 0: `/tmp/muhan-player-native-load.log`, including actual bank
+commands, C onboarding and both backup profiles.
+
+Limits: canonical DTO intentionally excludes credentials and runtime/session
+links. This callback is not installed in gameplay login and cannot substitute
+for legacy password/account verification. Rich inventory load, negative payload
+injection through this RPC, runtime initialization/admission integration, general
+DB player saves and recovery ownership remain required before authority cutover.
+No production grant, deployment or Actions execution.
+
 ## Native paired route selector — 2026-09-07
 
 Source `bb81b08` provides player_paired_route_select with the PlayerAuthorityStore
