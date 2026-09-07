@@ -115,6 +115,10 @@ async function choosePort(): Promise<number> {
 
 async function prepareFixture(): Promise<void> {
   await mkdir(fixture, { recursive: true })
+  // The native writer deliberately opens an existing private journal root;
+  // it must not manufacture a deployment root during ownership acquisition.
+  await mkdir(join(fixture, 'character-save-journal'), { mode: 0o700 })
+  assert.equal((await stat(join(fixture, 'character-save-journal'))).mode & 0o777, 0o700)
   for (const directory of ['rooms', 'objmon', 'help', 'post']) {
     await cp(join(root, directory), join(fixture, directory), { recursive: true })
   }
