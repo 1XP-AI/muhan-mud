@@ -1,9 +1,9 @@
 // New senders must share one private pending directory for both operations.
-import {preparePlayerPending,claimPlayerCharacterFence,visitPlayerPending} from './player-pending-request.js'
+import {preparePlayerPending,claimPlayerCharacterFence,visitPlayerPending,verifyPlayerResolved} from './player-pending-request.js'
 import {visitMoneyPending} from './money-pending-request.js'
 async function main() {
   const [mode,root,...args]=process.argv.slice(2)
-  if(mode!=='--prepare'||!root||args.length!==8) throw new Error('invalid player preparation')
+  if(!['--prepare','--verify-resolved'].includes(mode)||!root||args.length!==8) throw new Error('invalid player preparation')
   const chunks:Buffer[]=[];let length=0
   for await(const chunk of process.stdin) {
     const bytes=Buffer.from(chunk);length+=bytes.length
@@ -11,6 +11,9 @@ async function main() {
     chunks.push(bytes)
   }
   const payload=Buffer.concat(chunks)
+  if(mode==='--verify-resolved') {
+    await verifyPlayerResolved(root,args,payload);process.stdout.write(payload);return
+  }
   let conflict=false
   const playersTruncated=await visitPlayerPending(root,async r=>{
     if(!r) {conflict=true;return}

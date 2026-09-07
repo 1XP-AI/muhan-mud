@@ -58,6 +58,19 @@ function decode(bytes:Buffer,command?:string):{args:string[],payload:Buffer} {
   if(!encode(args,payload).equals(bytes)||(command!==undefined&&args[5]!==command)) throw new Error('noncanonical player record')
   return {args,payload}
 }
+// Read-only proof for native baseline adoption, serialized with claim/release.
+export async function verifyPlayerResolved(root:string,args:string[],payload:Buffer):Promise<void> {
+  const bytes=encode(args,payload),key=hash(JSON.stringify([args[0],args[4]]))
+  const dir=await pendingDirectory(root),base=`/proc/self/fd/${dir.fd}`
+  let lock:Awaited<ReturnType<typeof characterPendingLock>>|undefined
+  try {
+    lock=await characterPendingLock(base,key)
+    if(!(await readPendingBytes(base,`${args[5]}.player-resolved`)).equals(bytes)
+       ||!(await readPendingBytes(base,`${args[5]}.player-request`)).equals(bytes)) throw new Error('player resolution mismatch')
+    await requirePendingAbsent(base,`${key}.player-fence`)
+    await requirePendingAbsent(base,`${key}.money-fence`)
+  } finally {try {await lock?.close()} finally {await dir.close()}}
+}
 export async function readPlayerPending(root:string,command:string):Promise<{args:string[],payload:Buffer}> {
   if(!uuid.test(command)) throw new Error('invalid player command')
   const dir=await pendingDirectory(root)

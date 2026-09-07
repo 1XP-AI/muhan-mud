@@ -6,6 +6,7 @@ typedef struct player_session_store {
     void *connection;
     const char *node,*script,*root;
     char fields[8][129];
+    char owner[37];
     unsigned char *pending;
     size_t pending_length;
     uint64_t committed_revision;
@@ -20,6 +21,10 @@ typedef struct player_session_store {
 int player_session_store_init(player_session_store *,void *,const char *,const char *,
     const char *,const char *,const char *,const char *,const char *,const char *,int);
 player_store_ops player_session_store_build(player_session_store *);
+/* Revalidate exact pending bytes against live memory/current DB and durable
+ * release evidence before advancing to a fresh command. Does not release a
+ * reservation or mutate gameplay. Subsequent writes still require CAS/fence. */
+int player_session_store_adopt(player_session_store *,const struct creature *,const char *);
 /* Frees memory only; NEVER releases/deletes a durable pending reservation. */
 void player_session_store_dispose(player_session_store *);
 #endif

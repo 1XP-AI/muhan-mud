@@ -10,7 +10,7 @@ import {preparePlayerPending,readPlayerPending,claimPlayerCharacterFence} from '
 import {recoverPlayerPendingOnce} from '../dist/player-pending-recovery.js'
 import {releaseConfirmedPlayer} from '../dist/player-pending-release.js'
 import {fileURLToPath} from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawn,spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
 const port=process.env.BANK_PAYLOAD_LOCAL_PORT, binary=process.env.BANK_TRANSFER_PLANNER
@@ -163,16 +163,29 @@ try {
         await claimPlayerCharacterFence(pending,request.slice(0,8),request[8])
         await assert.rejects(releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login),/unconfirmed/)
         assert.ok(process.env.PLAYER_SESSION_STORE_NATIVE?.startsWith('/'))
-        const storeSave=spawnSync(process.env.PLAYER_SESSION_STORE_NATIVE,
+        await new Promise((resolve,reject)=>{
+          const child=spawn(process.env.PLAYER_SESSION_STORE_NATIVE,
           [world,name,writer,'1',request[5],process.execPath,fileURLToPath(new URL('../dist/player-pending-prepare-cli.js',import.meta.url)),pending,'101'],{
             env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
-              ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},timeout:8000,maxBuffer:8192,
+              ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},stdio:['pipe','pipe','pipe'],
           })
-        assert.equal(storeSave.status,0,storeSave.stderr.toString())
+          let output='',errors='',releasing=false,failure
+          const timer=setTimeout(()=>{failure=new Error('native adoption watchdog');child.kill('SIGKILL')},12000)
+          child.stderr.on('data',b=>{errors=(errors+b).slice(-8192)})
+          child.on('error',e=>{failure=e})
+          child.stdout.on('data',b=>{
+            output+=b
+            if(output==='READY\n'&&!releasing) {
+              releasing=true
+              releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login)
+                .then(()=>child.stdin.end('R')).catch(e=>{failure=e;child.kill('SIGKILL')})
+            }
+          })
+          child.on('close',code=>{clearTimeout(timer);if(failure||code!==0||!releasing) reject(failure??new Error(`native adoption ${code}: ${errors}`));else resolve()})
+        })
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
-        nativeSave(request,'2 1\n',pending)
+        nativeSave(request,'2 1\n')
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
-        await releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login)
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         // Retained resolved history no longer blocks a different operation's CLI.
         const bankArgs=[saveId,world,actor,session,'test-gateway',writer,'1','c9270000-0000-0000-0000-000000000001','1','deposit','1']

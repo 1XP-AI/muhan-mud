@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 int file_player_store_save(char *name,creature *p) {(void)name;(void)p;abort();}
 int file_player_store_load(char *name,creature **p) {(void)name;(void)p;abort();}
 int main(int argc,char **argv)
@@ -30,6 +31,16 @@ int main(int argc,char **argv)
     assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
     copy.gold++;assert(save_ply(argv[2],&copy)==PLAYER_STORE_IO_ERROR);
     assert(!strcmp(ctx.fields[6],"0"));
+    copy.gold--;assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK);
+    assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
+    assert(!strcmp(ctx.fields[6],"0")&&ctx.pending);
+    puts("READY");fflush(stdout);
+    assert(getchar()=='R');
+    copy.gold++;assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
+    copy.gold--;
+    assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001"));
+    assert(!strcmp(ctx.fields[6],"1")&&!ctx.pending);
+    assert(!strcmp(ctx.fields[5],"c9280000-0000-0000-0000-000000000001"));
     assert(player_store_unbind(&binding)==PLAYER_STORE_UNBIND_RESTORED);
     player_session_store_dispose(&ctx);player_snapshot_v1_free_clone(loaded);PQfinish(db);
     return 0;
