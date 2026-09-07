@@ -191,3 +191,13 @@ careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remov
 준비 검사기/실행기에 `--persist` 모드를 추가했다. 비교 등록 여부와 별개로 실제 writer capability와 artifact relay test 경로를 검사하고, 기존 migration 성공·checksum·source/image·기존 Job 거부·revision 재검사를 그대로 수행한다. 저장 모드는 기본 Job 300초를 기다릴 수 있도록 Helm timeout 6분/자식 프로세스 370초, 비교 모드는 기존 3분/190초다. 실행기는 두 Job을 한꺼번에 호출하지 않는다.
 
 필수 조건 및 writer readiness 테스트 실패 후 구현했고 chart/prerequisite/readiness/CLI/기존 render 58개가 통과했다. 이후 실제 CLI 프로세스 대역 테스트에 실제 writer chart manifest와 --persist 전달을 추가해 9개 시나리오가 통과했다. 실제 cluster 호출이나 새 배포는 없다. 운영 가이드에 저장 → 비교 순서와 실패 시 앞 단계 commit 가능성을 기록했다. source SHA 검증 기준 불일치와 amd64 통합 이미지, 독립 검토가 다음 선행 작업이다.
+
+## 고정 소스의 로컬 amd64 통합 빌드 시도
+
+원격 read-only `git ls-remote private refs/heads/codex/mud-identity-foundation`에서 여전히 `c1b016e811879f6c1515cec2092b1daf5e0c8cd7`을 확인했다. 최신 로컬 기능은 원격 브랜치에 없다. 기존 source-path 테스트의 고정 SHA/HEAD 불일치는 그대로 유지했고, 검토 없이 상수나 검증을 제거하지 않았다.
+
+별도 로컬 검증으로 고정 소스 `03c677fa660c3e2c21214aa2728ebbe21223dfa9`를 git archive의 `src/` prefix로 `/tmp/muhan-amd64-source.DRusdR`에 추출했다. 임시 경로에는 해당 archive와 추출본만 있으며 작업 폴더 변경을 복사하지 않았다. Docker의 named build context로 `source` stage를 대체해 나머지 기존 통합 Dockerfile을 linux/amd64로 빌드하려 했다. 이는 private Git fetch/BuildKit credential 검증을 생략한 로컬 패키징 검증이며 운영 이미지 provenance 승인과 구분한다. [Docker build context 동작](https://docs.docker.com/reference/cli/docker/buildx/build/).
+
+`docker buildx build --builder desktop-linux --load --platform linux/amd64 --build-context source=/tmp/muhan-amd64-source.DRusdR --build-arg SOURCE_REVISION=03c677fa660c3e2c21214aa2728ebbe21223dfa9 -t muhan-integrated-amd64:local -f muhan-mud/Dockerfile muhan-mud`는 Docker frontend `docker/dockerfile:1.7` metadata 취득의 DeadlineExceeded로 종료했다. 소스 컴파일까지 진행하지 않았으므로 통합 이미지 통과/실패로 해석하지 않는다.
+
+대안으로 같은 frontend 이미지의 `docker pull docker/dockerfile:1.7`을 실행했고 현재 exec session `64431`이 실행 중이며 마지막 30초 wait에서도 종료되지 않았다. 새 pull을 시작하지 말고 이 세션을 먼저 재확인한다. 이전 build session `9481`은 exit 1로 끝났다. 임시 소스 폴더는 재시도를 위해 보존했고 다른 이미지/캐시는 삭제하지 않았다. push/배포는 없다.
