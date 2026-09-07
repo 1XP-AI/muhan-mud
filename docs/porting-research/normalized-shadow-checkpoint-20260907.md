@@ -207,3 +207,23 @@ careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remov
 다음 턴에 pull session `64431`을 재확인했고 여전히 실행 중이었다. 중복 pull은 시작하지 않았다. 운영 Dockerfile을 수정하지 않고 입력의 첫 syntax 지시문만 제외해 내장 frontend로 같은 amd64 검증을 시도했다. exec session `65830`은 named source context 로딩까지 진행했지만 `gcc:14` metadata 취득에서 DeadlineExceeded로 종료했고 node/rust metadata 요청은 함께 취소됐다. 따라서 외부 frontend 이미지만의 문제로 좁힐 수 없고, 아직 C/Rust/Node 컴파일 증거는 없다.
 
 호스트의 bounded HTTPS 확인은 Docker registry `/v2/`에서 0.6초 내 HTTP 401 응답을 받았다(익명 요청에 대한 인증 요구 응답). 이것은 호스트 경로 도달성 증거일 뿐 Docker 내부 DNS/proxy/credential 경로의 정상 증거는 아니다. 원인을 단정하거나 Docker 설정·로그인·daemon을 변경하지 않았다. 마지막 pull 재조회도 session `64431` 실행 중/새 출력 없음이었다. 두 build 시도는 모두 terminal failure이므로 자동으로 새 build를 반복하지 않는다. 임시 소스는 여전히 `/tmp/muhan-amd64-source.DRusdR`에 보존되어 있다.
+
+## 임시 익명 설정에서 registry 정체 우회 확인
+
+목표 active를 확인하고 investigate 절차로 읽기 전용 진단했다. Docker 엔진은 29.6.1/linux/aarch64로 즉시 응답한다. 기존 pull session `64431`은 여전히 출력 없이 실행 중이며, 해당 docker PID 69017의 자식 docker-credential-desktop PID 69058은 10분 이상 생존했다. 1초 stack sampling에서는 대기 스레드가 보였지만 심볼이 충분하지 않아 Keychain이나 내부 원인을 확정하지 않았다. 다른 buildx 자식 credential helper도 장시간 남아 있었고 임의 종료하지 않았다.
+
+별도 빈 임시 설정 `/tmp/muhan-registry-check.UIqvJ7`으로 공개 `gcc:14` manifest만 조회한 session `91482`는 exit 0, schemaVersion 2, manifest 12개, amd64 존재를 반환했다. 원래 Docker 설정/로그인/daemon은 변경하지 않았다. 임시 설정에는 기존 buildx 플러그인을 찾기 위한 cliPluginsExtraDirs만 추가했다. 인증 정보는 복사하지 않았다.
+
+동일 고정 소스와 Dockerfile을 이 임시 설정 및 명시적인 로컬 socket으로 빌드한 exec session **24794**가 진행 중이다. default docker driver를 사용하며 --load만 지정했다. 이번에는 dockerfile frontend와 gcc/node/rust metadata가 모두 성공하고 실제 base image layer 다운로드로 진행했다. 따라서 기존 인증 도우미/CLI 설정 경로의 관여를 강하게 시사하나 builder 선택도 달라 엄밀한 단일 변수 실험이나 영구 원인 수정으로 보고하지 않는다. 아직 컴파일/이미지 완성 증거는 없다. 다음 턴은 24794를 먼저 이어받고 중복 빌드를 시작하지 않는다. 기존 64431도 미종료 상태로 별도 추적한다. Git/registry push 및 k8s 변경은 없다.
+
+## 통합 amd64 이미지 빌드 및 projector 실행 통과
+
+24794는 실제 Rust 컴파일 단계에서 exit 1로 종료했다. 배포 Dockerfile이 muhan-core-dto 디렉터리만 복사해 상위 rust/Cargo.toml 및 Cargo.lock을 누락했고, --locked가 없는 lockfile 생성을 거부한 것이 원인이다. 기존 단독 relay Dockerfile은 이미 전체 Rust workspace를 사용하고 있었다. investigate 절차로 원인을 확인한 뒤 --locked를 유지하고 전체 workspace를 복사하며 -p muhan-core-dto로 두 binary만 빌드하도록 수정했다. runtime COPY도 workspace target 경로로 맞췄다.
+
+배포 커밋 `3cf3503d`: 신규 regression test가 기존 Dockerfile에서 실패한 뒤 수정 후 prerequisite/chart/readiness/CLI 검사 **59 pass, 0 fail**을 확인했다. 기존 source-path 검사의 필수 복사 경로만 /src/rust/로 맞췄고 reviewed SHA 및 HEAD 일치 gate는 제거하거나 갱신하지 않았다. 따라서 별도의 reviewed-source gate 불일치는 여전히 남는다.
+
+동일 고정 source `03c677fa660c3e2c21214aa2728ebbe21223dfa9`와 임시 익명 설정으로 재빌드한 session **99662**는 exit 0이다. `muhan-integrated-amd64:local` 이미지 ID/manifest list는 `sha256:4b8d40d2e37edd046958ac6082969ff62fcefc89059f689af085d78f2c040d06`, architecture amd64, 기본 사용자 muhan:muhan이다. C 게임/인증, Rust 두 binary, Node 서비스 및 Next 웹 빌드를 모두 지나 최종 이미지가 생성됐다. 단, C command4.c:253의 alstr[16]에 한국어 문자열 복사 시 overflow warning 2개가 관찰되어 후속 수정 대상으로 남겼다. 아직 코드 수정이나 무경고 검증 증거는 없다.
+
+최종 이미지를 --rm, --read-only, --network none으로 실행해 C 게임 및 normalized projector의 ldd 의존성이 해소됨을 확인했다. 같은 제한과 기본 사용자에서 실제 amd64 projector에 tree fixture를 stdin으로 전달했다. 정상 digest는 exit 0/빈 stderr/5개 item 및 canonical digest `96df4bf87d1012fbef2043f215b95b6bf0790780b731546b1fcd6a257ee2b76c`, 잘못된 digest는 exit 1/빈 stdout/고정 거부 문구를 검증했다. 단발 컨테이너는 auto-remove됐다.
+
+이 결과는 고정 로컬 archive를 source stage 대신 사용한 패키징·projector smoke 증거다. private remote fetch, DB 연결, 실제 게임 가입/계정 연동, k8s 배포 또는 DB 권위 전환 완료의 증거가 아니다. 원격 게시/검토 기준 SHA 정리, 통합 이미지의 DB E2E, 실제 C save 및 onboarding 검증이 남는다. 기존 pull 64431은 이전 확인에서 살아 있었으며 종료 확인 전 재실행하지 않는다.
