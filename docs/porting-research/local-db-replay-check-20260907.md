@@ -1,5 +1,23 @@
 # Local DB replay check — passed on Linux
 
+## Backup/restore gate added — not yet passing
+
+Source `1fbe640` adds an actual server-version pg_dump/pg_restore into a second
+database, with full-row fingerprints for artifacts, receipts and projections.
+The helper accepts only the exact container ID marked by the disposable runner;
+no arbitrary DB URL is accepted. PG tmpfs increased to 384 MB for two databases.
+
+Actual result: replay/conformance still passes, but the added restore exits 1
+when PostgreSQL validates `game_character_player_snapshot_v1_artifacts_receipt_fk`.
+The pre-existing negative comparator fixture intentionally seeds artifact rows
+without receipts using session_replication_role=replica, so it is not a valid
+restorable game-state dataset. Log: `/tmp/muhan-replay-backup-restore.log`.
+This is not evidence of production corruption. Do not suppress constraints or
+count this dump as a successful backup proof. Next supply a separate valid
+dataset through normal writes for restoration, keeping negative comparator
+coverage independent. The combined runner currently returns failure at this
+new gate, accurately reflecting incomplete backup acceptance.
+
 ## Verified result
 
 Extended Linux run at `df59c7b` also exits 0. It checks the reused image lockfile
