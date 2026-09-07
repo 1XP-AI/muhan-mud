@@ -1,9 +1,14 @@
 #include "bank_money_commit_native.h"
 #include "bank_money_coordinate_native.h"
+#include "bank_money_live_native.h"
+#include "mstruct.h"
 #include <libpq-fe.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Disposable descriptor fixture; production owns these globals in global.c. */
+struct { creature *ply; iobuf *io; extra *extr; } Ply[PMAX];
+int Tablesize=1;
 int main(int argc,char **argv)
 {
     unsigned char *frame;
@@ -20,9 +25,18 @@ int main(int argc,char **argv)
     PQclear(role);
     if(getenv("BANK_TRANSFER_COORDINATE") && !strcmp(getenv("BANK_TRANSFER_COORDINATE"),"1")) {
       bank_money_coordinate_result output;
-      status=bank_money_coordinate_native(c,getenv("BANK_TRANSFER_PLANNER"),getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),
-        (const char *const *)(argv+1),2000,&output);
+      creature player; extra ext; iobuf io;
+      bank_money_live_request request;
+      memset(&player,0,sizeof(player)); memset(&ext,0,sizeof(ext)); memset(&io,0,sizeof(io));
+      if(strlen(argv[1])>36||strlen(argv[3])>36||strlen(argv[4])>36||strlen(argv[5])>128) { free(frame); PQfinish(c); return 2; }
+      strcpy(ext.character_id,argv[1]); strcpy(ext.auth_user_id,argv[3]);
+      strcpy(ext.db_session_id,argv[4]); strcpy(ext.db_gateway_instance_id,argv[5]);
+      Ply[0].ply=&player; Ply[0].io=&io; Ply[0].extr=&ext;
+      request.world_id=argv[2]; request.writer_id=argv[6]; request.writer_epoch=argv[7];
+      request.command_id=argv[8]; request.expected_revision=argv[9]; request.direction=argv[10]; request.amount=argv[11];
+      status=bank_money_live_native(c,&player,&request,getenv("BANK_TRANSFER_PLANNER"),getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),2000,&output);
       revision=output.revision; free(output.frame);
+      memset(Ply,0,sizeof(Ply));
     } else if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])
       status=bank_money_commit_prepared_native(c,getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),
         (const char *const *)(argv+1),frame,length,2000,&revision);

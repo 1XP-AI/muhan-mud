@@ -48,6 +48,9 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     cc -std=gnu89 -Wall -Wextra -Werror -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
       tests/unit/bank_money_coordinate_native_test.c src/bank_money_coordinate_native.c -o /tmp/bank-money-coordinate-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-coordinate-test
+    cc -std=gnu89 -Wall -Wextra -Werror -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/bank_money_live_native_test.c src/bank_money_live_native.c -o /tmp/bank-money-live-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-live-test
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       -fsanitize=address,undefined -fno-omit-frame-pointer \
       -Dfopen=child_reaper_test_fopen -Dunlink=child_reaper_test_unlink \
