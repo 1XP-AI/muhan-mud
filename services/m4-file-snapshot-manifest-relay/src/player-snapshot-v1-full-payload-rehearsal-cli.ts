@@ -106,7 +106,10 @@ export async function main(
     classification = await rehearsePlayerSnapshotV1FullPayload(
       artifact,
       reader,
-      (payload) => dependencies.verify(payload, { runnerPath: verifierPath }),
+      (payload) => dependencies.verify(payload, {
+        runnerPath: verifierPath,
+        snapshotSha256: artifact.snapshotSha256,
+      }),
     )
   } finally {
     await reader.close?.()

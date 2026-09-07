@@ -116,6 +116,20 @@ test('one-shot full-payload CLI validates --once and environment as INVALID_INPU
   }
 })
 
+test('full-payload CLI binds both verifier calls to the immutable artifact digest', async () => {
+  const calls: string[] = []; const output: string[] = []
+  const deps = dependencies([evidence], calls, output)
+  const digests: unknown[] = []
+  deps.verify = async (value, options) => {
+    digests.push(options.snapshotSha256)
+    assert.equal(options.snapshotSha256, local.snapshotSha256)
+    assert.equal(options.runnerPath, verifierPath)
+    return verification(value)
+  }
+  assert.equal(await rehearsalMain(baseEnv(), ['--once'], deps), 0)
+  assert.deepEqual(digests, [local.snapshotSha256, local.snapshotSha256])
+})
+
 test('one-shot full-payload CLI emits MATCH exactly once after local load, reader, and verifier ordering', async () => {
   const calls: string[] = []; const output: string[] = []
   assert.equal(await rehearsalMain(baseEnv(), ['--once'], dependencies([evidence], calls, output)), 0)
