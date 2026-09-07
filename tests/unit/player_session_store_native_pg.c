@@ -126,6 +126,32 @@ int main(int argc,char **argv)
     copy.gold--;assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
     assert(!strcmp(ctx.fields[6],"0")&&ctx.pending);
+    {
+        player_session_store before;
+        char owner[37];
+        PGconn *broken=PQconnectdb("host=127.0.0.1 dbname=postgres user=mud_writer_login connect_timeout=3");
+        assert(PQstatus(broken)==CONNECTION_OK);
+        assert(!shutdown(PQsocket(broken),SHUT_RDWR));
+        ctx.connection=broken;before=ctx;
+        assert(player_session_store_release(&ctx)!=0);
+        assert(!memcmp(&ctx,&before,sizeof(ctx)));
+        ctx.connection=db;PQfinish(broken);
+        /* Each rejected release must leave the original reservation in place:
+         * restored authority still cannot adopt without a resolved record. */
+        assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
+        ctx.committed_revision++;before=ctx;
+        assert(player_session_store_release(&ctx)!=0);
+        assert(!memcmp(&ctx,&before,sizeof(ctx)));
+        ctx.committed_revision--;
+        assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
+        strcpy(owner,ctx.owner);
+        strcpy(ctx.owner,"00000000-0000-0000-0000-000000000000");before=ctx;
+        assert(player_session_store_release(&ctx)!=0);
+        assert(!memcmp(&ctx,&before,sizeof(ctx)));
+        strcpy(ctx.owner,owner);
+        assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
+        assert(!strcmp(ctx.fields[6],"0")&&ctx.pending);
+    }
     assert(!player_session_store_release(&ctx));
     puts("READY");fflush(stdout);
     assert(getchar()=='R');
