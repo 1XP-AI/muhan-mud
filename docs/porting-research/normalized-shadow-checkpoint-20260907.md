@@ -237,3 +237,11 @@ runner `muhan-integrated-test-0907a`는 통합 이미지의 기본 muhan 사용�
 careful 절차에 따라 생성 시 ID, label, AutoRemove=true를 다시 확인한 뒤 정확한 DB 이름만 종료했다. DB와 runner 모두 목록 부재를 확인했다. tmpfs 합성 데이터는 제거됐고 운영 데이터는 접근하지 않았다. 이 lane은 trust 인증을 사용했으므로 비밀번호 인증·Supabase Auth·Realtime·실제 C wizard/save·k8s 네트워크 검증이 아니다.
 
 다음 onboarding 검증 경로를 읽었다. `scripts/run-stack-e2e.sh`는 명시적인 CI-only runner이며 로컬에서 CI=true를 임의 주입해 우회하지 않았다. `docs/web-mud/live-onboarding-smoke.md`의 실제 배포 테스트는 지정된 두 웹 계정/캐릭터 fixture 및 durable-data/전역 이름 유일성 승인이 필요하다. 현재 그런 fixture를 임의 생성하거나 운영 smoke를 실행하지 않았다. 다음 작업은 실제 C 경로의 로컬/CI 검증과 남은 source revision 게시·검토 절차이며, 전체 DB 권위 전환은 아직 완료되지 않았다.
+
+## C info 한국어 성향 표시 메모리 오류 수정
+
+통합 빌드가 지적한 command4.c의 info()를 확인했다. alstr[16]에 NUL 포함 19바이트/17바이트 UTF-8 문자열을 strcpy하고 있었다. 고정 문자열을 const char 포인터로 직접 선택하도록 바꾸고 기존 임계값 -100/101과 출력 공백·문구는 유지했다. 표시용 복사를 없애는 4줄 변경이며 게임 상태/저장 권위는 변경하지 않는다.
+
+`tests/unit/info_alignment_utf8_test.py`는 실제 소스의 선언과 성향 선택 블록을 추출해 7개 경계 입력을 C로 실행한다. 최초 -O1에서는 컴파일러가 복사/비교를 최적화해 오류를 관찰하지 못했으므로 -O0/-fno-builtin으로 고쳐, 수정 전 실제 ASan stack-buffer-overflow(19바이트 쓰기)를 재현한 뒤 수정 후 ASan/UBSan 통과를 확인했다. 별도 make info-alignment-utf8-test target을 unit-test 선행 조건에도 연결했다. 테스트는 info 전체나 실제 게임 세션의 대체물이 아니다.
+
+현재 command4.c와 헤더만 read-only build context로 사용한 linux/amd64 gcc:14 컴파일도 -O2 -Werror=stringop-overflow에서 exit 0이다(session 33088). 단독 docker run은 gcc:14가 로컬 이미지 저장소에 없어서 실행되지 않았고, BuildKit 캐시를 이용한 컴파일 검증으로 전환했다. 운영 이미지 재빌드/배포는 아직 하지 않았다. 이전 통합 이미지의 source SHA는 이 수정 이전이므로 이 변경을 포함한다고 보고하면 안 된다.
