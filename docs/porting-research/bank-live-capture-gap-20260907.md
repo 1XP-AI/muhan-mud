@@ -77,6 +77,34 @@ This is the calculation stage, not an atomic persistence implementation. It
 does not authenticate the actor or bind revisions, world/character identity,
 command replay or writer epoch. The future transaction must perform those
 checks and compare both input versions before publishing either output.
+
+## Internal atomic pair storage kernel
+
+Migration `20261017000000_paired_snapshot_transaction_kernel.sql` introduces
+a private pair-state row and immutable command journal. One shared revision
+identifies both full snapshots. `commit_paired_snapshot_candidate` locks that
+row, checks the expected revision, updates both snapshots, then journals the
+command in the same PostgreSQL transaction. Exact old-command retries return
+the original committed revision; changed command inputs conflict. Stale new
+commands return SQLSTATE 40001. Payload schemas remain database-validated.
+
+Source `dbda233` passed local PG17 execution with **both payloads changed**:
+injected journal INSERT failure rolls back both byte arrays and revision;
+successful execution stores both proposed arrays; exact retry succeeds; stale
+revision, changed retry revision, malformed bank payload and journal deletion
+are rejected. Full local runner exit 0, including prior C/Rust differential,
+real bank file relay and restore checks:
+`/tmp/muhan-paired-snapshot-changed.log`.
+
+This is an unexposed storage kernel, NOT a gameplay transfer API. Its function
+is SECURITY INVOKER; runtime/web roles have no EXECUTE or table access, and no
+baseline seeding API or live read route exists. It deliberately does not yet
+validate actor/world/writer epoch, money-transfer semantics or item ownership.
+The changed test snapshots demonstrate storage atomicity, not legal gameplay.
+Next: actual concurrent-session tests and transaction rollback/retry; then bind
+the Rust planner's exact input/output digests and implement the authority and
+transfer-policy checks before granting any runtime access. No testnet migration
+or authority switch was performed.
 Live command integration and C/Rust command-level differential tests remain.
 
 ## Actual C / Rust command differential verified
