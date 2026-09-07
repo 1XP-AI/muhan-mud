@@ -31,8 +31,8 @@ where c.oid in (
 
 create role full_payload_rehearsal_contract_capability nologin noinherit;
 grant full_payload_rehearsal_contract_capability to mud_full_payload_rehearsal_reader_login;
-create role "full payload rehearsal \"quoted\" capability" nologin noinherit;
-grant "full payload rehearsal \"quoted\" capability" to mud_full_payload_rehearsal_reader_login;
+create role "full payload rehearsal ""quoted"" capability" nologin noinherit;
+grant "full payload rehearsal ""quoted"" capability" to mud_full_payload_rehearsal_reader_login;
 create role full_payload_rehearsal_contract_unrelated_parent nologin noinherit;
 create role full_payload_rehearsal_contract_unrelated_member nologin noinherit;
 grant full_payload_rehearsal_contract_unrelated_parent to full_payload_rehearsal_contract_unrelated_member;
