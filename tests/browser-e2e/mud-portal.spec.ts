@@ -445,7 +445,7 @@ for (const completedFlow of [
     );
     await assertGatewayAdmissionAfterOnboarding(page, completedFlow.character);
 
-    const normalTraffic = await normalGatewayTraffic(page);
+    const normalTraffic = await normalGatewayActivity(page);
     expect(normalTraffic.sentBytes).toEqual([]);
     expect(normalTraffic.messages.map((message) => JSON.parse(message))).toEqual([{
       type: "auth",
