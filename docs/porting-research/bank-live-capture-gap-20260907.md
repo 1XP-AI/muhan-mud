@@ -1,5 +1,32 @@
 # Live bank capture and transaction gap
 
+## Two consecutive native saves — 2026-09-08
+
+Frozen source `0731250` extends the actual C/PG fixture beyond context-only
+adoption. The same loaded context saves gold 101 at revision 1, retries,
+waits for independently verified release, adopts the next command, then saves
+gold 102 at revision 2 and retries again. A second verified release advances
+the context baseline to revision 2. Node reads the exact second DB payload,
+unchanged bank bytes and second durable request; that request carries revision
+1 and the full hash of the first committed payload, not the original hash.
+
+The subsequent CAS race now starts at revision 2 and produces one revision-3
+winner. Historical first-request confirmation still returns revision 1 without
+rolling the head back. Three immutable intents are present (two sequential C
+saves and one concurrent SQL winner). No runtime change was needed to pass
+this stronger test.
+
+Full isolated local ARM64 runner at `0731250` exited 0, observed through its
+process handle. Evidence `/tmp/muhan-player-two-saves.log`; existing native
+money, cross-operation/recovery, sanitizer/differential, actual C onboarding
+and both restore profiles remain passing.
+
+This closes the second-write coverage gap, not the full port. The context is
+still per-character, and no production router/admission/disconnect lifecycle
+is installed. Multi-character orchestration and actual gameplay savegame/
+uninit/recovery queue integration remain. No push, production grant, Actions
+execution or deployment.
+
 ## Verified native baseline adoption — 2026-09-08
 
 Source `99b597b` adds explicit native adoption into a fresh command ID. It
