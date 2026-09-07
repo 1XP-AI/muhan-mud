@@ -24,6 +24,9 @@ assert workflow.count('${{ github.run_attempt }}') == 2
 assert 'dtolnay/rust-toolchain@1.90.0' in workflow
 assert 'pnpm/action-setup@v4' in workflow
 assert 'python-is-python3' in workflow and 'build-essential' in workflow
+assert workflow.count('Acquire::Retries=3 update --error-on=any') == 2
+assert 'sudo apt-get update\n' not in workflow
+assert workflow.count('sudo -n true ||') == 2
 assert makefile.count('/tmp/muhan-unit') == 1  # local default only
 assert 'MUHAN_UNIT_DIR ?= /tmp/muhan-unit' in makefile
 for config in ('playwright.config.ts', 'playwright.feature-off.config.ts'):

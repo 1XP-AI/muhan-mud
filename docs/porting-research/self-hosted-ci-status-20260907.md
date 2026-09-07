@@ -2,6 +2,30 @@
 
 ## Renewed request: current verification
 
+The latest follow-up also checks noninteractive sudo before either Linux
+dependency installation, so an unprepared runner fails with an actionable
+message instead of waiting for a password. Routing/isolation, manual-only,
+and owned-container cleanup tests passed again. An actual dispatch was
+attempted again and returned HTTP 422; **no new CI run exists**. The default
+branch was read directly and still has `on: push`, `ubuntu-latest`, and
+`5432:5432`. Enabling that workflow before landing the migration would restore
+the old automatic hosted execution. Default-branch merge/enablement therefore
+needs the user's direction; no remote success is claimed.
+
+Latest recheck: GitHub still reports `disabled_manually`. An actual dispatch
+request against `codex/self-hosted-arm64-ci` returned HTTP 422 (disabled
+workflow); no new run was created. The latest run is still `34093192597`,
+completed with failure. Runner-group inspection again returned HTTP 403,
+which is an API permission limitation, not proof that repository access is
+denied. No workflow enablement or default-branch merge was performed.
+
+Both Linux dependency setup steps now specify apt lock timeout and download
+retries on update, and fail on incomplete index updates (`--error-on=any`).
+This does not remove shared lock files or guarantee that every apt lock
+contention can be retried successfully. The three local CI routing,
+manual-only and owned-container cleanup policy tests pass, as does
+`git diff --check`. These checks are not a successful remote suite run.
+
 Rechecked the only workflow and its complete matrix. ARM64 label routing is
 already present on the working branch; there are no reusable workflows.
 Added per-job temporary/cache paths for npm, pnpm and Playwright, included
