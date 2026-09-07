@@ -1,5 +1,30 @@
 # Live bank capture and transaction gap
 
+## Equipped actual savegame persistence — 2026-09-08
+
+Source `6af8a5c` exercises actual savegame_nomsg with one inventory root and
+one equipped root. The fixture independently encodes the expected persisted
+unequipped inventory before calling savegame, then requires byte-identical
+pending data. Decoding proves Apack and Zblade appear exactly once, with no
+extra root or persisted ready slot. After save and exact retry, memcmp checks
+the original creature and objects, and the original inventory tag chain is
+unchanged. This runs real add_obj_crt/del_obj_crt, not mocked list operations.
+
+Node reads matching DB and durable-request bytes, unchanged bank and gold 201.
+The digest-bound Rust planner accepts this equipped-derived DB snapshot and
+produces precisely the same full player bytes except gold 200 for a planned
+deposit. That plan is not committed in this assertion. Existing Savehero
+two-save/release/adoption cycles run while Peerhero remains pending.
+
+Full frozen local ARM64 runner at `6af8a5c` exited 0 via the process handle;
+evidence `/tmp/muhan-equipped-savegame-db.log`. All native/recovery/locking,
+sanitizer/differential, actual C onboarding and restore checks still pass.
+
+This covers one equipped root plus one inventory root. Full equipment-slot,
+nested-container and actual uninit/stat-normalization behavior still need
+coverage. Actual disconnect and player_recovery lifecycle integration remain
+uninstalled. No production grant, push, Actions run or deployment.
+
 ## Actual savegame command through DB registry — 2026-09-08
 
 Source `a6b59b4` links the real command8.c savegame_nomsg and player.c object
