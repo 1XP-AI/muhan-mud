@@ -1,5 +1,31 @@
 # Live bank capture and transaction gap
 
+## Actual recovery queue with DB connection loss — 2026-09-08
+
+Source `2b19d85` links real player_recovery.c into the C/PG registry fixture.
+The equipped-derived canonical clone is enqueued twice by the same pointer;
+the queue owns exactly one fd-less player. The test shuts down only a separate
+fixture-owned PostgreSQL socket. Retrying through the actual queue and native
+adapter returns IO_ERROR/UNKNOWN, keeps the player queued, keeps the login
+block, and preserves the exact pending payload. Registry removal stays refused.
+
+After restoring the healthy borrowed connection, the same request returns
+EXACT_RETRY. The actual queue removes its entry and real files1.c free_crt frees
+the complete clone; ASan/UBSan reports no ownership errors. A further retry
+returns NOT_FOUND. The separate context/durable pending lifecycle remains
+retained and cannot be removed merely because the queue is empty.
+
+Frozen full local ARM64 runner at `2b19d85` exited 0 through its process handle;
+evidence `/tmp/muhan-player-recovery-queue.log`. Existing equipped savegame,
+two-character/two-save cycles, DB recovery, C/Rust differential, actual C
+onboarding and both restore profiles remain passing.
+
+Scope: this uses a real disconnected fixture DB socket, not a crashed DB server,
+and confirms an already committed request. The clone is enqueued explicitly;
+actual io.c/uninit disconnect wiring, never-committed queue recovery and process
+restart ownership/admission remain integration gaps. No production grant, push,
+Actions execution or deployment.
+
 ## Equipped actual savegame persistence — 2026-09-08
 
 Source `6af8a5c` exercises actual savegame_nomsg with one inventory root and
