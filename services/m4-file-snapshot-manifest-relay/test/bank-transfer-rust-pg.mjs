@@ -100,6 +100,14 @@ try {
     } finally { await db.query('rollback') }
   }
   const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
+  const nativeCommit=(args,overrideAuthority=authority,options='')=>{
+    const lengths=Buffer.alloc(8); lengths.writeUInt32BE(args[5].length); lengths.writeUInt32BE(args[6].length,4)
+    return spawnSync(process.env.BANK_TRANSFER_NATIVE_COMMIT,[args[0],...overrideAuthority,...args.slice(1,5)].map(String),{
+      input:Buffer.concat([lengths,args[5],args[6]]),timeout:5000,maxBuffer:1024,
+      env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
+        ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
+    })
+  }
   assert.equal((await db.query("select has_function_privilege('mud_writer','private.commit_money_transfer_candidate(uuid,uuid,bigint,text,bigint,bytea,bytea)','EXECUTE') allowed")).rows[0].allowed,false)
   for(const [index,direction] of ['deposit','withdraw'].entries()) {
     const before=qualified?(await login.query(readSql,[id,...authority])).rows[0]:await read()
@@ -220,8 +228,32 @@ try {
         }
       }
     }
-    assert.equal((await execute(args)).rows[0].outcome,'COMMITTED')
-    assert.equal((await execute(args)).rows[0].outcome,'EXACT_RETRY')
+    if(qualified) {
+      assert.ok(process.env.BANK_TRANSFER_NATIVE_COMMIT?.startsWith('/'))
+      const wrongAuthority=[...authority]; wrongAuthority[1]='e9210000-0000-0000-0000-000000000099'
+      const rejected=nativeCommit(args,wrongAuthority)
+      assert.equal(rejected.status,1); assert.equal(rejected.stdout.length,0)
+      if(index===0) {
+        await db.query('begin')
+        try {
+          await db.query('select character_id from private.game_character_paired_snapshot_states where character_id=$1 for update',[id])
+          const start=Date.now()
+          // Wrong actor guarantees this probe cannot commit after disconnect;
+          // the transport still must report UNKNOWN while it lacks a reply.
+          const unknown=nativeCommit(args,wrongAuthority,'-c lock_timeout=0 -c statement_timeout=0')
+          assert.equal(unknown.status,3); assert.equal(unknown.stdout.length,0)
+          assert.ok(Date.now()-start>=1500 && Date.now()-start<4500)
+        } finally { await db.query('rollback') }
+      }
+      for(const expected of ['COMMITTED','EXACT_RETRY']) {
+        const result=nativeCommit(args)
+        assert.equal(result.status,0,result.stderr.toString())
+        assert.equal(result.stdout.toString(),`${expected} ${index+1}\n`)
+      }
+    } else {
+      assert.equal((await execute(args)).rows[0].outcome,'COMMITTED')
+      assert.equal((await execute(args)).rows[0].outcome,'EXACT_RETRY')
+    }
     await assert.rejects(execute([...args.slice(0,3),direction,26,p,b]),e=>e.code==='P0001')
     await assert.rejects(execute([...args.slice(0,3),direction==='deposit'?'withdraw':'deposit',25,p,b]),e=>e.code==='P0001')
     const after=await read(); assert.equal(after.revision,String(index+1)); assert.deepEqual(after.player_payload,p); assert.deepEqual(after.bank_payload,b)

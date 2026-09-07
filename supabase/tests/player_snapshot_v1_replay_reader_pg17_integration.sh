@@ -583,7 +583,12 @@ cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --included
   -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
   "$repo_root/src/bank_money_read_native.c" "$repo_root/tests/unit/bank_money_read_native_pg.c" \
   -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_read_native_pg"
+cc -std=gnu89 -Wall -Wextra -Werror -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$repo_root/src" -I"$(pg_config --includedir)" \
+  "$repo_root/src/bank_money_read_native.c" "$repo_root/src/bank_money_commit_native.c" "$repo_root/tests/unit/bank_money_commit_native_pg.c" \
+  -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_commit_native_pg"
 BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" BANK_TRANSFER_QUALIFIED=1 \
+  BANK_TRANSFER_NATIVE_COMMIT="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_commit_native_pg" \
   BANK_TRANSFER_NATIVE_READER="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_read_native_pg" \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"

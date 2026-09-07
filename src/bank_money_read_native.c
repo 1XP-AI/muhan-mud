@@ -1,4 +1,5 @@
 #include "bank_money_read_native.h"
+#include "bank_money_pg_exchange.h"
 #include <libpq-fe.h>
 #include <poll.h>
 #include <time.h>
@@ -36,13 +37,40 @@ static int valid_hash(const char *p)
     for(i=0;i<64;i++) if(!((p[i]>='0'&&p[i]<='9')||(p[i]>='a'&&p[i]<='f'))) return 0;
     return 1;
 }
+PGresult *bank_money_pg_exchange(PGconn *c,const char *sql,int count,const Oid *types,
+    const char *const *values,const int *lengths,const int *formats,int timeout_ms)
+{
+    PGresult *result=NULL,*next;
+    int original_mode,flush;
+    int64_t start,deadline;
+    if(!c||timeout_ms<1||timeout_ms>10000||PQstatus(c)!=CONNECTION_OK||PQtransactionStatus(c)!=PQTRANS_IDLE) return NULL;
+    start=now_ms(); if(start<0) return NULL; deadline=start+timeout_ms;
+    original_mode=PQisnonblocking(c);
+    if(PQsetnonblocking(c,1)!=0) return NULL;
+    if(!PQsendQueryParams(c,sql,count,types,values,lengths,formats,1)) goto failed;
+    while((flush=PQflush(c))==1) if(wait_socket(c,POLLOUT,deadline)!=0) goto failed;
+    if(flush<0) goto failed;
+    for(;;) {
+        if(now_ms()<0 || now_ms()>=deadline) goto failed;
+        if(!PQconsumeInput(c)) goto failed;
+        if(PQisBusy(c)) { if(wait_socket(c,POLLIN,deadline)!=0) goto failed; continue; }
+        next=PQgetResult(c);
+        if(!next) break;
+        if(result) { PQclear(next); goto failed; }
+        result=next;
+    }
+    if(PQsetnonblocking(c,original_mode)!=0) goto failed;
+    return result;
+failed:
+    if(result) PQclear(result);
+    return NULL;
+}
 int bank_money_read_native(void *connection,const char *const values[7],int timeout_ms,bank_money_read_result *out)
 {
     PGconn *c=(PGconn *)connection;
-    PGresult *result=NULL,*next;
+    PGresult *result=NULL;
     bank_money_read_result value;
-    int original_mode,i,flush,ok=-1;
-    int64_t start,deadline;
+    int i,ok=-1;
     size_t pl,bl;
     const unsigned char *revision;
     static const Oid types[5]={20,17,17,25,25};
@@ -50,21 +78,7 @@ int bank_money_read_native(void *connection,const char *const values[7],int time
     memset(out,0,sizeof(*out)); memset(&value,0,sizeof(value));
     if(!c||!values||timeout_ms<1||timeout_ms>10000||PQstatus(c)!=CONNECTION_OK||PQtransactionStatus(c)!=PQTRANS_IDLE) return -1;
     for(i=0;i<7;i++) if(!values[i]) return -1;
-    start=now_ms(); if(start<0) return -1; deadline=start+timeout_ms;
-    original_mode=PQisnonblocking(c);
-    if(PQsetnonblocking(c,1)!=0) return -1;
-    if(!PQsendQueryParams(c,"select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)",7,NULL,values,NULL,NULL,1)) goto done;
-    while((flush=PQflush(c))==1) if(wait_socket(c,POLLOUT,deadline)!=0) goto done;
-    if(flush<0) goto done;
-    for(;;) {
-        if(now_ms()<0 || now_ms()>=deadline) goto done;
-        if(!PQconsumeInput(c)) goto done;
-        if(PQisBusy(c)) { if(wait_socket(c,POLLIN,deadline)!=0) goto done; continue; }
-        next=PQgetResult(c);
-        if(!next) break;
-        if(result) { PQclear(next); goto done; }
-        result=next;
-    }
+    result=bank_money_pg_exchange(c,"select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)",7,NULL,values,NULL,NULL,timeout_ms);
     if(!result||PQresultStatus(result)!=PGRES_TUPLES_OK||PQntuples(result)!=1||PQnfields(result)!=5) goto done;
     for(i=0;i<5;i++) if(PQgetisnull(result,0,i)||PQftype(result,i)!=types[i]||PQfformat(result,i)!=1) goto done;
     if(PQgetlength(result,0,0)!=8||PQgetlength(result,0,3)!=64||PQgetlength(result,0,4)!=64) goto done;
@@ -78,7 +92,6 @@ int bank_money_read_native(void *connection,const char *const values[7],int time
     value.frame_length=8+pl+bl; put32(value.frame,pl); put32(value.frame+4,bl);
     memcpy(value.frame+8,PQgetvalue(result,0,1),pl); memcpy(value.frame+8+pl,PQgetvalue(result,0,2),bl);
     memcpy(value.player_hash,PQgetvalue(result,0,3),64); memcpy(value.bank_hash,PQgetvalue(result,0,4),64);
-    if(PQsetnonblocking(c,original_mode)!=0) goto done;
     *out=value; value.frame=NULL; ok=0;
 done:
     free(value.frame); if(result) PQclear(result);
