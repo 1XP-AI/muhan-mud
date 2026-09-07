@@ -18,6 +18,7 @@ int main(int argc,char **argv)
     status=bank_money_read_native(c,(const char *const *)(argv+1),2000,&result);
     PQfinish(c);
     if(status!=0) return 1;
+    fprintf(stderr,"%llu %s %s\n",(unsigned long long)result.revision,result.player_hash,result.bank_hash);
     if(fwrite(result.frame,1,result.frame_length,stdout)!=result.frame_length) { free(result.frame); return 2; }
     free(result.frame);
     return 0;

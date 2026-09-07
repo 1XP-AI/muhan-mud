@@ -36,7 +36,8 @@ const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,tex
 const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
 const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
 const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_READER,args.map(String),{
-  env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options},
+  env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
+    ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
   timeout:5000,maxBuffer:9*1024*1024,
 })
 let login
@@ -94,6 +95,7 @@ try {
       const timeout=nativeRead([id,...authority],'-c lock_timeout=0 -c statement_timeout=0')
       assert.equal(timeout.status,1,'native reader must terminate on its own deadline')
       assert.equal(timeout.stdout.length,0)
+      assert.ok(Date.now()-start>=1500,'probe must wait for the native deadline, not an immediate error')
       assert.ok(Date.now()-start<4500,'native deadline must precede the process watchdog')
     } finally { await db.query('rollback') }
   }
@@ -106,6 +108,7 @@ try {
     if(qualified) {
       const native=nativeRead([id,...authority])
       assert.equal(native.status,0,native.stderr.toString())
+      assert.equal(native.stderr.toString(),`${before.revision} ${before.player_hash} ${before.bank_hash}\n`)
       const pl=native.stdout.readUInt32BE(0),bl=native.stdout.readUInt32BE(4)
       assert.equal(native.stdout.length,8+pl+bl)
       input={...before,player_payload:native.stdout.subarray(8,8+pl),bank_payload:native.stdout.subarray(8+pl)}
