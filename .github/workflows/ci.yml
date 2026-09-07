@@ -1,7 +1,12 @@
 name: CI
 
 on:
-  push:
+  workflow_dispatch:
+
+# Paid hosted runners are an explicit, user-approved exception to local tests.
+concurrency:
+  group: manual-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
