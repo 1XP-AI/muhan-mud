@@ -43,10 +43,12 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
   ')"
 created=("$runner" "${created[@]}")
 docker start -ai "$runner"
-bash "$root/scripts/verify-replay-db-backup-local.sh" --allow-disposable "$pg"
+for profile in canonical tree_inventory; do
+bash "$root/scripts/verify-replay-db-backup-local.sh" --allow-disposable "$pg" "$profile"
 restored="$(docker create --read-only --user 0:0 --network "container:$pg" \
   --tmpfs /tmp:rw,exec,size=256m \
   --mount "type=bind,src=$scratch,dst=/workspace,readonly" \
-  --entrypoint bash "$runner_image" /workspace/scripts/verify-restored-snapshot-linux.sh --allow-disposable)"
+  --entrypoint bash "$runner_image" /workspace/scripts/verify-restored-snapshot-linux.sh --allow-disposable "$profile")"
 created=("$restored" "${created[@]}")
 docker start -ai "$restored"
+done
