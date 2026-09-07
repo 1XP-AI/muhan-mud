@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = 3123;
+const port = Number(process.env.MUHAN_BROWSER_PORT ?? 3123);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid MUHAN_BROWSER_PORT");
 
 export default defineConfig({
   testDir: ".",

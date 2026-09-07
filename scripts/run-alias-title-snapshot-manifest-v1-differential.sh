@@ -2,8 +2,8 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-oracle=/tmp/muhan-unit/alias_title_snapshot_manifest_v1_oracle
-mkdir -p /tmp/muhan-unit
+oracle="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/alias_title_snapshot_manifest_v1_oracle"
+mkdir -p "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}"
 cd "$root/src"
 ${CC:-cc} -std=gnu89 -fcommon -I. -ffunction-sections -fdata-sections \
   ../tests/harness/alias_title_snapshot_manifest_v1_oracle.c \

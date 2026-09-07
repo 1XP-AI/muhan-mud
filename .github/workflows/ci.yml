@@ -3,7 +3,7 @@ name: CI
 on:
   workflow_dispatch:
 
-# Paid hosted runners are an explicit, user-approved exception to local tests.
+# Manual execution preserves the local-first policy; hosted exceptions cover x64/Windows.
 concurrency:
   group: manual-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -14,14 +14,15 @@ permissions:
 jobs:
   database-contract:
     name: Supabase ownership contract
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:17-alpine
         env:
           POSTGRES_PASSWORD: contract-only-password
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -29,15 +30,46 @@ jobs:
           --health-retries 20
 
     steps:
+      - name: Isolate job-local build outputs
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify Linux ARM64 runner and Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          command -v apt-get
+          docker info --format '{{.Architecture}}'
 
       - name: Install PostgreSQL client and libpq headers
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y postgresql-client libpq-dev
+          sudo apt-get install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm (job-local)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
 
       - name: Run P1F Linux runtime idle and native tests
         shell: bash
@@ -63,7 +95,7 @@ jobs:
       - name: Run identity and onboarding contracts
         shell: bash
         env:
-          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           set -euo pipefail
           bash supabase/tests/imported_unclaimed_batch_schema_static_contract.sh
@@ -110,7 +142,7 @@ jobs:
         shell: bash
         env:
           M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE: "1"
-          M3_RECEIPT_TRANSPORT_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          M3_RECEIPT_TRANSPORT_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           set -euo pipefail
           make -C src character-save-journal-v2-receipt-transport-integration CC=gcc PG_CONFIG=pg_config
@@ -122,7 +154,7 @@ jobs:
       - name: Run M3 writer login and startup-session contracts
         shell: bash
         env:
-          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
           M3_WRITER_SESSION_ALLOW_DISPOSABLE: "1"
         run: |
           set -euo pipefail
@@ -140,7 +172,7 @@ jobs:
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
           psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
           M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1 \
-          M3_RPC_TRANSPORT_DATABASE_URL=postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:5432/postgres \
+          M3_RPC_TRANSPORT_DATABASE_URL=postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres \
             make -C src character-save-journal-v2-rpc-transport-integration CC=gcc PG_CONFIG=pg_config
 
       - name: Run M3 v3 route, provisioning baseline, and absent-head seed PostgreSQL 17 contracts
@@ -161,8 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           evidence_database=legacy_identity_evidence_contract
-          evidence_database_url="postgresql://postgres:contract-only-password@127.0.0.1:5432/${evidence_database}"
-          createdb --host=127.0.0.1 --username=postgres "${evidence_database}"
+          evidence_database_url="postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/${evidence_database}"
+          createdb --host=127.0.0.1 --port="${{ job.services.postgres.ports['5432'] }}" --username=postgres "${evidence_database}"
           psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
           # Start at the identity schema: the earlier lobby-presence migration
           # depends on Realtime, which this minimal disposable bootstrap omits.
@@ -367,8 +399,8 @@ jobs:
         shell: bash
         env:
           BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_CI_E2E: "1"
-          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_DATABASE_URL: postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:5432/legacy_identity_evidence_contract
-          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_SUPER_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/legacy_identity_evidence_contract
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_DATABASE_URL: postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/legacy_identity_evidence_contract
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_SUPER_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/legacy_identity_evidence_contract
         run: |
           set -euo pipefail
           bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
@@ -397,13 +429,6 @@ jobs:
             CC=gcc PG_CONFIG=pg_config \
             M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE=1
 
-      - name: Run named-volume restart harness
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash tests/integration/muhan_v2_named_volume_restart_integration.sh
-
       - name: Setup Node for importer integration
         uses: actions/setup-node@v4
         with:
@@ -413,15 +438,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@10.15.1 --activate
           pnpm install --frozen-lockfile --filter @muhan/character-inventory-importer...
 
       - name: Run disposable Linux/Postgres importer integration
         shell: bash
         env:
           INVENTORY_E2E_ALLOW_DISPOSABLE: "1"
-          INVENTORY_E2E_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          INVENTORY_E2E_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           set -euo pipefail
           # This primary disposable database has the identity checkpoint but
@@ -442,33 +465,54 @@ jobs:
           pnpm --filter @muhan/character-inventory-importer test:integration
 
   build-and-smoke:
-    name: ${{ matrix.runner }}
-    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.lane }}
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            smoke_expect_hints: "1"
-          - runner: ubuntu-22.04-arm
+          - lane: linux-arm64
+            runner: ubuntu-arm64
+            labels: [self-hosted, Linux, ARM64]
             smoke_expect_hints: "0"
-          - runner: windows-latest
+          # Retain native x64 ABI and the pinned amd64 named-volume contract.
+          - lane: linux-x64-compatibility
+            runner: ubuntu-latest
+            labels: ubuntu-latest
             smoke_expect_hints: "1"
-          - runner: macos-latest
+          - lane: windows-x64-compatibility
+            runner: windows-latest
+            labels: windows-latest
+            smoke_expect_hints: "1"
+          - lane: macos-arm64-portability
+            runner: macos-latest
+            labels: [self-hosted, macOS, ARM64]
             smoke_expect_hints: "1"
 
     steps:
+      - name: Isolate job-local build outputs
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+
       - name: Checkout (default)
         if: matrix.runner != 'macos-latest'
         uses: actions/checkout@v4
 
       - name: Checkout (macOS sparse, manual)
         if: matrix.runner == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           git init .
-          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://github.com/${{ github.repository }}.git"
           git sparse-checkout init --no-cone
           printf '%s\n' \
             '/src/' \
@@ -479,11 +523,12 @@ jobs:
             '/post/' \
             '/log/' \
             '/README.md' > .git/info/sparse-checkout
-          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 origin "${{ github.sha }}"
           git checkout --force FETCH_HEAD
 
       - name: Setup Python (Linux/macOS)
-        if: matrix.runner != 'windows-latest'
+        if: matrix.runner == 'macos-latest'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -498,13 +543,51 @@ jobs:
             gcc
             python
 
+      - name: Verify Linux ARM64 runner and Docker
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          command -v apt-get
+          docker info --format '{{.Architecture}}'
+
       - name: Install build deps (Ubuntu)
         if: startsWith(matrix.runner, 'ubuntu')
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates pkg-config jq
+
+      - name: Setup Node
+        if: matrix.lane == 'linux-arm64'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm (job-local)
+        if: matrix.lane == 'linux-arm64'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
+      - name: Setup Rust
+        if: matrix.lane == 'linux-arm64'
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify macOS ARM64 toolchain
+        if: matrix.runner == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcode-select -p
+          xcrun --find clang
+          command -v make
+          cc --version
 
       - name: Build (Linux/macOS)
         if: matrix.runner != 'windows-latest'
@@ -527,7 +610,7 @@ jobs:
           make -C src -j2 CC=gcc
 
       - name: Run M3 native runtime lifecycle gate (Linux + libpq)
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -537,12 +620,19 @@ jobs:
             CC=gcc PG_CONFIG=pg_config
 
       - name: Exercise M3 live-save production graph (Linux)
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           make -C src m3-feature-off-legacy-authority-test CC=gcc
           make -C src m3-live-save-all-shadow-binding-test CC=gcc
+
+      - name: Run named-volume restart harness
+        if: matrix.lane == 'linux-x64-compatibility'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/integration/muhan_v2_named_volume_restart_integration.sh
 
       - name: Player snapshot portable contract (Linux/macOS)
         if: matrix.runner != 'windows-latest'
@@ -563,7 +653,7 @@ jobs:
           make -C src player-snapshot-v1-test CC=gcc
 
       - name: Audit default MUD artifact has no PQ or libpq (Linux)
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -576,8 +666,8 @@ jobs:
         run: |
           set -euo pipefail
           export MUHAN_HOME="$GITHUB_WORKSPACE"
-          log_file="/tmp/frp.log"
-          port="$((40000 + RANDOM % 1000))"
+          log_file="$RUNNER_TEMP/frp-${{ github.job }}-${{ strategy.job-index }}.log"
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 
           ./src/frp.new -r "$port" >"$log_file" 2>&1 &
           pid=$!
@@ -607,9 +697,9 @@ jobs:
         run: |
           set -euo pipefail
           export MUHAN_HOME="$(pwd)"
-          log_file="/tmp/frp.log"
+          log_file="$RUNNER_TEMP/frp-${{ github.job }}-${{ strategy.job-index }}.log"
           bin="./src/frp.new"
-          port="$((40000 + RANDOM % 1000))"
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 
           if [[ ! -x "$bin" && -x "./src/frp.new.exe" ]]; then
             bin="./src/frp.new.exe"
@@ -638,7 +728,7 @@ jobs:
           fi
 
       - name: Legacy unit contracts
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -649,7 +739,7 @@ jobs:
           python3 tests/unit/creature_object_layout_contract_test.py
 
       - name: Onboarding protocol sanitizers
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -686,7 +776,7 @@ jobs:
             "$RUNNER_TEMP/staged-player-sanitized-test"
 
       - name: CDTO and journal sanitizers
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -717,7 +807,7 @@ jobs:
           make -C src player-snapshot-v1-sanitizer-test CC=gcc
 
       - name: Bounded player serializer checks
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -725,59 +815,58 @@ jobs:
           make -C src player-record-serializer-sanitizer-test CC=gcc
 
       - name: Deterministic AI scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-ai-scenario.sh --output "$RUNNER_TEMP/muhan-ai-scenario.json"
 
       - name: SIGTERM shutdown scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-shutdown-scenario.sh --output "$RUNNER_TEMP/muhan-shutdown-scenario.json"
 
       - name: Setup Node for Gateway/Web contracts
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Install and verify Gateway/Web
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@10.15.1 --activate
           pnpm install --frozen-lockfile
           pnpm check
 
       - name: Admission identity C/Gateway conformance
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-admission-identity-conformance.sh
 
       - name: MUD1C admission-context C/Gateway conformance
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-mud1c-admission-context-conformance.sh
 
       - name: Browser xterm onboarding contract
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           pnpm exec playwright install --with-deps chromium
+          export MUHAN_BROWSER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
           pnpm test:browser
 
       - name: Web stack lifecycle unit contract
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -786,14 +875,14 @@ jobs:
           pnpm --dir services/gateway exec tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --esModuleInterop --jsx react-jsx ../../tests/stack-e2e/stack-e2e.test.ts
 
       - name: Disposable web onboarding stack acceptance
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-stack-e2e.sh
 
       - name: Rust CDTO and M3 wake protocol contracts
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -805,14 +894,14 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --workspace --exclude muhan-m3-wake-protocol
 
       - name: Trusted admission scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-admission-scenario.sh --output "$RUNNER_TEMP/muhan-admission-scenario.json"
 
       - name: Real onboarding scenario with ASan and UBSan
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
@@ -830,7 +919,7 @@ jobs:
               --output "$RUNNER_TEMP/muhan-onboarding-sanitized-scenario.json"
 
       - name: Upload AI scenario evidence
-        if: always() && matrix.runner == 'ubuntu-latest'
+        if: always() && matrix.lane == 'linux-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: mud-ai-scenario-${{ github.sha }}
