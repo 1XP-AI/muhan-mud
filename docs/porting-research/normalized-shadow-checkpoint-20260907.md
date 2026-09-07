@@ -123,3 +123,13 @@ Docker 사용량은 이미지 21.01GB(회수 가능 10.84GB), build cache 12.17G
 배포 저장소 커밋 `673754d5`: 위 SQL은 이름 변경 외 차이가 없음을 확인한 뒤 소스와 byte 일치하도록 맞췄다. 원본 SQL hash를 고정하는 기존 렌더링 테스트도 해당 5개 hash만 갱신했다. 통합 Dockerfile에 normalized projector build/COPY/root-owned 0555 설정을 추가했다. 새 prerequisite 테스트 2개를 먼저 실패시키고 수정 후 기존 chart tests 44개와 함께 46 pass, 0 fail을 확인했다. 통합 이미지 자체의 새 빌드나 배포 실행 증거는 아니다.
 
 새 normalized 비교 Job, 전용 secret 및 DB migration 연결, network policy, 운영 입력 쌍 준비, amd64 통합 이미지 검증은 여전히 다음 작업이다. 두 저장소의 변경은 로컬 커밋이며 registry/Git 원격 push 및 k8s 작업은 하지 않았다.
+
+## normalized shadow chart 연결
+
+배포 저장소 커밋 `c3857ea6`에 기본 비활성 normalizedShadow 설정을 추가했다. `enabled`는 20261006/14 스키마 및 종속 artifact migration 준비만 켜고, 별도 `run`이 실제 Job을 렌더링한다. migration은 검증된 소스와 byte 일치하며 checksum에도 반영된다. run에는 짧은 manualRunId, 별도 PVC/단일 subPath, 전용 기존 Secret이 필수다. Job은 10001 UID, 읽기 전용 PVC 및 root filesystem, /tmp memory volume, backoff 0, 120초 deadline, 서비스 계정 token 없이 CLI --once를 실행한다.
+
+전용 Secret key는 `normalized-reader-db-uri`이며 계정 비밀번호 설정과 Secret 생성은 자동화하지 않았다. 기존 migration hook의 완료를 먼저 확인하고 credential/input을 준비한 다음 run을 켜는 2단계 운영 절차를 `muhan-mud/NORMALIZED-SHADOW.md`에 기록했다. Job은 일반 retained Job이며 hook/TTL 자동 삭제를 사용하지 않는다. 동일 ID는 기존 Job이 유지되는 동안 재실행되지 않으며 새 실행에는 새 ID가 필요하다.
+
+NetworkPolicy enabled 시 새 Job의 ingress를 닫고 같은 release Postgres/DNS egress만 허용하며 DB ingress 허용 대상도 추가한다. RED 3개 확인 후 chart 구현을 추가해 신규 3개 및 기존 46개 테스트, 총 49 pass/0 fail을 확인했다. 이후 read-only mount 수, service-account token, writer credential 미참조, hook 부재 assertion도 추가해 신규 3개를 다시 통과했다.
+
+실제 k8s Job, amd64 통합 이미지, 운영 credential/input provisioning은 아직 미검증/미완료다. Git/registry push 또는 운영 배포는 하지 않았다. 다음은 독립 리뷰와 배포 artifact/source revision 검증이다.
