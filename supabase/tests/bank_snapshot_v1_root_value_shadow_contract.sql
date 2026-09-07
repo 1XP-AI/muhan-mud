@@ -23,6 +23,8 @@ select pg_temp.assert_true(pg_temp.record_root(-9223372036854775808::bigint)='RE
 select pg_temp.assert_true(pg_temp.record_root(-9223372036854775808::bigint)='EXACT_RETRY','same command and value exact-retry without mutation');
 select pg_temp.expect_state('P0001','select pg_temp.record_root(7)');
 select pg_temp.expect_state('P0001',format('select outcome from private.record_bank_snapshot_v1_root_value_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9,%L,48,-1)', 'a9070000-0000-0000-0000-000000000001','c9070000-0000-0000-0000-000000000002',:'bsv_request_sha256',repeat('a',64),repeat('b',64)));
+reset role;
+reset session authorization;
 select pg_temp.assert_true((select root_value=-9223372036854775808::bigint from private.game_character_bank_snapshot_v1_root_value_shadows where character_id='a9070000-0000-0000-0000-000000000001'::uuid and command_id='c9070000-0000-0000-0000-000000000001'::uuid),'changed-value retry and topology-key mismatch leave immutable root evidence untouched');
 reset role;
 reset session authorization;

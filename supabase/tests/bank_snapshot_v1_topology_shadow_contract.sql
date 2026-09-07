@@ -32,10 +32,16 @@ select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"node
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[ {"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":1,"extra":true} ]''::jsonb)');
 select jsonb_agg(jsonb_build_object('nodeIndex',i,'parentNodeIndex',case when i=0 then null::integer else i-1 end,'siblingOrdinal',0) order by i)::text as depth_nodes from generate_series(0,64) as series(i) \gset bsv_
 select pg_temp.expect_state('22023',format('select pg_temp.record_bank_nodes(%L::jsonb)',:'bsv_depth_nodes'));
+reset role;
+reset session authorization;
 select pg_temp.assert_true(not exists(select 1 from private.game_character_bank_snapshot_v1_topology_shadows where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid),'every rejected topology leaves no shadow evidence');
 
+set local session authorization mud_writer_login;
+set local role mud_writer;
 select pg_temp.assert_true(pg_temp.record_bank_nodes('[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0},{"nodeIndex":1,"parentNodeIndex":0,"siblingOrdinal":0},{"nodeIndex":2,"parentNodeIndex":1,"siblingOrdinal":0}]'::jsonb)='RECORDED','a canonical one-root depth-three topology with explicit null root records');
 select pg_temp.assert_true(pg_temp.record_bank_nodes('[{"nodeIndex":0,"parentNodeIndex":null,"siblingOrdinal":0},{"nodeIndex":1,"parentNodeIndex":0,"siblingOrdinal":0},{"nodeIndex":2,"parentNodeIndex":1,"siblingOrdinal":0}]'::jsonb)='EXACT_RETRY','a canonical topology exact-retries without mutation');
+reset role;
+reset session authorization;
 select pg_temp.assert_true((select item_count=3 from private.game_character_bank_snapshot_v1_topology_shadows where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid) and (select count(*)=3 from private.game_character_bank_snapshot_v1_topology_shadow_items where character_id='a9050000-0000-0000-0000-000000000001'::uuid and command_id='c9050000-0000-0000-0000-000000000001'::uuid),'only canonical topology rows are recorded');
 reset role;
 reset session authorization;
