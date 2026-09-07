@@ -26,6 +26,30 @@ export interface PlayerSnapshotV1Artifact {
   payload: Uint8Array
 }
 
+/**
+ * Read-only native evidence parsed from exactly one C artifact-store file.
+ * It deliberately has no filename, receipt, filesystem, relay, or mutation
+ * capability; callers that need receipt authority must still use
+ * `parsePlayerSnapshotV1Artifact` below.
+ */
+export interface PlayerSnapshotV1ArtifactEvidence {
+  worldId: string
+  characterId: string
+  commandId: string
+  canonicalNameHex: string
+  requestSha256: string
+  sourcePostSha256: string
+  writerInstanceId: string
+  writerEpoch: string
+  writerRevision: string
+  storageFormat: string
+  snapshotFormat: typeof PLAYER_SNAPSHOT_V1_FORMAT
+  sourceOctets: string
+  snapshotSha256: string
+  snapshotOctets: number
+  payload: Uint8Array
+}
+
 export class InvalidPlayerSnapshotV1ArtifactError extends Error {
   constructor() { super('invalid PlayerSnapshotV1 artifact') }
 }
@@ -126,23 +150,12 @@ function parseHeader(bytes: Uint8Array): { header: PlayerSnapshotV1Header, paylo
  * does not call or extend the legacy text-manifest parser: its canonical receipt
  * is only used to bind the immutable header to the acknowledged save context.
  */
-export function parsePlayerSnapshotV1Artifact(
-  filename: string,
-  bytes: Uint8Array,
-  receipt: Manifest,
-): PlayerSnapshotV1Artifact {
-  const commandId = commandFromPlayerSnapshotV1Filename(filename)
-  if (!commandId || bytes.length < 51 || bytes.length > MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS) {
+export function parsePlayerSnapshotV1ArtifactEvidence(bytes: Uint8Array): PlayerSnapshotV1ArtifactEvidence {
+  if (bytes.length < 51 || bytes.length > MAX_PLAYER_SNAPSHOT_V1_ARTIFACT_OCTETS) {
     throw new InvalidPlayerSnapshotV1ArtifactError()
   }
   const { header, payload } = parseHeader(bytes)
-  if (commandId !== receipt.commandId || header.worldId !== receipt.worldId
-    || header.characterId !== receipt.characterId || header.commandId !== receipt.commandId
-    || header.canonicalNameHex !== receipt.canonicalNameHex || header.requestSha256 !== receipt.requestSha256
-    || header.sourcePostSha256 !== receipt.postSha256 || header.writerInstanceId !== receipt.writerInstanceId
-    || header.writerEpoch !== receipt.writerEpoch || header.writerRevision !== receipt.writerRevision
-    || header.storageFormat !== String(receipt.storageFormat) || header.sourceOctets !== receipt.snapshotOctets
-    || payload.length < 48 || payload.length > MAX_PLAYER_SNAPSHOT_V1_OCTETS
+  if (payload.length < 48 || payload.length > MAX_PLAYER_SNAPSHOT_V1_OCTETS
     || BigInt(header.snapshotOctets) !== BigInt(payload.length)
     || !Buffer.from(payload.subarray(0, 8)).equals(CDTO_MAGIC)
     || payload[8] !== 0 || payload[9] !== 1 || payload[10] !== 0 || payload[11] !== 7) {
@@ -158,14 +171,53 @@ export function parsePlayerSnapshotV1Artifact(
   if (expectedDigest.length !== 32 || !actualDigest.equals(expectedDigest)) throw new InvalidPlayerSnapshotV1ArtifactError()
   if (createHash('sha256').update(payload).digest('hex') !== header.snapshotSha256) throw new InvalidPlayerSnapshotV1ArtifactError()
   return {
-    characterId: receipt.characterId,
-    commandId,
-    receiptRequestSha256: receipt.requestSha256,
-    sourcePostSha256: receipt.postSha256,
-    sourceOctets: receipt.snapshotOctets,
-    snapshotFormat: PLAYER_SNAPSHOT_V1_FORMAT,
+    worldId: header.worldId,
+    characterId: header.characterId,
+    commandId: header.commandId,
+    canonicalNameHex: header.canonicalNameHex,
+    requestSha256: header.requestSha256,
+    sourcePostSha256: header.sourcePostSha256,
+    writerInstanceId: header.writerInstanceId,
+    writerEpoch: header.writerEpoch,
+    writerRevision: header.writerRevision,
+    storageFormat: header.storageFormat,
+    snapshotFormat: header.snapshotFormat,
+    sourceOctets: header.sourceOctets,
     snapshotSha256: header.snapshotSha256,
     snapshotOctets: payload.length,
     payload: Buffer.from(payload),
+  }
+}
+
+/**
+ * Parses native evidence and then binds it to the independently persisted
+ * legacy receipt selected by the immutable artifact filename.
+ */
+export function parsePlayerSnapshotV1Artifact(
+  filename: string,
+  bytes: Uint8Array,
+  receipt: Manifest,
+): PlayerSnapshotV1Artifact {
+  const commandId = commandFromPlayerSnapshotV1Filename(filename)
+  if (!commandId) throw new InvalidPlayerSnapshotV1ArtifactError()
+  const evidence = parsePlayerSnapshotV1ArtifactEvidence(bytes)
+  if (commandId !== receipt.commandId || evidence.worldId !== receipt.worldId
+    || evidence.characterId !== receipt.characterId || evidence.commandId !== receipt.commandId
+    || evidence.canonicalNameHex !== receipt.canonicalNameHex || evidence.requestSha256 !== receipt.requestSha256
+    || evidence.sourcePostSha256 !== receipt.postSha256 || evidence.writerInstanceId !== receipt.writerInstanceId
+    || evidence.writerEpoch !== receipt.writerEpoch || evidence.writerRevision !== receipt.writerRevision
+    || evidence.storageFormat !== String(receipt.storageFormat) || evidence.sourceOctets !== receipt.snapshotOctets) {
+    throw new InvalidPlayerSnapshotV1ArtifactError()
+  }
+  return {
+    characterId: evidence.characterId,
+    commandId: evidence.commandId,
+    receiptRequestSha256: evidence.requestSha256,
+    sourcePostSha256: evidence.sourcePostSha256,
+    sourceOctets: evidence.sourceOctets,
+    snapshotFormat: evidence.snapshotFormat,
+    snapshotSha256: evidence.snapshotSha256,
+    snapshotOctets: evidence.snapshotOctets,
+    payload: evidence.payload,
   }
 }

@@ -39,6 +39,21 @@ const HEADER_NAMES: [&str; 15] = [
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlayerSnapshotV1ArtifactShadowVerification {
+    /// Immutable C artifact-header facts, copied only after the complete
+    /// header and payload have validated.  This remains read-only metadata;
+    /// no identity is used to select, write, or project an artifact.
+    pub world_id: String,
+    pub character_id: String,
+    pub command_id: String,
+    pub canonical_name_hex: String,
+    pub request_sha256: String,
+    pub source_post_sha256: String,
+    pub writer_instance_id: String,
+    pub writer_epoch: u64,
+    pub writer_revision: u64,
+    pub storage_format: u64,
+    pub snapshot_format: String,
+    pub source_octets: u64,
     pub snapshot_sha256: [u8; DIGEST_LENGTH],
     pub snapshot_octets: usize,
     pub replay: ReplayVerificationV1,
@@ -244,19 +259,43 @@ pub fn verify_player_snapshot_v1_artifact_shadow(
     let replay = verify_player_snapshot_post_save_shadow_v1(snapshot, &header.snapshot_sha256)
         .map_err(|_| InvalidPlayerSnapshotV1Artifact)?;
     Ok(PlayerSnapshotV1ArtifactShadowVerification {
+        world_id: header.world_id.to_owned(),
+        character_id: header.character_id.to_owned(),
+        command_id: header.command_id.to_owned(),
+        canonical_name_hex: header.canonical_name_hex.to_owned(),
+        request_sha256: header.request_sha256.to_owned(),
+        source_post_sha256: header.source_post_sha256.to_owned(),
+        writer_instance_id: header.writer_instance_id.to_owned(),
+        writer_epoch: header.writer_epoch,
+        writer_revision: header.writer_revision,
+        storage_format: header.storage_format,
+        snapshot_format: header.snapshot_format.to_owned(),
+        source_octets: header.source_octets,
         snapshot_sha256: header.snapshot_sha256,
         snapshot_octets: snapshot.len(),
         replay,
     })
 }
 
-/// Stable, metadata-only result for a shadow observer.  It intentionally
-/// excludes all header identity fields and every snapshot source field.
+/// Stable, metadata-only result for a shadow observer.  It includes the
+/// validated immutable header facts and excludes the snapshot payload.
 pub fn format_player_snapshot_v1_artifact_shadow_verification(
     value: &PlayerSnapshotV1ArtifactShadowVerification,
 ) -> String {
     format!(
-        "format={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_FORMAT}\nversion={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_VERSION}\nalgorithm={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_ALGORITHM}\nsnapshot_sha256={}\nsnapshot_octets={}\ncanonical_octets={}\ninventory_node_count={}\n",
+        "format={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_FORMAT}\nversion={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_VERSION}\nalgorithm={PLAYER_SNAPSHOT_V1_ARTIFACT_SHADOW_VERIFICATION_ALGORITHM}\nworld_id={}\ncharacter_id={}\ncommand_id={}\ncanonical_name_hex={}\nrequest_sha256={}\nsource_post_sha256={}\nwriter_instance_id={}\nwriter_epoch={}\nwriter_revision={}\nstorage_format={}\nsnapshot_format={}\nsource_octets={}\nsnapshot_sha256={}\nsnapshot_octets={}\ncanonical_octets={}\ninventory_node_count={}\n",
+        value.world_id,
+        value.character_id,
+        value.command_id,
+        value.canonical_name_hex,
+        value.request_sha256,
+        value.source_post_sha256,
+        value.writer_instance_id,
+        value.writer_epoch,
+        value.writer_revision,
+        value.storage_format,
+        value.snapshot_format,
+        value.source_octets,
         digest_hex(&value.snapshot_sha256),
         value.snapshot_octets,
         value.replay.canonical_octets,
