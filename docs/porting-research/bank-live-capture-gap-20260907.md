@@ -432,6 +432,31 @@ installed into the live command coordinator. Durable pending-request recovery,
 actual acknowledgement loss, native planner invocation, command/session
 binding and legacy write fencing remain before activation.
 
+### Actual committed acknowledgement loss
+
+Source `e746f14` adds a disposable loopback relay around the actual native
+commit executable. Authentication and query submission reach the local PG
+server; server replies are withheld after the qualified commit query begins.
+While the C process still awaits its reply, an independent DB connection proves
+revision one and both intended payloads are already committed. The test also
+asserts response bytes were actually withheld. The native client reaches its
+own deadline, returns UNKNOWN and emits no success output.
+
+A fresh native process reconnects directly to the disposable DB with the exact
+same command, authority tuple, expected revision and planned bytes. It receives
+EXACT_RETRY, including a second retry, before the ordinary withdrawal proceeds.
+Final full-byte roundtrip and two total intents/authority rows prove no duplicate
+deposit. The relay uses an ephemeral loopback port inside the isolated test
+container, no external service or published host port, and closes only its own
+sockets/process. This is test-only failure injection, not application routing.
+
+Full local runner passed exit 0: `/tmp/muhan-lost-money-ack.log`, with the existing
+native sanitizers and both restored profiles. This closes actual post-commit
+reply-loss classification/reconnect retry for a still-valid authority tuple.
+The test retains command bytes in its parent process; durable recovery after
+the entire runtime restarts, expired session/writer reconciliation, live command
+installation and exclusive legacy-write fencing remain outstanding.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
