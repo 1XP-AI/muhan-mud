@@ -1,5 +1,38 @@
 # Live bank capture and transaction gap
 
+## General player save CAS verified — 2026-09-07
+
+Source `19d1a5f` adds closed `commit_player_snapshot` with an immutable,
+operation-specific intent ledger. It revalidates the writer/name/character
+route after acquiring the paired-state update lock, requires the caller's
+original revision and player hash, checks the canonical payload/name, and
+commits player bytes while preserving bank bytes under the shared revision.
+An exact historical retry returns its original revision without rolling the
+current head back; a conflicting command, stale baseline or invalid payload
+cannot write. This is C snapshot persistence, not a Rust gameplay port.
+
+Frozen source `f46c123` additionally tests wrong name, character ID and writer
+epoch, plus a valid-digest payload with a different player name. Each rejects
+without changing the pair or creating a save intent. The actual PostgreSQL
+tests prove one winner for concurrent CAS saves, preserved bank bytes,
+immutable intents, and historical retry after the head advances. Grants are
+test-only and revoked afterward.
+
+The full isolated local ARM64 runner at `f46c123` exited **0**, observed through
+the process handle; evidence: `/tmp/muhan-player-save-identity.log`. This also
+ran native bank commands, C onboarding, sanitizer/differential checks, and
+both canonical/tree-inventory backup restore profiles. The latter fingerprints
+do not yet prove complete recovery of the new player-save intent ledger.
+
+Remaining cutover blockers: no native save provider is installed; the original
+load baseline must survive savegame copies, disconnect and recovery queues.
+A fresh route lookup must never label stale in-memory state with a newer DB
+revision. General saves also need durable pending-command ownership and
+coordination with money operations before DB authority is enabled. Credential
+verification and live player initialization remain separate from DTO decoding.
+No production grants, deployment, push or Actions execution were performed in
+this goal continuation; the pending CI changes remain separate.
+
 ## Revalidated detached native DB player load — 2026-09-07
 
 Source `db05b82` adds closed read_player_paired_snapshot and a PlayerStore-shaped
