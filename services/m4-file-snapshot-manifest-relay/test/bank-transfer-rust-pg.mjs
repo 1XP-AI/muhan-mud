@@ -341,7 +341,7 @@ try {
     await assert.rejects(execute([...args.slice(0,3),direction==='deposit'?'withdraw':'deposit',25,p,b]),e=>e.code==='P0001')
     const after=await read(); assert.equal(after.revision,String(index+1)); assert.deepEqual(after.player_payload,p); assert.deepEqual(after.bank_payload,b)
   }
-  const final=await read(); assert.deepEqual(final.player_payload,player); assert.deepEqual(final.bank_payload,bank)
+  let final=await read(); assert.deepEqual(final.player_payload,player); assert.deepEqual(final.bank_payload,bank)
   await assert.rejects(execute([id,'c9190000-0000-0000-0000-000000000003',0,'deposit',25,player,bank]),e=>e.code==='40001')
   assert.deepEqual(await read(),final)
   assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
@@ -349,6 +349,29 @@ try {
     const rows=(await db.query('select actor_user_id,session_id,writer_instance_id,writer_epoch::text from private.game_character_money_transfer_authorities where character_id=$1',[id])).rows
     assert.equal(rows.length,2)
     for(const row of rows) assert.deepEqual(row,{actor_user_id:actor,session_id:session,writer_instance_id:writer,writer_epoch:'1'})
+    const amountRoot=await mkdtemp(join(tmpdir(),'muhan-bank-all-'))
+    try {
+      const depositAll=[id,'c9250000-0000-0000-0000-000000000001',2,'deposit','모두',playerGold(player,0n),bankGold(bank,150n)]
+      const deposited=nativeCommit(depositAll,authority,'',amountRoot,true)
+      assert.equal(deposited.status,0,deposited.stderr.toString()); assert.equal(deposited.stdout.toString(),'COMMITTED 3\n')
+      const saved=await readMoneyPending(amountRoot,depositAll[1])
+      assert.equal(saved.args[10],'100','persist concrete DB-derived amount, never all')
+      const afterAll=await read()
+      assert.deepEqual(afterAll.player_payload,depositAll[5]); assert.deepEqual(afterAll.bank_payload,depositAll[6])
+      const retry=nativeCommit([...depositAll.slice(0,4),100,...depositAll.slice(5)],authority,'',amountRoot)
+      assert.equal(retry.status,0,retry.stderr.toString()); assert.equal(retry.stdout.toString(),'EXACT_RETRY 3\n')
+      const empty=[id,'c9250000-0000-0000-0000-000000000002',3,'deposit','모두',depositAll[5],depositAll[6]]
+      const rejected=nativeCommit(empty,authority,'',amountRoot,true)
+      assert.equal(rejected.status,4); assert.equal(rejected.stdout.length,0)
+      await assert.rejects(readMoneyPending(amountRoot,empty[1]),{code:'ENOENT'})
+      assert.deepEqual(await read(),afterAll)
+      const withdraw=[id,'c9250000-0000-0000-0000-000000000003',3,'withdraw','000100냥',player,bank]
+      const withdrawn=nativeCommit(withdraw,authority,'',amountRoot,true)
+      assert.equal(withdrawn.status,0,withdrawn.stderr.toString()); assert.equal(withdrawn.stdout.toString(),'COMMITTED 4\n')
+      assert.equal((await readMoneyPending(amountRoot,withdraw[1])).args[10],'100')
+      final=await read(); assert.deepEqual(final.player_payload,player); assert.deepEqual(final.bank_payload,bank)
+      console.log('GREEN native command amounts: DB-derived all, numeric durable intent, exact retry, empty-all rejection and Korean unit normalization')
+    } finally {await rm(amountRoot,{recursive:true,force:true})}
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
     await db.query(`grant execute on function ${recoverySignature} to mud_writer`)
     await db.query("update private.game_character_sessions set expires_at=clock_timestamp()-interval '1 millisecond' where character_id=$1",[id])
@@ -397,7 +420,7 @@ try {
       console.log('GREEN restarted recovery CLI discovers durable requests: confirms old commit, preserves unknown/corrupt files without writes')
     } finally { await rm(restartRoot,{recursive:true,force:true}) }
     assert.deepEqual(await read(),final)
-    assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
+    assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,4)
     console.log('GREEN successor writer reconciles exact old commit after session/epoch expiry without replay or state changes')
     console.log('GREEN qualified writer login: gated pair read -> Rust result -> atomic commit and immutable command binding')
   }

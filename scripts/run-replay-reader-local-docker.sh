@@ -45,6 +45,7 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     CARGO_NET_OFFLINE=true bash scripts/run-player-snapshot-v1-artifact-conformance.sh
     make -C src bank-snapshot-v1-test bank-snapshot-v1-artifact-test
     make -C src bank-transfer-snapshot-v1-test bank-transfer-snapshot-v1-sanitizer-test
+    cargo test --locked --offline --manifest-path rust/Cargo.toml -p muhan-core-dto --lib --bin bank_money_transfer_plan
     cc -std=gnu89 -Wall -Wextra -Werror -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
       tests/unit/bank_money_coordinate_native_test.c src/bank_money_coordinate_native.c -o /tmp/bank-money-coordinate-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/bank-money-coordinate-test

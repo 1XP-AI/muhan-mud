@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define FRAME_MAX (8388608U+8U)
 static int64_t clock_ms(void)
@@ -28,14 +29,14 @@ static int frame_valid(const unsigned char *p,size_t n)
     a=get32(p); b=get32(p+4);
     return a>=48&&a<=4194304&&b>=55&&b<=4194304&&a+b+8==n;
 }
-int bank_money_process_native(const char *path,const char *const *args,int count,const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
+static int exchange(const char *path,const char *const *args,int count,const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length,size_t prefix)
 {
     int in[2]={-1,-1},output[2]={-1,-1},i,status=0,exited=0,eof=0,result=-1,actions_ready=0;
     pid_t pid=-1,waited;
     posix_spawn_file_actions_t actions;
     char *argv[18],*env[]={"LANG=C.UTF-8",NULL};
     unsigned char *bytes=NULL;
-    size_t sent=0,used=0;
+    size_t sent=0,used=0,limit=FRAME_MAX+prefix;
     ssize_t n;
     int64_t now,deadline;
     struct pollfd fds[2];
@@ -46,7 +47,7 @@ int bank_money_process_native(const char *path,const char *const *args,int count
     argv[0]=(char *)path; argv[count+1]=NULL;
     for(i=0;i<count;i++) { if(!args[i]) return -1; argv[i+1]=(char *)args[i]; }
     now=clock_ms(); if(now<0) return -1; deadline=now+timeout_ms;
-    bytes=(unsigned char *)malloc(FRAME_MAX+1); if(!bytes) goto done;
+    bytes=(unsigned char *)malloc(limit+1); if(!bytes) goto done;
     if(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,in)||socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,output)) goto done;
     if(posix_spawn_file_actions_init(&actions)) goto done;
     actions_ready=1;
@@ -64,8 +65,8 @@ int bank_money_process_native(const char *path,const char *const *args,int count
             else if(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK&&errno!=EINTR) goto done;
         }
         if(!eof) {
-            n=recv(output[0],bytes+used,FRAME_MAX+1-used,0);
-            if(n>0) { used+=(size_t)n; if(used>FRAME_MAX) goto done; }
+            n=recv(output[0],bytes+used,limit+1-used,0);
+            if(n>0) { used+=(size_t)n; if(used>limit) goto done; }
             else if(n==0) eof=1;
             else if(errno!=EAGAIN&&errno!=EWOULDBLOCK&&errno!=EINTR) goto done;
         }
@@ -80,7 +81,7 @@ int bank_money_process_native(const char *path,const char *const *args,int count
         /* Bounded reap polling also handles EOF arriving just before exit. */
         if(poll(fds,2,(int)(deadline-now<10?deadline-now:10))<0&&errno!=EINTR) goto done;
     }
-    if(sent!=length||!WIFEXITED(status)||WEXITSTATUS(status)!=0||!frame_valid(bytes,used)) goto done;
+    if(sent!=length||!WIFEXITED(status)||WEXITSTATUS(status)!=0||used<prefix||!frame_valid(bytes+prefix,used-prefix)) goto done;
     *out=bytes; *out_length=used; bytes=NULL; result=0;
 done:
     if(actions_ready) posix_spawn_file_actions_destroy(&actions);
@@ -88,5 +89,21 @@ done:
     if(pid>0&&!exited) { kill(pid,SIGKILL); while(waitpid(pid,&status,0)<0&&errno==EINTR) {} }
     free(bytes); return result;
 }
+int bank_money_process_native(const char *path,const char *const *args,int count,const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
+{ return exchange(path,args,count,input,length,timeout_ms,out,out_length,0); }
 int bank_money_plan_native(const char *path,const char *const args[4],const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
 { return bank_money_process_native(path,args,4,input,length,timeout_ms,out,out_length); }
+int bank_money_plan_resolved_native(const char *path,const char *const args[4],const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length,uint64_t *amount)
+{
+    const char *extended[5]; unsigned char *bytes=NULL; size_t size=0; uint64_t value=0; int i;
+    if(out) *out=NULL;
+    if(out_length) *out_length=0;
+    if(amount) *amount=0;
+    if(!args||!out||!out_length||!amount) return -1;
+    for(i=0;i<4;i++) extended[i]=args[i];
+    extended[4]="--resolved-amount-v1";
+    if(exchange(path,extended,5,input,length,timeout_ms,&bytes,&size,8)) return -1;
+    for(i=0;i<8;i++) value=(value<<8)|bytes[i];
+    if(!value||value>INT64_MAX) {free(bytes); return -1;}
+    memmove(bytes,bytes+8,size-8); *out=bytes; *out_length=size-8; *amount=value; return 0;
+}

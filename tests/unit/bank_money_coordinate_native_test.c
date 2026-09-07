@@ -14,14 +14,14 @@ int bank_money_read_native(void *c,const char *const a[7],int ms,bank_money_read
     memset(r,0,sizeof(*r)); r->revision=7; r->frame=malloc(4); r->frame_length=4;
     memcpy(r->frame,"read",4); strcpy(r->player_hash,"playerhash"); strcpy(r->bank_hash,"bankhash"); return 0;
 }
-int bank_money_plan_native(const char *path,const char *const args[4],const unsigned char *in,size_t len,int ms,unsigned char **out,size_t *size)
+int bank_money_plan_resolved_native(const char *path,const char *const args[4],const unsigned char *in,size_t len,int ms,unsigned char **out,size_t *size,uint64_t *amount)
 {
     assert(phase++==1 && ms==2000 && !strcmp(path,"/planner"));
     assert(!strcmp(args[0],"deposit") && !strcmp(args[1],"25"));
     assert(!strcmp(args[2],"playerhash") && !strcmp(args[3],"bankhash"));
     assert(len==4 && !memcmp(in,"read",4));
     if(fail_plan) return -1;
-    *out=malloc(4); memcpy(*out,"plan",4); *size=4; return 0;
+    *out=malloc(4); memcpy(*out,"plan",4); *size=4; *amount=25; return 0;
 }
 int bank_money_commit_prepared_native(void *c,const char *node,const char *script,const char *root,const char *const a[11],const unsigned char *frame,size_t len,int ms,uint64_t *rev)
 {

@@ -14,6 +14,27 @@ pub fn plan_money_transfer_bytes(
     direction: Direction,
     amount: i64,
 ) -> Result<(Vec<u8>, Vec<u8>), TransferError> {
+    let (_, p, b) = plan_money_transfer_request_bytes(
+        player,
+        bank,
+        player_digest,
+        bank_digest,
+        direction,
+        Some(amount),
+    )?;
+    Ok((p, b))
+}
+
+/// Resolve `None` (all) only after decoding the same digest-bound source pair.
+/// Return the resolved amount so durable intent never stores an ambiguous all.
+pub fn plan_money_transfer_request_bytes(
+    player: &[u8],
+    bank: &[u8],
+    player_digest: &[u8; 32],
+    bank_digest: &[u8; 32],
+    direction: Direction,
+    requested: Option<i64>,
+) -> Result<(i64, Vec<u8>, Vec<u8>), TransferError> {
     if player.len() > 4 * 1024 * 1024
         || bank.len() > 4 * 1024 * 1024
         || crate::sha256(player) != *player_digest
@@ -30,11 +51,79 @@ pub fn plan_money_transfer_bytes(
     }
     let decoded_bank = crate::verify_bank_snapshot_v1(bank, bank_digest)
         .map_err(|_| TransferError::InvalidSnapshot)?;
+    let amount = requested.unwrap_or(match direction {
+        Direction::Deposit => decoded_player.gold,
+        Direction::Withdraw => decoded_bank.root.nodes[0].object.value,
+    });
     let plan = plan_money_transfer(&decoded_player, &decoded_bank, direction, amount)?;
     Ok((
+        amount,
         encode_player_snapshot_v1(&plan.player).map_err(|_| TransferError::InvalidSnapshot)?,
         encode_bank_snapshot_v1(&plan.bank).map_err(|_| TransferError::InvalidSnapshot)?,
     ))
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use crate::sha256;
+    #[test]
+    fn all_is_resolved_from_digest_bound_source() {
+        let hex = include_str!("../../../tests/fixtures/player_snapshot_v1_one_inventory_item.hex")
+            .trim();
+        let wire: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let mut player = crate::player_snapshot_v1::decode_player_snapshot_v1(&wire).unwrap();
+        player.gold = 100;
+        let mut root = player.inventory.nodes[0].clone();
+        root.parent_index = None;
+        root.child_index = 0;
+        root.object.value = 50;
+        let bank = BankSnapshotV1 {
+            root: crate::ObjectGraphV1 { nodes: vec![root] },
+        };
+        let p = encode_player_snapshot_v1(&player).unwrap();
+        let b = encode_bank_snapshot_v1(&bank).unwrap();
+        for (direction, amount) in [(Direction::Deposit, 100), (Direction::Withdraw, 50)] {
+            let (resolved, np, nb) = plan_money_transfer_request_bytes(
+                &p,
+                &b,
+                &sha256(&p),
+                &sha256(&b),
+                direction,
+                None,
+            )
+            .unwrap();
+            assert_eq!(resolved, amount);
+            assert_eq!(
+                (np, nb),
+                plan_money_transfer_bytes(&p, &b, &sha256(&p), &sha256(&b), direction, amount)
+                    .unwrap()
+            );
+        }
+        assert!(plan_money_transfer_request_bytes(
+            &p,
+            &b,
+            &[0; 32],
+            &sha256(&b),
+            Direction::Deposit,
+            None
+        )
+        .is_err());
+        player.gold = 0;
+        let p = encode_player_snapshot_v1(&player).unwrap();
+        assert!(plan_money_transfer_request_bytes(
+            &p,
+            &b,
+            &sha256(&p),
+            &sha256(&b),
+            Direction::Deposit,
+            None
+        )
+        .is_err());
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

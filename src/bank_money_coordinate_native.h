@@ -3,6 +3,7 @@
 #include "bank_money_commit_native.h"
 typedef struct bank_money_coordinate_result {
     uint64_t revision;
+    uint64_t amount;
     unsigned char *frame;
     size_t frame_length;
 } bank_money_coordinate_result;

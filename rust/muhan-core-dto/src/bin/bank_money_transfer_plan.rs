@@ -1,5 +1,5 @@
 //! Bounded binary planner bridge. No network, database, file or live-state writes.
-use muhan_core_dto::bank_transfer_v1::{plan_money_transfer_bytes, Direction};
+use muhan_core_dto::bank_transfer_v1::{plan_money_transfer_request_bytes, Direction};
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 const LIMIT: usize = 4 * 1024 * 1024;
@@ -18,7 +18,8 @@ fn digest(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 fn plan(args: &[String], input: &mut impl Read, output: &mut impl Write) -> Option<()> {
-    if args.len() != 4 {
+    let resolved = args.len() == 5 && args[4] == "--resolved-amount-v1";
+    if args.len() != 4 && !resolved {
         return None;
     }
     let direction = match args[0].as_str() {
@@ -26,13 +27,7 @@ fn plan(args: &[String], input: &mut impl Read, output: &mut impl Write) -> Opti
         "withdraw" => Direction::Withdraw,
         _ => return None,
     };
-    if args[1].is_empty()
-        || args[1].starts_with('0')
-        || !args[1].bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    let amount = args[1].parse::<i64>().ok()?;
+    let amount = parse_amount(&args[1], resolved)?;
     let pd = digest(&args[2])?;
     let bd = digest(&args[3])?;
     let mut bytes = Vec::new();
@@ -48,7 +43,7 @@ fn plan(args: &[String], input: &mut impl Read, output: &mut impl Write) -> Opti
     if pl > LIMIT || bl > LIMIT || pl + bl + 8 != bytes.len() {
         return None;
     }
-    let (p, b) = plan_money_transfer_bytes(
+    let (amount, p, b) = plan_money_transfer_request_bytes(
         &bytes[8..8 + pl],
         &bytes[8 + pl..],
         &pd,
@@ -59,6 +54,9 @@ fn plan(args: &[String], input: &mut impl Read, output: &mut impl Write) -> Opti
     .ok()?;
     // Build the complete result before writing; invalid inputs emit no payload.
     let mut result = Vec::with_capacity(p.len() + b.len() + 8);
+    if resolved {
+        result.extend_from_slice(&amount.to_be_bytes());
+    }
     result.extend_from_slice(&(p.len() as u32).to_be_bytes());
     result.extend_from_slice(&(b.len() as u32).to_be_bytes());
     result.extend(p);
@@ -66,6 +64,26 @@ fn plan(args: &[String], input: &mut impl Read, output: &mut impl Write) -> Opti
     output.write_all(&result).ok()?;
     output.flush().ok()?;
     Some(())
+}
+fn parse_amount(value: &str, resolved: bool) -> Option<Option<i64>> {
+    if resolved && value.len() > 24 {
+        return None;
+    }
+    if resolved && matches!(value, "all" | "모두") {
+        return Some(None);
+    }
+    let digits = if resolved {
+        value
+            .strip_suffix("냥")
+            .unwrap_or(value)
+            .trim_start_matches('0')
+    } else {
+        value
+    };
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(Some(digits.parse::<i64>().ok()?))
 }
 fn main() -> ExitCode {
     if plan(
@@ -84,6 +102,28 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_amount_grammar() {
+        for value in ["25", "25냥", "00025냥"] {
+            assert_eq!(parse_amount(value, true), Some(Some(25)));
+        }
+        for value in ["all", "모두"] {
+            assert_eq!(parse_amount(value, true), Some(None));
+            assert_eq!(parse_amount(value, false), None);
+        }
+        for value in [
+            "0냥",
+            "-1냥",
+            "+1냥",
+            "25x냥",
+            "25 냥",
+            "냥",
+            "모두냥",
+            "9223372036854775808냥",
+        ] {
+            assert_eq!(parse_amount(value, true), None);
+        }
+    }
     #[test]
     fn malformed_or_unbound_input_never_emits_a_plan() {
         for amount in ["0", "-1", "01", "+1", "9223372036854775808"] {
