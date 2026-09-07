@@ -710,7 +710,9 @@ async function main(): Promise<void> {
       await eventually(() => assert.ok(browser.json('provisioned')))
     } catch {
       const dbState = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || coalesce(h.status, 'none') from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id left join private.game_character_onboarding_handoffs h on h.correlation_id = i.correlation_id where i.correlation_id = '${correlation}'`)
-      throw new Error(redact(`provision completion missing; phase=${completionPhase}; db=${dbState}; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`))
+      const headState = await sql(`select json_build_object('state', h.head_state, 'revision', h.revision, 'hasWriterEpoch', h.writer_epoch is not null, 'storageFormat', h.storage_format)::text from private.game_character_legacy_heads h join private.game_character_provisioning_requests p on p.character_id = h.character_id where p.correlation_id = '${correlation}'`)
+      const journal = await readdir(join(fixture, 'character-save-journal'))
+      throw new Error(redact(`provision completion missing; phase=${completionPhase}; db=${dbState}; head=${headState}; journal=${JSON.stringify(journal)}; C=${mudDiagnostics}; controls=${JSON.stringify(browser.frames.filter(frame => !frame.binary).map(frame => frame.data.toString('utf8')))}`))
     }
     assert.equal(finalizeObservedSaved, true)
 
