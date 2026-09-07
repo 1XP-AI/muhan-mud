@@ -1,5 +1,33 @@
 # Live bank capture and transaction gap
 
+## Equipped inventory normalization and save-path audit — 2026-09-07
+
+Tracing command8.c savegame/savegame_nomsg exposed a missing normalization step:
+legacy save temporarily adds ready-slot equipment to inventory before save_ply.
+The initial live snapshot helper serialized only first_obj, so equipped objects
+could disappear from the canonical comparison. The corrected fixture at f3982bd
+reproduced an unequal canonical image. Source `8e05bc1` constructs a private
+root-tag view and inserts equipped roots using legacy name/adjustment ordering,
+clearing ready slots only on the view. It never updates live object parents or
+list tags. Duplicate root pointers and over-200 roots fail closed instead of
+silently following the legacy serializer's 200-root truncation.
+
+The actual serializer/decoder/codec test compares equipped live state with its
+expected unequipped inventory snapshot and asserts the live creature, equipped
+object and original list link remain unchanged. Full frozen ARM64 suite at
+`8e05bc1` exited 0: `/tmp/muhan-equipped-snapshot.log`, including real bank entry
+points, qualified DB transactions, onboarding and both restore profiles. The
+test covers a simple equipped root; richer ready-slot/nested-container and live
+uninit stat changes remain acceptance work, not implicitly covered.
+
+Save-path findings for the runtime adapter: command8 save functions pass a
+different shallow creature copy to save_ply; io.c disconnect frees io/extra
+before uninit_ply/save_ply; recovery queue retries later through save_ply. Thus a
+bank policy keyed only by original creature pointer or a live Ply session cannot
+govern all saves. A durable character authority/revision binding must survive
+disconnect and copied save views before global DB player-store installation.
+No current file save route was disabled or deployed by this change.
+
 ## Actual C deposit/withdraw functions with qualified PostgreSQL — 2026-09-07
 
 Sources `0adaf72`/`535a43c` extend the native PostgreSQL executable to call the
