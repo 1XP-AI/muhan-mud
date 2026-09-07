@@ -5,7 +5,14 @@ set -euo pipefail
   echo "M5e replay reader PG17 integration skipped (set PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1)"
   exit 0
 }
-command -v docker >/dev/null || { echo "M5e replay reader integration requires docker" >&2; exit 2; }
+containerless="${PLAYER_SNAPSHOT_V1_REPLAY_READER_CONTAINERLESS:-0}"
+[[ "$containerless" == 0 || "$containerless" == 1 ]] || exit 2
+if [[ "$containerless" == 1 ]]; then
+  [[ -f /.dockerenv ]] || { echo 'containerless replay requires an isolated test container' >&2; exit 2; }
+  command -v psql >/dev/null || exit 2
+else
+  command -v docker >/dev/null || { echo "M5e replay reader integration requires docker" >&2; exit 2; }
+fi
 command -v node >/dev/null || { echo "M5e replay reader integration requires a built relay dist" >&2; exit 2; }
 [[ "$(node -p 'process.platform')" == linux ]] || {
   echo 'M5e replay reader integration requires Linux Node for descriptor-bound outbox reads; run in an isolated Linux environment' >&2
@@ -52,6 +59,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ "$containerless" == 0 ]]; then
 container_id="$(docker run --detach --rm --name "$container" \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=192m \
@@ -60,23 +68,35 @@ container_id="$(docker run --detach --rm --name "$container" \
 container="$container_id"
 
 postgres_port="$(docker port "$container" 5432/tcp | sed -n '1{s/.*://p;}')"
+else
+  # Outer harness owns a fresh PG17 container and shares only its network namespace.
+  # Never accepts an arbitrary database URL or mounts a Docker control socket.
+  postgres_port=5432
+fi
 [[ "$postgres_port" =~ ^[1-9][0-9]*$ ]] || { echo "M5e replay reader integration did not receive a temporary loopback port" >&2; exit 2; }
 
+run_psql() {
+  local password="$1" options="$2"
+  shift 2
+  if [[ "$containerless" == 1 ]]; then
+    PGPASSWORD="$password" PGOPTIONS="$options" psql "$@"
+  else
+    docker exec --interactive --env "PGPASSWORD=$password" --env "PGOPTIONS=$options" "$container" psql "$@"
+  fi
+}
+
 run_super() {
-  docker exec --interactive --env PGPASSWORD=contract-only-password "$container" \
-    psql --host=127.0.0.1 --username=postgres --dbname=postgres \
+  run_psql contract-only-password '' --host=127.0.0.1 --username=postgres --dbname=postgres \
       --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"
 }
 run_reader() {
-  docker exec --interactive --env PGPASSWORD="$reader_password" \
-    --env PGOPTIONS='-c default_transaction_read_only=on' "$container" \
-    psql --host=127.0.0.1 --username=mud_replay_reader_login --dbname=postgres \
+  run_psql "$reader_password" '-c default_transaction_read_only=on' \
+    --host=127.0.0.1 --username=mud_replay_reader_login --dbname=postgres \
       --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"
 }
 run_full_payload_reader() {
-  docker exec --interactive --env PGPASSWORD="$full_payload_reader_password" \
-    --env PGOPTIONS='-c default_transaction_read_only=on' "$container" \
-    psql --host=127.0.0.1 --username=mud_full_payload_rehearsal_reader_login --dbname=postgres \
+  run_psql "$full_payload_reader_password" '-c default_transaction_read_only=on' \
+    --host=127.0.0.1 --username=mud_full_payload_rehearsal_reader_login --dbname=postgres \
       --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"
 }
 
@@ -163,7 +183,7 @@ for _ in $(seq 1 60); do
   [[ "$ready" -ge 2 ]] && break
   sleep 1
 done
-[[ "$ready" -ge 2 ]] || { docker logs "$container" >&2; exit 2; }
+[[ "$ready" -ge 2 ]] || { echo 'disposable PG17 readiness failed' >&2; exit 2; }
 
 run_super --file=/workspace/supabase/tests/bootstrap_contract.sql
 for migration in \
