@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { readFile,mkdtemp,rm,appendFile } from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {prepareMoneyPending,readMoneyPending} from '../dist/money-pending-request.js'
+import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../dist/money-pending-request.js'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
@@ -403,7 +403,9 @@ try {
       const header=Buffer.alloc(8); header.writeUInt32BE(original[11].length); header.writeUInt32BE(original[12].length,4)
       const frame=Buffer.concat([header,original[11],original[12]])
       const savedArgs=original.slice(0,11).map(String)
-      await prepareMoneyPending(restartRoot,savedArgs,frame)
+      await claimMoneyCharacterFence(restartRoot,savedArgs,frame)
+      const fencePath=join(restartRoot,`${createHash('sha256').update(JSON.stringify([savedArgs[1],savedArgs[0]])).digest('hex')}.money-fence`)
+      const fenceBefore=await readFile(fencePath)
       const restart=()=>spawnSync(process.execPath,[new URL('../dist/money-pending-recovery-cli.js',import.meta.url).pathname,'--once'],{
         timeout:10000,maxBuffer:8192,env:{...process.env,MONEY_PENDING_RECOVERY_ENABLED:'true',MONEY_PENDING_ROOT:restartRoot,
           MONEY_RECOVERY_WORLD:world,MONEY_RECOVERY_WRITER:successor,MONEY_RECOVERY_EPOCH:'2',
@@ -412,6 +414,7 @@ try {
       const first=restart()
       assert.equal(first.status,0,first.stderr.toString())
       assert.deepEqual(JSON.parse(first.stdout.toString()),{confirmed:1,unresolved:0,invalid:0,errors:0,truncated:false})
+      await prepareMoneyPending(restartRoot,savedArgs,frame)
       const unknown=[...savedArgs]; unknown[7]='c9240000-0000-0000-0000-000000000088'
       await prepareMoneyPending(restartRoot,unknown,frame)
       const corrupt=[...savedArgs]; corrupt[7]='c9240000-0000-0000-0000-000000000089'
@@ -424,6 +427,7 @@ try {
         assert.deepEqual(JSON.parse(result.stdout.toString()),{confirmed:1,unresolved:1,invalid:1,errors:0,truncated:false})
       }
       assert.deepEqual(await Promise.all([savedArgs[7],unknown[7],corrupt[7]].map(command=>readFile(join(restartRoot,`${command}.money-request`)))),beforeFiles)
+      assert.deepEqual(await readFile(fencePath),fenceBefore)
       console.log('GREEN restarted recovery CLI discovers durable requests: confirms old commit, preserves unknown/corrupt files without writes')
     } finally { await rm(restartRoot,{recursive:true,force:true}) }
     assert.deepEqual(await read(),final)
