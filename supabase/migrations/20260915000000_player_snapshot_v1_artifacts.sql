@@ -281,21 +281,21 @@ create table if not exists private.game_character_player_snapshot_v1_artifacts (
     check (receipt_request_sha256 ~ '^[0-9a-f]{64}$'),
   constraint game_character_player_snapshot_v1_artifacts_writer_epoch_check
     check (writer_epoch between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_artifacts_writer_revision_check
+  constraint game_character_player_snapshot_v1_artifacts_writ_0ef7159641
     check (writer_revision between 1 and 9223372036854775807),
   constraint game_character_player_snapshot_v1_artifacts_source_hash_check
     check (source_post_sha256 ~ '^[0-9a-f]{64}$'),
   constraint game_character_player_snapshot_v1_artifacts_source_octets_check
     check (source_octets between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_artifacts_storage_format_check
+  constraint game_character_player_snapshot_v1_artifacts_stor_dcdbd700be
     check (storage_format > 0),
-  constraint game_character_player_snapshot_v1_artifacts_snapshot_format_check
+  constraint game_character_player_snapshot_v1_artifacts_snap_f6e00b0a38
     check (snapshot_format = 'player-snapshot-v1'),
   constraint game_character_player_snapshot_v1_artifacts_snapshot_hash_check
     check (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_artifacts_snapshot_octets_check
+  constraint game_character_player_snapshot_v1_artifacts_snap_95f4cd9c70
     check (snapshot_octets between 48 and 4194352),
-  constraint game_character_player_snapshot_v1_artifacts_payload_octets_check
+  constraint game_character_player_snapshot_v1_artifacts_payl_7b2153e248
     check (octet_length(payload) = snapshot_octets),
   constraint game_character_player_snapshot_v1_artifacts_payload_valid_check
     check (private.player_snapshot_v1_payload_valid(payload))

@@ -24,7 +24,7 @@ create table if not exists private.game_imported_unclaimed_batch_member_identiti
       and canonical_legacy_name = private.game_identity_canonical_legacy_name(canonical_legacy_name)
       and canonical_legacy_name not in ('.', '..')
     ),
-  constraint game_imported_unclaimed_batch_member_identities_shard_matches_name
+  constraint game_imported_unclaimed_batch_member_identities__ea393e73d4
     check (
       legacy_shard = substr(
         encode(digest(convert_to(canonical_legacy_name, 'UTF8'), 'sha1'), 'hex'), 1, 2

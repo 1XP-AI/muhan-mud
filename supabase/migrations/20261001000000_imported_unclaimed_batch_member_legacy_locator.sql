@@ -7,11 +7,11 @@ create table if not exists private.game_imported_unclaimed_batch_member_legacy_l
   canonical_legacy_name text not null,
   legacy_name_sha1 text not null,
   legacy_shard char(2) not null,
-  constraint game_imported_unclaimed_batch_member_legacy_locators_member_fkey
+  constraint game_imported_unclaimed_batch_member_legacy_loca_ef3e223fab
     foreign key (character_id)
     references private.game_imported_unclaimed_batch_members(character_id)
     on delete restrict,
-  constraint game_imported_unclaimed_batch_member_legacy_locators_name_c_safe
+  constraint game_imported_unclaimed_batch_member_legacy_loca_4e4ed8bd05
     check (
       char_length(canonical_legacy_name) between 1 and 12
       and octet_length(canonical_legacy_name) <= 14
@@ -19,12 +19,12 @@ create table if not exists private.game_imported_unclaimed_batch_member_legacy_l
       and canonical_legacy_name = private.game_identity_canonical_legacy_name(canonical_legacy_name)
       and canonical_legacy_name not in ('.', '..')
     ),
-  constraint game_imported_unclaimed_batch_member_legacy_locators_sha1_matches_name
+  constraint game_imported_unclaimed_batch_member_legacy_loca_6adf3060c1
     check (
       legacy_name_sha1 ~ '^[0-9a-f]{40}$'
       and legacy_name_sha1 = encode(digest(convert_to(canonical_legacy_name, 'UTF8'), 'sha1'), 'hex')
     ),
-  constraint game_imported_unclaimed_batch_member_legacy_locators_shard_matches_sha1
+  constraint game_imported_unclaimed_batch_member_legacy_loca_ae25b2ae81
     check (legacy_shard = substr(legacy_name_sha1, 1, 2))
 );
 

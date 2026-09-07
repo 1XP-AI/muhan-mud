@@ -62,7 +62,7 @@ create table if not exists private.game_imported_unclaimed_batch_watermarks (
       and world_id ~ '^[a-z0-9]([a-z0-9._:-]{0,254}[a-z0-9])?$'),
   constraint game_imported_unclaimed_batch_watermarks_sequence_nonnegative
     check (watermark_sequence between 0 and 9007199254740991),
-  constraint game_imported_unclaimed_batch_watermarks_committed_sequence_matches
+  constraint game_imported_unclaimed_batch_watermarks_committ_48dda056ec
     check (committed_batch_sequence = watermark_sequence),
   constraint game_imported_unclaimed_batch_watermarks_committed_batch_fkey
     foreign key (world_id, stream_id, committed_batch_sequence)

@@ -54,3 +54,24 @@ Luna/max의 `ctx_cce041432b02` 점검은 `9d8f6ed`의 SQL을 20260909/14/15 및 
 `supabase/tests/player_snapshot_normalized_v1_replay_reader_seed.sql`은 disposable DB 소유자가 실제 tree fixture 표현식(`pvi_tree_payload`)과 그 fixture에서 Rust가 출력한 JSON(`normalized_projection`)을 전달해 실행할 후보다. receipt → manifest → artifact → normalized recorder 순서로 저장하고 하나의 transaction을 commit하므로 이후 별도의 전용 reader 세션에서 조회할 수 있다. fixed test identity를 새로 INSERT하며 기존 행을 삭제·덮어쓰지 않는다. 각 recorder의 결과는 정확히 한 행의 `RECORDED`여야 한다. source post hash/크기는 합성 fixture metadata이며 실제 legacy save 증거가 아니다.
 
 조회 실행기에 전달할 identity: world `normalized-reader-test`, character `a9140000-0000-0000-0000-000000000001`, command `c9140000-0000-0000-0000-000000000001`. 기존 persistence 계약의 rollback fixture와는 별개다. SQL은 아직 미실행이며 Rust 출력 준비와 seed/계약/reader의 자동 연결도 남아 있다. 2026-09-07 Docker 도구 경로만 확인했으며 daemon이나 DB에는 접속하지 않았다. 사용자에게 로컬 임시 PostgreSQL 생성·검증·정리 실행 허용을 질문했고 답변을 기다리는 중이다.
+
+## 사용자 허용 후 실제 PostgreSQL 17 검증 — 2026-09-07
+
+위의 미실행/허용 대기 기록 이후 사용자가 로컬 Docker 임시 DB 생성·테스트·정리를 허용했다. Docker `desktop-linux`의 로컬 Unix socket을 확인하고 `postgres:17-alpine` 임시 인스턴스에서 실행했다. 운영 DB, Supabase 운영 서비스, k8s에는 접속하지 않았다.
+
+실행에서 두 결함을 재현하고 수정했다.
+
+- 긴 constraint 이름이 63바이트로 잘려 20261003의 inventory graph migration에서 중복 이름으로 실패했다. 7개 migration의 긴 constraint 이름을 48자 prefix와 원본 이름 SHA-256의 10자리 suffix로 바꾸고 관련 SQL 테스트의 이름 참조도 맞췄다. 새 이름 길이 회귀 테스트의 실패 후 통과를 확인했다. 기존 설치 DB의 constraint를 rename하는 작업은 하지 않았으며, 이 수정은 새 설치 SQL의 선언과 참조를 정정한다.
+- normalized recorder가 `WITH ORDINALITY`의 `ordinality` 컬럼을 `ordinal`로 참조해 실제 seed 저장에서 실패했다. validation/insert/exact-retry 비교 경로의 참조를 고쳤다. 실제 fixture seed 저장과 기존 persistence SQL 계약이 이후 통과했다.
+
+확인된 결과:
+
+- relay TypeScript build 및 Rust normalized projector build 통과.
+- 실제 tree fixture → Rust JSON → receipt/manifest/artifact/normalized recorder 저장 commit 통과.
+- 전용 login으로 실제 Node SQL adapter 실행: Rust projection과 정확한 일치, snapshot hash/크기, 다른 world 조회 부재, payload SELECT 거부 및 재조회 통과.
+- 역할까지 비어 있는 별도 새 PostgreSQL 인스턴스에서 20260902부터 20261014까지 게임 migration 전체 적용, normalized persistence SQL 계약, normalized reader SQL 계약 통과.
+- Node의 constraint 이름 테스트와 integration guard tests: 3 pass, 0 fail.
+
+범위 제한: 20260901 lobby migration은 Supabase Realtime 스키마를 요구하므로 기존 PG 계약 lane처럼 제외했다. 일반 PostgreSQL에 적용하면 Realtime 스키마 부재로 실패한다. 같은 클러스터의 다른 DB로 전체 migration을 반복하면 공유 역할의 membership 전제로 실패하므로 fresh-chain 검증은 별도 인스턴스로 수행했다. 실제 Supabase 전체 설치·웹 가입/계정 연동·게임 저장 권위 전환·k8s 배포 검증은 여전히 남아 있다.
+
+두 임시 컨테이너 `muhan-normalized-contract-7f913c`, `muhan-normalized-contract-7f913d`는 테스트 라벨/ID를 확인한 뒤 종료했고 auto-remove 및 컨테이너 목록 부재를 확인했다. tmpfs의 합성 테스트 데이터도 제거되었다. 재현용 전체 자동 orchestration script와 독립 변경 리뷰는 후속 작업이다.

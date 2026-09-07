@@ -19,27 +19,27 @@ create table if not exists private.game_character_player_snapshot_v1_level_proje
   recorded_at timestamptz not null default clock_timestamp(),
   constraint game_character_player_snapshot_v1_level_projections_pk
     primary key (character_id, command_id),
-  constraint game_character_player_snapshot_v1_level_projections_revision_unique
+  constraint game_character_player_snapshot_v1_level_projecti_7d49ec2c3c
     unique (character_id, writer_revision),
   constraint game_character_player_snapshot_v1_level_projections_artifact_fk
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_v1_artifacts(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_v1_level_projections_request_hash_check
+  constraint game_character_player_snapshot_v1_level_projecti_10acdd79ba
     check (receipt_request_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_level_projections_writer_epoch_check
+  constraint game_character_player_snapshot_v1_level_projecti_2d9b4db49c
     check (writer_epoch between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_level_projections_writer_revision_check
+  constraint game_character_player_snapshot_v1_level_projecti_38f0fdfccb
     check (writer_revision between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_level_projections_source_hash_check
+  constraint game_character_player_snapshot_v1_level_projecti_8a87e5d688
     check (source_post_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_level_projections_source_octets_check
+  constraint game_character_player_snapshot_v1_level_projecti_21c88333c6
     check (source_octets between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_level_projections_snapshot_hash_check
+  constraint game_character_player_snapshot_v1_level_projecti_d6bfb95736
     check (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_level_projections_snapshot_octets_check
+  constraint game_character_player_snapshot_v1_level_projecti_65b1a51934
     check (snapshot_octets between 48 and 4194352),
-  constraint game_character_player_snapshot_v1_level_projections_raw_level_check
+  constraint game_character_player_snapshot_v1_level_projecti_da595e506a
     check (raw_level_u8 between 0 and 255)
 );
 

@@ -48,7 +48,7 @@ select pg_temp.assert_true(
   exists (
     select 1 from pg_constraint c
      where c.conrelid = 'private.game_imported_unclaimed_batch_member_legacy_locators'::regclass
-       and c.conname = 'game_imported_unclaimed_batch_member_legacy_locators_member_fkey'
+       and c.conname = 'game_imported_unclaimed_batch_member_legacy_loca_ef3e223fab'
        and c.contype = 'f'
        and c.confrelid = 'private.game_imported_unclaimed_batch_members'::regclass
        and c.confdeltype = 'r'

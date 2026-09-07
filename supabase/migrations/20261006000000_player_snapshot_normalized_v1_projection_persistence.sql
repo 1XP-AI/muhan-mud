@@ -29,41 +29,41 @@ create table if not exists private.game_character_player_snapshot_normalized_v1_
   recorded_at timestamptz not null default clock_timestamp(),
   constraint game_character_player_snapshot_normalized_v1_projections_pk
     primary key (character_id, command_id),
-  constraint game_character_player_snapshot_normalized_v1_projections_revision_unique
+  constraint game_character_player_snapshot_normalized_v1_pro_16d7a2d90b
     unique (character_id, writer_revision),
-  constraint game_character_player_snapshot_normalized_v1_projections_artifact_fk
+  constraint game_character_player_snapshot_normalized_v1_pro_3cb94e2e45
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_v1_artifacts(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_normalized_v1_projections_request_hash_check
+  constraint game_character_player_snapshot_normalized_v1_pro_21eb37b10e
     check (receipt_request_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_normalized_v1_projections_writer_epoch_check
+  constraint game_character_player_snapshot_normalized_v1_pro_0b8fcdcdb0
     check (writer_epoch between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_normalized_v1_projections_writer_revision_check
+  constraint game_character_player_snapshot_normalized_v1_pro_ce68cfdeeb
     check (writer_revision between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_normalized_v1_projections_source_hash_check
+  constraint game_character_player_snapshot_normalized_v1_pro_074e4816fe
     check (source_post_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_normalized_v1_projections_source_octets_check
+  constraint game_character_player_snapshot_normalized_v1_pro_2d9f79ca6d
     check (source_octets between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_normalized_v1_projections_snapshot_hash_check
+  constraint game_character_player_snapshot_normalized_v1_pro_02e174aa3b
     check (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_normalized_v1_projections_snapshot_octets_check
+  constraint game_character_player_snapshot_normalized_v1_pro_7614519833
     check (snapshot_octets between 48 and 4194352),
-  constraint game_character_player_snapshot_normalized_v1_projections_format_check
+  constraint game_character_player_snapshot_normalized_v1_pro_9bf3fb84b0
     check (projection_format = 'player-snapshot-v1-normalized-projection'),
-  constraint game_character_player_snapshot_normalized_v1_projections_version_check
+  constraint game_character_player_snapshot_normalized_v1_pro_08013e274a
     check (projection_version = 1),
-  constraint game_character_player_snapshot_normalized_v1_projections_algorithm_check
+  constraint game_character_player_snapshot_normalized_v1_pro_817eeca2da
     check (projection_algorithm = 'sha-256'),
-  constraint game_character_player_snapshot_normalized_v1_projections_digest_check
+  constraint game_character_player_snapshot_normalized_v1_pro_31b784fa33
     check (canonical_digest ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_normalized_v1_projections_level_check
+  constraint game_character_player_snapshot_normalized_v1_pro_b10b66ac8d
     check (level between 0 and 255),
-  constraint game_character_player_snapshot_normalized_v1_projections_hp_check
+  constraint game_character_player_snapshot_normalized_v1_pro_56ec87a685
     check (hp_current <= hp_max),
-  constraint game_character_player_snapshot_normalized_v1_projections_mp_check
+  constraint game_character_player_snapshot_normalized_v1_pro_af1e192fbf
     check (mp_current <= mp_max),
-  constraint game_character_player_snapshot_normalized_v1_projections_item_count_check
+  constraint game_character_player_snapshot_normalized_v1_pro_e2ab36263f
     check (item_count between 0 and 8192)
 );
 
@@ -74,17 +74,17 @@ create table if not exists private.game_character_player_snapshot_normalized_v1_
   max_value smallint not null,
   current_value smallint not null,
   last_used bigint not null,
-  constraint game_character_player_snapshot_normalized_v1_projection_daily_pk
+  constraint game_character_player_snapshot_normalized_v1_pro_1981f98405
     primary key (character_id, command_id, slot),
-  constraint game_character_player_snapshot_normalized_v1_projection_daily_projection_fk
+  constraint game_character_player_snapshot_normalized_v1_pro_fe5c399f4a
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_normalized_v1_projections(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_normalized_v1_projection_daily_slot_check
+  constraint game_character_player_snapshot_normalized_v1_pro_91e5147b46
     check (slot between 0 and 9),
-  constraint game_character_player_snapshot_normalized_v1_projection_daily_max_check
+  constraint game_character_player_snapshot_normalized_v1_pro_b35deb9858
     check (max_value between 0 and 255),
-  constraint game_character_player_snapshot_normalized_v1_projection_daily_current_check
+  constraint game_character_player_snapshot_normalized_v1_pro_aea689124c
     check (current_value between 0 and max_value)
 );
 
@@ -95,13 +95,13 @@ create table if not exists private.game_character_player_snapshot_normalized_v1_
   interval_value bigint not null,
   last_used bigint not null,
   misc smallint not null,
-  constraint game_character_player_snapshot_normalized_v1_projection_timers_pk
+  constraint game_character_player_snapshot_normalized_v1_pro_c987ec6bf9
     primary key (character_id, command_id, slot),
-  constraint game_character_player_snapshot_normalized_v1_projection_timers_projection_fk
+  constraint game_character_player_snapshot_normalized_v1_pro_d83738a7d5
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_normalized_v1_projections(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_normalized_v1_projection_timers_slot_check
+  constraint game_character_player_snapshot_normalized_v1_pro_35fe37bcdc
     check (slot between 0 and 44)
 );
 
@@ -125,27 +125,27 @@ create table if not exists private.game_character_player_snapshot_normalized_v1_
   magic_power smallint not null,
   magic_realm smallint not null,
   special smallint not null,
-  constraint game_character_player_snapshot_normalized_v1_projection_items_pk
+  constraint game_character_player_snapshot_normalized_v1_pro_ed2987ff12
     primary key (character_id, command_id, item_index),
-  constraint game_character_player_snapshot_normalized_v1_projection_items_projection_fk
+  constraint game_character_player_snapshot_normalized_v1_pro_347112ce45
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_normalized_v1_projections(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_normalized_v1_projection_items_parent_fk
+  constraint game_character_player_snapshot_normalized_v1_pro_83dff33cc9
     foreign key (character_id, command_id, parent_index)
     references private.game_character_player_snapshot_normalized_v1_projection_items(character_id, command_id, item_index)
     on delete restrict,
-  constraint game_character_player_snapshot_normalized_v1_projection_items_index_check
+  constraint game_character_player_snapshot_normalized_v1_pro_90c285324a
     check (item_index between 0 and 8191),
-  constraint game_character_player_snapshot_normalized_v1_projection_items_parent_check
+  constraint game_character_player_snapshot_normalized_v1_pro_7368c16187
     check (parent_index is null or parent_index between 0 and 8191 and parent_index < item_index),
-  constraint game_character_player_snapshot_normalized_v1_projection_items_child_check
+  constraint game_character_player_snapshot_normalized_v1_pro_f59b0dba86
     check (child_index between 0 and 4095),
-  constraint game_character_player_snapshot_normalized_v1_projection_items_i8_check
+  constraint game_character_player_snapshot_normalized_v1_pro_af62c7de77
     check (type_code between -128 and 127 and adjustment between -128 and 127
       and armor between -128 and 127 and wear_flag between -128 and 127
       and magic_power between -128 and 127 and magic_realm between -128 and 127),
-  constraint game_character_player_snapshot_normalized_v1_projection_items_shots_check
+  constraint game_character_player_snapshot_normalized_v1_pro_3b5dc2da9e
     check (shots_current <= shots_max)
 );
 
@@ -336,7 +336,7 @@ begin
   v_bytes := v_bytes || int2send(1::smallint) || set_byte(decode('00', 'hex'), 0, v_level);
   v_bytes := v_bytes || int2send(v_hp_max) || int2send(v_hp_current) || int2send(v_mp_max) || int2send(v_mp_current)
     || int8send(v_experience) || int8send(v_gold);
-  for v_entry, v_index in select value, ordinal - 1 from jsonb_array_elements(v_daily) with ordinality loop
+  for v_entry, v_index in select value, ordinality - 1 from jsonb_array_elements(v_daily) with ordinality loop
     if not private.player_snapshot_normalized_v1_projection_closed_object(v_entry, array['current', 'last_used', 'max']::text[]) then
       raise exception using errcode = '22023', message = 'PlayerSnapshotNormalizedV1 projection is invalid';
     end if;
@@ -349,7 +349,7 @@ begin
       || set_byte(decode('00', 'hex'), 0, private.player_snapshot_normalized_v1_projection_integer(v_entry->'current', 0, 255)::integer)
       || int8send(private.player_snapshot_normalized_v1_projection_integer(v_entry->'last_used', -9223372036854775808, 9223372036854775807));
   end loop;
-  for v_entry, v_index in select value, ordinal - 1 from jsonb_array_elements(v_timers) with ordinality loop
+  for v_entry, v_index in select value, ordinality - 1 from jsonb_array_elements(v_timers) with ordinality loop
     if not private.player_snapshot_normalized_v1_projection_closed_object(v_entry, array['interval', 'last_used', 'misc']::text[]) then
       raise exception using errcode = '22023', message = 'PlayerSnapshotNormalizedV1 projection is invalid';
     end if;
@@ -360,7 +360,7 @@ begin
   end loop;
   v_count := jsonb_array_length(v_items);
   v_bytes := v_bytes || int4send(v_count);
-  for v_entry, v_index in select value, ordinal - 1 from jsonb_array_elements(v_items) with ordinality loop
+  for v_entry, v_index in select value, ordinality - 1 from jsonb_array_elements(v_items) with ordinality loop
     if not private.player_snapshot_normalized_v1_projection_closed_object(v_entry, array[
       'adjustment', 'armor', 'child_index', 'magic_power', 'magic_realm', 'ndice', 'parent_index', 'pdice',
       'sdice', 'shots_current', 'shots_max', 'special', 'type_code', 'value', 'wear_flag', 'weight'
@@ -467,7 +467,7 @@ begin
     insert into private.game_character_player_snapshot_normalized_v1_projection_daily (
       character_id, command_id, slot, max_value, current_value, last_used
     )
-    select p_character_id, p_command_id, ordinal - 1,
+    select p_character_id, p_command_id, ordinality - 1,
       private.player_snapshot_normalized_v1_projection_integer(value->'max', 0, 255)::smallint,
       private.player_snapshot_normalized_v1_projection_integer(value->'current', 0, 255)::smallint,
       private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807)
@@ -475,7 +475,7 @@ begin
     insert into private.game_character_player_snapshot_normalized_v1_projection_timers (
       character_id, command_id, slot, interval_value, last_used, misc
     )
-    select p_character_id, p_command_id, ordinal - 1,
+    select p_character_id, p_command_id, ordinality - 1,
       private.player_snapshot_normalized_v1_projection_integer(value->'interval', -9223372036854775808, 9223372036854775807),
       private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807),
       private.player_snapshot_normalized_v1_projection_integer(value->'misc', -32768, 32767)::smallint
@@ -484,7 +484,7 @@ begin
       character_id, command_id, item_index, parent_index, child_index, value, weight, type_code, adjustment,
       shots_max, shots_current, ndice, sdice, pdice, armor, wear_flag, magic_power, magic_realm, special
     )
-    select p_character_id, p_command_id, ordinal - 1,
+    select p_character_id, p_command_id, ordinality - 1,
       case when jsonb_typeof(value->'parent_index') = 'null' then null else private.player_snapshot_normalized_v1_projection_integer(value->'parent_index', 0, 8191)::integer end,
       private.player_snapshot_normalized_v1_projection_integer(value->'child_index', 0, 4095)::integer,
       private.player_snapshot_normalized_v1_projection_integer(value->'value', -9223372036854775808, 9223372036854775807),
@@ -519,12 +519,12 @@ begin
      and v_existing.level = v_level and v_existing.hp_max = v_hp_max and v_existing.hp_current = v_hp_current
      and v_existing.mp_max = v_mp_max and v_existing.mp_current = v_mp_current and v_existing.experience = v_experience
      and v_existing.gold = v_gold and v_existing.item_count = v_count
-     and not exists ((select ordinal - 1, private.player_snapshot_normalized_v1_projection_integer(value->'max', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'current', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807) from jsonb_array_elements(v_daily) with ordinality) except (select slot, max_value, current_value, last_used from private.game_character_player_snapshot_normalized_v1_projection_daily where character_id = p_character_id and command_id = p_command_id))
-     and not exists ((select slot, max_value, current_value, last_used from private.game_character_player_snapshot_normalized_v1_projection_daily where character_id = p_character_id and command_id = p_command_id) except (select ordinal - 1, private.player_snapshot_normalized_v1_projection_integer(value->'max', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'current', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807) from jsonb_array_elements(v_daily) with ordinality))
-     and not exists ((select ordinal - 1, private.player_snapshot_normalized_v1_projection_integer(value->'interval', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'misc', -32768, 32767)::smallint from jsonb_array_elements(v_timers) with ordinality) except (select slot, interval_value, last_used, misc from private.game_character_player_snapshot_normalized_v1_projection_timers where character_id = p_character_id and command_id = p_command_id))
-     and not exists ((select slot, interval_value, last_used, misc from private.game_character_player_snapshot_normalized_v1_projection_timers where character_id = p_character_id and command_id = p_command_id) except (select ordinal - 1, private.player_snapshot_normalized_v1_projection_integer(value->'interval', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'misc', -32768, 32767)::smallint from jsonb_array_elements(v_timers) with ordinality))
-     and not exists ((select ordinal - 1, case when jsonb_typeof(value->'parent_index') = 'null' then null else private.player_snapshot_normalized_v1_projection_integer(value->'parent_index', 0, 8191)::integer end, private.player_snapshot_normalized_v1_projection_integer(value->'child_index', 0, 4095)::integer, private.player_snapshot_normalized_v1_projection_integer(value->'value', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'weight', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'type_code', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'adjustment', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_max', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_current', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'ndice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'sdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'pdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'armor', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'wear_flag', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_power', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_realm', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'special', -32768, 32767)::smallint from jsonb_array_elements(v_items) with ordinality) except (select item_index, parent_index, child_index, value, weight, type_code, adjustment, shots_max, shots_current, ndice, sdice, pdice, armor, wear_flag, magic_power, magic_realm, special from private.game_character_player_snapshot_normalized_v1_projection_items where character_id = p_character_id and command_id = p_command_id))
-     and not exists ((select item_index, parent_index, child_index, value, weight, type_code, adjustment, shots_max, shots_current, ndice, sdice, pdice, armor, wear_flag, magic_power, magic_realm, special from private.game_character_player_snapshot_normalized_v1_projection_items where character_id = p_character_id and command_id = p_command_id) except (select ordinal - 1, case when jsonb_typeof(value->'parent_index') = 'null' then null else private.player_snapshot_normalized_v1_projection_integer(value->'parent_index', 0, 8191)::integer end, private.player_snapshot_normalized_v1_projection_integer(value->'child_index', 0, 4095)::integer, private.player_snapshot_normalized_v1_projection_integer(value->'value', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'weight', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'type_code', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'adjustment', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_max', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_current', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'ndice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'sdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'pdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'armor', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'wear_flag', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_power', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_realm', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'special', -32768, 32767)::smallint from jsonb_array_elements(v_items) with ordinality)) then
+     and not exists ((select ordinality - 1, private.player_snapshot_normalized_v1_projection_integer(value->'max', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'current', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807) from jsonb_array_elements(v_daily) with ordinality) except (select slot, max_value, current_value, last_used from private.game_character_player_snapshot_normalized_v1_projection_daily where character_id = p_character_id and command_id = p_command_id))
+     and not exists ((select slot, max_value, current_value, last_used from private.game_character_player_snapshot_normalized_v1_projection_daily where character_id = p_character_id and command_id = p_command_id) except (select ordinality - 1, private.player_snapshot_normalized_v1_projection_integer(value->'max', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'current', 0, 255)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807) from jsonb_array_elements(v_daily) with ordinality))
+     and not exists ((select ordinality - 1, private.player_snapshot_normalized_v1_projection_integer(value->'interval', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'misc', -32768, 32767)::smallint from jsonb_array_elements(v_timers) with ordinality) except (select slot, interval_value, last_used, misc from private.game_character_player_snapshot_normalized_v1_projection_timers where character_id = p_character_id and command_id = p_command_id))
+     and not exists ((select slot, interval_value, last_used, misc from private.game_character_player_snapshot_normalized_v1_projection_timers where character_id = p_character_id and command_id = p_command_id) except (select ordinality - 1, private.player_snapshot_normalized_v1_projection_integer(value->'interval', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'last_used', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'misc', -32768, 32767)::smallint from jsonb_array_elements(v_timers) with ordinality))
+     and not exists ((select ordinality - 1, case when jsonb_typeof(value->'parent_index') = 'null' then null else private.player_snapshot_normalized_v1_projection_integer(value->'parent_index', 0, 8191)::integer end, private.player_snapshot_normalized_v1_projection_integer(value->'child_index', 0, 4095)::integer, private.player_snapshot_normalized_v1_projection_integer(value->'value', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'weight', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'type_code', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'adjustment', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_max', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_current', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'ndice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'sdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'pdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'armor', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'wear_flag', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_power', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_realm', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'special', -32768, 32767)::smallint from jsonb_array_elements(v_items) with ordinality) except (select item_index, parent_index, child_index, value, weight, type_code, adjustment, shots_max, shots_current, ndice, sdice, pdice, armor, wear_flag, magic_power, magic_realm, special from private.game_character_player_snapshot_normalized_v1_projection_items where character_id = p_character_id and command_id = p_command_id))
+     and not exists ((select item_index, parent_index, child_index, value, weight, type_code, adjustment, shots_max, shots_current, ndice, sdice, pdice, armor, wear_flag, magic_power, magic_realm, special from private.game_character_player_snapshot_normalized_v1_projection_items where character_id = p_character_id and command_id = p_command_id) except (select ordinality - 1, case when jsonb_typeof(value->'parent_index') = 'null' then null else private.player_snapshot_normalized_v1_projection_integer(value->'parent_index', 0, 8191)::integer end, private.player_snapshot_normalized_v1_projection_integer(value->'child_index', 0, 4095)::integer, private.player_snapshot_normalized_v1_projection_integer(value->'value', -9223372036854775808, 9223372036854775807), private.player_snapshot_normalized_v1_projection_integer(value->'weight', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'type_code', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'adjustment', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_max', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'shots_current', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'ndice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'sdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'pdice', -32768, 32767)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'armor', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'wear_flag', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_power', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'magic_realm', -128, 127)::smallint, private.player_snapshot_normalized_v1_projection_integer(value->'special', -32768, 32767)::smallint from jsonb_array_elements(v_items) with ordinality)) then
     return query select 'EXACT_RETRY'::text;
     return;
   end if;

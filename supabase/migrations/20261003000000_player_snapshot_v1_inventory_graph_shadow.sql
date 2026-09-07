@@ -17,27 +17,27 @@ create table if not exists private.game_character_player_snapshot_v1_inventory_g
   recorded_at timestamptz not null default clock_timestamp(),
   constraint game_character_player_snapshot_v1_inventory_graph_shadows_pk
     primary key (character_id, command_id),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_revision_unique
+  constraint game_character_player_snapshot_v1_inventory_grap_ac640774c1
     unique (character_id, writer_revision),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_artifact_fk
+  constraint game_character_player_snapshot_v1_inventory_grap_7fc25ec80b
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_v1_artifacts(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_request_hash_check
+  constraint game_character_player_snapshot_v1_inventory_grap_8473606a8c
     check (receipt_request_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_writer_epoch_check
+  constraint game_character_player_snapshot_v1_inventory_grap_183d8e01d5
     check (writer_epoch between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_writer_revision_check
+  constraint game_character_player_snapshot_v1_inventory_grap_edeb84c450
     check (writer_revision between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_source_hash_check
+  constraint game_character_player_snapshot_v1_inventory_grap_145a99c9fd
     check (source_post_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_source_octets_check
+  constraint game_character_player_snapshot_v1_inventory_grap_2bb2d02117
     check (source_octets between 1 and 9223372036854775807),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_snapshot_hash_check
+  constraint game_character_player_snapshot_v1_inventory_grap_d4831707b0
     check (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_snapshot_octets_check
+  constraint game_character_player_snapshot_v1_inventory_grap_b789e0f309
     check (snapshot_octets between 48 and 4194352),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadows_item_count_check
+  constraint game_character_player_snapshot_v1_inventory_grap_fde6e5b064
     check (item_count between 0 and 8192)
 );
 
@@ -47,25 +47,25 @@ create table if not exists private.game_character_player_snapshot_v1_inventory_g
   node_index integer not null,
   parent_node_index integer,
   sibling_ordinal integer not null,
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_pk
+  constraint game_character_player_snapshot_v1_inventory_grap_5ecadc9c59
     primary key (character_id, command_id, node_index),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_shadow_fk
+  constraint game_character_player_snapshot_v1_inventory_grap_5d757e7cc2
     foreign key (character_id, command_id)
     references private.game_character_player_snapshot_v1_inventory_graph_shadows(character_id, command_id)
     on delete restrict,
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_parent_fk
+  constraint game_character_player_snapshot_v1_inventory_grap_a6b940e627
     foreign key (character_id, command_id, parent_node_index)
     references private.game_character_player_snapshot_v1_inventory_graph_shadow_items(
       character_id, command_id, node_index
     )
     on delete restrict,
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_node_index_check
+  constraint game_character_player_snapshot_v1_inventory_grap_78012c04c1
     check (node_index between 0 and 8191),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_parent_index_check
+  constraint game_character_player_snapshot_v1_inventory_grap_8860035438
     check (parent_node_index is null or parent_node_index between 0 and 8191),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_parent_preorder_check
+  constraint game_character_player_snapshot_v1_inventory_grap_d686080915
     check (parent_node_index is null or parent_node_index < node_index),
-  constraint game_character_player_snapshot_v1_inventory_graph_shadow_items_sibling_ordinal_check
+  constraint game_character_player_snapshot_v1_inventory_grap_9e6c2bc064
     check (sibling_ordinal between 0 and 4095)
 );
 
