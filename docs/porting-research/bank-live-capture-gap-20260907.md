@@ -1,5 +1,32 @@
 # Live bank capture and transaction gap
 
+## Native player save transport — 2026-09-07
+
+Source `7a412a7` adds a bounded libpq adapter for the closed general player
+save RPC. Its explicit request includes the original loaded revision/hash;
+it never looks up a new revision or changes a live creature. It bounds inputs,
+decodes the canonical payload before sending, checks the name, and distinguishes
+local invalid input, explicit DB rejection, unknown outcome, new commit and
+historical retry. Revision output is zero except for a strictly checked binary
+acknowledgement at expected+1. Unknown results require keeping the exact request
+and discarding the borrowed connection.
+
+The new native fixture first failed compilation because this API was absent.
+After implementation the actual PostgreSQL test performs its initial player
+save through C, retries through fresh C processes, rejects a stale hash,
+noncanonical/overflow revision and corrupted payload, and checks historical
+retry after subsequent concurrent saves without head rollback. The full frozen
+local ARM64 runner at `7a412a7` exited 0, including ASan/UBSan, native bank
+commands, actual C onboarding and both backup profiles. Evidence:
+`/tmp/muhan-player-save-native.log`.
+
+This is an internal transport, not an installed PlayerStore callback. Durable
+player-request preparation, per-character save ownership across copies and
+disconnect, pending-money coordination, and live baseline lifecycle remain
+required. Player-save-specific lost-ack and malformed-server-response injection
+are not yet covered; money transport tests do not prove those cases for this
+adapter. No production grant, push, deployment or Actions run.
+
 ## General player save CAS verified — 2026-09-07
 
 Source `19d1a5f` adds closed `commit_player_snapshot` with an immutable,
