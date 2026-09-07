@@ -239,6 +239,7 @@ STACK_E2E_BINARY="$work_dir/frp.new" \
 STACK_E2E_ARTIFACT="$work_dir/result.json" \
 ADMISSION_IDENTITY_PG17_ALLOW_DISPOSABLE=1 \
   pnpm --dir "$repo_root/services/gateway" exec tsx --test \
+    "$repo_root/tests/stack-e2e/post-game-claim-check.test.ts" \
     "$repo_root/tests/stack-e2e/admission-identity-pg17.integration.test.ts" \
     "$repo_root/tests/stack-e2e/stack-e2e.test.ts" || test_status=$?
 

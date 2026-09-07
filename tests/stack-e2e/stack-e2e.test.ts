@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { once } from 'node:events'
 import test from 'node:test'
 import { createRequire } from 'node:module'
+import { assertPostGameClaim, type PostGameLayout } from './post-game-claim-check.js'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { loadConfig } from '../../services/gateway/src/config.js'
@@ -1061,6 +1062,7 @@ async function main(): Promise<void> {
       supabasePublishableKey: webProvisionJwt,
     })
     await waitForWebStackServer(web)
+    const browserStartedAt = Math.floor(Date.now() / 1000)
     await runWebStackAcceptance({
       server: web,
       provision: {
@@ -1090,18 +1092,25 @@ async function main(): Promise<void> {
     assert.equal(webClaimState, `active|${webClaimActor}|${webClaimName}`)
     assert.equal(await sql(`select count(*) from private.game_imported_unclaimed_batch_members where character_id = '${webClaimCharacterId}'`), '1')
     assert.equal(await sql(`select canonical_legacy_name || '|' || legacy_name_sha1 || '|' || legacy_shard from private.game_imported_unclaimed_batch_member_legacy_locators where character_id = '${webClaimCharacterId}'`), `${webClaimName}|${createHash('sha1').update(webClaimName).digest('hex')}|${createHash('sha1').update(webClaimName).digest('hex').slice(0, 2)}`)
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
     const postGameClaimBytes = await readFile(webClaimPlayer)
-    if (!postGameClaimBytes.equals(webClaimBytes)) {
+    {
       const layoutBinary = join(await mkdtemp(join(tmpdir(), 'muhan-post-game-layout-')), 'layout')
       await run('cc', ['-I', join(root, 'src'), join(root, 'tests/stack-e2e/player-record-layout.c'), '-o', layoutBinary])
       const { stdout } = await run(layoutBinary)
-      const layout = JSON.parse(stdout) as { fields: Array<{ name: string; offset: number; length: number }> }
+      const layout = JSON.parse(stdout) as PostGameLayout & { fields: Array<{ name: string; offset: number; length: number }> }
       const changed = layout.fields.filter(field => !webClaimBytes.subarray(field.offset, field.offset + field.length).equals(postGameClaimBytes.subarray(field.offset, field.offset + field.length))).map(field => field.name)
       // Names/booleans only: no player field values, credential bytes or hashes.
       process.stderr.write(`stack-e2e: post-game-claim size-equal=${webClaimBytes.length === postGameClaimBytes.length} changed-fields=${JSON.stringify(changed)}\n`)
+      // Exact claim-only preservation is checked above. Ordinary admission
+      // rebases timers and saves again; verify those semantics separately.
+      assertPostGameClaim(webClaimBytes, postGameClaimBytes, layout, {
+        startedAt: browserStartedAt, endedAt: Math.ceil(Date.now() / 1000),
+      })
     }
-    assert.equal(createHash('sha256').update(postGameClaimBytes).digest('hex'), webClaimDigest)
-    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_sessions where character_id in (select id from public.game_characters where owner_user_id in ('${webProvisionActor}', '${webClaimActor}'))`), '0'))
+    const postGameDigest = createHash('sha256').update(postGameClaimBytes).digest('hex')
+    await eventually(async () => assert.equal(await sql(`select count(*) from private.game_character_legacy_heads h join private.game_character_shadow_receipts r on r.character_id=h.character_id and r.writer_epoch=h.writer_epoch and r.writer_revision=h.revision and r.post_sha256=h.head_sha256 where h.character_id='${webClaimCharacterId}' and h.head_sha256='${postGameDigest}'`), '1'))
+    evidence.events.push({ case: 'web-claim-post-game', result: 'preserved-data-bounded-runtime-changes-head-receipt-match' })
 
     // The browser has now exercised distinct real provision and claim flows.
     // Resolve their server-issued correlations from the immutable intent rows,
