@@ -133,3 +133,11 @@ Docker 사용량은 이미지 21.01GB(회수 가능 10.84GB), build cache 12.17G
 NetworkPolicy enabled 시 새 Job의 ingress를 닫고 같은 release Postgres/DNS egress만 허용하며 DB ingress 허용 대상도 추가한다. RED 3개 확인 후 chart 구현을 추가해 신규 3개 및 기존 46개 테스트, 총 49 pass/0 fail을 확인했다. 이후 read-only mount 수, service-account token, writer credential 미참조, hook 부재 assertion도 추가해 신규 3개를 다시 통과했다.
 
 실제 k8s Job, amd64 통합 이미지, 운영 credential/input provisioning은 아직 미검증/미완료다. Git/registry push 또는 운영 배포는 하지 않았다. 다음은 독립 리뷰와 배포 artifact/source revision 검증이다.
+
+## 재개 후 배포 검증 범위 확대
+
+목표 active 상태를 확인하고 배포 저장소의 chart 검사 외에 release wrapper와 Docker source-path 검사까지 실행했다. 58개 중 57개가 통과했고 source-path 검사 1개가 실패했다. 해당 검사는 검토 기준 `d4d70643ba9d21ae537417c1d82d5e1482b43fd0`와 소스 checkout HEAD가 같아야 하는데, 실행 시 HEAD는 `98ed194b55d95b5da90f46f6dcc8d728b44a978b`였다. 새 소스 검토 없이 상수만 갱신하거나 검사를 제거하지 않았다. 이 실패가 해결되기 전 전체 packaging 검증 통과로 보고하지 않는다.
+
+배포 `muhan-mud/build.sh`는 private Git에서 정확한 원격 source SHA를 가져오며, 호출하는 루트 `build.sh`는 cloud builder의 `--push`까지 실행한다. 따라서 이를 로컬 전용 이미지 테스트로 실행하지 않았다. 원격에 존재하는 검토 완료 source SHA 확정, source-path 검증 기준 갱신, 실제 amd64 통합 이미지 검증이 배포 전 선행 작업이다.
+
+배포 커밋 `778a30e3`은 회귀 테스트만 보강한다. 실행 입력 각각의 누락·긴 ID·하위 경로 거부, default/schema-only/network-off 시 비교 정책 부재, 실행 시 같은 release 선택과 PostgreSQL/DNS 포트, DB ingress의 비교 Job 연결을 검사한다. 최초 테스트의 리소스 선택이 PostgREST 이름까지 부분 일치하는 결함을 바로잡아 정확한 PostgreSQL 정책 이름으로 검사한다. 이는 테스트 구현 수정이지 chart 런타임 결함 수정은 아니다. 보강 후 prerequisite/normalized/chart 50개가 모두 통과했다. 위의 별도 source-path 검사는 여전히 미해결이다. 커밋은 로컬이며 운영 변경은 없다.
