@@ -9,6 +9,7 @@ command -v docker >/dev/null || { echo "player snapshot v1 artifact integration 
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="player-snapshot-v1-${RANDOM}-${RANDOM}"
+container_id=""
 fixture_path="$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex"
 fixture_hex="$(tr -d '\r\n' < "$fixture_path")"
 [[ "$fixture_hex" =~ ^[0-9a-f]+$ && "${#fixture_hex}" -eq 3556 ]] || {
@@ -27,12 +28,13 @@ tree_fixture_hex="$(tr -d '\r\n' < "$tree_fixture_path")"
 fixture_sql="decode('$fixture_hex', 'hex')"
 inventory_fixture_sql="decode('$inventory_fixture_hex', 'hex')"
 tree_fixture_sql="decode('$tree_fixture_hex', 'hex')"
-cleanup() { docker rm --force "$container" >/dev/null 2>&1 || true; }
+cleanup() { if [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]; then docker rm --force "$container_id" >/dev/null 2>&1 || true; fi; }
 trap cleanup EXIT
-docker run --detach --rm --name "$container" \
+container_id="$(docker run --detach --rm --name "$container" \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=192m \
-  --volume "$repo_root:/workspace:ro" postgres:17-alpine >/dev/null
+  --volume "$repo_root:/workspace:ro" postgres:17-alpine)"
+container="$container_id"
 run_super() {
   docker exec --interactive --env PGPASSWORD=contract-only-password "$container" \
     psql --host=127.0.0.1 --username=postgres --dbname=postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 "$@"

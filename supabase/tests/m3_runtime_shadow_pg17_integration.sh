@@ -25,6 +25,7 @@ command -v "${PG_CONFIG:-pg_config}" >/dev/null || {
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 harness="${1:-}"
 container="m3-runtime-shadow-${RANDOM}-${RANDOM}"
+container_id=""
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/m3-runtime-shadow.XXXXXX")"
 home="$tmp/muhan-home"
 conninfo_file="$tmp/writer.conninfo"
@@ -38,7 +39,7 @@ database_host="${M3_RUNTIME_SHADOW_PG17_DATABASE_HOST:-127.0.0.1}"
 
 cleanup() {
   rm -rf -- "$tmp"
-  docker rm --force "$container" >/dev/null 2>&1 || true
+  if [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]; then docker rm --force "$container_id" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
@@ -104,10 +105,11 @@ fi
   exit 2
 }
 
-docker run --detach --rm --name "$container" --publish 127.0.0.1::5432 \
+container_id="$(docker run --detach --rm --name "$container" --publish 127.0.0.1::5432 \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=128m \
-  --volume "$repo_root:/workspace:ro" postgres:17-alpine >/dev/null
+  --volume "$repo_root:/workspace:ro" postgres:17-alpine)"
+container="$container_id"
 
 # The entrypoint briefly accepts connections on its setup server.  Two
 # consecutive queries prove that PostgreSQL 17's final server is serving.

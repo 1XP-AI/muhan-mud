@@ -9,13 +9,15 @@ command -v docker >/dev/null || { echo "PlayerSnapshotV1 relay PG17 E2E requires
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="pva-relay-e2e-${RANDOM}-${RANDOM}"
-cleanup() { docker rm --force "$container" >/dev/null 2>&1 || true; }
+container_id=""
+cleanup() { if [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]; then docker rm --force "$container_id" >/dev/null 2>&1 || true; fi; }
 trap cleanup EXIT
 
-docker run --detach --rm --name "$container" --publish 127.0.0.1::5432 \
+container_id="$(docker run --detach --rm --name "$container" --publish 127.0.0.1::5432 \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=192m \
-  --volume "$repo_root:/workspace:ro" postgres:17-alpine >/dev/null
+  --volume "$repo_root:/workspace:ro" postgres:17-alpine)"
+container="$container_id"
 
 run_super() {
   docker exec --interactive --env PGPASSWORD=contract-only-password "$container" \

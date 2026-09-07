@@ -13,17 +13,19 @@ command -v docker >/dev/null || {
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="m3-live-save-route-${RANDOM}-${RANDOM}"
+container_id=""
 
 cleanup() {
-  docker rm --force "$container" >/dev/null 2>&1 || true
+  if [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]; then docker rm --force "$container_id" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
-docker run --detach --rm --name "$container" \
+container_id="$(docker run --detach --rm --name "$container" \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=128m \
   --volume "$repo_root:/workspace:ro" \
-  postgres:17-alpine >/dev/null
+  postgres:17-alpine)"
+container="$container_id"
 
 # The image entrypoint briefly exposes its initialization server before
 # restarting PostgreSQL for normal service.  Require two consecutive real

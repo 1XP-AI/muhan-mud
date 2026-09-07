@@ -10,6 +10,7 @@ command -v node >/dev/null || { echo "M5e replay reader integration requires a b
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 container="m5e-replay-reader-${RANDOM}-${RANDOM}"
+container_id=""
 reader_password="m5e-reader-${RANDOM}-${RANDOM}"
 full_payload_reader_password="m5e-full-payload-reader-${RANDOM}-${RANDOM}"
 comparator_cli="$repo_root/services/m4-file-snapshot-manifest-relay/dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js"
@@ -43,15 +44,16 @@ chmod 0700 "$full_payload_rehearsal_outbox"
 cleanup() {
   rm -rf -- "$journal_root"
   rm -rf -- "$full_payload_rehearsal_outbox"
-  docker rm --force "$container" >/dev/null 2>&1 || true
+  if [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]; then docker rm --force "$container_id" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
-docker run --detach --rm --name "$container" \
+container_id="$(docker run --detach --rm --name "$container" \
   --env POSTGRES_PASSWORD=contract-only-password \
   --tmpfs /var/lib/postgresql/data:rw,size=192m \
   --publish 127.0.0.1::5432 \
-  --volume "$repo_root:/workspace:ro" postgres:17-alpine >/dev/null
+  --volume "$repo_root:/workspace:ro" postgres:17-alpine)"
+container="$container_id"
 
 postgres_port="$(docker port "$container" 5432/tcp | sed -n '1{s/.*://p;}')"
 [[ "$postgres_port" =~ ^[1-9][0-9]*$ ]] || { echo "M5e replay reader integration did not receive a temporary loopback port" >&2; exit 2; }
