@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
+import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
 const port=process.env.BANK_PAYLOAD_LOCAL_PORT, binary=process.env.BANK_TRANSFER_PLANNER
 if(!/^[1-9][0-9]{0,4}$/.test(port??'')||Number(port)>65535||!binary?.startsWith('/')) throw new Error('invalid local configuration')
@@ -245,7 +246,19 @@ try {
           assert.ok(Date.now()-start>=1500 && Date.now()-start<4500)
         } finally { await db.query('rollback') }
       }
-      for(const expected of ['COMMITTED','EXACT_RETRY']) {
+      if(index===0) {
+        const lengths=Buffer.alloc(8); lengths.writeUInt32BE(p.length); lengths.writeUInt32BE(b.length,4)
+        await loseCommittedAck({port,binary:process.env.BANK_TRANSFER_NATIVE_COMMIT,
+          args:[id,...authority,...args.slice(1,5)],input:Buffer.concat([lengths,p,b]),
+          committed:async()=>{
+            const state=await read()
+            return state.revision==='1' && state.player_payload.equals(p) && state.bank_payload.equals(b)
+          },
+        })
+        assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,1)
+        console.log('GREEN commit durable while native acknowledgement is lost: UNKNOWN, then same-command reconnect retry')
+      }
+      for(const expected of [index===0?'EXACT_RETRY':'COMMITTED','EXACT_RETRY']) {
         const result=nativeCommit(args)
         assert.equal(result.status,0,result.stderr.toString())
         assert.equal(result.stdout.toString(),`${expected} ${index+1}\n`)
