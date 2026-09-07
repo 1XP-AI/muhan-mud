@@ -1,5 +1,22 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest rerun: storage resolved, first save acknowledged
+
+Frozen source `24cd12d` ran on local Docker Desktop with the pinned default
+builder. No Actions job, cloud build, production deployment or remote push.
+Local fast checks passed: strict TypeScript, 44-migration coverage, manual-only
+workflow policy, and 20 tests. Full acceptance remains 1 PASS / 1 FAIL.
+
+The new cleanup-time diagnostics rule out an absent/unacknowledged first-save
+head: the provisioning character has head state `existing`, revision 1,
+storage format 1 and a writer epoch; the save journal contains `.prepared`,
+`.published` and `.acked`. The earlier revision-zero baseline-conflict
+hypothesis is therefore not supported. Finalize/reconcile still fails, leaving
+intent `provisioning`, request `reserved`, character `provisioning` and no
+handoff. Next capture the disposable RPC error at finalize/reconcile and trace
+the installed function, without weakening lifecycle or evidence gates. This
+does not establish complete browser acceptance or real Supabase Auth.
+
 User explicitly authorized isolated local Docker full-stack testing.
 
 ## Implemented
