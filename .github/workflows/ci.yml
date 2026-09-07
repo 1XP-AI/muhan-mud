@@ -778,6 +778,7 @@ jobs:
           set -euo pipefail
           pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/web-stack-ui.lifecycle.test.ts
           pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/normalized-snapshot-check.test.ts
+          pnpm --dir services/gateway exec tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --esModuleInterop --jsx react-jsx ../../tests/stack-e2e/stack-e2e.test.ts
 
       - name: Disposable web onboarding stack acceptance
         if: matrix.runner == 'ubuntu-latest'

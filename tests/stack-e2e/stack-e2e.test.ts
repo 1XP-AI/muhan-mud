@@ -357,7 +357,7 @@ function legacyInventoryRecord(name: string, sha256: string, byteSize: number): 
 class Browser {
   readonly frames: Array<{ data: Buffer, binary: boolean }> = []
   constructor(readonly ws: any) {
-    ws.on('message', (data, binary) => this.frames.push({ data: Buffer.from(data as Uint8Array), binary }))
+    ws.on('message', (data: unknown, binary: boolean) => this.frames.push({ data: Buffer.from(data as Uint8Array), binary }))
   }
   text(): string {
     const text = this.frames.filter((frame) => frame.binary).map((frame) => frame.data.toString('utf8')).join('')
