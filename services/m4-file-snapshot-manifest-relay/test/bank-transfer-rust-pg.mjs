@@ -38,6 +38,7 @@ const world=qualified?'qualified-rust-pair':'rust-pair'
 const actor='e9210000-0000-0000-0000-000000000001',session='f9210000-0000-0000-0000-000000000001',writer='b9210000-0000-0000-0000-000000000001'
 const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea)'
 const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
+const recoverySignature='private.reconcile_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea,uuid,bigint)'
 const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
 const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_READER,args.map(String),{
   env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
@@ -305,6 +306,28 @@ try {
     const rows=(await db.query('select actor_user_id,session_id,writer_instance_id,writer_epoch::text from private.game_character_money_transfer_authorities where character_id=$1',[id])).rows
     assert.equal(rows.length,2)
     for(const row of rows) assert.deepEqual(row,{actor_user_id:actor,session_id:session,writer_instance_id:writer,writer_epoch:'1'})
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
+    await db.query(`grant execute on function ${recoverySignature} to mud_writer`)
+    await db.query("update private.game_character_sessions set expires_at=clock_timestamp()-interval '1 millisecond' where character_id=$1",[id])
+    await db.query('select private.seal_game_world_writer_epoch($1,$2,1)',[world,writer])
+    await db.query("update private.game_character_writer_epochs set expires_at=clock_timestamp()-interval '1 millisecond' where world_id=$1",[world])
+    const successor='b9240000-0000-0000-0000-000000000001'
+    assert.equal((await db.query("select * from private.acquire_game_world_writer_epoch($1,$2,clock_timestamp()+interval '3 minutes')",[world,successor])).rows[0].writer_epoch,'2')
+    const original=[id,...authority,'c9190000-0000-0000-0000-000000000001',0,'deposit',25,playerGold(player,75n),bankGold(bank,75n)]
+    await assert.rejects(login.query(qualifiedSql,original),e=>e.code==='P0001')
+    const recoverySql='select * from private.reconcile_money_transfer($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)'
+    const request=[...original,successor,2]
+    assert.deepEqual((await login.query(recoverySql,request)).rows,[{outcome:'CONFIRMED',committed_revision:'1'}])
+    for(const [index,value] of [[3,'f9240000-0000-0000-0000-000000000099'],[10,26],[14,1],[2,'e9240000-0000-0000-0000-000000000099']]) {
+      const wrong=[...request]; wrong[index]=value
+      await assert.rejects(login.query(recoverySql,wrong),e=>e.code==='P0001')
+    }
+    const missing=[...request]; missing[7]='c9240000-0000-0000-0000-000000000099'
+    assert.deepEqual((await login.query(recoverySql,missing)).rows,[{outcome:'UNRESOLVED',committed_revision:null}])
+    await assert.rejects(db.query(recoverySql,request),e=>e.code==='P0001')
+    assert.deepEqual(await read(),final)
+    assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
+    console.log('GREEN successor writer reconciles exact old commit after session/epoch expiry without replay or state changes')
     console.log('GREEN qualified writer login: gated pair read -> Rust result -> atomic commit and immutable command binding')
   }
   console.log('GREEN DB snapshots -> digest-bound Rust deposit/withdraw -> atomic DB pair and exact retry; full-byte roundtrip preserved')
@@ -313,8 +336,10 @@ try {
   if(qualified) {
     await db.query(`revoke execute on function ${signature} from mud_writer`)
     await db.query(`revoke execute on function ${readSignature} from mud_writer`)
+    await db.query(`revoke execute on function ${recoverySignature} from mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
   }
   await db.end()
 }
