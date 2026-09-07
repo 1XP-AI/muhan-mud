@@ -541,6 +541,10 @@ BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/paired-snapshot-concurrency-local-pg.mjs"
 CARGO_TARGET_DIR="$repo_root/rust/target" cargo test --locked --offline --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto --bin bank_money_transfer_plan
 CARGO_TARGET_DIR="$repo_root/rust/target" cargo build --locked --offline --release --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto --bin bank_money_transfer_plan
+make -C "$repo_root/src" bank-transfer-snapshot-v1-test
+BANK_TRANSFER_C_ENCODER="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_transfer_snapshot_v1_test" \
+  BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
+  node "$repo_root/services/m4-file-snapshot-manifest-relay/test/c-bank-transfer-rust.mjs"
 for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261018000000_money_transfer_semantics.sql
 done

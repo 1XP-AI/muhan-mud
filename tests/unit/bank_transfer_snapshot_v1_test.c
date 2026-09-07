@@ -9,7 +9,7 @@ static size_t length32(const unsigned char *p)
 {
     return (size_t)p[0]*16777216U+(size_t)p[1]*65536U+(size_t)p[2]*256U+p[3];
 }
-int main(void)
+int main(int argc,char **argv)
 {
     creature player, original, *clone;
     object bank, bank_original;
@@ -22,6 +22,11 @@ int main(void)
     memset(&root,0,sizeof(root)); root.obj=&bank;
     original=player; bank_original=bank;
     assert(bank_transfer_snapshot_v1_encode(&player,&root,&wire,&length)==CDTO_V1_OK);
+    if(argc==2 && strcmp(argv[1],"--frame")==0) {
+        assert(fwrite(wire,1,length,stdout)==length);
+        free(wire);
+        return 0;
+    }
     pl=length32(wire); bl=length32(wire+4);
     assert(length==8+pl+bl);
     assert(player_snapshot_v1_decode_clone(wire+8,pl,&clone)==CDTO_V1_OK);
