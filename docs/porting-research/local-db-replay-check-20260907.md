@@ -304,3 +304,27 @@ or deployment was used.
 Remaining bank gap: a backup containing nonempty bank payload rows and
 C/Rust validation of those restored bytes. This E2E demonstrates persistence,
 not production bank capture coverage, bank restore, or live DB authority.
+# Nonempty bank backup/restore and native verification
+
+Frozen source `76ccb01` passed the complete local Linux runner (exit 0):
+`/tmp/muhan-bank-restored-native.log`.
+
+Both clean backup profiles now contain an actual bank payload with three
+objects (one root and two children), including signed-i64 minimum root value.
+The valid seed records through the writer RPC with triggers/constraints enabled.
+The backup comparison now covers nine evidence relations, including payload,
+topology and three topology-item rows; it cannot pass with empty bank tables.
+
+After actual PG17 custom-format dump/restore, the bank write exact-retries as
+the writer session without direct table-read privilege. Full-row fingerprints
+remain identical. The restored payload is fetched read-only by the disposable
+test administrator and passed to the real C bank decoder/encoder for complete
+byte equality, then to the new Rust bank replay executable using the DB's stored
+whole-payload digest. Both profiles report three verified bank nodes. Invalid
+digest syntax is rejected. Existing player restore and relay gates also pass.
+
+This proves synthetic bank persistence and recovery through production codecs,
+not completeness of capture from every live bank mutation. Remaining: capture
+coverage and failover/concurrency semantics for actual bank operations, narrowly
+authorized production read wiring, live migration/cutover and testnet acceptance.
+No production authority or deployed infrastructure was modified.
