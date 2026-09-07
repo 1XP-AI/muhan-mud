@@ -16,7 +16,7 @@ async function main() {
     if(!r) {conflict=true;return}
     if(r.args[0]===args[0]&&r.args[4]===args[4]
        &&(JSON.stringify(r.args)!==JSON.stringify(args)||!r.payload.equals(payload))) conflict=true
-  })
+  },1000,true)
   const moneyTruncated=await visitMoneyPending(root,async r=>{
     if(!r||(r.args[1]===args[0]&&r.args[0]===args[4])) conflict=true
   },1000,true)

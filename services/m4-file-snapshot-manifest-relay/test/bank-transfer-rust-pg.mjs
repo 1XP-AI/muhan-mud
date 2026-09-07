@@ -8,6 +8,7 @@ import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../
 import {releaseConfirmedMoney} from '../dist/money-pending-release.js'
 import {preparePlayerPending,readPlayerPending,claimPlayerCharacterFence} from '../dist/player-pending-request.js'
 import {recoverPlayerPendingOnce} from '../dist/player-pending-recovery.js'
+import {releaseConfirmedPlayer} from '../dist/player-pending-release.js'
 import {fileURLToPath} from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
@@ -159,10 +160,21 @@ try {
         nativeSave(request,'-3 0\n',conflictRoot)
         assert.deepEqual(await state(),{revision:'0',player_payload:initial,bank_payload:bank})
         assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,0)
+        await claimPlayerCharacterFence(pending,request.slice(0,8),request[8])
+        await assert.rejects(releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login),/unconfirmed/)
         nativeSave(request,'1 1\n',pending)
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         nativeSave(request,'2 1\n',pending)
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
+        await releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login)
+        assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
+        // Retained resolved history no longer blocks a different operation's CLI.
+        const bankArgs=[saveId,world,actor,session,'test-gateway',writer,'1','c9270000-0000-0000-0000-000000000001','1','deposit','1']
+        const lengths=Buffer.alloc(8);lengths.writeUInt32BE(changed.length);lengths.writeUInt32BE(bank.length,4)
+        const frame=Buffer.concat([lengths,changed,bank])
+        const next=spawnSync(process.execPath,[fileURLToPath(new URL('../dist/money-pending-prepare-cli.js',import.meta.url)),'--prepare',pending,...bankArgs],{input:frame,timeout:5000})
+        assert.equal(next.status,0,next.stderr.toString());assert.deepEqual(next.stdout,frame)
+        await assert.rejects(releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login))
       } finally {await rm(pending,{recursive:true,force:true})}
       assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
       const after=await state();assert.deepEqual(after,{revision:'1',player_payload:changed,bank_payload:bank})
@@ -531,6 +543,8 @@ try {
       const before=await playerState(),root=await mkdtemp(join(tmpdir(),'muhan-player-recovery-'))
       try {
         await claimPlayerCharacterFence(root,playerRecoveryRequest.slice(0,8),playerRecoveryRequest[8])
+        // Historical confirmation is insufficient after the DB head advances.
+        await assert.rejects(releaseConfirmedPlayer(root,playerRecoveryRequest.slice(0,8),playerRecoveryRequest[8],successor,'2',login),e=>e.code==='40001')
         const expected={confirmed:1,unresolved:0,invalid:0,errors:0,truncated:false}
         assert.deepEqual(await recoverPlayerPendingOnce(root,world,successor,'2',login),expected)
         // Fence-only crash evidence and its later request copy count once.

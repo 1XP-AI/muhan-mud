@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto'
-import {opendir} from 'node:fs/promises'
+import {opendir,unlink} from 'node:fs/promises'
 import {pendingDirectory,readPendingBytes,publishPendingBytes,publishPendingBytesAt,characterPendingLock,requirePendingAbsent} from './pending-record-store.js'
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const hash=(body:string)=>createHash('sha256').update(body).digest('hex')
@@ -20,7 +20,7 @@ export async function preparePlayerPending(root:string,args:string[],payload:Buf
 }
 // Durable reservation shares money's lock and world/character key. Publishing
 // it before the request means a crash cannot admit a different operation.
-// No release here: preserve until independent DB reconciliation is implemented.
+// Release requires independent confirmation plus current-source agreement.
 export async function claimPlayerCharacterFence(root:string,args:string[],payload:Buffer):Promise<'CLAIMED'|'EXACT_RETRY'> {
   const bytes=encode(args,payload),key=hash(JSON.stringify([args[0],args[4]]))
   const dir=await pendingDirectory(root),base=`/proc/self/fd/${dir.fd}`
@@ -28,8 +28,25 @@ export async function claimPlayerCharacterFence(root:string,args:string[],payloa
   try {
     lock=await characterPendingLock(base,key);await dir.sync()
     await requirePendingAbsent(base,`${key}.money-fence`)
+    await requirePendingAbsent(base,`${args[5]}.player-resolved`)
     const outcome=await publishPendingBytesAt(dir,`${key}.player-fence`,bytes)
     return outcome==='PREPARED'?'CLAIMED':'EXACT_RETRY'
+  } finally {try {await lock?.close()} finally {await dir.close()}}
+}
+// Storage-internal verifier hook. Retain request and resolution evidence before
+// removing ONLY the matching reservation while holding the shared kernel lock.
+export async function resolvePlayerCharacterFence(root:string,args:string[],payload:Buffer,verify:()=>Promise<void>):Promise<void> {
+  const bytes=encode(args,payload),key=hash(JSON.stringify([args[0],args[4]]))
+  const dir=await pendingDirectory(root),base=`/proc/self/fd/${dir.fd}`
+  let lock:Awaited<ReturnType<typeof characterPendingLock>>|undefined
+  try {
+    lock=await characterPendingLock(base,key);await dir.sync()
+    await requirePendingAbsent(base,`${key}.money-fence`)
+    if(!(await readPendingBytes(base,`${key}.player-fence`)).equals(bytes)) throw new Error('different player reservation')
+    await verify()
+    await publishPendingBytesAt(dir,`${args[5]}.player-request`,bytes)
+    await publishPendingBytesAt(dir,`${args[5]}.player-resolved`,bytes)
+    await unlink(`${base}/${key}.player-fence`);await dir.sync()
   } finally {try {await lock?.close()} finally {await dir.close()}}
 }
 function decode(bytes:Buffer,command?:string):{args:string[],payload:Buffer} {
@@ -49,7 +66,7 @@ export async function readPlayerPending(root:string,command:string):Promise<{arg
     return decode(bytes,command)
   } finally {await dir.close()}
 }
-export async function visitPlayerPending(root:string,visit:(request:{args:string[],payload:Buffer}|null)=>Promise<void>,limit=1000):Promise<boolean> {
+export async function visitPlayerPending(root:string,visit:(request:{args:string[],payload:Buffer}|null)=>Promise<void>,limit=1000,skipResolved=false):Promise<boolean> {
   if(!Number.isInteger(limit)||limit<1||limit>1000) throw new Error('invalid player scan limit')
   const dir=await pendingDirectory(root),base=`/proc/self/fd/${dir.fd}`
   try {
@@ -63,6 +80,13 @@ export async function visitPlayerPending(root:string,visit:(request:{args:string
       try {
         if(fence?!/^[0-9a-f]{64}$/.test(key):!uuid.test(key)) throw new Error('invalid player filename')
         const bytes=await readPendingBytes(base,entry.name),found=decode(bytes,fence?undefined:key)
+        if(skipResolved&&!fence) {
+          try {
+            const resolved=await readPendingBytes(base,`${key}.player-resolved`)
+            if(!resolved.equals(bytes)) throw new Error('conflicting player resolution')
+            continue
+          } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
+        }
         if(fence&&key!==hash(JSON.stringify([found.args[0],found.args[4]]))) throw new Error('invalid player fence key')
         const digest=createHash('sha256').update(bytes).digest('hex'),command=found.args[5]
         if(seen.has(command)) {

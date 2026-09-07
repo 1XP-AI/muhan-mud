@@ -25,7 +25,7 @@ async function main() {
   },1000,true)
   const playersTruncated=await visitPlayerPending(root,async request=>{
     if(!request||(request.args[0]===args[1]&&request.args[4]===args[0])) conflict=true
-  })
+  },1000,true)
   if(conflict||truncated||playersTruncated) throw new Error('pending recovery required before preparation')
   // Exclusive publication is the process-race arbiter. A crash after this
   // point leaves a complete recoverable fence even without a request file.
