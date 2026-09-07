@@ -534,5 +534,6 @@ for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261017000000_paired_snapshot_transaction_kernel.sql
 done
 run_super --set="fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_canonical.hex")" \
+  --set="next_fixture_hex=$(tr -d '\r\n' < "$repo_root/tests/fixtures/player_snapshot_v1_tree_inventory.hex")" \
   --file=/workspace/supabase/tests/paired_snapshot_transaction_contract.sql
 echo 'GREEN paired snapshot transaction rollback and retry contract'
