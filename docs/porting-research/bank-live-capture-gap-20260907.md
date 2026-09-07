@@ -537,6 +537,32 @@ Confirmed-request acknowledgement/retention, paginated draining, live C
 coordinator installation, current-session state refresh and legacy write
 fencing remain. No K8s deployment, production grant or CI run was performed.
 
+### Native C invocation of the Rust planner
+
+Source `6d07856` replaces direct Node->Rust invocation in the qualified
+integration with a native C process bridge. It executes one explicit trusted
+absolute binary without a shell, passes only the four planner arguments and a
+minimal locale environment, and closes inherited descriptors above stderr.
+Concurrent nonblocking local socket IO prevents input/output pipe deadlock;
+complete frames are bounded to two 4-MiB payloads plus headers. Failure,
+oversize/malformed framing, nonzero child exit or deadline emits no result.
+The bridge reaps its child and does not mutate game or database state.
+
+The real C read -> C-launched Rust plan -> C commit flow passes along with
+wrong-digest/funds rejection. A deliberately stalled child reaches the native
+two-second deadline, is killed/reaped, and yields no output before the outer
+watchdog; database state remains unchanged. Native bridge ASan/UBSan and the
+full local replay/restore suite passed exit 0:
+`/tmp/muhan-native-rust-bridge-final.log`.
+
+Concrete runtime integration prerequisite found in `src/io.c`: SIGCHLD
+increments `Deadchildren`, and `reap_children` currently uses blocking `wait`
+based on that counter. Independently reaping the planner could leave a stale
+counter and block the game while another child is alive. The bridge is therefore
+NOT installed into the live coordinator yet. Reaper ownership/nonblocking
+collection must be tested and adjusted before activation, along with the
+existing pending-request integration and legacy-write fencing requirements.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
