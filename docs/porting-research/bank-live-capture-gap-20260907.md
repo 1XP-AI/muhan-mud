@@ -1,5 +1,35 @@
 # Live bank capture and transaction gap
 
+## Verified native baseline adoption — 2026-09-08
+
+Source `99b597b` adds explicit native adoption into a fresh command ID. It
+requires a confirmed/retried pending payload, equal normalized live memory,
+current DB character/owner/revision, byte-identical decoded DB state, and exact
+durable request/resolution evidence with neither player nor money reservation
+remaining. Only then does it replace command/revision/hash and clear the
+in-memory pending buffer. It does not delete history or mutate the creature.
+Every subsequent write still needs the shared reservation and DB CAS; the
+checks are not a promise that no other writer can change state afterward.
+
+The actual C fixture initially failed compilation with the adoption API absent.
+Its integration now keeps the same C process alive after save/retry: adoption
+before release is rejected, an independent Node/PG connection verifies release,
+then C rejects mismatched live memory and accepts the original state. The
+context advances from revision 0 to 1 and receives the exact requested fresh
+command ID while retained request bytes remain readable. A bounded parent
+watchdog terminates only its own child if this handshake stalls.
+
+Full frozen local ARM64 suite at `99b597b` exited 0 via its process handle;
+evidence `/tmp/muhan-player-adoption.log`. Existing C/PG, money/recovery,
+cross-operation, sanitizer/differential, real C onboarding and restore profiles
+all remain passing.
+
+The test proves context advancement, not yet a second completed write within
+that context. Multi-character routing, repeated-save/release orchestration,
+actual disconnect/recovery ownership, and authenticated live admission still
+need integration before production authority cutover. No push, deployment,
+production grant or Actions execution.
+
 ## Native per-character PlayerStore baseline — 2026-09-08
 
 Source `ed782c9` adds a caller-owned per-character/load/command adapter using
