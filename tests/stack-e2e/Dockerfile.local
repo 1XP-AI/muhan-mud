@@ -1,0 +1,15 @@
+FROM rust:1.90-bookworm AS rust
+FROM node:22-bookworm
+COPY --from=rust /usr/local/cargo /usr/local/cargo
+COPY --from=rust /usr/local/rustup /usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpq-dev postgresql-client python3 && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@10.15.1
+WORKDIR /repo
+# Build context must be a frozen Git archive, never the developer checkout.
+COPY . .
+RUN pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+RUN make -B -C src -j2 CC=gcc USE_M3_RUNTIME=1 PG_CONFIG=pg_config OUTFILE=/usr/local/bin/muhan-stack-frp > /tmp/c-build.log 2>&1 || (tail -80 /tmp/c-build.log && exit 1)
+RUN cargo build --locked --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_normalized_project
+ENV NEXT_TELEMETRY_DISABLED=1
+ENTRYPOINT ["bash", "/repo/tests/stack-e2e/run-local-container.sh"]

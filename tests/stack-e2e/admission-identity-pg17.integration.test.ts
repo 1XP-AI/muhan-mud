@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { sql } from './sql-transport.js'
 import test from 'node:test'
 import fixture from '../fixtures/admission_identity_conformance_v1.json' with { type: 'json' }
 import { loadConfig } from '../../services/gateway/src/config.js'
@@ -10,21 +9,10 @@ import {
   SupabaseEvidenceFinalizerTransport,
 } from '../../services/gateway/src/evidence-finalizer.js'
 
-const run = promisify(execFile)
 const disposable = process.env.ADMISSION_IDENTITY_PG17_ALLOW_DISPOSABLE === '1'
 const rejectedCorrelation = '123e4567-e89b-12d3-a456-426614174003'
 const rejectedCharacter = '123e4567-e89b-12d3-a456-426614174004'
 const rejectedWorld = 'muhan-rejected-evidence'
-
-async function sql(query: string): Promise<string> {
-  const container = process.env.STACK_E2E_PG_CONTAINER
-  assert.ok(container, 'admission identity PG17 integration requires the runner-owned PostgreSQL container')
-  const result = await run('docker', [
-    'exec', container, 'psql', '-U', 'postgres', '-d', 'stack_e2e',
-    '-At', '-v', 'ON_ERROR_STOP=1', '-c', query,
-  ], { maxBuffer: 1024 * 1024 })
-  return result.stdout.trim()
-}
 
 function evidence(sha256 = fixture.playerFileSha256) {
   return {

@@ -25,6 +25,7 @@ import {
 import { cleanupFailure, runCleanupSteps } from './lifecycle.js'
 import { assertOnboardingNormalizedSnapshot } from './normalized-snapshot-check.js'
 import { parseManifest } from '../../services/m4-file-snapshot-manifest-relay/src/manifest.js'
+import { sql } from './sql-transport.js'
 import { parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../../services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-artifact.js'
 
 const run = promisify(execFile)
@@ -98,11 +99,6 @@ async function raceWithTimeout<T>(operation: Promise<T>, timeoutMs: number): Pro
   } finally {
     if (timer) clearTimeout(timer)
   }
-}
-
-async function sql(query: string): Promise<string> {
-  const result = await run('docker', ['exec', process.env.STACK_E2E_PG_CONTAINER!, 'psql', '-U', 'postgres', '-d', 'stack_e2e', '-At', '-v', 'ON_ERROR_STOP=1', '-c', query], { maxBuffer: 1024 * 1024 })
-  return result.stdout.trim()
 }
 
 async function choosePort(): Promise<number> {
