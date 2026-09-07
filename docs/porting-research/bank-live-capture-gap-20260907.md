@@ -56,3 +56,25 @@ The local runner now includes it so the gap remains visible.
    characterized above. Only then enable a versioned DB-authority gate.
 
 No live capture hook, authority switch or deployment was added by this audit.
+
+## Detached transfer planner implemented
+
+Rust `bank_transfer_v1::plan_money_transfer` now accepts full player and bank
+snapshots and an explicit positive amount. It validates both schemas, checks
+funds, nonnegative balances, the existing 300-million deposit ceiling and i64
+overflow before returning two owned proposed snapshots. Only player gold and
+bank root value change; nested objects and other fields remain identical.
+The input snapshots are never mutated. Zero or negative amounts are rejected;
+this intentionally does not preserve the legacy empty "all" transfer behavior.
+
+TDD: tests first failed with the missing module, then all three new integration
+tests passed. They cover both directions, rejected conditions, exact other-field
+preservation and a deterministic balance/amount matrix of deposit/withdraw
+roundtrips. Full default Rust crate tests passed on Linux ARM64 in local Docker:
+`/tmp/muhan-bank-transfer-rust.log` (exit 0).
+
+This is the calculation stage, not an atomic persistence implementation. It
+does not authenticate the actor or bind revisions, world/character identity,
+command replay or writer epoch. The future transaction must perform those
+checks and compare both input versions before publishing either output.
+Live command integration and C/Rust command-level differential tests remain.
