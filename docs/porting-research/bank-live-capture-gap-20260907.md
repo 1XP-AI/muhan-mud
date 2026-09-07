@@ -1,5 +1,36 @@
 # Live bank capture and transaction gap
 
+## Finish older frozen requests independently of gameplay — 2026-09-08
+
+Source `7ee9ba4` adds `player_session_store_finish_pending`: validate the next
+command, decode the exact retained pending payload into an owned clone,
+recognize an already verified release when possible, retry an unconfirmed
+request using only that clone, then perform native release and adoption.
+The caller retains exclusive ownership of newer gameplay and must save it
+under the next command after success. No newer live player is passed to this
+API, and no pending payload is replaced by newer state.
+
+The C/PG fixture sets Peerhero's newer in-memory gold to 202 while the retained
+request represents 201, resets acknowledgement status to UNKNOWN, and finishes
+the old request. It requires the newer creature/equipment graph to remain
+unchanged, the context to advance to revision 1 and a new command with no
+pending payload, and eventual registry removal to succeed. The independent
+Node parent still requires DB gold 201, revision 1, the full equipment-derived
+payload, and exactly one immutable intent. This is an exact-retry case, not a
+new first commit or a real socket disconnect.
+
+The RED compile ran in the retained Linux image (the host lacked libpq
+headers). Startup reconstruction of a context whose release record exists but
+whose acknowledgement is unknown is not implemented here. This is not a
+restart loader, writer takeover coordinator, or automatic disconnect hook;
+the real uninit/update integration and saving the newer exit state remain.
+
+Frozen source `7ee9ba4` completed the full isolated Linux ARM64 runner with
+exit 0 observed through process handle 86799; evidence is
+`/tmp/muhan-finish-pending.log`. Existing native DB, C/Rust differential,
+sanitizer, C onboarding and legacy backup/restore profiles passed. This
+provides no production cutover or complete new-ledger disaster-recovery proof.
+
 ## Executable disconnect persistence boundary — 2026-09-08
 
 Source `64e04d1` extracts the existing io.c disconnect persistence block into
