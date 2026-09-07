@@ -41,7 +41,8 @@ static int bytes_at(int directory_fd, const char *name, const void *bytes, size_
 {
     int fd; const char *cursor; ssize_t amount;
     fd = openat(directory_fd, name, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, mode);
-    if(fd < 0) return -1; cursor = (const char *)bytes;
+    if(fd < 0) return -1;
+    cursor = (const char *)bytes;
     while(length) { amount = write(fd, cursor, length); if(amount <= 0) { close(fd); return -1; } cursor += amount; length -= (size_t)amount; }
     return close(fd);
 }
