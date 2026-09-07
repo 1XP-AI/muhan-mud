@@ -29,7 +29,8 @@ trap 'exit 143' TERM
 git -C "$root" archive HEAD | tar -x -C "$scratch"
 # Only committed sources are tested; no working-tree files are copied.
 git -C "$root" rev-parse HEAD
-docker build -t "$id:local" -f "$scratch/tests/stack-e2e/Dockerfile.local" "$scratch"
+# Explicit local Docker driver, regardless of the user's selected cloud builder.
+docker buildx build --builder default --load -t "$id:local" -f "$scratch/tests/stack-e2e/Dockerfile.local" "$scratch"
 docker network create --internal "$network" >/dev/null
 network_created=1
 docker create --name "$pg" --network "$network" --tmpfs /var/lib/postgresql/data:rw,size=512m -e POSTGRES_PASSWORD=stack-e2e-postgres-password -e POSTGRES_DB=stack_e2e postgres:17-alpine >/dev/null
