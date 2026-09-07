@@ -6,6 +6,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { test } from 'node:test'
 import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
 import { projectPlayerSnapshotV1Normalized, type PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
+import { comparePlayerSnapshotV1NormalizedProjectionShadow } from '../src/player-snapshot-v1-normalized-projection-shadow-comparator.js'
+import { parsePlayerSnapshotV1ArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
 
 const commandId = '11111111-1111-4111-8111-111111111111'
 const characterId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -76,4 +78,23 @@ test('hermetic C -> Rust -> Node bridge preserves the checked-in tree projection
   assert.deepEqual(persisted, [{
     characterId, commandId, receiptRequestSha256: requestSha256, sourcePostSha256, sourceOctets: '128', projection: parsed,
   }], 'the actual relay persists the exact Node-parsed Rust projection and only receipt-bound metadata')
+})
+
+test('hermetic post-save shadow proof binds the C artifact projection to one injected normalized record', async () => {
+  const runnerPath = process.env.M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER
+  assert.ok(runnerPath && isAbsolute(runnerPath), 'bridge runner supplies the real Rust projection binary')
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const derived = await projectPlayerSnapshotV1Normalized(payload, { runnerPath, snapshotSha256 })
+  const evidence = parsePlayerSnapshotV1ArtifactEvidence(artifact(payload, snapshotSha256))
+  const record = {
+    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: requestSha256,
+    writerInstanceId: evidence.writerInstanceId, writerEpoch: evidence.writerEpoch, writerRevision: evidence.writerRevision,
+    sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: payload.length, projection: derived,
+  }
+  assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(evidence, {
+    findByCommandId: async () => [record],
+  }, {
+    project: (receivedPayload, receivedSha256) => projectPlayerSnapshotV1Normalized(receivedPayload, { runnerPath, snapshotSha256: receivedSha256 }),
+  }), 'MATCH')
 })
