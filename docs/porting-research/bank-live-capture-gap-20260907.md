@@ -254,6 +254,33 @@ deployments were performed. Next live-transition prerequisites remain an
 audited consistent player/bank baseline, a single runtime authority choice,
 and actual command wiring with restart/differential verification.
 
+### Receipt-bound baseline enrollment
+
+Migration 210 now enrolls both payloads into paired revision zero from one
+existing character/command receipt. It locks the character and current legacy
+head, checks world/name/storage, request hash, writer epoch/revision and source
+hash/size across player and bank evidence, and checks the embedded player name
+against the canonical character name. An immutable baseline ledger references
+both source artifacts and records their digests. Existing untracked paired
+state is not adopted. A matching retry never resets an advanced pair.
+
+Source `29ef0ce` passed the full local Linux replay runner, including both
+backup/restore profiles: `/tmp/muhan-paired-baseline-rollback.log` (exit 0).
+The contract fails before the migration, then passes after two applications.
+Wrong request, missing command and stale head reject enrollment. An injected
+failure on the final baseline-ledger insert rolls back the pair insert too.
+Successful enrollment compares both complete byte payloads to source evidence;
+retry preserves a deliberately advanced test revision. Runtime grants remain
+absent. The fixture uses a separate identity namespace after the first run
+exposed a collision with intentionally inconsistent historical reader fixtures.
+
+This is an internal enrollment prerequisite, NOT proof that separate legacy
+files were captured atomically or that live writes have stopped. No production
+grant or authority switch is enabled. Live activation still requires a bounded
+quiescence/capture protocol, exclusive runtime authority, and command integration
+with restart tests. This turn's backup checks retain their existing scope; they
+do not yet exercise restoration of an enrolled baseline ledger.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
