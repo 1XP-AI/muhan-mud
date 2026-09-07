@@ -105,11 +105,13 @@ try {
     } finally { await db.query('rollback') }
   }
   const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
-  const nativeCommit=(args,overrideAuthority=authority,options='')=>{
+  const nativeCommit=(args,overrideAuthority=authority,options='',pendingRoot='')=>{
     const lengths=Buffer.alloc(8); lengths.writeUInt32BE(args[5].length); lengths.writeUInt32BE(args[6].length,4)
     return spawnSync(process.env.BANK_TRANSFER_NATIVE_COMMIT,[args[0],...overrideAuthority,...args.slice(1,5)].map(String),{
       input:Buffer.concat([lengths,args[5],args[6]]),timeout:5000,maxBuffer:1024,
       env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
+        BANK_TRANSFER_PENDING_ROOT:pendingRoot,BANK_TRANSFER_PENDING_NODE:process.execPath,
+        BANK_TRANSFER_PENDING_CLI:new URL('../dist/money-pending-prepare-cli.js',import.meta.url).pathname,
         ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
     })
   }
@@ -296,11 +298,28 @@ try {
         console.log('GREEN durable pending request survives sender exit; fresh process recovers exact retry and rejects corruption')
         console.log('GREEN commit durable while native acknowledgement is lost: UNKNOWN, then same-command reconnect retry')
       }
-      for(const expected of [index===0?'EXACT_RETRY':'COMMITTED','EXACT_RETRY']) {
-        const result=nativeCommit(args)
-        assert.equal(result.status,0,result.stderr.toString())
-        assert.equal(result.stdout.toString(),`${expected} ${index+1}\n`)
-      }
+      const nativePending=await mkdtemp(join(tmpdir(),'muhan-native-pending-'))
+      try {
+        const unchanged=await read()
+        const refused=nativeCommit(args,authority,'',join(nativePending,'missing'))
+        assert.equal(refused.status,4,refused.stderr.toString()); assert.equal(refused.stdout.length,0)
+        assert.deepEqual(await read(),unchanged)
+        for(const expected of [index===0?'EXACT_RETRY':'COMMITTED','EXACT_RETRY']) {
+          const result=nativeCommit(args,authority,'',nativePending)
+          assert.equal(result.status,0,result.stderr.toString())
+          assert.equal(result.stdout.toString(),`${expected} ${index+1}\n`)
+        }
+        const saved=await readMoneyPending(nativePending,args[1])
+        assert.deepEqual(saved.args,[id,...authority,...args.slice(1,5)].map(String))
+        const pl=saved.frame.readUInt32BE(0)
+        assert.deepEqual(saved.frame.subarray(8,8+pl),p); assert.deepEqual(saved.frame.subarray(8+pl),b)
+        const afterCommit=await read()
+        const conflict=nativeCommit([...args.slice(0,4),26,p,b],authority,'',nativePending)
+        assert.equal(conflict.status,4); assert.equal(conflict.stdout.length,0)
+        assert.deepEqual(await read(),afterCommit)
+        assert.deepEqual(await readMoneyPending(nativePending,args[1]),saved)
+        console.log('GREEN native commit requires durable preparation; missing directory/conflict never reaches commit')
+      } finally { await rm(nativePending,{recursive:true,force:true}) }
     } else {
       assert.equal((await execute(args)).rows[0].outcome,'COMMITTED')
       assert.equal((await execute(args)).rows[0].outcome,'EXACT_RETRY')

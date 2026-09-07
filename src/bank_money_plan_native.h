@@ -8,4 +8,6 @@
  * Synchronous deadline-bounded child exchange; no game mutation.
  * Failure publishes no output. Caller frees a successful output. */
 int bank_money_plan_native(const char *,const char *const [4],const unsigned char *,size_t,int,unsigned char **,size_t *);
+/* Internal framed subprocess exchange; used by the durable preparation helper. */
+int bank_money_process_native(const char *,const char *const *,int,const unsigned char *,size_t,int,unsigned char **,size_t *);
 #endif

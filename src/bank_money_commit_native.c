@@ -1,5 +1,6 @@
 #include "bank_money_commit_native.h"
 #include "bank_money_pg_exchange.h"
+#include "bank_money_plan_native.h"
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -45,4 +46,18 @@ int bank_money_commit_native(void *connection,const char *const text[11],const u
     if(status>0) *revision=parsed;
 done:
     PQclear(result); return status;
+}
+int bank_money_commit_prepared_native(void *connection,const char *node,const char *script,const char *root,
+    const char *const values[11],const unsigned char *frame,size_t length,int timeout_ms,uint64_t *revision)
+{
+    const char *args[14]; unsigned char *echo=NULL; size_t echoed=0; int i,result;
+    if(!revision) return BANK_MONEY_COMMIT_INVALID;
+    *revision=0;
+    if(!node||!script||script[0]!='/'||!root||root[0]!='/'||!values) return BANK_MONEY_COMMIT_NOT_SENT;
+    args[0]=script; args[1]="--prepare"; args[2]=root;
+    for(i=0;i<11;i++) args[i+3]=values[i];
+    result=bank_money_process_native(node,args,14,frame,length,timeout_ms,&echo,&echoed);
+    if(result||echoed!=length||!echo||memcmp(echo,frame,length)) { free(echo); return BANK_MONEY_COMMIT_NOT_SENT; }
+    free(echo);
+    return bank_money_commit_native(connection,values,frame,length,timeout_ms,revision);
 }

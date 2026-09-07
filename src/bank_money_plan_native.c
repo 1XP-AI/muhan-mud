@@ -28,12 +28,12 @@ static int frame_valid(const unsigned char *p,size_t n)
     a=get32(p); b=get32(p+4);
     return a>=48&&a<=4194304&&b>=55&&b<=4194304&&a+b+8==n;
 }
-int bank_money_plan_native(const char *path,const char *const args[4],const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
+int bank_money_process_native(const char *path,const char *const *args,int count,const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
 {
     int in[2]={-1,-1},output[2]={-1,-1},i,status=0,exited=0,eof=0,result=-1,actions_ready=0;
     pid_t pid=-1,waited;
     posix_spawn_file_actions_t actions;
-    char *argv[6],*env[]={"LANG=C.UTF-8",NULL};
+    char *argv[18],*env[]={"LANG=C.UTF-8",NULL};
     unsigned char *bytes=NULL;
     size_t sent=0,used=0;
     ssize_t n;
@@ -41,10 +41,10 @@ int bank_money_plan_native(const char *path,const char *const args[4],const unsi
     struct pollfd fds[2];
     if(out) *out=NULL;
     if(out_length) *out_length=0;
-    if(!out||!out_length||!path||path[0]!='/'||!args||!frame_valid(input,length)||timeout_ms<1||timeout_ms>10000) return -1;
+    if(!out||!out_length||!path||path[0]!='/'||!args||count<1||count>16||!frame_valid(input,length)||timeout_ms<1||timeout_ms>10000) return -1;
     for(i=0;i<3;i++) if(fcntl(i,F_GETFD)<0) return -1;
-    argv[0]=(char *)path; argv[5]=NULL;
-    for(i=0;i<4;i++) { if(!args[i]) return -1; argv[i+1]=(char *)args[i]; }
+    argv[0]=(char *)path; argv[count+1]=NULL;
+    for(i=0;i<count;i++) { if(!args[i]) return -1; argv[i+1]=(char *)args[i]; }
     now=clock_ms(); if(now<0) return -1; deadline=now+timeout_ms;
     bytes=(unsigned char *)malloc(FRAME_MAX+1); if(!bytes) goto done;
     if(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,in)||socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,output)) goto done;
@@ -88,3 +88,5 @@ done:
     if(pid>0&&!exited) { kill(pid,SIGKILL); while(waitpid(pid,&status,0)<0&&errno==EINTR) {} }
     free(bytes); return result;
 }
+int bank_money_plan_native(const char *path,const char *const args[4],const unsigned char *input,size_t length,int timeout_ms,unsigned char **out,size_t *out_length)
+{ return bank_money_process_native(path,args,4,input,length,timeout_ms,out,out_length); }

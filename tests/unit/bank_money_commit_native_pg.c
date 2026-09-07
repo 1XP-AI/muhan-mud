@@ -16,11 +16,14 @@ int main(int argc,char **argv)
     role=PQexec(c,"set role mud_writer");
     if(PQresultStatus(role)!=PGRES_COMMAND_OK) { free(frame); PQclear(role); PQfinish(c); return 2; }
     PQclear(role);
-    status=bank_money_commit_native(c,(const char *const *)(argv+1),frame,length,2000,&revision);
+    if(getenv("BANK_TRANSFER_PENDING_ROOT") && getenv("BANK_TRANSFER_PENDING_ROOT")[0])
+      status=bank_money_commit_prepared_native(c,getenv("BANK_TRANSFER_PENDING_NODE"),getenv("BANK_TRANSFER_PENDING_CLI"),getenv("BANK_TRANSFER_PENDING_ROOT"),
+        (const char *const *)(argv+1),frame,length,2000,&revision);
+    else status=bank_money_commit_native(c,(const char *const *)(argv+1),frame,length,2000,&revision);
     free(frame); PQfinish(c);
     if(status==BANK_MONEY_COMMIT_CONFIRMED||status==BANK_MONEY_COMMIT_RETRY) {
         printf("%s %llu\n",status==BANK_MONEY_COMMIT_CONFIRMED?"COMMITTED":"EXACT_RETRY",(unsigned long long)revision);
         return 0;
     }
-    return status==BANK_MONEY_COMMIT_REJECTED?1:status==BANK_MONEY_COMMIT_UNKNOWN?3:2;
+    return status==BANK_MONEY_COMMIT_REJECTED?1:status==BANK_MONEY_COMMIT_UNKNOWN?3:status==BANK_MONEY_COMMIT_NOT_SENT?4:2;
 }
