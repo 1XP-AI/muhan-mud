@@ -486,6 +486,32 @@ after complete service restart, expired-authority reconciliation, or wiring
 into live C command handling. The existing legacy journal was not reused
 because it encodes legacy-file promotion rather than a two-payload DB command.
 
+### Reconciliation after old authority expires
+
+Migration 230 adds a read-only reconciliation RPC. It requires the actual
+writer login, a current unsealed/unexpired recovery writer lease and unchanged
+active character ownership. It compares the complete original authority tuple,
+command, expected revision, direction, amount and both proposed byte payloads
+against immutable command/intent/authority records. Matching history returns
+CONFIRMED with its original committed revision; missing history is UNRESOLVED,
+not permission to issue a new command. The function never refreshes the old
+session, replays a write or mutates player/bank data. Production grants stay off.
+
+Source `8bde360` passed the full local runner, exit 0:
+`/tmp/muhan-money-reconcile.log`. After both money operations the test expires
+the old session, seals/expires writer epoch one and acquires epoch two for a
+successor. Old commit replay now fails, while the successor can confirm the
+exact epoch-one deposit. Changed original session/amount/actor and wrong recovery
+epoch are rejected; a missing command remains UNRESOLVED. Calling as admin
+fails the login check. Snapshot revision/bytes and the two intent rows remain
+unchanged. The disposable recovery grant is revoked and verified absent.
+
+This is historical confirmation, NOT current wallet state: a confirmed revision
+one may coexist with current revision two, and must not overwrite live memory.
+The native recovery transport and restarted coordinator still need to consume
+this result, drain durable requests and obtain current state under a fresh
+game session before resuming commands. Live authority remains disabled.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
