@@ -1,5 +1,33 @@
 # Live bank capture and transaction gap
 
+## Persist newer equipped state after finishing the old request — 2026-09-08
+
+RED source `e966f11` strengthens the independent Node DB checks to require
+Peerhero revision 2 and gold 202, both durable resolved requests, the next
+request's baseline revision/hash, and exactly two immutable intents. The
+frozen local runner exited 1 at the intended assertion (actual revision 1,
+expected 2), evidence `/tmp/muhan-newer-save-red.log`.
+
+Source `763c5b7` extends the actual C savegame fixture after finishing the
+older frozen request: save the preserved newer equipped state under the new
+command, require COMMITTED revision 2 and EXACT_RETRY, refuse registry removal
+while pending, then finish/release/adopt to revision 2. The original live
+creature and equipment graph must remain unchanged. The independent parent
+checks the old payload remains gold 201, the newer payload is gold 202 with
+the same equipment bytes, bank bytes are unchanged, and a Rust deposit plan
+preserves that full newer payload except for the intended gold change.
+
+This closes the two-request save sequence in the native fixture, not the full
+runtime disconnect integration. The newer state is explicitly mutated by the
+fixture; real uninit/update execution, owned queued exit-state orchestration,
+startup recovery and production login installation remain outstanding.
+
+GREEN frozen source `763c5b7` completed the full isolated Linux ARM64 runner
+with exit 0 observed through process handle 57930; evidence
+`/tmp/muhan-newer-save-green.log`. Existing C/Rust differential, native DB,
+sanitizer, onboarding and legacy restore profiles also passed. No push,
+Actions execution, deployment or production authority switch was performed.
+
 ## Finish older frozen requests independently of gameplay — 2026-09-08
 
 Source `7ee9ba4` adds `player_session_store_finish_pending`: validate the next
