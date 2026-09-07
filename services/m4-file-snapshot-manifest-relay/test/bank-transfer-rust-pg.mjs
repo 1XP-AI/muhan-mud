@@ -126,6 +126,17 @@ try {
       assert.equal(native.stdout.length,8+pl+bl)
       input={...before,player_payload:native.stdout.subarray(8,8+pl),bank_payload:native.stdout.subarray(8+pl)}
       assert.deepEqual(input,before)
+      if(index===0) {
+        const start=Date.now()
+        const stalled=spawnSync(process.env.BANK_TRANSFER_NATIVE_PLANNER,[direction,'25',before.player_hash,before.bank_hash],{
+          input:native.stdout,timeout:5000,maxBuffer:8192,
+          env:{...process.env,BANK_TRANSFER_PLANNER:process.env.BANK_TRANSFER_STALLED_PLANNER},
+        })
+        assert.equal(stalled.status,1,stalled.stderr.toString()); assert.equal(stalled.stdout.length,0)
+        assert.ok(Date.now()-start>=1500 && Date.now()-start<4500)
+        assert.deepEqual(await read(),before)
+        console.log('GREEN native Rust bridge terminates and reaps a stalled child before watchdog without output or DB mutation')
+      }
     }
     for(const negative of [planned(input,direction,25,true),planned(input,direction,999999)]) {
       assert.equal(negative.status,1); assert.equal(negative.stdout.length,0)

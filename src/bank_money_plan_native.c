@@ -52,8 +52,7 @@ int bank_money_plan_native(const char *path,const char *const args[4],const unsi
     actions_ready=1;
     if(posix_spawn_file_actions_adddup2(&actions,in[1],0)||posix_spawn_file_actions_adddup2(&actions,output[1],1)
        ||posix_spawn_file_actions_addopen(&actions,2,"/dev/null",O_WRONLY,0)
-       ||posix_spawn_file_actions_addclose(&actions,in[0])||posix_spawn_file_actions_addclose(&actions,output[0])
-       ||posix_spawn_file_actions_addclose(&actions,in[1])||posix_spawn_file_actions_addclose(&actions,output[1])) goto done;
+       ||posix_spawn_file_actions_addclosefrom_np(&actions,3)) goto done;
     if(posix_spawn(&pid,path,&actions,NULL,argv,env)) { pid=-1; goto done; }
     close(in[1]); in[1]=-1; close(output[1]); output[1]=-1;
     if(fcntl(in[0],F_SETFL,O_NONBLOCK)||fcntl(output[0],F_SETFL,O_NONBLOCK)) goto done;
@@ -73,7 +72,7 @@ int bank_money_plan_native(const char *path,const char *const args[4],const unsi
         if(!exited) {
             waited=waitpid(pid,&status,WNOHANG);
             if(waited==pid) exited=1;
-            else if(waited<0&&errno!=EINTR) goto done;
+            else if(waited<0&&errno!=EINTR) { if(errno==ECHILD) pid=-1; goto done; }
         }
         if(exited&&eof) break;
         fds[0].fd=sent<length?in[0]:-1; fds[0].events=POLLOUT; fds[0].revents=0;
