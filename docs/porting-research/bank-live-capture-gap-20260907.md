@@ -1,5 +1,28 @@
 # Live bank capture and transaction gap
 
+## Wallet application arithmetic guard — 2026-09-07
+
+Source `7e40787` strengthens the actual compile-gated bank command dispatcher:
+capture the source wallet, require it to remain unchanged during the callback,
+and require the returned wallet to equal source minus/plus the confirmed amount.
+Check long bounds before arithmetic; reject impossible negative inferred bank
+source on deposit and overflowing inferred bank source on withdrawal. Invalid
+results leave acknowledgement zero and do not overwrite the current wallet.
+An intervening callback mutation is preserved, not rolled back blindly.
+
+Test-first actual-bank harness failed on an inconsistent acknowledgement before
+the fix. Both directions now reject wrong wallet, LONG_MAX amount, intervening
+wallet change and impossible bank result. Normal confirmations and legacy
+selection still pass; selected failures never enter FileStore. Native macOS
+ASan/UBSan passed. Full frozen Linux ARM64 suite at `7e40787` exited 0:
+`/tmp/muhan-bank-route-apply.log`, including real PG, C onboarding and both restore
+profiles. No production enablement, deployment or Actions execution.
+
+This guard is necessary but not sufficient: the callback must still establish
+DB identity/revision, bank provenance and current-source binding. Historical
+retry acknowledgement is not permission to apply old balances. Runtime callback
+installation, durable pending fences and all other save-path control remain open.
+
 ## Normalized live-state equality before bank commit — 2026-09-07
 
 Source `15aed9c`, with fixture correction `e04da36`, captures the live player
