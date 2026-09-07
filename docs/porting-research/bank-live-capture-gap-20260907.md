@@ -512,6 +512,31 @@ The native recovery transport and restarted coordinator still need to consume
 this result, drain durable requests and obtain current state under a fresh
 game session before resuming commands. Live authority remains disabled.
 
+### Fresh coordinator request discovery and reconciliation
+
+Source `a37621b` adds an explicitly enabled, single-pass recovery CLI. It opens
+the private pending directory by capability, discovers request files without
+receiving command identifiers, validates and processes one request at a time,
+and calls only the read-only reconciliation RPC under the configured current
+writer lease. Connection/query/server-lock deadlines are explicit. Reports
+contain counts only: confirmed, unresolved, invalid, errors and truncation.
+Discovery stops after 1000 directory entries and reports truncation rather
+than claiming a full scan. Requests are never replayed, deleted or rewritten.
+
+The real PostgreSQL integration starts this CLI as a fresh process after the
+old session/epoch are expired and a successor holds epoch two. A directory
+with one historical request confirms successfully. Adding a missing command
+and a corrupted record produces one confirmed, one unresolved and one invalid;
+two fresh invocations return the same report, preserve every file byte and
+leave the paired state and intent count unchanged. No old authority tuple or
+frame is passed to these processes outside the durable records.
+
+Full local runner passed exit 0: `/tmp/muhan-money-recovery-startup.log`.
+This is an executable recovery entrypoint, not an installed startup service.
+Confirmed-request acknowledgement/retention, paginated draining, live C
+coordinator installation, current-session state refresh and legacy write
+fencing remain. No K8s deployment, production grant or CI run was performed.
+
 ## Actual C / Rust command differential verified
 
 Source `7db0146` extends the C characterization harness with a bounded numeric
