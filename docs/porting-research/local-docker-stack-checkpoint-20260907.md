@@ -1,5 +1,34 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: frozen local full-stack acceptance GREEN (32/32)
+
+`ad8f9de` frozen local Docker run passes all 32 tests, zero failures/skips.
+Evidence: `/tmp/muhan-local-stack.HlCO2e/result.json` (`status=passed`), console
+`/tmp/muhan-local-evidence-stack.log`; main real-stack case took 16.1 seconds.
+All owned containers/network were cleaned; Docker container listing is empty.
+
+The remaining ENOENT was a test-contract mismatch: onboarding_receipt.h
+defines the correlation receipt for provision only; command1.c's claim path
+instead persists the command-keyed onboarding activation binding shared by
+both modes. The new helper requires that binding's exact actor, correlation,
+character, mode and command for both flows and retains the separate receipt
+requirement for provision. RED reproduced the claim receipt mismatch; all
+eight local-evidence tests then pass, including substitution/missing-file
+denials. No production receipt was fabricated and no missing-file fallback
+was introduced. TypeScript and diff checks pass.
+
+Verified real paths include: imported account provenance, web provision and
+claim, roster reselection, real C health output, duplicate-session rejection,
+SIGTERM/SIGKILL recovery, exact claim-only bytes, bounded post-game preservation,
+latest DB head/receipt match, bound-before-save chronological proof, immutable
+M3/M4 artifacts and fulfillment, normalized Rust/Postgres comparison, exact
+retries and cross-command substitution rejection.
+
+This closes the **local disposable stack gate**, not the entire porting goal.
+Auth remains deterministic test responses; actual self-hosted Supabase Auth,
+testnet deployment/cutover and remaining persistence/Rust-port milestones
+still require their own evidence. No push, hosted CI, or deployment occurred.
+
 ## Latest: activation ordering fixed; DB fulfillment passes, local receipt path next
 
 Fresh frozen `65a5bf1` run `/tmp/muhan-local-stack.PlL3mK/result.json`, console
