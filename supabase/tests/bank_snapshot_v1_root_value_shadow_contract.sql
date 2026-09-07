@@ -17,7 +17,8 @@ set local session authorization mud_writer_login;
 set local role mud_writer;
 select pg_temp.expect_state('P0001',format('select outcome from private.record_bank_snapshot_v1_root_value_shadow_for_receipt(%L::uuid,%L::uuid,%L,%L,9,%L,48,-1)', 'a9070000-0000-0000-0000-000000000001','c9070000-0000-0000-0000-000000000001',:'bsv_request_sha256',repeat('a',64),repeat('b',64)));
 select pg_temp.assert_true((select outcome='RECORDED' from private.record_m4_file_snapshot_manifest_for_receipt('a9070000-0000-0000-0000-000000000001'::uuid,'c9070000-0000-0000-0000-000000000001'::uuid,:'bsv_request_sha256','legacy-file-manifest-v1',repeat('a',64),9)),'matching M4 manifest settles before root-value evidence');
-create or replace function pg_temp.record_root(p_value bigint) returns text language sql as $$ select outcome from private.record_bank_snapshot_v1_root_value_shadow_for_receipt('a9070000-0000-0000-0000-000000000001'::uuid,'c9070000-0000-0000-0000-000000000001'::uuid,:'bsv_request_sha256',repeat('a',64),9,repeat('b',64),48,p_value) $$;
+-- Bind the psql variable before entering the dollar-quoted function body.
+create or replace function pg_temp.record_root(p_value bigint, p_request_sha256 text default :'bsv_request_sha256') returns text language sql as $$ select outcome from private.record_bank_snapshot_v1_root_value_shadow_for_receipt('a9070000-0000-0000-0000-000000000001'::uuid,'c9070000-0000-0000-0000-000000000001'::uuid,p_request_sha256,repeat('a',64),9,repeat('b',64),48,p_value) $$;
 select pg_temp.assert_true(pg_temp.record_root(-9223372036854775808::bigint)='RECORDED','canonical signed-i64 minimum root value records');
 select pg_temp.assert_true(pg_temp.record_root(-9223372036854775808::bigint)='EXACT_RETRY','same command and value exact-retry without mutation');
 select pg_temp.expect_state('P0001','select pg_temp.record_root(7)');

@@ -19,7 +19,7 @@ set local session authorization mud_writer_login;
 set local role mud_writer;
 select pg_temp.assert_true((select outcome='RECORDED' from private.record_m4_file_snapshot_manifest_for_receipt('a9050000-0000-0000-0000-000000000001'::uuid,'c9050000-0000-0000-0000-000000000001'::uuid,:'bsv_request_sha256','legacy-file-manifest-v1',repeat('a',64),9)),'the valid receipt-bound M4 manifest records before bank topology evidence');
 -- psql expands variables outside dollar-quoted function bodies only.
-create or replace function pg_temp.record_bank_nodes(p_nodes jsonb, p_request_sha256 text default :'bsv_request_sha256') returns text language sql as $$ select outcome from private.record_bank_snapshot_v1_topology_shadow_for_receipt('a9050000-0000-0000-0000-000000000001'::uuid,'c9050000-0000-0000-000000000001'::uuid,p_request_sha256,repeat('a',64),9,repeat('b',64),48,p_nodes) $$;
+create or replace function pg_temp.record_bank_nodes(p_nodes jsonb, p_request_sha256 text default :'bsv_request_sha256') returns text language sql as $$ select outcome from private.record_bank_snapshot_v1_topology_shadow_for_receipt('a9050000-0000-0000-0000-000000000001'::uuid,'c9050000-0000-0000-0000-000000000001'::uuid,p_request_sha256,repeat('a',64),9,repeat('b',64),48,p_nodes) $$;
 
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(null::jsonb)');
 select pg_temp.expect_state('22023','select pg_temp.record_bank_nodes(''[]''::jsonb)');
