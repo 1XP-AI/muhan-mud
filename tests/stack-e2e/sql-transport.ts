@@ -14,11 +14,18 @@ export function sqlCommand(env: NodeJS.ProcessEnv, query: string): [string, stri
   return ['docker', ['exec', env.STACK_E2E_PG_CONTAINER, 'psql', ...args]]
 }
 
+export function sqlEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...source, PGPASSWORD: source.STACK_E2E_PG_PASSWORD, PSQLRC: '/dev/null' }
+  delete env.PGSERVICE
+  delete env.PGSERVICEFILE
+  return env
+}
+
 export async function sql(query: string): Promise<string> {
   const [command, args] = sqlCommand(process.env, query)
   const result = await promisify(execFile)(command, args, {
     maxBuffer: 1024 * 1024,
-    env: { ...process.env, PGPASSWORD: process.env.STACK_E2E_PG_PASSWORD, PGSERVICE: '', PGSERVICEFILE: '/dev/null', PSQLRC: '/dev/null' },
+    env: sqlEnvironment(process.env),
   })
   return result.stdout.trim()
 }

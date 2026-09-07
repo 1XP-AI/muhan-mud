@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { sqlCommand } from './sql-transport.js'
+import { sqlCommand, sqlEnvironment } from './sql-transport.js'
+
+test('psql removes service configuration instead of requesting an empty service', () => {
+  const env = sqlEnvironment({ PGSERVICE: 'external', PGSERVICEFILE: '/external', STACK_E2E_PG_PASSWORD: 'disposable' })
+  assert.equal('PGSERVICE' in env, false)
+  assert.equal('PGSERVICEFILE' in env, false)
+  assert.equal(env.PGPASSWORD, 'disposable')
+})
 
 test('default SQL transport retains runner-owned Docker execution', () => {
   assert.deepEqual(sqlCommand({ STACK_E2E_PG_CONTAINER: 'owned' }, 'select 1').slice(0, 1), ['docker'])

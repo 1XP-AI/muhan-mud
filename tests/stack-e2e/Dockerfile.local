@@ -7,8 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpq-
 RUN npm install -g pnpm@10.15.1
 WORKDIR /repo
 # Build context must be a frozen Git archive, never the developer checkout.
-COPY . .
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json ./web/package.json
+COPY services/gateway/package.json ./services/gateway/package.json
+COPY services/character-inventory-importer/package.json ./services/character-inventory-importer/package.json
+COPY services/m4-file-snapshot-manifest-relay/package.json ./services/m4-file-snapshot-manifest-relay/package.json
+COPY services/onboarding-reconciler/package.json ./services/onboarding-reconciler/package.json
 RUN pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+COPY . .
 RUN make -B -C src -j2 CC=gcc USE_M3_RUNTIME=1 PG_CONFIG=pg_config OUTFILE=/usr/local/bin/muhan-stack-frp > /tmp/c-build.log 2>&1 || (tail -80 /tmp/c-build.log && exit 1)
 RUN cargo build --locked --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_normalized_project
 ENV NEXT_TELEMETRY_DISABLED=1
