@@ -2,6 +2,18 @@
 
 ## Verified result
 
+Independent confirmation at `c077cf9`: another fresh isolated Linux/PG17 run
+exited 0, now without the noisy ERR trap. Log:
+`/tmp/muhan-linux-replay-confirmation.log`.
+
+The relay's supported `pnpm --filter @muhan/m4-file-snapshot-manifest-relay test`
+entrypoint also passed: 159 passed, 0 failed, 5 skipped (164 total), with native
+C oracle and real Rust normalized projector prepared by the bridge harness.
+Log: `/tmp/muhan-relay-supported-regression.log`. A preliminary direct tsx
+invocation omitted this setup and failed three bridge tests; that invocation is
+not the supported full-suite result. The five platform-specific skips are not
+counted as passes. Typecheck and focused digest tests remain green as below.
+
 Source `c6bf3e9` completed the full isolated Linux/PG17 harness with exit 0.
 Log: `/tmp/muhan-linux-replay-digest-fix.log`. Current frozen TypeScript and
 Rust sources were compiled inside the reused Linux test image; PostgreSQL used
