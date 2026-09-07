@@ -642,6 +642,7 @@ async function main(): Promise<void> {
     }
     const actualOnboardingAuthorizer = new SupabaseOnboardingAuthorizer(config, diagnosticFetch)
     let finalizeObservedSaved = false
+    let provisioningDigest: string | undefined
     let completionPhase = 'not-started'
     const onboardingAuthorizer: OnboardingAuthorizer = {
       begin: (request) => actualOnboardingAuthorizer.begin(request),
@@ -652,6 +653,9 @@ async function main(): Promise<void> {
         completionPhase = 'finalize-receipt-check'
         const savedReceipt = await readFile(join(fixture, 'onboarding-receipts', `${request.correlationId}.receipt`), 'utf8')
         assert.match(savedReceipt, /state=saved\n/)
+        provisioningDigest = createHash('sha256').update(await readFile(legacyPlayerPath(canonicalName))).digest('hex')
+        assert.equal(request.fileSha256, provisioningDigest)
+        assert.match(savedReceipt, new RegExp(`saved_file_sha256=${provisioningDigest}\\n`))
         finalizeObservedSaved = true
         completionPhase = 'finalize-rpc'
         const result = await actualOnboardingAuthorizer.finalize(request)
@@ -730,7 +734,15 @@ async function main(): Promise<void> {
     const digest = createHash('sha256').update(await readFile(player)).digest('hex')
     const characterId = await sql(`select character_id from private.game_character_provisioning_requests where correlation_id = '${correlation}'`)
     const state = await sql(`select i.status || '|' || p.status || '|' || c.lifecycle || '|' || p.saved_file_sha256 || '|' || c.owner_user_id || '|' || c.legacy_name || '|' || c.legacy_name_key from private.game_character_onboarding_intents i join private.game_character_provisioning_requests p using (correlation_id) join public.game_characters c on c.id = p.character_id where i.correlation_id = '${correlation}'`)
-    assert.equal(state, `finalized|finalized|active|${digest}|${actor}|Stackhero|Stackhero`)
+    // ACTIVATED performs another explicit save. The immutable onboarding
+    // receipt proves the first generation, not the current mutable file.
+    assert.ok(provisioningDigest)
+    assert.equal(state, `finalized|finalized|active|${provisioningDigest}|${actor}|Stackhero|Stackhero`)
+    const currentHead = await sql(`select head_state || '|' || head_sha256 || '|' || revision from private.game_character_legacy_heads where character_id = '${characterId}'`)
+    const [headState, headDigest, headRevision] = currentHead.split('|')
+    assert.equal(headState, 'existing')
+    assert.equal(headDigest, digest)
+    assert.ok(Number(headRevision) >= 2, 'activation must acknowledge a later save generation')
     await assert.rejects(
       () => new SupabaseOnboardingAuthorizer(config).finalize({ actorUserId: actor, correlationId: correlation, characterId, fileSha256: 'f'.repeat(64), storageFormat: 'player-v1' }),
       /onboarding authorization was refused/
@@ -738,6 +750,7 @@ async function main(): Promise<void> {
     assert.equal(await sql(`select status || '|' || lifecycle from private.game_character_provisioning_requests p join public.game_characters c on c.id = p.character_id where p.correlation_id = '${correlation}'`), 'finalized|active')
     const receipt = await readFile(join(fixture, 'onboarding-receipts', `${correlation}.receipt`), 'utf8')
     assert.match(receipt, /state=committed\n/)
+    assert.match(receipt, new RegExp(`saved_file_sha256=${provisioningDigest}\\n`))
     assert.match(receipt, new RegExp(`canonical_name_hex=${Buffer.from(canonicalName, 'utf8').toString('hex')}\\n`))
     assert.doesNotMatch(receipt, new RegExp(`${password}|${admissionSecret}|${accessToken}`))
     browser.send('건강\n')
