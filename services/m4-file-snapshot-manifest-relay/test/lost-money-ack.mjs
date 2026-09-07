@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {createServer,createConnection} from 'node:net'
 import {spawn} from 'node:child_process'
 
-export async function loseCommittedAck({port,binary,args,input,committed}) {
+export async function loseCommittedAck({port,binary,args,input,committed,pendingRoot}) {
   assert.equal(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE,'1')
   assert.equal(process.platform,'linux')
   assert.ok(/^[1-9][0-9]{0,4}$/.test(String(port)) && Number(port)<=65535)
@@ -36,6 +36,9 @@ export async function loseCommittedAck({port,binary,args,input,committed}) {
     let output='',errors=''
     child=spawn(binary,args.map(String),{
       env:{...process.env,PGPORT:String(proxy.address().port),PGPASSWORD:'bank-local-contract-password',
+        BANK_TRANSFER_PENDING_ROOT:pendingRoot,
+        BANK_TRANSFER_PENDING_NODE:process.execPath,
+        BANK_TRANSFER_PENDING_CLI:new URL('../dist/money-pending-prepare-cli.js',import.meta.url).pathname,
         PGSSLMODE:'disable',PGOPTIONS:'',ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},
       stdio:['pipe','pipe','pipe'],
     })

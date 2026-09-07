@@ -269,18 +269,21 @@ try {
         const pendingArgs=[id,...authority,...args.slice(1,5)].map(String)
         const pendingFrame=Buffer.concat([lengths,p,b])
         try {
-        assert.equal(await prepareMoneyPending(pendingRoot,pendingArgs,pendingFrame),'PREPARED')
-        assert.equal(await prepareMoneyPending(pendingRoot,pendingArgs,pendingFrame),'EXACT_RETRY')
-        const changed=[...pendingArgs]; changed[10]='26'
-        await assert.rejects(prepareMoneyPending(pendingRoot,changed,pendingFrame),/conflict/)
-        assert.deepEqual(await readMoneyPending(pendingRoot,args[1]),{args:pendingArgs,frame:pendingFrame})
+        // No parent-side prepare: the real C sender must durably record its
+        // request before committing, even when it never receives the DB reply.
+        await assert.rejects(readMoneyPending(pendingRoot,args[1]),{code:'ENOENT'})
         await loseCommittedAck({port,binary:process.env.BANK_TRANSFER_NATIVE_COMMIT,
+          pendingRoot,
           args:[id,...authority,...args.slice(1,5)],input:Buffer.concat([lengths,p,b]),
           committed:async()=>{
             const state=await read()
             return state.revision==='1' && state.player_payload.equals(p) && state.bank_payload.equals(b)
           },
         })
+        assert.deepEqual(await readMoneyPending(pendingRoot,args[1]),{args:pendingArgs,frame:pendingFrame})
+        assert.equal(await prepareMoneyPending(pendingRoot,pendingArgs,pendingFrame),'EXACT_RETRY')
+        const changed=[...pendingArgs]; changed[10]='26'
+        await assert.rejects(prepareMoneyPending(pendingRoot,changed,pendingFrame),/conflict/)
         const recover=()=>spawnSync(process.execPath,[new URL('./money-pending-replay.mjs',import.meta.url).pathname,pendingRoot,args[1]],{
           timeout:7000,maxBuffer:8192,
           env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
