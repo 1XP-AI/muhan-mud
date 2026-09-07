@@ -165,3 +165,11 @@ Luna/max의 제한적 독립 정적 점검 `task_1416f14fae81` / `ctx_b7da02f59d
 `normalized-shadow-cli-process.test.mjs`는 실제 로컬 Helm 렌더링의 migration/test manifest를 합성 release JSON에 넣고 실행기를 별도 Node 프로세스로 실행한다. 하위 Helm/kubectl은 임시 디렉터리의 대역만 PATH에 제공하며 사용자 환경/자격증명은 상속하지 않는다. preflight/execute, 기존 Job, revision 변경, 외부 명령 실패, 잘못된 JSON, test 실패, 필수 인자 누락의 8개 분기가 통과했다. 실제 CLI가 계산한 SQL checksum과 chart 출력이 연결됐고 정확한 context/namespace/test filter, 종료 코드·한 줄 출력, 원시 명령 출력 미노출을 검증했다. 임시 fixture는 finally로 정리했다. 실제 클러스터의 release JSON이나 실제 Helm test 실행 증거는 아니다.
 
 전체 데이터 경로를 다시 확인한 결과, normalized DB 저장 구현은 소스 `player-snapshot-v1-artifact-cli.ts`의 별도 opt-in에 이미 있다. 하지만 배포 chart의 artifact relay Job은 `player-snapshot-v1-manifest-first-cli.js`를 실행하고, 이 entrypoint는 현재 manifest/artifact만 저장하며 normalized projector/store를 연결하지 않는다. 따라서 비교 Job만 등록해도 실제 게임 outbox의 normalized 행이 자동으로 생성되는 것은 아니다. 다음 핵심 작업은 이 manifest-first 저장 경로에 검증된 normalized persistence를 연결하고 실제 C receipt-bound outbox → Rust → PostgreSQL → 비교를 E2E로 검증하는 것이다. 별도 기존 artifact CLI와 운영 receipt-bound 입력 형식 호환성부터 확인해야 하며, 기존 게임 파일 권위는 그대로 유지한다.
+
+## manifest-first 정규화 저장 연결
+
+소스 커밋 `9a8dee4`에서 운영 manifest-first relay에 선택적 normalized persistence를 연결했다. 기존 receipt-bound parser/paired filesystem을 그대로 사용해 manifest와 artifact RPC가 RECORDED 또는 EXACT_RETRY로 확정된 뒤에만 Rust projector와 normalized store를 호출한다. 기존 numeric allowlist 재구성 함수를 공유해 projector의 추가 필드는 DB 입력으로 전달하지 않는다. normalized 단계 실패 시 generic error counter와 미전달로 집계하며 앞 단계의 저장 증거는 유지한다. 다음 실행은 선행 exact retry 후 마지막 저장을 다시 시도한다. 전체 delivered/recorded/exactRetry는 마지막 활성 단계가 성공한 쌍만 계산하고 각 단계별 counter는 따로 남긴다.
+
+manifest-first CLI는 `M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED=true`와 절대 경로 `M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_RUNNER`가 있을 때만 이를 연결한다. writer URL 검증과 기존 전용 store를 재사용한다. 잘못된 runner 설정은 base store 생성 전 거부하며 실패 시 두 store 모두 닫는다. 기본 off의 호출과 결과 구조는 유지한다. chart는 아직 이 설정을 제공하지 않으므로 자동 활성화되지 않는다.
+
+선행 실패/부분 전달·exact retry/필드 allowlist/CLI opt-in 및 정리의 테스트 3개를 먼저 실패시킨 후 구현했다. 최초 retry fixture는 기존 분류기에 없는 SQLSTATE 40001을 사용했으므로 기존 정책을 바꾸지 않고 연결 중단 ECONNRESET fixture로 수정했다. 타입 검사·빌드 통과, relay 단위 34 pass/4 기존 skip, 전체 C→Rust→Node bridge 163 tests 중 158 pass/0 fail/5 기존 skip이다. 새 manifest-first normalized 조합을 실제 PostgreSQL에 저장하고 조회하는 E2E는 아직 없다. 다음은 그 E2E와 chart opt-in 연결이며, 정규화 저장이 게임 DB 권위 전환 완료를 의미하지 않는다.
