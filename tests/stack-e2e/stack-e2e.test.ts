@@ -8,6 +8,8 @@ import test from 'node:test'
 import { createRequire } from 'node:module'
 import { assertPostGameClaim, type PostGameLayout } from './post-game-claim-check.js'
 import { readLocalOnboardingEvidence } from './local-onboarding-evidence.js'
+import { createRealAuthFixture } from './real-auth-fixture.js'
+import { SupabaseAuthenticator } from '../../services/gateway/src/auth.js'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { loadConfig } from '../../services/gateway/src/config.js'
@@ -33,8 +35,8 @@ import { parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../../service
 
 const run = promisify(execFile)
 const actor = '11111111-1111-4111-8111-111111111111'
-const webProvisionActor = '88888888-8888-4888-8888-888888888888'
-const webClaimActor = '99999999-9999-4999-8999-999999999999'
+const defaultWebProvisionActor = '88888888-8888-4888-8888-888888888888'
+const defaultWebClaimActor = '99999999-9999-4999-8999-999999999999'
 const cancelledCorrelation = '22222222-2222-4222-8222-222222222222'
 const correlation = '33333333-3333-4333-8333-333333333333'
 const badCorrelation = '55555555-5555-4555-8555-555555555555'
@@ -533,12 +535,18 @@ async function main(): Promise<void> {
     assert.ok(process.env.STACK_E2E_M3_DATABASE_URL, 'runner must provide the M3 writer database URL')
     assert.ok(process.env.STACK_E2E_NORMALIZED_READER_URL, 'runner must provide a dedicated normalized reader')
     assert.ok(process.env.STACK_E2E_NORMALIZED_PROJECTOR, 'runner must build the normalized projector')
-    const webProvisionJwt = browserJwt(webProvisionActor)
-    const webClaimJwt = browserJwt(webClaimActor)
+    let webProvisionActor = defaultWebProvisionActor, webClaimActor = defaultWebClaimActor
+    let webProvisionJwt = browserJwt(webProvisionActor), webClaimJwt = browserJwt(webClaimActor)
+    const realAuthUrl = process.env.STACK_E2E_AUTH_URL
+    if (realAuthUrl) {
+      const provision = await createRealAuthFixture(realAuthUrl, 'web-provision@example.test')
+      const claim = await createRealAuthFixture(realAuthUrl, 'web-claim@example.test')
+      webProvisionActor = provision.userId; webProvisionJwt = provision.accessToken
+      webClaimActor = claim.userId; webClaimJwt = claim.accessToken
+    }
     const authenticatedSubjects = new Map([
       [accessToken, actor],
-      [webProvisionJwt, webProvisionActor],
-      [webClaimJwt, webClaimActor],
+      ...(!realAuthUrl ? [[webProvisionJwt, webProvisionActor], [webClaimJwt, webClaimActor]] as [string, string][] : []),
     ])
     await prepareFixture()
     await sql(`insert into auth.users (id, aud, role, email_confirmed_at) values
@@ -630,10 +638,19 @@ async function main(): Promise<void> {
     const restUrl = process.env.STACK_E2E_REST_URL
     assert.ok(restUrl && !restUrl.endsWith(':0'), 'runner must provide a PostgREST URL')
     config.supabaseInternalRestUrl = restUrl
+    let realAuthVerifications = 0
+    const realAuthenticator = realAuthUrl ? new SupabaseAuthenticator({ ...config,
+      supabaseAuthUrl: realAuthUrl, jwtIssuer: realAuthUrl, supabasePublishableKey: webProvisionJwt,
+    }) : undefined
     const authenticator = {
       verify: async (token: string) => {
         const sub = authenticatedSubjects.get(token)
-        if (!sub) throw new Error('unknown deterministic stack browser token')
+        if (!sub) {
+          assert.ok(realAuthenticator, 'unknown deterministic stack browser token')
+          const identity = await realAuthenticator.verify(token)
+          realAuthVerifications++
+          return identity
+        }
         return { sub, expiresAtMs: Date.now() + 120_000, claims: {} }
       },
     }
@@ -1056,6 +1073,7 @@ async function main(): Promise<void> {
     // an Auth server; every roster read, onboarding frame, C prompt, lifecycle
     // transition, and subsequent ordinary MUD admission is otherwise live.
     web = startWebStackServer({
+      authUrl: realAuthUrl,
       gatewayUrl: `${gateway.address().replace('http:', 'ws:')}/ws`,
       port: webPort,
       root,
@@ -1087,6 +1105,10 @@ async function main(): Promise<void> {
         userId: webClaimActor,
       },
     })
+    if (realAuthUrl) {
+      assert.ok(realAuthVerifications >= 4, 'both real browser accounts must authenticate onboarding and game admission')
+      evidence.events.push({ case: 'real-auth-browser', result: 'GoTrue-password-login-production-Gateway-verifier-PostgREST-owner-identity' })
+    }
     const webProvisionState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where owner_user_id = '${webProvisionActor}'`)
     assert.equal(webProvisionState, `active|${webProvisionActor}|${webProvisionName}`)
     const webClaimState = await sql(`select lifecycle || '|' || owner_user_id || '|' || legacy_name from public.game_characters where id = '${webClaimCharacterId}'`)

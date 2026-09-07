@@ -45,4 +45,4 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 [[ "$schema_ready" == 1 ]] || { echo 'local-stack: PostgREST schema readiness failed' >&2; exit 1; }
-exec pnpm --dir /repo/services/gateway exec tsx --test /repo/tests/stack-e2e/local-onboarding-evidence.test.ts /repo/tests/stack-e2e/post-game-claim-check.test.ts /repo/tests/stack-e2e/admission-identity-pg17.integration.test.ts /repo/tests/stack-e2e/stack-e2e.test.ts
+exec pnpm --dir /repo/services/gateway exec tsx --test /repo/tests/stack-e2e/real-auth-fixture.test.ts /repo/tests/stack-e2e/local-onboarding-evidence.test.ts /repo/tests/stack-e2e/post-game-claim-check.test.ts /repo/tests/stack-e2e/admission-identity-pg17.integration.test.ts /repo/tests/stack-e2e/stack-e2e.test.ts

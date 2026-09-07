@@ -33,6 +33,7 @@ export interface WebStackServer {
   baseUrl: string;
   child: ChildProcess;
   postgrestUrl?: string;
+  authUrl?: string;
 }
 
 interface TimerApi {
@@ -149,12 +150,14 @@ export function startWebStackServer({
   root,
   supabaseUrl,
   supabasePublishableKey,
+  authUrl,
 }: {
   gatewayUrl: string;
   port: number;
   root: string;
   supabaseUrl: string;
   supabasePublishableKey: string;
+  authUrl?: string;
 }): WebStackServer {
   const child = spawn(
     "pnpm",
@@ -181,7 +184,7 @@ export function startWebStackServer({
       process.stderr.write(`stack-e2e: web exited early (${code ?? signal}): ${output.read()}\n`);
     }
   });
-  return { baseUrl: `http://127.0.0.1:${port}`, child, postgrestUrl: supabaseUrl };
+  return { baseUrl: `http://127.0.0.1:${port}`, child, postgrestUrl: supabaseUrl, authUrl };
 }
 
 async function fetchWebStackReadiness(
@@ -303,6 +306,18 @@ async function installAuthBoundary(page: Page, fixture: WebStackFixture, server:
     const response = await route.fetch({ url: upstream.toString() });
     await route.fulfill({ response });
   });
+  if (server.authUrl) {
+    assert.equal(server.authUrl, 'http://127.0.0.1:9999');
+    await page.route(`${server.baseUrl}/auth/v1/**`, async (route) => {
+      const requested = new URL(route.request().url());
+      const upstream = new URL(server.authUrl!);
+      upstream.pathname = requested.pathname.slice('/auth/v1'.length);
+      upstream.search = requested.search;
+      const response = await route.fetch({ url: upstream.toString() });
+      await route.fulfill({ response });
+    });
+    return;
+  }
   const session = {
     access_token: fixture.accessToken,
     token_type: "bearer",
