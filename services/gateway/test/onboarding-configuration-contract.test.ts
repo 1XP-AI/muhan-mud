@@ -73,13 +73,14 @@ test('only the coordinated enabled test configuration exposes create or claim th
 
   const ownerUserId = '11111111-1111-4111-8111-111111111111'
   const characterId = '22222222-2222-4222-8222-222222222222'
+  const activeRoster = [{ id: characterId, lifecycle: 'active' }]
   for (const completion of ['provisioned', 'claimed'] as const) {
     const handoff = completeOnboardingHandoff(ownerUserId, characterId, completion)
     assert.deepEqual(
       resolvePlayAdmission(ownerUserId, 'ready', [{ id: characterId, lifecycle: 'active' }], handoff),
       handoff,
     )
-    assert.equal(shouldOpenGatewaySocket('ready', characterId, [characterId]), true)
+    assert.equal(shouldOpenGatewaySocket('ready', characterId, activeRoster), true)
   }
 })
 
