@@ -618,7 +618,7 @@ cc -std=gnu89 -fcommon -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config -
   -Wl,--gc-sections -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/player_paired_route_native_pg"
 cc -std=gnu89 -fcommon -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --includedir)" \
   -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
-  "$repo_root/src/bank_money_read_native.c" "$repo_root/src/player_snapshot_save_native.c" \
+  "$repo_root/src/bank_money_read_native.c" "$repo_root/src/bank_money_plan_native.c" "$repo_root/src/player_snapshot_save_native.c" \
   "$repo_root/tests/unit/player_snapshot_save_native_pg.c" "${bank_codec_objects[@]}" \
   -Wl,--gc-sections -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/player_snapshot_save_native_pg"
 cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Wall -Wextra -Werror -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \

@@ -6,6 +6,8 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {prepareMoneyPending,readMoneyPending,claimMoneyCharacterFence} from '../dist/money-pending-request.js'
 import {releaseConfirmedMoney} from '../dist/money-pending-release.js'
+import {preparePlayerPending,readPlayerPending} from '../dist/player-pending-request.js'
+import {fileURLToPath} from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { loseCommittedAck } from './lost-money-ack.mjs'
 if(process.env.BANK_PAYLOAD_LOCAL_DISPOSABLE!=='1'||process.platform!=='linux') throw new Error('disposable Linux only')
@@ -113,9 +115,10 @@ try {
       await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[saveId,initial,bank])
       const sql='select * from private.commit_player_snapshot($1,$2,$3,$4,$5,$6,$7,$8,$9)'
       const request=[world,name,writer,'1',saveId,'c9260000-0000-0000-0000-000000000001','0',sha(initial).toString('hex'),changed]
-      const nativeSave=(args,expected)=>{
+      const nativeSave=(args,expected,root)=>{
         assert.ok(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE?.startsWith('/'))
-        const result=spawnSync(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE,args.slice(0,8).map(String),{
+        const extra=root?[process.execPath,fileURLToPath(new URL('../dist/player-pending-prepare-cli.js',import.meta.url)),root]:[]
+        const result=spawnSync(process.env.PLAYER_SNAPSHOT_SAVE_NATIVE,[...args.slice(0,8).map(String),...extra],{
           input:args[8],env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
             ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},timeout:5000,maxBuffer:8192,
         })
@@ -141,8 +144,20 @@ try {
       nativeSave(invalidRevision,'-2 0\n')
       invalidRevision[6]='9223372036854775806';nativeSave(invalidRevision,'-2 0\n')
       assert.equal((await state()).revision,'0')
-      nativeSave(request,'1 1\n')
-      nativeSave(request,'2 1\n')
+      const pending=await mkdtemp(join(tmpdir(),'muhan-player-native-pending-'))
+      try {
+        nativeSave(request,'-3 0\n',join(pending,'missing'))
+        const conflictRoot=await mkdtemp(join(pending,'conflict-'))
+        const different=[...request.slice(0,8)];different[6]='1'
+        await preparePlayerPending(conflictRoot,different,request[8])
+        nativeSave(request,'-3 0\n',conflictRoot)
+        assert.deepEqual(await state(),{revision:'0',player_payload:initial,bank_payload:bank})
+        assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,0)
+        nativeSave(request,'1 1\n',pending)
+        assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
+        nativeSave(request,'2 1\n',pending)
+        assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
+      } finally {await rm(pending,{recursive:true,force:true})}
       assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
       const after=await state();assert.deepEqual(after,{revision:'1',player_payload:changed,bank_payload:bank})
       await assert.rejects(login.query(sql,[...request.slice(0,8),playerGold(initial,102n)]),e=>e.code==='P0001')

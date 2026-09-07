@@ -1,6 +1,8 @@
 #include "player_snapshot_save_native.h"
 #include "player_snapshot_v1.h"
 #include "bank_money_pg_exchange.h"
+#include "bank_money_plan_native.h"
+#include <stdlib.h>
 #include <string.h>
 int player_snapshot_save_native(void *connection,const char *const text[8],
     const unsigned char *payload,size_t length,int timeout_ms,uint64_t *revision)
@@ -54,4 +56,21 @@ int player_snapshot_save_native(void *connection,const char *const text[8],
     if(status>0) *revision=parsed;
 done:
     PQclear(r);return status;
+}
+int player_snapshot_save_prepared_native(void *connection,const char *node,const char *script,const char *root,
+    const char *const values[8],const unsigned char *payload,size_t length,int timeout_ms,uint64_t *revision)
+{
+    const char *args[11];unsigned char *echo=NULL;size_t echoed=0;int i,result;
+    if(!revision) return PLAYER_SNAPSHOT_SAVE_INVALID;
+    *revision=0;
+    if(!connection||!node||node[0]!='/'||!script||script[0]!='/'||!root||root[0]!='/'||!values
+       ||!payload||length<48||length>4194304||timeout_ms<1||timeout_ms>10000) return PLAYER_SNAPSHOT_SAVE_NOT_SENT;
+    args[0]=script;args[1]="--prepare";args[2]=root;
+    for(i=0;i<8;i++) {if(!values[i]) return PLAYER_SNAPSHOT_SAVE_NOT_SENT;args[i+3]=values[i];}
+    result=bank_money_process_native(node,args,11,payload,length,timeout_ms,&echo,&echoed);
+    if(result||echoed!=length||!echo||memcmp(echo,payload,length)) {
+        free(echo);return PLAYER_SNAPSHOT_SAVE_NOT_SENT;
+    }
+    free(echo);
+    return player_snapshot_save_native(connection,values,payload,length,timeout_ms,revision);
 }
