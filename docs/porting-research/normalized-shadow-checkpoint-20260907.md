@@ -183,3 +183,11 @@ manifest-first CLI는 `M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_E
 read-only root filesystem, tmpfs /tmp, 이미지의 기본 node UID, 테스트 파일 read-only mount, DB 컨테이너 network namespace에서 실제 실행이 통과했다: `Normalized manifest-first integration passed: new records, exact retry, reader comparison, unchanged evidence`. DB는 외부 포트를 게시하지 않은 disposable trust 인증 환경이므로 비밀번호 인증을 새로 검증한 결과는 아니다. reader/writer는 각각 전용 DB login을 사용했다. CDTO와 source post metadata는 합성 fixture이며 살아 있는 C 게임 프로세스의 save/power-loss/PVC 증적은 아니다.
 
 careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remove를 확인하고 종료했다. DB와 runner 컨테이너 모두 목록 부재를 확인했으며 합성 데이터는 제거됐다. 로컬 이미지는 후속 검증용으로 보존했다. 운영 DB·k8s·registry push는 없었다. 다음은 chart opt-in 연결과 독립 리뷰, 검토된 source SHA/amd64 통합 이미지 준비다.
+
+## 정규화 저장 chart opt-in 연결
+
+배포 커밋 `c1b08a4e`에 `playerSnapshotV1ArtifactRelay.normalizedProjection.enabled=false` 기본값을 추가했다. 활성화하려면 artifact relay, normalizedShadow 스키마 준비, migrations가 함께 켜져 있어야 하며 기존 M3 shadow/paired outbox 조건도 유지한다. 이 옵션을 켠 artifact relay만 test-only hook으로 바꾸고 고정된 Rust projector 경로와 literal true persistence env를 manifest-first CLI에 전달한다. 옵션이 꺼져 있으면 기존 artifact relay 동작은 그대로다.
+
+준비 검사기/실행기에 `--persist` 모드를 추가했다. 비교 등록 여부와 별개로 실제 writer capability와 artifact relay test 경로를 검사하고, 기존 migration 성공·checksum·source/image·기존 Job 거부·revision 재검사를 그대로 수행한다. 저장 모드는 기본 Job 300초를 기다릴 수 있도록 Helm timeout 6분/자식 프로세스 370초, 비교 모드는 기존 3분/190초다. 실행기는 두 Job을 한꺼번에 호출하지 않는다.
+
+필수 조건 및 writer readiness 테스트 실패 후 구현했고 chart/prerequisite/readiness/CLI/기존 render 58개가 통과했다. 이후 실제 CLI 프로세스 대역 테스트에 실제 writer chart manifest와 --persist 전달을 추가해 9개 시나리오가 통과했다. 실제 cluster 호출이나 새 배포는 없다. 운영 가이드에 저장 → 비교 순서와 실패 시 앞 단계 commit 가능성을 기록했다. source SHA 검증 기준 불일치와 amd64 통합 이미지, 독립 검토가 다음 선행 작업이다.
