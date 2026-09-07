@@ -173,3 +173,13 @@ Luna/max의 제한적 독립 정적 점검 `task_1416f14fae81` / `ctx_b7da02f59d
 manifest-first CLI는 `M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED=true`와 절대 경로 `M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_RUNNER`가 있을 때만 이를 연결한다. writer URL 검증과 기존 전용 store를 재사용한다. 잘못된 runner 설정은 base store 생성 전 거부하며 실패 시 두 store 모두 닫는다. 기본 off의 호출과 결과 구조는 유지한다. chart는 아직 이 설정을 제공하지 않으므로 자동 활성화되지 않는다.
 
 선행 실패/부분 전달·exact retry/필드 allowlist/CLI opt-in 및 정리의 테스트 3개를 먼저 실패시킨 후 구현했다. 최초 retry fixture는 기존 분류기에 없는 SQLSTATE 40001을 사용했으므로 기존 정책을 바꾸지 않고 연결 중단 ECONNRESET fixture로 수정했다. 타입 검사·빌드 통과, relay 단위 34 pass/4 기존 skip, 전체 C→Rust→Node bridge 163 tests 중 158 pass/0 fail/5 기존 skip이다. 새 manifest-first normalized 조합을 실제 PostgreSQL에 저장하고 조회하는 E2E는 아직 없다. 다음은 그 E2E와 chart opt-in 연결이며, 정규화 저장이 게임 DB 권위 전환 완료를 의미하지 않는다.
+
+## 실제 manifest-first 신규 저장 E2E 통과
+
+소스 커밋 `34e0449`에 신규 E2E 실행기를 추가했다. 기존 seed에 psql `receipt_only` 변수의 존재로 선택하는 별도 경로를 추가해 identity/head/receipt까지만 commit한다. 이 모드에서는 manifest/artifact/normalized 행을 만들지 않는다. 기존 기본 seed 경로는 유지한다. 신규 실행기는 세 출력 테이블의 행 부재를 먼저 확인한 뒤 합성 tree CDTO fixture와 receipt metadata로 0700/0600 파일 쌍을 만든다. 실제 manifest-first CLI가 신규 3단계 저장과 exact retry를 수행하고, 기존 reader integration을 호출해 SQL/pool 조회 및 CLI MATCH/INVALID_INPUT/MISSING_RECORD와 입력 파일 불변을 확인한다.
+
+새 로컬 이미지 `muhan-normalized-manifest-first:local`을 빌드했다(manifest list `sha256:2018009f5ebe845e97bcce04c400a65b9401e56be582b94e7a4ec6b3323c39ea`). PostgreSQL 17 임시 인스턴스에 bootstrap 및 20260902~20261014 migration을 적용했다. 앞선 PG lane과 같이 Supabase Realtime을 필요로 하는 20260901은 제외했다. seed는 `-v receipt_only=1 -v pvi_tree_payload=NULL`로 실행했으며 payload 변수는 이 경로에서 사용되지 않는다.
+
+read-only root filesystem, tmpfs /tmp, 이미지의 기본 node UID, 테스트 파일 read-only mount, DB 컨테이너 network namespace에서 실제 실행이 통과했다: `Normalized manifest-first integration passed: new records, exact retry, reader comparison, unchanged evidence`. DB는 외부 포트를 게시하지 않은 disposable trust 인증 환경이므로 비밀번호 인증을 새로 검증한 결과는 아니다. reader/writer는 각각 전용 DB login을 사용했다. CDTO와 source post metadata는 합성 fixture이며 살아 있는 C 게임 프로세스의 save/power-loss/PVC 증적은 아니다.
+
+careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remove를 확인하고 종료했다. DB와 runner 컨테이너 모두 목록 부재를 확인했으며 합성 데이터는 제거됐다. 로컬 이미지는 후속 검증용으로 보존했다. 운영 DB·k8s·registry push는 없었다. 다음은 chart opt-in 연결과 독립 리뷰, 검토된 source SHA/amd64 통합 이미지 준비다.
