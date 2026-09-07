@@ -3,6 +3,7 @@
 #include "mstruct.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 extern character_save_journal_v2_protocol_result
@@ -206,6 +207,7 @@ int character_save_journal_v2_player_store_save(
     char command_uuid[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH+1];
     unsigned long name_length, player_name_length;
     character_save_journal_v2_protocol_result result;
+    const char *failure_step="writer-validation";
 
     /* A recursive dispatch is inert and must not erase the outer protocol's
      * in-progress report.  Every non-recursive attempt starts with a fresh
@@ -227,11 +229,14 @@ int character_save_journal_v2_player_store_save(
     memset(&tuple,0,sizeof(tuple));
     if(character_save_journal_v2_writer_validate_held(store->held_writer,&tuple)!=
        CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) goto failed;
+    failure_step="configuration";
     if(!player_store_configured(store)) goto failed;
+    failure_step="lease-deadline";
     memset(deadline,0,sizeof(deadline));
     if(store->lease_deadline(store->lease_deadline_opaque,deadline)||
        !player_store_text_length(deadline,
           CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX)) goto failed;
+    failure_step="writer-renewal";
     if(character_save_journal_v2_live_ops_writer_epoch_renew(store->live_ops,
        &tuple,deadline)!=CHARACTER_SAVE_JOURNAL_V2_RPC_TRANSPORT_OK) goto failed;
     /* This is deliberately after exact writer renewal and before UUID,
@@ -239,10 +244,12 @@ int character_save_journal_v2_player_store_save(
      * callback reads the initial bound route, proves canonical live absence
      * from a held-root descriptor only for uninitialized heads, seeds once,
      * then exact-rebinds absent/revision-zero identity. */
+    failure_step="absent-head-bootstrap";
     if(!store->absent_bootstrap || store->absent_bootstrap(
        store->absent_bootstrap_opaque,store->held_writer,store->live_ops,
        (const unsigned char *)name,(size_t)name_length)) goto failed;
     store->active_player=player;
+    failure_step="serialization";
     if(!store->resolve_candidate) {
         memset(command_uuid,0,sizeof(command_uuid));
         if(store->command_uuid(store->command_uuid_opaque,command_uuid)||
@@ -264,6 +271,7 @@ int character_save_journal_v2_player_store_save(
     operations.receipt_opaque=store->live_ops;
     operations.observe_prepared_stage=store->stage_observer;
     operations.observe_prepared_stage_opaque=store->stage_observer_opaque;
+    failure_step="save-protocol";
     if(store->resolve_candidate) {
         memset(&operations_v4, 0, sizeof(operations_v4));
         operations_v4.route_lookup = operations.route_lookup;
@@ -299,6 +307,9 @@ int character_save_journal_v2_player_store_save(
         return PLAYER_STORE_OK;
     }
 failed:
+    /* Fixed stage/cutpoint only: never emit names, credentials or payloads. */
+    fprintf(stderr,"M3 player save failed: step=%s cutpoint=%d\n",
+        failure_step,(int)store->last_report.reached);
     player_store_finish(store);
     return PLAYER_STORE_IO_ERROR;
 }
