@@ -26,3 +26,9 @@
 테스트는 scope 파라미터, 읽기 전용 전제, i64 극값, 부재·중복, 잘못된 projection/metadata, 조회 실패 무재시도, await 도중 caller identity 변경을 검증한다. typecheck와 C→Rust→Node 브리지는 150 tests 중 145 pass, 0 fail, 5 기존 skip이다. SQL은 실제 PostgreSQL에서 실행하지 않았으므로 SQL 실행·grant·RLS·runtime consumer 연결은 여전히 미검증/미완료다. 현재 adapter는 세션이나 역할을 생성하지 않는다. caller가 connection을 독점하고 read-only 상태를 유지해야 한다.
 
 서브 에이전트 배정: 핵심 설계·복잡한 구현·독립 리뷰는 Astra/medium, 범위가 명확한 테스트·문서·정적 점검은 Luna/max. 직전 Orca Astra worker는 모델 호환성 오류로 리뷰를 수행하지 못했으므로 독립 리뷰 완료로 계산하지 않는다.
+
+## C·Rust·조회 adapter 연결 검증
+
+실제 C inventory fixture를 receipt-bound artifact로 읽고 Rust CLI의 실제 JSON 출력을 SQL 결과 행으로 주입해, 조회 adapter와 shadow comparator를 함께 통과시키는 테스트를 추가했다. 정상 일치, 행 부재, 중복, writer revision 불일치, 손상된 projection JSON을 각각 검증한다. 조회 파라미터가 world/character/command 복합 식별자인지와 조회 횟수도 확인한다.
+
+2026-09-07 재실행: typecheck 통과, C oracle·Rust CLI·Node bridge는 151 tests, 146 pass, 0 fail, 5 기존 조건부 skip. 이 테스트의 DB 경계는 주입된 행이므로 실제 PostgreSQL SQL 실행, 역할 권한, runtime 연결 또는 배포 검증을 대신하지 않는다. SQL과 migration 일치 여부에 대한 Luna/max 정적 점검은 별도 진행 중이다.

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -9,6 +10,7 @@ import { projectPlayerSnapshotV1Normalized, type PlayerSnapshotV1NormalizedProje
 import { comparePlayerSnapshotV1NormalizedProjectionShadow } from '../src/player-snapshot-v1-normalized-projection-shadow-comparator.js'
 import { parsePlayerSnapshotV1ArtifactEvidence, parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
 import { parseManifest } from '../src/manifest.js'
+import { PostgresNormalizedProjectionReader } from '../src/player-snapshot-v1-normalized-projection-reader.js'
 
 const commandId = '11111111-1111-4111-8111-111111111111'
 const characterId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -122,5 +124,43 @@ test('raw native evidence and filename or receipt mismatches cannot reach a shad
       }),
       /invalid PlayerSnapshotV1 artifact/,
     )
+  }
+})
+
+test('C fixture and real Rust wire pass through the SQL row adapter into the shadow comparator', async () => {
+  const runnerPath = process.env.M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER
+  assert.ok(runnerPath && isAbsolute(runnerPath))
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`${commandId}.player-snapshot-v1`,
+    artifact(payload, snapshotSha256), parseManifest(receipt()))
+  const projectionText = execFileSync(runnerPath, ['--snapshot-sha256', snapshotSha256], {
+    input: payload, maxBuffer: 4_194_352,
+  }).toString('utf8').trimEnd()
+  const row = {
+    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: evidence.receiptRequestSha256,
+    writerInstanceId: evidence.writerInstanceId, writerEpoch: evidence.writerEpoch, writerRevision: evidence.writerRevision,
+    sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: String(payload.length), projectionText,
+  }
+  const scenarios = [
+    { rows: [row], expected: 'MATCH' },
+    { rows: [], expected: 'MISSING_RECORD' },
+    { rows: [row, row], expected: 'UNEXPECTED_DUPLICATE' },
+    { rows: [{ ...row, writerRevision: '2' }], expected: 'EVIDENCE_MISMATCH' },
+    { rows: [{ ...row, projectionText: '{}' }], expected: 'RECORD_READ_ERROR' },
+  ]
+  for (const { rows, expected } of scenarios) {
+    let selects = 0
+    // Inject SQL result rows only; this test does not execute PostgreSQL.
+    const reader = new PostgresNormalizedProjectionReader({ query: async (sql, values) => {
+      if (sql === 'show transaction_read_only') return { rows: [{ transaction_read_only: 'on' }] }
+      selects++
+      assert.deepEqual(values, [evidence.worldId, characterId, commandId])
+      return { rows }
+    } })
+    assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(evidence, reader, {
+      project: (bytes, digest) => projectPlayerSnapshotV1Normalized(bytes, { runnerPath, snapshotSha256: digest }),
+    }), expected)
+    assert.equal(selects, 1)
   }
 })
