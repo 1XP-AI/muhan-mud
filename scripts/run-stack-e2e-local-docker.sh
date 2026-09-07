@@ -15,7 +15,10 @@ cleanup() {
   local status=$?
   trap - EXIT INT TERM
   set +e
-  for name in "${created[@]}"; do docker rm -f "$name" >/dev/null; done
+  # macOS ships Bash 3.2, where an empty array under nounset is unbound.
+  if [[ "${#created[@]}" -gt 0 ]]; then
+    for name in "${created[@]}"; do docker rm -f "$name" >/dev/null; done
+  fi
   if [[ "$network_created" == 1 ]]; then docker network rm "$network" >/dev/null; fi
   echo "local-stack: source/build evidence retained at $scratch; status=$status"
   exit "$status"

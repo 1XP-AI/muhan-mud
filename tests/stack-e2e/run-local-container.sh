@@ -34,4 +34,13 @@ export STACK_E2E_DATABASE_URL='postgres://postgres:stack-e2e-postgres-password@1
 export STACK_E2E_JWT_SECRET=stack-e2e-jwt-secret-not-for-production
 export STACK_E2E_SERVICE_ROLE_JWT="$(node -e 'const c=require("node:crypto");const b=x=>Buffer.from(JSON.stringify(x)).toString("base64url");const h=b({alg:"HS256",typ:"JWT"})+"."+b({role:"service_role",aud:"authenticated",exp:4102444800});process.stdout.write(h+"."+c.createHmac("sha256",process.env.STACK_E2E_JWT_SECRET).update(h).digest("base64url"))')"
 export STACK_E2E_ARTIFACT=/tmp/stack-result.json
+# PostgREST starts alongside PostgreSQL, before migrations. Refresh its cache
+# after the complete schema exists; readiness requires the final RPC surface.
+psql -X -v ON_ERROR_STOP=1 -c "NOTIFY pgrst, 'reload schema';" >/dev/null
+schema_ready=0
+for attempt in $(seq 1 60); do
+  if curl --max-time 2 -fsS -H "Authorization: Bearer $STACK_E2E_SERVICE_ROLE_JWT" "$STACK_E2E_REST_URL/" | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{try{process.exit(JSON.parse(s).paths["/rpc/begin_game_character_onboarding"]?0:1)}catch{process.exit(1)}})'; then schema_ready=1; break; fi
+  sleep 1
+done
+[[ "$schema_ready" == 1 ]] || { echo 'local-stack: PostgREST schema readiness failed' >&2; exit 1; }
 exec pnpm --dir /repo/services/gateway exec tsx --test /repo/tests/stack-e2e/admission-identity-pg17.integration.test.ts /repo/tests/stack-e2e/stack-e2e.test.ts
