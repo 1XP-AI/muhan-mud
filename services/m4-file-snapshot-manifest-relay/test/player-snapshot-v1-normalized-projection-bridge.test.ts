@@ -115,4 +115,12 @@ test('raw native evidence and filename or receipt mismatches cannot reach a shad
     () => parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`22222222-2222-4222-8222-222222222222.player-snapshot-v1`, wrapped, parseManifest(receipt())),
     /invalid PlayerSnapshotV1 artifact/,
   )
+  for (const mismatch of [{ canonicalNameHex: '4d3342' }, { storageFormat: 2 }]) {
+    assert.throws(
+      () => parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`${commandId}.player-snapshot-v1`, wrapped, {
+        ...parseManifest(receipt()), ...mismatch,
+      }),
+      /invalid PlayerSnapshotV1 artifact/,
+    )
+  }
 })

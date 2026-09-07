@@ -108,6 +108,31 @@ function item(parentIndex: number | null, childIndex: number): PlayerSnapshotV1N
   }
 }
 
+test('classifies wrong numeric representations on both sides without throwing or coercing', async () => {
+  const groups = [
+    { path: 'player', value: player },
+    { path: 'daily', value: player.daily[0]! },
+    { path: 'timers', value: player.timers[0]! },
+    { path: 'items', value: player.items[0]! },
+  ]
+  for (const { path, value } of groups) {
+    for (const [field, original] of Object.entries(value)) {
+      if (typeof original !== 'number' && typeof original !== 'bigint') continue
+      const malformed = structuredClone(projection)
+      const target = path === 'player' ? malformed.player : malformed.player[path as 'daily' | 'timers' | 'items'][0]!
+      Object.assign(target, { [field]: typeof original === 'number' ? BigInt(original) : Number(original) })
+      let reads = 0
+      assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
+        findByCommandId: async () => { reads++; return [record()] },
+      }, { project: async () => malformed }), 'PROJECTION_DERIVATION_FAILED', `${path}.${field} derivation`)
+      assert.equal(reads, 0)
+      assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), reader([record({ projection: malformed })]), {
+        project: async () => projection,
+      }), 'INVALID_RECORD', `${path}.${field} persisted record`)
+    }
+  }
+})
+
 function topologyProjection(items: PlayerSnapshotV1NormalizedProjection['player']['items']): PlayerSnapshotV1NormalizedProjection {
   const value = { ...player, items }
   return projected(value)

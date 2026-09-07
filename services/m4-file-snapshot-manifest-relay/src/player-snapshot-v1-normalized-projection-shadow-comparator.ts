@@ -70,7 +70,9 @@ function exactlyKeys(value: Record<string, unknown>, fields: readonly string[]):
 }
 
 function integer(value: unknown, min: bigint, max: bigint): value is number | bigint {
-  if (typeof value === 'bigint') return value >= min && value <= max
+  // Match the normalized projector's runtime types before digest serialization:
+  // signed i64 fields are bigint; all narrower integers are number.
+  if (min === MIN_I64 && max === MAX_I64) return typeof value === 'bigint' && value >= min && value <= max
   return typeof value === 'number' && Number.isSafeInteger(value) && BigInt(value) >= min && BigInt(value) <= max
 }
 
