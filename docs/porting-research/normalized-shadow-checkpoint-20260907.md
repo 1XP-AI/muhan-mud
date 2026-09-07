@@ -245,3 +245,13 @@ careful 절차에 따라 생성 시 ID, label, AutoRemove=true를 다시 확인�
 `tests/unit/info_alignment_utf8_test.py`는 실제 소스의 선언과 성향 선택 블록을 추출해 7개 경계 입력을 C로 실행한다. 최초 -O1에서는 컴파일러가 복사/비교를 최적화해 오류를 관찰하지 못했으므로 -O0/-fno-builtin으로 고쳐, 수정 전 실제 ASan stack-buffer-overflow(19바이트 쓰기)를 재현한 뒤 수정 후 ASan/UBSan 통과를 확인했다. 별도 make info-alignment-utf8-test target을 unit-test 선행 조건에도 연결했다. 테스트는 info 전체나 실제 게임 세션의 대체물이 아니다.
 
 현재 command4.c와 헤더만 read-only build context로 사용한 linux/amd64 gcc:14 컴파일도 -O2 -Werror=stringop-overflow에서 exit 0이다(session 33088). 단독 docker run은 gcc:14가 로컬 이미지 저장소에 없어서 실행되지 않았고, BuildKit 캐시를 이용한 컴파일 검증으로 전환했다. 운영 이미지 재빌드/배포는 아직 하지 않았다. 이전 통합 이미지의 source SHA는 이 수정 이전이므로 이 변경을 포함한다고 보고하면 안 된다.
+
+## Private 브랜치 게시와 CI 실행 환경 차단 확인
+
+1XP-Inc/muhan-mud가 private 저장소임을 확인하고, 이전 사용자의 커밋·푸시 요청 범위에서 로컬 32개 커밋을 private/codex/mud-identity-foundation에 게시했다. 원격은 c1b016e에서 `a45ec8e67a31a1c33ec189091cb85c5c048e2980`로 fast-forward됐다. 기본 브랜치 병합, deployment 저장소 push, registry push, 운영 배포는 없다.
+
+CI run https://github.com/1XP-Inc/muhan-mud/actions/runs/34083005207 는 모든 job이 steps=[]로 종료됐다. ubuntu check-run 101621738407의 GitHub annotation은 계정 결제 실패 또는 spending limit 증가 필요를 명시한다. 실제 테스트가 실행되지 않았으므로 코드 실패 또는 성공으로 분류하지 않는다. GitHub 조직 Billing & plans는 사용자의 확인이 필요하며 결제/한도 설정을 변경하지 않았다. 실행 환경 복구 전 같은 workflow를 반복 재실행하지 않는다.
+
+Orca Luna/max task `task_5280985b24eb`, dispatch `ctx_0d3f5ee5744d`의 읽기 전용 CI audit를 완료했다. CI는 push-only/all refs이며 build-and-smoke의 ubuntu-latest lane만 실제 C/Gateway/Next dev/Chromium 가입·기존 계정 claim을 실행한다. Auth endpoint는 fixture 대역이며 production Next와 실제 Supabase Auth는 이 lane의 증거가 아니다. worker 결과를 회수하고 `worker-release`의 released/closed_agent_terminal/captured 확인 후 delivery_f4c64309f4e2를 ack했다. 완료 세션은 남기지 않았다. Astra CLI는 여전히 0.149.0이라 기존 비호환 시도를 반복하지 않았다.
+
+Coordinator와 Luna가 stack runner의 migration 누락을 확인했다. 20261002~07 및 10~14 총 11개가 빠져 있었다. 새 source-bound coverage test가 먼저 실패한 후 explicit apply_sql 목록에 순서대로 추가했고, 현재 44개 game migration의 정확한 순서/중복 없음과 기존 CI-only gate 유지 검사가 통과했다. bash 구문 검사도 통과했고 unit-test에 coverage 검사를 연결했다. SQL 자체는 이전 통합 이미지 DB E2E에서 같은 44개를 적용했지만, 변경된 실제 C/browser stack 전체는 이번에 실행하지 못했다. 이 후속 코드와 기록은 아직 로컬 커밋이며 게시된 a45ec8e에는 포함되지 않는다. 원격 소스 경로 검토 gate, 전체 stack 실행 및 실제 Auth/배포 검증은 계속 남는다.
