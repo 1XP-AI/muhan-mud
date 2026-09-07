@@ -23,6 +23,9 @@ import {
   type WebStackServer,
 } from './web-stack-ui.js'
 import { cleanupFailure, runCleanupSteps } from './lifecycle.js'
+import { assertOnboardingNormalizedSnapshot } from './normalized-snapshot-check.js'
+import { parseManifest } from '../../services/m4-file-snapshot-manifest-relay/src/manifest.js'
+import { parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../../services/m4-file-snapshot-manifest-relay/src/player-snapshot-v1-artifact.js'
 
 const run = promisify(execFile)
 const actor = '11111111-1111-4111-8111-111111111111'
@@ -70,7 +73,7 @@ function browserJwt(subject: string): string {
 }
 
 function redact(value: string): string {
-  return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, process.env.STACK_E2E_M3_WRITER_PASSWORD, process.env.STACK_E2E_M3_DATABASE_URL, admissionSecret, password, accessToken]
+  return [process.env.STACK_E2E_SERVICE_ROLE_JWT, process.env.STACK_E2E_PG_PASSWORD, process.env.STACK_E2E_M3_WRITER_PASSWORD, process.env.STACK_E2E_M3_DATABASE_URL, process.env.STACK_E2E_NORMALIZED_READER_URL, 'stack-e2e-reader-password', admissionSecret, password, accessToken]
     .filter((secret): secret is string => Boolean(secret))
     .reduce((output, secret) => output.split(secret).join('<REDACTED>'), value)
 }
@@ -169,6 +172,8 @@ type RelaySummary = Record<string, number>
 async function runM3ArtifactRelay(entrypoint: 'player-snapshot-v1-manifest-first-cli.ts' | 'player-snapshot-v1-artifact-cli.ts'): Promise<RelaySummary> {
   const databaseUrl = process.env.STACK_E2E_M3_DATABASE_URL
   assert.ok(databaseUrl, 'runner must provide the M3 writer database URL')
+  const projectorPath = process.env.STACK_E2E_NORMALIZED_PROJECTOR
+  assert.ok(projectorPath, 'runner must build the normalized Rust projector')
   const { stdout } = await run(join(root, 'services/m4-file-snapshot-manifest-relay/node_modules/.bin/tsx'), [
     join(root, `services/m4-file-snapshot-manifest-relay/src/${entrypoint}`), '--once',
   ], {
@@ -178,6 +183,9 @@ async function runM3ArtifactRelay(entrypoint: 'player-snapshot-v1-manifest-first
       DATABASE_URL: databaseUrl,
       M4_FILE_SNAPSHOT_OUTBOX_DIR: join(fixture, 'character-player-snapshot-v1-outbox'),
       M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED: 'true',
+      M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_PERSISTENCE_ENABLED:
+        entrypoint === 'player-snapshot-v1-manifest-first-cli.ts' ? 'true' : 'false',
+      M4_PLAYER_SNAPSHOT_NORMALIZED_V1_PROJECTION_RUNNER: projectorPath,
     },
   })
   return JSON.parse(stdout.trim()) as RelaySummary
@@ -234,6 +242,14 @@ async function assertM3OnboardingEvidence({
   assertNoPlaintextSecrets('PlayerSnapshotV1 artifact', artifact, secrets)
   assertNoPlaintextSecrets('M3 receipt manifest', manifest, secrets)
   assertNoPlaintextSecrets('onboarding receipt', receipt, secrets)
+  const readerUrl = process.env.STACK_E2E_NORMALIZED_READER_URL
+  const projectorPath = process.env.STACK_E2E_NORMALIZED_PROJECTOR
+  assert.ok(readerUrl, 'runner must provide a dedicated normalized reader login')
+  assert.ok(projectorPath, 'runner must build the normalized Rust projector')
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(
+    `${commandId}.player-snapshot-v1`, artifact, parseManifest(Buffer.from(manifest)),
+  )
+  await assertOnboardingNormalizedSnapshot(evidence, readerUrl, projectorPath)
   return { characterId: characterId!, commandId: commandId! }
 }
 
@@ -497,6 +513,8 @@ async function main(): Promise<void> {
     assert.equal(process.env.STACK_E2E_M3_ENABLED, '1', 'this acceptance lane requires the M3-enabled disposable binary')
     assert.ok(process.env.STACK_E2E_M3_CONNINFO_FILE, 'runner must provide a protected M3 writer conninfo file')
     assert.ok(process.env.STACK_E2E_M3_DATABASE_URL, 'runner must provide the M3 writer database URL')
+    assert.ok(process.env.STACK_E2E_NORMALIZED_READER_URL, 'runner must provide a dedicated normalized reader')
+    assert.ok(process.env.STACK_E2E_NORMALIZED_PROJECTOR, 'runner must build the normalized projector')
     const webProvisionJwt = browserJwt(webProvisionActor)
     const webClaimJwt = browserJwt(webClaimActor)
     const authenticatedSubjects = new Map([
@@ -956,6 +974,7 @@ async function main(): Promise<void> {
     }, 45_000)
     const replay = await relayM3Artifacts()
     assert.ok((replay.manifest.exactRetry ?? 0) >= 2, 'manifest relay must exact-retry the browser provision and claim evidence')
+    assert.ok((replay.manifest.normalizedProjectionExactRetry ?? 0) >= 2, 'normalized persistence must exact-retry both real C onboarding snapshots')
     assert.ok((replay.artifact.exactRetry ?? 0) >= 2, 'artifact relay must exact-retry the browser provision and claim evidence')
     assert.ok((replay.artifact.fulfillmentExactRetry ?? 0) >= 2, 'fulfillment relay must exact-retry the browser provision and claim evidence')
 

@@ -62,4 +62,14 @@ The local, non-mutating `python3 tests/unit/stack_e2e_migration_coverage_test.py
 checks that the explicit application list contains every game migration exactly
 once in chronological order. Only the Realtime lobby migration is excluded.
 This guards schema coverage; it does not prove that a stack run has passed or
-that normalized persistence is enabled in the game scenario.
+that the end-to-end comparison has passed.
+
+The runner also builds the locked Rust normalized projector into its disposable
+directory and provisions a separate normalized-reader login in its temporary DB.
+The manifest-first pass persists the real C-produced snapshots; the fulfillment
+pass remains separate. Provision and claim assertions bind the actual outbox
+bytes to their receipt, compare them through the production reader and Rust
+projector, require MATCH, and require normalized exact retry for both browser
+flows. `normalized-snapshot-check.test.ts` separately verifies reader cleanup
+on match, mismatch, and exceptions without connecting to a DB. These assertions
+are CI acceptance requirements, not a claim that the current CI run passed.

@@ -49,7 +49,7 @@ if [[ "${CI:-}" != "true" ]]; then
   exit 2
 fi
 
-for command in docker node pnpm make curl; do
+for command in docker node pnpm make curl cargo; do
   command -v "$command" >/dev/null || {
     echo "stack-e2e: required command not found: $command" >&2
     exit 2
@@ -193,6 +193,8 @@ fi
 # never in a developer database or a checked-in fixture.
 docker exec "$postgres_name" psql -U postgres -d stack_e2e -v ON_ERROR_STOP=1 \
   -c "alter role mud_writer_login password '${m3_writer_password}'" >/dev/null
+docker exec "$postgres_name" psql -U postgres -d stack_e2e -v ON_ERROR_STOP=1 \
+  -c "alter role mud_normalized_replay_reader_login password 'stack-e2e-reader-password'" >/dev/null
 m3_conninfo_file="$work_dir/m3-writer.conninfo"
 umask 077
 printf '%s' "postgresql://mud_writer_login:${m3_writer_password}@127.0.0.1:${postgres_port}/stack_e2e?sslmode=disable" >"$m3_conninfo_file"
@@ -211,10 +213,17 @@ if ! make -B -C "$repo_root/src" -j2 CC=gcc USE_M3_RUNTIME=1 PG_CONFIG=pg_config
 fi
 echo "stack-e2e: GREEN (preflight)"
 
+# Build from this checkout's locked workspace into the disposable run directory.
+cargo build --locked --release --manifest-path "$repo_root/rust/Cargo.toml" \
+  --target-dir "$work_dir/rust-target" -p muhan-core-dto \
+  --bin player_snapshot_v1_normalized_project
+
 test_status=0
 STACK_E2E_PG_CONTAINER="$postgres_name" \
 STACK_E2E_PG_PASSWORD="$pg_password" \
 STACK_E2E_M3_ENABLED=1 \
+STACK_E2E_NORMALIZED_PROJECTOR="$work_dir/rust-target/release/player_snapshot_v1_normalized_project" \
+STACK_E2E_NORMALIZED_READER_URL="postgresql://mud_normalized_replay_reader_login:stack-e2e-reader-password@127.0.0.1:${postgres_port}/stack_e2e?sslmode=disable" \
 STACK_E2E_M3_WRITER_PASSWORD="$m3_writer_password" \
 STACK_E2E_M3_CONNINFO_FILE="$m3_conninfo_file" \
 STACK_E2E_M3_DATABASE_URL="postgresql://mud_writer_login:${m3_writer_password}@127.0.0.1:${postgres_port}/stack_e2e?sslmode=disable" \
