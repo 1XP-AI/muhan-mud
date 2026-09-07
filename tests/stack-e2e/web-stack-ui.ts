@@ -469,8 +469,8 @@ export async function runWebStackAcceptance({
       await assertRosterThenAdmission(provisionPage, provision.characterName);
     } catch (error) {
       assert.match(provision.userId, /^[0-9a-f-]{36}$/);
-      const state = await sql(`select i.status || '|' || coalesce(p.status, 'none') || '|' || coalesce(c.lifecycle, 'none') from private.game_character_onboarding_intents i left join private.game_character_provisioning_requests p using(correlation_id) left join public.game_characters c on c.id=p.character_id where i.actor_user_id='${provision.userId}'`);
-      let terminal = await provisionTerminal.textContent() ?? "";
+      const state = await sql(`select i.status::text || '|' || coalesce(p.status::text, 'none') || '|' || coalesce(c.lifecycle::text, 'none') from private.game_character_onboarding_intents i left join private.game_character_provisioning_requests p using(correlation_id) left join public.game_characters c on c.id=p.character_id where i.actor_user_id='${provision.userId}'`).catch(() => "diagnostic-unavailable");
+      let terminal = await provisionTerminal.count() ? await provisionTerminal.textContent() ?? "" : "<unmounted>";
       for (const secret of [provision.accessToken, provision.gamePassword, provision.email]) terminal = terminal.split(secret).join("<REDACTED>");
       process.stderr.write(`stack-e2e: web-provision-state=${state} terminal=${JSON.stringify(terminal.slice(-1200))}\n`);
       throw error;
