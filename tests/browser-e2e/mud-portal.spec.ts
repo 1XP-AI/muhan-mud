@@ -579,6 +579,30 @@ test("claim clears the password field and disables input immediately on an error
   expect(await page.locator("body").textContent()).not.toContain("claim-secret");
 });
 
+test("legacy claim failure returns through MudPortal with Korean recovery guidance and no normal admission", async ({ page }) => {
+  await signInToEmptyRoster(page);
+  await page.getByRole("button", { name: "기존 캐릭터 연결" }).click();
+  await waitForOnboardingSocket(page, "claim");
+
+  await emitOnboardingControl(page, { type: "error", reason: "onboarding failed" });
+  await page.evaluate(() => {
+    const sockets = window.__muhanFakeSockets?.filter((entry) => entry.url.includes("/onboarding")) ?? [];
+    sockets[sockets.length - 1]?.close(1008, "C Gateway credential=password=not-for-display");
+  });
+
+  await expect(page.getByText("이 계정에 연결된 캐릭터가 없습니다")).toBeVisible();
+  const recovery = page.locator(".roster-empty .form-notice[role=alert]");
+  await expect(recovery).toContainText("기존 캐릭터 확인을 완료하지 못했습니다.");
+  await expect(recovery).toContainText(
+    "온보딩 터미널에서 기존 캐릭터 이름과 게임 비밀번호를 다시 확인한 뒤 다시 시도해 주세요.",
+  );
+  expect(await page.locator("body").textContent()).not.toContain("password=not-for-display");
+  await expect(page.locator(".onboarding-viewport")).toHaveCount(0);
+  await expect(page.locator(".terminal-content")).toHaveCount(0);
+  expect(await normalGatewaySocketCount(page)).toBe(0);
+  expect(await normalGatewayTraffic(page)).toEqual({ messages: [], sentBytes: [] });
+});
+
 test("claim clears an unsent password before echo becomes visible again", async ({ page }) => {
   await signInToEmptyRoster(page);
   await page.getByRole("button", { name: "기존 캐릭터 연결" }).click();
