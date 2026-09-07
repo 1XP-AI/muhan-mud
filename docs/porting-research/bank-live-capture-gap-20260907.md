@@ -1,5 +1,32 @@
 # Live bank capture and transaction gap
 
+## Native fresh-command coordinator — 2026-09-07
+
+Source `9997fd4` composes qualified native read, Rust subprocess planning,
+durable preparation and qualified commit into `bank_money_coordinate_native`.
+The supplied expected revision must equal the DB-read revision. There is no
+automatic replan or new command UUID on failure. Only a new CONFIRMED commit
+returns owned planned bytes; all failures and historical RETRY clear the output
+so the caller cannot accidentally apply an old retry snapshot as a new wallet.
+The caller still owns live-state serialization and applying validated snapshots.
+
+Test-first evidence: the new coordinator contract failed to compile before the
+API existed. Unit tests now pass with ASan/UBSan, checking the full argument and
+payload chain, every commit status, stopped read/plan phases, stale revision and
+invalid input. In the real PostgreSQL fixture, the withdrawal now uses this
+single C call rather than Node sequencing the adapters. It rejects a stale
+revision before creating a pending record, commits the exact expected pair,
+then retries using the original immutable request via the recovery transport.
+
+The frozen-source Linux ARM64 suite exited 0 with this source:
+`/tmp/muhan-native-coordinate.log`, including both database restore profiles.
+The coordinator is not installed in the live bank route and is not linked into
+the deployed runtime. Still required: runtime session/identity binding, command
+parsing including all-money commands, pending-work fences and startup recovery,
+safe application to current live state, and fencing/migrating other writers.
+Each phase is bounded separately; this synchronous API is not a nonblocking
+game-loop integration. No deployment or production privilege changes occurred.
+
 ## Latest native durable preparation verification — 2026-09-07
 
 Source `e2855b1` adds the C prepared-commit wrapper: the trusted Node helper
