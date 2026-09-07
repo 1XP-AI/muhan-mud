@@ -201,12 +201,35 @@ writer are rejected. Admin identity is rejected as a runtime caller. The test
 grants function access only inside its rollback-only disposable transaction;
 a post-rollback assertion proves the runtime role still lacks EXECUTE.
 
-This qualifier is not yet called by the money commit entrypoint. It must be
-composed inside the same entrypoint/transaction, never called as a separate
-autocommit preflight. Runtime grants remain closed. Lock-wait expiry races and
-cross-operation lock-order compatibility still require execution evidence;
-baseline eligibility/enrollment and eventual live activation remain outstanding.
-Live command integration and C/Rust command-level differential tests remain.
+The qualifier is now composed inside `commit_qualified_money_transfer`
+(migration 200), not a separate autocommit preflight. The wrapper records the
+actor/session/gateway/writer/epoch tuple atomically with both snapshots and the
+command intent; exact retries must retain that tuple. Runtime grants remain
+closed. Baseline eligibility/enrollment, cross-operation lock-order compatibility
+and eventual live command activation remain outstanding.
+
+### Qualified transaction and lock-wait expiry evidence
+
+Source `ac387d5` passed the full isolated Linux ARM64 replay runner (exit 0),
+including both backup/restore profiles and C/Rust byte verification. Log:
+`/tmp/muhan-qualified-lock-expiry.log`. The actual writer login exercises
+DB snapshots -> Rust planner -> qualified atomic commit -> exact retry and
+full-byte deposit/withdraw roundtrip. The disposable-only function grant is
+explicitly revoked and checked absent at teardown; no production grant exists.
+
+An independent administrator connection holds the paired snapshot row lock.
+The writer starts with a live session; `pg_blocking_pids` proves it is waiting
+on that administrator before the session expires. Releasing the lock after
+expiry rejects the command with P0001, preserves both snapshots/revision and
+leaves all three command/intent/authority tables empty for that character.
+Refreshing the session then permits the normal commit and exact retry.
+
+The first expiry probe instead reached the role's existing lock timeout
+(55P03), so the test connection alone now uses a bounded five-second lock
+timeout and ten-second statement timeout around the three-second expiry
+window. This is not a production timeout change. This evidence covers session
+expiry at the paired-state lock; writer-lease expiry and competing ownership
+changes across other operation lock orders still need dedicated coverage.
 
 ## Actual C / Rust command differential verified
 
