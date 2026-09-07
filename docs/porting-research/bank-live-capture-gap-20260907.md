@@ -1,5 +1,36 @@
 # Live bank capture and transaction gap
 
+## Verified player reservation release — 2026-09-07
+
+Source `e8f13b8` adds serialized player release. Under the shared character
+lock, it requires the exact active fence, independently confirms the immutable
+request through reconciliation, then reads the current player at precisely
+expected+1 using the current writer. Payload bytes and full hash must match.
+Historical confirmation after the DB head advances is insufficient. The
+original request and matching `.player-resolved` record are durably published
+before removing only the matching fence. No gameplay memory is updated.
+
+Claim refuses resolved command reuse. Preparation visitors skip only exact
+resolved request copies; an active fence is never skipped. Recovery retains
+its history-inclusive default. Tests prove unconfirmed release leaves ownership,
+the release lock excludes a successor claim, history survives fence-only release,
+and a stale release cannot remove a later reservation. Actual PostgreSQL tests
+reject release before commit, accept after native prepared save/retry, preserve
+history, and permit money preparation in the same directory afterward. They
+also reject a confirmed historical request once its DB head has advanced.
+
+Frozen full local ARM64 runner at `e8f13b8` exited 0 via its process handle;
+evidence `/tmp/muhan-player-release.log`. Existing money/cross-operation fences,
+native C/PG, sanitizer/differential, actual C onboarding and both backup profiles
+remain passing.
+
+Still required: the caller must own and adopt the live baseline; this API does
+not attach a decoded player or update revision state across copies/disconnect.
+General player authority remains uninstalled. Recovery of old confirmed requests
+whose head has advanced needs a separate explicit adoption lifecycle, not blind
+release or state rollback. Power-loss cut-point and player-specific lost-ack
+coverage remain incomplete. No production grant, push, Actions run or deployment.
+
 ## Historical player save reconciliation — 2026-09-07
 
 Source `2a31207` adds a closed read-only player reconciliation RPC and bounded
