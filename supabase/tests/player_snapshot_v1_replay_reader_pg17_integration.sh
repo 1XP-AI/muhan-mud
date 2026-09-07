@@ -582,6 +582,12 @@ done
 for pass in 1 2; do
   run_super --file=/workspace/supabase/migrations/20261023000000_money_transfer_reconciliation.sql
 done
+if run_super --command="select 'private.resolve_player_paired_route(text,text,uuid,bigint)'::regprocedure"; then
+  echo 'RED unexpectedly passed before player route migration' >&2; exit 1
+fi
+for pass in 1 2; do
+  run_super --file=/workspace/supabase/migrations/20261024000000_player_paired_route.sql
+done
 cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --includedir)" \
   -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
   "$repo_root/src/bank_money_read_native.c" "$repo_root/tests/unit/bank_money_read_native_pg.c" \

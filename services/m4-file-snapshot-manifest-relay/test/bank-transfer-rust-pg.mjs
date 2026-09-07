@@ -40,6 +40,8 @@ const actor='e9210000-0000-0000-0000-000000000001',session='f9210000-0000-0000-0
 const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea)'
 const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,uuid,text,uuid,bigint)'
 const recoverySignature='private.reconcile_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea,uuid,bigint)'
+const playerRouteSignature='private.resolve_player_paired_route(text,text,uuid,bigint)'
+const playerRouteSql='select * from private.resolve_player_paired_route($1,$2,$3,$4)'
 const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
 const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_READER,args.map(String),{
   env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
@@ -87,6 +89,15 @@ try {
     await db.query(`grant execute on function ${readSignature} to mud_writer`)
     login=new Client({connectionString:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`})
     await login.connect(); await login.query('set role mud_writer')
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRouteSignature,'EXECUTE'])).rows[0].allowed,false)
+    await db.query(`grant execute on function ${playerRouteSignature} to mud_writer`)
+    const routeName=(await db.query('select legacy_name from public.game_characters where id=$1',[id])).rows[0].legacy_name
+    const routed=(await login.query(playerRouteSql,[world,routeName,writer,1])).rows
+    assert.equal(routed.length,1);assert.equal(routed[0].character_id,id);assert.equal(routed[0].owner_user_id,actor);assert.equal(routed[0].revision,'0')
+    assert.equal(routed[0].player_hash,sha(player).toString('hex'));assert.equal(routed[0].bank_hash,sha(bank).toString('hex'))
+    await assert.rejects(login.query(playerRouteSql,[world,'Missinghero',writer,1]),e=>e.code==='P0001')
+    await assert.rejects(login.query(playerRouteSql,[world,routeName,writer,2]),e=>e.code==='P0001')
+    await assert.rejects(db.query(playerRouteSql,[world,routeName,writer,1]),e=>e.code==='P0001')
     await assert.rejects(login.query('select * from private.game_character_paired_snapshot_states'),e=>e.code==='42501')
     await assert.rejects(db.query(readSql,[id,...authority]),e=>e.code==='P0001')
     const wrong=[id,...authority]; wrong[2]='e9210000-0000-0000-0000-000000000099'
@@ -395,6 +406,11 @@ try {
     await db.query("update private.game_character_writer_epochs set expires_at=clock_timestamp()-interval '1 millisecond' where world_id=$1",[world])
     const successor='b9240000-0000-0000-0000-000000000001'
     assert.equal((await db.query("select * from private.acquire_game_world_writer_epoch($1,$2,clock_timestamp()+interval '3 minutes')",[world,successor])).rows[0].writer_epoch,'2')
+    const offlineName=(await db.query('select legacy_name from public.game_characters where id=$1',[id])).rows[0].legacy_name
+    await assert.rejects(login.query(playerRouteSql,[world,offlineName,writer,1]),e=>e.code==='P0001')
+    const offlineRoute=(await login.query(playerRouteSql,[world,offlineName,successor,2])).rows
+    assert.equal(offlineRoute.length,1);assert.equal(offlineRoute[0].character_id,id);assert.equal(offlineRoute[0].revision,'4')
+    console.log('GREEN player route resolves DB identity/current revision without a live player session; superseded writer rejected')
     const original=[id,...authority,'c9190000-0000-0000-0000-000000000001',0,'deposit',25,playerGold(player,75n),bankGold(bank,75n)]
     await assert.rejects(login.query(qualifiedSql,original),e=>e.code==='P0001')
     const recoverySql='select * from private.reconcile_money_transfer($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)'
@@ -451,9 +467,11 @@ try {
     await db.query(`revoke execute on function ${signature} from mud_writer`)
     await db.query(`revoke execute on function ${readSignature} from mud_writer`)
     await db.query(`revoke execute on function ${recoverySignature} from mud_writer`)
+    await db.query(`revoke execute on function ${playerRouteSignature} from mud_writer`)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',readSignature,'EXECUTE'])).rows[0].allowed,false)
     assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',recoverySignature,'EXECUTE'])).rows[0].allowed,false)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',playerRouteSignature,'EXECUTE'])).rows[0].allowed,false)
   }
   await db.end()
 }
