@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Actual C deposit/withdraw functions with qualified PostgreSQL — 2026-09-07
+
+Sources `0adaf72`/`535a43c` extend the native PostgreSQL executable to call the
+real bank.c deposit/withdraw entry points, not the dispatcher directly. A bank
+room fixture and actual cmd feed the native callback, qualified DB transaction,
+result decoder, wallet application and command success formatting. Successful
+message count must agree with CONFIRMED; printed amount must agree with the
+wallet delta; failed commands leave the wallet unchanged. Legacy bank load/save,
+player save and legacy amount-parser calls abort this selected-authority test.
+
+The first integration attempt failed linking a duplicate free_obj test stub;
+the real files1.c implementation remains linked and that duplicate was removed.
+The isolated native bank compile explicitly enables MUHAN_BANK_MONEY_ROUTING.
+No production compilation default was changed.
+
+Full frozen ARM64 suite at `535a43c` exited 0:
+`/tmp/muhan-bank-actual-command.log`. Actual entry-point tests include matching
+withdrawal, all-deposit, state drift refusal, empty-all refusal and same-directory
+withdrawal after verified release; recovery and both backup profiles also pass.
+The separate real C onboarding socket scenario passes. These are not yet one
+network-to-DB game process: room/descriptor setup and output capture are fixtures.
+Runtime policy installation, network command acceptance and all save-path
+ownership remain open. No Actions execution or deployment.
+
 ## Process-death-safe kernel money locks — 2026-09-07
 
 Test-first `4baa214` reproduced a stale directory lock after SIGKILL: the next
