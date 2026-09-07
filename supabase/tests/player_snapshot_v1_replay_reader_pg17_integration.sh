@@ -593,6 +593,10 @@ cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --included
   "$repo_root/src/bank_money_read_native.c" "$repo_root/tests/unit/bank_money_read_native_pg.c" \
   -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_read_native_pg"
 bank_codec_objects=()
+cc -std=gnu89 -Wall -Wextra -Werror -I"$repo_root/src" -I"$(pg_config --includedir)" \
+  -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+  "$repo_root/src/bank_money_read_native.c" "$repo_root/src/player_paired_route_native.c" "$repo_root/tests/unit/player_paired_route_native_pg.c" \
+  -L"$(pg_config --libdir)" -lpq -o "${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/player_paired_route_native_pg"
 for bank_codec in files1 player_record_serializer player_snapshot_v1 object_graph_v1 cdto_v1 bank_snapshot_v1 bank_money_result_native bank_money_command_native bank_money_route bank; do
   bank_codec_object="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank-native-${bank_codec}.o"
   cc -std=gnu89 -fcommon -DMUHAN_BANK_MONEY_ROUTING -ffunction-sections -fdata-sections -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -614,5 +618,6 @@ BANK_PAYLOAD_LOCAL_DISPOSABLE=1 BANK_PAYLOAD_LOCAL_PORT="$postgres_port" BANK_TR
   BANK_TRANSFER_NATIVE_PLANNER="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_plan_native_runner" \
   BANK_TRANSFER_NATIVE_COMMIT="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_commit_native_pg" \
   BANK_TRANSFER_NATIVE_READER="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/bank_money_read_native_pg" \
+  PLAYER_PAIRED_ROUTE_NATIVE="${MUHAN_UNIT_DIR:-/tmp/muhan-unit}/player_paired_route_native_pg" \
   BANK_TRANSFER_PLANNER="$repo_root/rust/target/release/bank_money_transfer_plan" \
   node "$repo_root/services/m4-file-snapshot-manifest-relay/test/bank-transfer-rust-pg.mjs"

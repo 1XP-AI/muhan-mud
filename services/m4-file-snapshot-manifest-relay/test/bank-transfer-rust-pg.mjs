@@ -42,6 +42,13 @@ const readSignature='private.read_qualified_money_transfer_state(uuid,text,uuid,
 const recoverySignature='private.reconcile_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea,uuid,bigint)'
 const playerRouteSignature='private.resolve_player_paired_route(text,text,uuid,bigint)'
 const playerRouteSql='select * from private.resolve_player_paired_route($1,$2,$3,$4)'
+const nativeRoute=values=>{
+  assert.ok(process.env.PLAYER_PAIRED_ROUTE_NATIVE?.startsWith('/'))
+  return spawnSync(process.env.PLAYER_PAIRED_ROUTE_NATIVE,values.map(String),{
+    env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
+      ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},timeout:5000,maxBuffer:8192,
+  })
+}
 const readSql='select * from private.read_qualified_money_transfer_state($1,$2,$3,$4,$5,$6,$7)'
 const nativeRead=(args,options='')=>spawnSync(process.env.BANK_TRANSFER_NATIVE_READER,args.map(String),{
   env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:options,
@@ -95,6 +102,11 @@ try {
     const routed=(await login.query(playerRouteSql,[world,routeName,writer,1])).rows
     assert.equal(routed.length,1);assert.equal(routed[0].character_id,id);assert.equal(routed[0].owner_user_id,actor);assert.equal(routed[0].revision,'0')
     assert.equal(routed[0].player_hash,sha(player).toString('hex'));assert.equal(routed[0].bank_hash,sha(bank).toString('hex'))
+    const nativeIdentity=nativeRoute([world,routeName,writer,1])
+    assert.equal(nativeIdentity.status,0,nativeIdentity.stderr.toString())
+    assert.equal(nativeIdentity.stdout.toString(),`${id} ${actor} 0 ${routed[0].player_hash} ${routed[0].bank_hash}\n`)
+    const missingIdentity=nativeRoute([world,'Missinghero',writer,1])
+    assert.equal(missingIdentity.status,1);assert.equal(missingIdentity.stdout.length,0)
     await assert.rejects(login.query(playerRouteSql,[world,'Missinghero',writer,1]),e=>e.code==='P0001')
     await assert.rejects(login.query(playerRouteSql,[world,routeName,writer,2]),e=>e.code==='P0001')
     await assert.rejects(db.query(playerRouteSql,[world,routeName,writer,1]),e=>e.code==='P0001')
@@ -108,6 +120,9 @@ try {
     await db.query('begin')
     try {
       await db.query('select character_id from private.game_character_paired_snapshot_states where character_id=$1 for update',[id])
+      const routeStart=Date.now(),blockedRoute=nativeRoute([world,routeName,writer,1])
+      assert.equal(blockedRoute.status,1);assert.equal(blockedRoute.stdout.length,0)
+      assert.ok(Date.now()-routeStart<4000,'native route must stop before watchdog on held DB lock')
       const start=Date.now()
       const timeout=nativeRead([id,...authority],'-c lock_timeout=0 -c statement_timeout=0')
       assert.equal(timeout.status,1,'native reader must terminate on its own deadline')
@@ -410,6 +425,9 @@ try {
     await assert.rejects(login.query(playerRouteSql,[world,offlineName,writer,1]),e=>e.code==='P0001')
     const offlineRoute=(await login.query(playerRouteSql,[world,offlineName,successor,2])).rows
     assert.equal(offlineRoute.length,1);assert.equal(offlineRoute[0].character_id,id);assert.equal(offlineRoute[0].revision,'4')
+    const nativeOffline=nativeRoute([world,offlineName,successor,2])
+    assert.equal(nativeOffline.status,0,nativeOffline.stderr.toString())
+    assert.equal(nativeOffline.stdout.toString(),`${id} ${actor} 4 ${offlineRoute[0].player_hash} ${offlineRoute[0].bank_hash}\n`)
     console.log('GREEN player route resolves DB identity/current revision without a live player session; superseded writer rejected')
     const original=[id,...authority,'c9190000-0000-0000-0000-000000000001',0,'deposit',25,playerGold(player,75n),bankGold(bank,75n)]
     await assert.rejects(login.query(qualifiedSql,original),e=>e.code==='P0001')
