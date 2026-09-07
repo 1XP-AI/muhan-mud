@@ -36,6 +36,10 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     ln -s /repo/services/m4-file-snapshot-manifest-relay/node_modules /work/services/m4-file-snapshot-manifest-relay/node_modules
     cd /work
     test -x /usr/bin/flock
+    cc -std=gnu89 -fcommon -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
+      tests/unit/player_authority_store_test.c src/player_authority_store.c src/player_store.c \
+      src/player_path.c src/utf8_text.c src/resource_path.c -o /tmp/player-authority-store-test
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/player-authority-store-test
     # Compile the real login consumer after transient admission struct changes.
     cc -std=gnu89 -fcommon -Isrc -c src/command1.c -o /tmp/session-command1.o
     cc -std=gnu89 -fcommon -Isrc -fsanitize=address,undefined -fno-omit-frame-pointer \
