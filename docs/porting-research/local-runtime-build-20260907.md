@@ -31,7 +31,18 @@ rejection of abbreviated revisions and remote Docker endpoints. Actual
 named-context override, complete packaging, and executable runtime checks
 remain unverified until the image build succeeds.
 
+The boundary suite now also runs the complete wrapper with a recording mock
+Docker executable. It checks the archived Gateway source exists without Git
+metadata, the main context is empty, the local builder/platform/target flags
+are correct, a cloud driver is rejected before building, a failed build exits
+without claiming success or inspecting an image, and a wrong image architecture
+is rejected. All checks pass. These are wrapper tests, not BuildKit execution
+or production runtime acceptance.
+
 Docker daemon `_ping` currently returns OK, but an existing `buildx inspect
 default --bootstrap` process remains live without output after five minutes.
 No duplicate build was started. Host disk has about 11 GiB available; capacity
 must be checked before building this multi-stage image. No data was deleted.
+The daemon info endpoint also responds: aarch64, Docker 29.6.1, overlayfs,
+zero running containers. The same builder-inspection process was polled again
+and is still live; the daemon response alone does not prove BuildKit readiness.
