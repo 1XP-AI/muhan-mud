@@ -926,9 +926,10 @@ class OnboardingSession {
         this.pauseInput()
         const legacyNameKey = Buffer.from(event.nameHex, 'hex').toString('utf8')
         if (Buffer.from(legacyNameKey, 'utf8').toString('hex') !== event.nameHex) throw new OnboardingProtocolError()
-        // The challenge is the only point where C-provided SHA evidence crosses
-        // the service boundary. Do not cancel the intent after this ledger write.
-        this.unreservedIntentMayExist = false
+        // An allowance is not ownership. On rejection or disconnect, the DB
+        // cancellation RPC may end this still-started intent without deleting
+        // its attempt ledger. Its intent row lock serializes with challenge
+        // and claim; finalized/reserved intents cannot be cancelled.
         const request: ChallengeOnboardingRequest = { actorUserId: this.actorUserId!, correlationId: this.correlationId!, worldId: 'muhan', legacyNameKey, fileSha256: event.fileSha256 }
         const result = await this.authorizer.challenge(request)
         if (this.closed) return
@@ -1002,6 +1003,9 @@ class OnboardingSession {
     }
     // C must first accept the exact completion control. Its write callback is
     // the durable C-side boundary before the DB may bind the evidence receipt.
+    // Once completion can reach C, preserve indeterminate handoff evidence
+    // for reconciliation instead of cancelling the claim on disconnect.
+    this.unreservedIntentMayExist = false
     await this.writeControl(completionControl)
     if (this.closed) return
     await this.evidenceFinalizer.finalize({

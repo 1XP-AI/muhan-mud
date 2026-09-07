@@ -937,7 +937,7 @@ async function main(): Promise<void> {
     assert.equal(await sql(`select lifecycle || '|' || coalesce(owner_user_id::text, '<null>') from public.game_characters where id = '${missingMemberCharacterId}'`), 'imported_unclaimed|<null>')
     await assertNormalAdmissionDenied(gateway.address(), missingMemberCharacterId)
     await closeAndWait(missingMember.ws)
-    process.stderr.write(`stack-e2e: missing-member-intent-after-close=${await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${missingMemberCorrelation}'`)}\n`)
+    await eventually(async () => assert.equal(await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${missingMemberCorrelation}'`), 'cancelled'))
 
     const wrongPassword = await openOnboarding(gateway.address(), wrongPasswordCorrelation, 'claim')
     wrongPassword.send(`${importedClaimName}\n`)
@@ -948,6 +948,8 @@ async function main(): Promise<void> {
     assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
     await assertNormalAdmissionDenied(gateway.address(), importedClaimCharacterId)
     await closeAndWait(wrongPassword.ws)
+    await eventually(async () => assert.equal(await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${wrongPasswordCorrelation}'`), 'cancelled'))
+    assert.equal(await sql(`select count(*) from private.game_character_claim_attempts where correlation_id = '${wrongPasswordCorrelation}' and claimed_at is null`), '1')
 
     const expiredClaim = await openOnboarding(gateway.address(), expiredClaimCorrelation, 'claim')
     expiredClaim.send(`${importedClaimName}\n`)
@@ -958,6 +960,8 @@ async function main(): Promise<void> {
     assert.equal(createHash('sha256').update(await readFile(importedClaimPlayer)).digest('hex'), importedClaimDigest)
     await assertNormalAdmissionDenied(gateway.address(), importedClaimCharacterId)
     await closeAndWait(expiredClaim.ws)
+    await eventually(async () => assert.equal(await sql(`select status from private.game_character_onboarding_intents where correlation_id = '${expiredClaimCorrelation}'`), 'cancelled'))
+    assert.equal(await sql(`select count(*) from private.game_character_claim_attempts where correlation_id = '${expiredClaimCorrelation}' and claimed_at is null`), '1')
 
     const claim = await openOnboarding(gateway.address(), importedClaimCorrelation, 'claim')
     claim.send(`${importedClaimName}\n`)
