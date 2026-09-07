@@ -64,6 +64,46 @@ export async function readMoneyPending(root:string,command:string) {
   try { return (await readAt(`/proc/self/fd/${dir.fd}`,command)).result }
   finally { await dir.close() }
 }
+// Durable per-character reservation primitive. No release API: a DB-confirmed
+// current-state recovery protocol must own release before runtime adoption.
+// Unlike a directory scan, the exclusive link serializes competing processes.
+export async function claimMoneyCharacterFence(root:string,args:string[],frame:Buffer):Promise<'CLAIMED'|'EXACT_RETRY'> {
+  const bytes=encode(args,frame)
+  const key=hash(JSON.stringify([args[1],args[0]]))
+  const dir=await directory(root),base=`/proc/self/fd/${dir.fd}`
+  const target=`${base}/${key}.money-fence`,temp=`${base}/.${key}.${randomUUID()}.tmp`
+  let created=false
+  try {
+    const fd=await open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600)
+    created=true
+    try {await fd.writeFile(bytes);await fd.sync()} finally {await fd.close()}
+    let outcome:'CLAIMED'|'EXACT_RETRY'='CLAIMED'
+    try {await link(temp,target)} catch(error) {
+      if((error as NodeJS.ErrnoException).code!=='EEXIST') throw error
+      const existing=await open(target,constants.O_RDONLY|constants.O_NOFOLLOW)
+      try {
+        const stat=await existing.stat()
+        // A contender can observe the winner's temporary second link. Refuse
+        // conservatively; never wait on, replace, or delete its reservation.
+        if(!stat.isFile()||stat.uid!==process.getuid!()||(stat.mode&0o777)!==0o600||stat.nlink!==1||stat.size!==bytes.length)
+          throw new Error('character has pending money fence')
+        const found=Buffer.alloc(bytes.length+1)
+        let used=0
+        while(used<found.length) {
+          const result=await existing.read(found,used,found.length-used,null)
+          if(!result.bytesRead) break
+          used+=result.bytesRead
+        }
+        if(used!==bytes.length||!found.subarray(0,used).equals(bytes)) throw new Error('character has pending money fence')
+        outcome='EXACT_RETRY'
+      } finally {await existing.close()}
+    }
+    await unlink(temp);created=false;await dir.sync();return outcome
+  } finally {
+    if(created) await unlink(temp).catch(()=>{})
+    await dir.close()
+  }
+}
 // Bounded sequential visitor: never hold many multi-megabyte requests in memory.
 // Keep one directory capability across discovery and every record read.
 export async function visitMoneyPending(root:string,visit:(request:{args:string[],frame:Buffer}|null)=>Promise<void>,limit=1000):Promise<boolean> {

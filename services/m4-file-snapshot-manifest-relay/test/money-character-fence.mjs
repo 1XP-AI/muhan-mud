@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict'
+import {mkdtemp,rm,readdir,readFile} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {spawn} from 'node:child_process'
+import {fileURLToPath} from 'node:url'
+import {claimMoneyCharacterFence} from '../dist/money-pending-request.js'
+const args=['a0000000-0000-4000-8000-000000000001','fence-world','a0000000-0000-4000-8000-000000000002',
+ 'a0000000-0000-4000-8000-000000000003','gateway','a0000000-0000-4000-8000-000000000004','1',
+ 'a0000000-0000-4000-8000-000000000005','0','deposit','25']
+const frame=Buffer.alloc(8+48+55);frame.writeUInt32BE(48,0);frame.writeUInt32BE(55,4)
+if(process.argv[2]==='--child') {
+ const request=[...args];request[7]=process.argv[4];request[0]=process.argv[5]||args[0]
+ try {console.log(await claimMoneyCharacterFence(process.argv[3],request,frame))} catch {process.exitCode=2}
+} else {
+ const root=await mkdtemp(join(tmpdir(),'muhan-money-fence-'))
+ const child=(command,character=args[0])=>new Promise((resolve,reject)=>{
+  const p=spawn(process.execPath,[fileURLToPath(import.meta.url),'--child',root,command,character],{stdio:['ignore','pipe','inherit']})
+  let output='';p.stdout.on('data',b=>{output+=b});p.on('error',reject);p.on('exit',code=>resolve({code,output}))
+ })
+ try {
+  const commands=Array.from({length:8},(_,i)=>`b0000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`)
+  const results=await Promise.all(commands.map(c=>child(c)))
+  assert.equal(results.filter(r=>r.code===0).length,1)
+  const winner=results.findIndex(r=>r.code===0)
+  const files=await readdir(root);assert.equal(files.length,1);assert.ok(files[0].endsWith('.money-fence'))
+  const saved=await readFile(join(root,files[0]))
+  assert.deepEqual(await child(commands[winner]),{code:0,output:'EXACT_RETRY\n'})
+  assert.equal((await child(commands[(winner+1)%8])).code,2)
+  assert.deepEqual(await readFile(join(root,files[0])),saved)
+  assert.equal((await child(commands[0],'c0000000-0000-4000-8000-000000000001')).code,0)
+  console.log('GREEN durable character fence: one process wins, restart retries exactly, other command blocked, other character independent')
+ } finally {await rm(root,{recursive:true,force:true})}
+}
