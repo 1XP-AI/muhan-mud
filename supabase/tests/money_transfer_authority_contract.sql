@@ -46,4 +46,8 @@ select pg_temp.expect_state('P0001','select pg_temp.authority()');
 reset role;
 reset session authorization;
 rollback;
-select not has_function_privilege('mud_writer','private.lock_money_transfer_authority(uuid,text,uuid,uuid,text,uuid,bigint)','EXECUTE') as runtime_access_still_closed;
+do $$ begin
+  if has_function_privilege('mud_writer','private.lock_money_transfer_authority(uuid,text,uuid,uuid,text,uuid,bigint)','EXECUTE') then
+    raise exception 'runtime authority grant leaked from disposable test';
+  end if;
+end $$;
