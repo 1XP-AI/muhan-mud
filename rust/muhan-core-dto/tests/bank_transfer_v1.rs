@@ -29,6 +29,53 @@ fn fixtures() -> (PlayerSnapshotV1, BankSnapshotV1) {
 }
 
 #[test]
+#[ignore = "requires compiled actual C bank command oracle; local Linux runner supplies it"]
+fn actual_c_money_commands_match_rust_plans() {
+    let oracle = std::env::var("MUHAN_BANK_COMMAND_ORACLE").expect("explicit C oracle required");
+    let (mut player, mut bank) = fixtures();
+    let mut compared = 0;
+    for direction in [Direction::Deposit, Direction::Withdraw] {
+        for gold in [0, 1, 50, 100, 299_999_999, 300_000_000, 300_000_001] {
+            for balance in [0, 1, 50, 100, 299_999_999, 300_000_000, 300_000_001] {
+                for amount in [0, 1, 25, 50, 100, 300_000_000, 300_000_001] {
+                    player.gold = gold;
+                    bank.root.nodes[0].object.value = balance;
+                    let expected = match plan_money_transfer(&player, &bank, direction, amount) {
+                        Ok(plan) => format!(
+                            "OK {} {}",
+                            plan.player.gold, plan.bank.root.nodes[0].object.value
+                        ),
+                        Err(_) => format!("REJECT {gold} {balance}"),
+                    };
+                    let output = std::process::Command::new(&oracle)
+                        .args([
+                            if direction == Direction::Deposit {
+                                "deposit"
+                            } else {
+                                "withdraw"
+                            }
+                            .to_owned(),
+                            gold.to_string(),
+                            balance.to_string(),
+                            amount.to_string(),
+                        ])
+                        .output()
+                        .expect("launch actual C command");
+                    assert!(output.status.success());
+                    assert_eq!(
+                        String::from_utf8(output.stdout).unwrap().trim(),
+                        expected,
+                        "direction={direction:?}, player={gold}, bank={balance}, amount={amount}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(compared, 686);
+}
+
+#[test]
 fn transfers_change_only_two_balances_and_do_not_mutate_inputs() {
     let (player, bank) = fixtures();
     let original = (player.clone(), bank.clone());

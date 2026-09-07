@@ -44,6 +44,9 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
       tests/unit/bank_transfer_legacy_characterization.c src/bank.c \
       -Wl,--gc-sections -o /tmp/bank-transfer-characterization
     /tmp/bank-transfer-characterization
+    MUHAN_BANK_COMMAND_ORACLE=/tmp/bank-transfer-characterization CARGO_TARGET_DIR=/work/rust/target \
+      cargo test --locked --offline --manifest-path rust/Cargo.toml -p muhan-core-dto \
+      --test bank_transfer_v1 -- --ignored
     CARGO_TARGET_DIR=/work/rust/target cargo build --locked --offline --release --manifest-path rust/Cargo.toml -p muhan-core-dto --bin player_snapshot_v1_replay_verify
     PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 PLAYER_SNAPSHOT_V1_REPLAY_READER_CONTAINERLESS=1 bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
   ')"

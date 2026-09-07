@@ -56,8 +56,29 @@ static int scenario(int taking,int failing)
     if(failing && saved_gold+bank_balance==(long)150) return 1;
     return 0;
 }
-int main(void)
+static int differential(int argc,char **argv)
 {
+    creature player; room bank_room; cmd command;
+    long values[3]; char *end; int i;
+    if(argc!=5 || (strcmp(argv[1],"deposit") && strcmp(argv[1],"withdraw"))) return 2;
+    for(i=0;i<3;i++) {
+        if(strlen(argv[i+2])>9 || !argv[i+2][0]) return 2;
+        values[i]=strtol(argv[i+2],&end,10);
+        if(*end || values[i]<0 || values[i]>300000001) return 2;
+    }
+    memset(&player,0,sizeof(player)); memset(&bank_room,0,sizeof(bank_room));
+    memset(&command,0,sizeof(command));
+    F_SET(&bank_room,RBANK); player.parent_rom=&bank_room;
+    strcpy(player.name,"Bankhero"); player.gold=values[0]; bank_balance=values[1];
+    saved_gold=values[0]; command.num=2;
+    snprintf(command.str[1],sizeof(command.str[1]),"%ld냥",values[2]);
+    if(!strcmp(argv[1],"deposit")) deposit(&player,&command); else withdraw(&player,&command);
+    printf("%s %ld %ld\n",bank_calls==1 && player_calls==1?"OK":"REJECT",saved_gold,bank_balance);
+    return 0;
+}
+int main(int argc,char **argv)
+{
+    if(argc>1) return differential(argc,argv);
     if(scenario(0,0)||scenario(1,0)||scenario(0,1)||scenario(1,1)) return 1;
     puts("legacy bank characterization: success conserves value; failed bank saves still persist player (known non-atomic baseline)");
     return 0;
