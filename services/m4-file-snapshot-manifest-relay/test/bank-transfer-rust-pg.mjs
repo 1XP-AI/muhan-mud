@@ -162,7 +162,13 @@ try {
         assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,0)
         await claimPlayerCharacterFence(pending,request.slice(0,8),request[8])
         await assert.rejects(releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login),/unconfirmed/)
-        nativeSave(request,'1 1\n',pending)
+        assert.ok(process.env.PLAYER_SESSION_STORE_NATIVE?.startsWith('/'))
+        const storeSave=spawnSync(process.env.PLAYER_SESSION_STORE_NATIVE,
+          [world,name,writer,'1',request[5],process.execPath,fileURLToPath(new URL('../dist/player-pending-prepare-cli.js',import.meta.url)),pending,'101'],{
+            env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
+              ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},timeout:8000,maxBuffer:8192,
+          })
+        assert.equal(storeSave.status,0,storeSave.stderr.toString())
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         nativeSave(request,'2 1\n',pending)
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
