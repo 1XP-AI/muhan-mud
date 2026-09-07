@@ -5,7 +5,7 @@ import test from 'node:test'
 import WebSocket, { type RawData } from 'ws'
 import type { AuthorizedCharacter, BeginCharacterSessionRequest, CharacterAuthorizer, RenewCharacterSessionRequest, RenewedCharacterSession } from '../src/character-authorizer.js'
 import { loadConfig } from '../src/config.js'
-import { createGateway, sendBufferedWebSocketFrame, type GatewayDependencies, type GatewayTimers } from '../src/gateway.js'
+import { createGateway, sendBufferedWebSocketFrame, type EvidenceFinalizer, type GatewayDependencies, type GatewayTimers } from '../src/gateway.js'
 import { OnboardingAuthorizationError, type ChallengeOnboardingRequest, type FinalizeOnboardingRequest, type OnboardingAuthorizer } from '../src/onboarding-authorizer.js'
 import { OnboardingControlDemultiplexer } from '../src/onboarding-protocol.js'
 
@@ -962,6 +962,7 @@ test('disconnect after a successful claim challenge cancels before VERIFIED or E
       onboardingAuthorizer: authorizer,
       characterAuthorizer: authorizer,
       authenticator: { verify: async () => ({ sub: actor, expiresAtMs: Date.now() + 60_000, claims: {} }) },
+      ...(evidenceEnabled ? { evidenceFinalizer: { finalize: async (_request: Parameters<EvidenceFinalizer['finalize']>[0]): Promise<void> => {} } } : {}),
       connectTcp: () => { mud.connect(); return mud as unknown as Socket },
     })
     gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening')

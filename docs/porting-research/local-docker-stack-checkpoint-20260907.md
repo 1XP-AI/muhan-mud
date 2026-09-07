@@ -1,5 +1,30 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: pre-completion claim cancellation fixed; expired finalize next
+
+`89e50b4` keeps unfinished claim cancellation eligible through challenge and
+password input, then preserves indeterminate work before VERIFIED claim RPC
+or EVIDENCE completion control. Existing cancel SQL only changes the intent;
+no migration or ledger deletion was needed. New transactional SQL contract
+passed against actual isolated PostgreSQL 17/full current schema: same-actor
+retries, full-row allowance preservation, old challenge/claim denial,
+idempotent cancellation, target/actor rate caps and reserved/finalized guards.
+Owned tmpfs DB container was removed after rollback; no other containers touched.
+
+Gateway suite: 137 passed, 0 failed, 4 conditional skips after test-only
+evidence-finalizer injection. Gateway and stack TypeScript checks passed.
+Concurrent two-DB-session cancel-vs-claim ordering remains to be tested.
+
+Frozen `89e50b4` full stack passes missing-member cancellation and wrong-password
+cancellation (including retained allowance) and proceeds to expired claim.
+It fails at stack-e2e line 963: expired claim remains started, expected cancelled.
+Evidence `/tmp/muhan-local-stack.a8R76A/result.json`. Expiry is injected in DB
+after challenge returns, so C verifies password then claim RPC rejects; Gateway
+has already disabled cancellation before sending that RPC. Next distinguish
+known deterministic DB rejection from indeterminate ownership completion and
+cover both with TDD; do not cancel an uncertain committed claim blindly.
+Full acceptance still 1 PASS / 1 FAIL; browser phase not reached. No push/deploy.
+
 ## Latest diagnosis: rejected claim permanently skips cancellation
 
 Frozen `fe3edfc` reproduces `missing-member-intent-after-close=started`, then
