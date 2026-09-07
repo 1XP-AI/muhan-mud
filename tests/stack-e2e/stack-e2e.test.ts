@@ -906,6 +906,10 @@ async function main(): Promise<void> {
     await waitForMud(claimMudPort, mud)
     const claimConfig = loadConfig({ NODE_ENV: 'test', MUD_ONBOARDING_ENABLED: 'true', SUPABASE_URL: 'http://127.0.0.1:9999', SUPABASE_INTERNAL_REST_URL: restUrl, SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT, MUD_ADMISSION_SECRET: admissionSecret, GATEWAY_INSTANCE_ID: `claim-${process.pid}`, HOST: '127.0.0.1', PORT: '0', MUD_HOST: '127.0.0.1', MUD_PORT: String(claimMudPort), ALLOWED_ORIGINS: origin, AUTH_TIMEOUT_MS: '2000', TCP_CONNECT_TIMEOUT_MS: '3000', MUD_ADMISSION_TIMEOUT_MS: '3000' })
     const claimAuthorizer = new SupabaseOnboardingAuthorizer(claimConfig)
+    // The real browser emits its actual ephemeral origin, not the synthetic
+    // origin used by Node WebSocket fixtures. Authorize that exact origin only.
+    const webPort = await choosePort()
+    claimConfig.allowedOrigins.add(`http://127.0.0.1:${webPort}`)
     let claimCompletionPhase = 'before-claim'
     const expiringClaimAuthorizer: OnboardingAuthorizer = {
       begin: (request) => claimAuthorizer.begin(request),
@@ -1049,7 +1053,6 @@ async function main(): Promise<void> {
     // UI receives a deterministic Auth response only because PostgREST is not
     // an Auth server; every roster read, onboarding frame, C prompt, lifecycle
     // transition, and subsequent ordinary MUD admission is otherwise live.
-    const webPort = await choosePort()
     web = startWebStackServer({
       gatewayUrl: `${gateway.address().replace('http:', 'ws:')}/ws`,
       port: webPort,
