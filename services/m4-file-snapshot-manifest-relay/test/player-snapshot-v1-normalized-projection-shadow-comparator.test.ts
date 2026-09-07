@@ -52,8 +52,33 @@ function projected(player: PlayerSnapshotV1NormalizedProjection['player']): Play
 }
 
 function reader(rows: readonly unknown[]): ImmutablePlayerSnapshotV1NormalizedProjectionRecordReader {
-  return { findByCommandId: async () => rows }
+  return { findByIdentity: async () => rows }
 }
+
+test('selects the exact world and character when two characters share a command id', async () => {
+  const otherCharacter = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const rows = [record(), record({ characterId: otherCharacter }), record({ worldId: 'other' })]
+  const seen: unknown[] = []
+  const scopedReader = {
+    findByIdentity: async (identity: { worldId: string, characterId: string, commandId: string }) => {
+      seen.push(identity)
+      return rows.filter((row) => row.worldId === identity.worldId && row.characterId === identity.characterId && row.commandId === identity.commandId)
+    },
+  }
+  const identities = [
+    { worldId: 'muhan-01', characterId, commandId },
+    { worldId: 'muhan-01', characterId: otherCharacter, commandId },
+    { worldId: 'other', characterId, commandId },
+  ]
+  for (const identity of identities) {
+    assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow({ ...artifact(), ...identity },
+      scopedReader,
+      { project: async () => projection }), 'MATCH')
+  }
+  assert.deepEqual(seen, identities)
+  assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), reader([rows[1]]),
+    { project: async () => projection }), 'EVIDENCE_MISMATCH', 'a reader returning another character is still rejected')
+})
 
 test('derives every normalized field from immutable C artifact evidence and matches one closed injected record', async () => {
   const seen: Array<[Uint8Array, string]> = []
@@ -88,7 +113,7 @@ test('fails closed when the immutable evidence or derived projection is invalid,
   let reads = 0
   const invalidArtifact = { ...artifact(), writerRevision: '09' }
   assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(invalidArtifact, {
-    findByCommandId: async () => { reads++; return [record()] },
+    findByIdentity: async () => { reads++; return [record()] },
   }, { project: async () => projection }), 'INVALID_ARTIFACT')
   assert.equal(reads, 0)
 
@@ -96,7 +121,7 @@ test('fails closed when the immutable evidence or derived projection is invalid,
     project: async () => ({ ...projection, player: { ...projection.player, daily: projection.player.daily.slice(1) } }),
   }), 'PROJECTION_DERIVATION_FAILED')
   assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
-    findByCommandId: async () => { throw new Error('reader failure') },
+    findByIdentity: async () => { throw new Error('reader failure') },
   }, { project: async () => projection }), 'RECORD_READ_ERROR')
 })
 
@@ -123,7 +148,7 @@ test('classifies wrong numeric representations on both sides without throwing or
       Object.assign(target, { [field]: typeof original === 'number' ? BigInt(original) : Number(original) })
       let reads = 0
       assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
-        findByCommandId: async () => { reads++; return [record()] },
+        findByIdentity: async () => { reads++; return [record()] },
       }, { project: async () => malformed }), 'PROJECTION_DERIVATION_FAILED', `${path}.${field} derivation`)
       assert.equal(reads, 0)
       assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), reader([record({ projection: malformed })]), {
@@ -147,7 +172,7 @@ test('rejects Rust-invalid depth-65 and 4,097-item root or child lists before a 
   for (const [name, malformed] of cases) {
     let reads = 0
     const result = await comparePlayerSnapshotV1NormalizedProjectionShadow(artifact(), {
-      findByCommandId: async () => { reads++; return [record({ projection: malformed })] },
+      findByIdentity: async () => { reads++; return [record({ projection: malformed })] },
     }, { project: async () => malformed })
     assert.equal(result, 'PROJECTION_DERIVATION_FAILED', name)
     assert.equal(reads, 0, `${name} must fail before comparison can reach MATCH`)

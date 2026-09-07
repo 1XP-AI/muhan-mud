@@ -95,7 +95,7 @@ test('hermetic post-save shadow proof binds the C artifact projection to one inj
     sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: payload.length, projection: derived,
   }
   assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(evidence, {
-    findByCommandId: async () => [record],
+    findByIdentity: async () => [record],
   }, {
     project: (receivedPayload, receivedSha256) => projectPlayerSnapshotV1Normalized(receivedPayload, { runnerPath, snapshotSha256: receivedSha256 }),
   }), 'MATCH')
@@ -108,7 +108,7 @@ test('raw native evidence and filename or receipt mismatches cannot reach a shad
   const rawEvidence = parsePlayerSnapshotV1ArtifactEvidence(wrapped)
   let reads = 0
   assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(rawEvidence, {
-    findByCommandId: async () => { reads++; return [] },
+    findByIdentity: async () => { reads++; return [] },
   }, { project: async () => { throw new Error('must not derive raw evidence') } }), 'INVALID_ARTIFACT')
   assert.equal(reads, 0, 'unbound native evidence cannot reach the reader or MATCH')
   assert.throws(

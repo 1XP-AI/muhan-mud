@@ -45,7 +45,7 @@ export interface ImmutablePlayerSnapshotV1NormalizedProjectionRecord {
 
 /** Payload-free, read-only injection point. No database implementation belongs here. */
 export interface ImmutablePlayerSnapshotV1NormalizedProjectionRecordReader {
-  findByCommandId(commandId: string): Promise<readonly unknown[]>
+  findByIdentity(identity: Readonly<{ worldId: string, characterId: string, commandId: string }>): Promise<readonly unknown[]>
 }
 
 /** Injectable derivation boundary; the production adapter is the Rust-backed normalized projector. */
@@ -236,7 +236,9 @@ export async function comparePlayerSnapshotV1NormalizedProjectionShadow(
   try { derived = await deriver.project(artifact.payload, artifact.snapshotSha256) } catch { return 'PROJECTION_DERIVATION_FAILED' }
   if (!closedProjection(derived)) return 'PROJECTION_DERIVATION_FAILED'
   let rows: readonly unknown[]
-  try { rows = await reader.findByCommandId(artifact.commandId) } catch { return 'RECORD_READ_ERROR' }
+  try {
+    rows = await reader.findByIdentity({ worldId: artifact.worldId, characterId: artifact.characterId, commandId: artifact.commandId })
+  } catch { return 'RECORD_READ_ERROR' }
   if (!Array.isArray(rows)) return 'RECORD_READ_ERROR'
   if (rows.length === 0) return 'MISSING_RECORD'
   if (rows.length !== 1) return 'UNEXPECTED_DUPLICATE'
