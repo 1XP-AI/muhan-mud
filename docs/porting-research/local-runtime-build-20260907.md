@@ -1,5 +1,27 @@
 # Production runtime: local build gate
 
+## Latest execution
+
+The local runtime build is now running in session `36085` with source
+`2cfedc036f613fd8c902257aa1125c4222928b5b`. Evidence directory:
+`/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/muhan-runtime-build.RNIORD`.
+BuildKit confirms the default docker driver and loads the named local source
+context (42.80 MB); the private-fetch stage is bypassed without credentials.
+Image build completion and runtime binary tests are still pending.
+
+The investigation found the original inspection process had the shared
+`~/.docker/buildx/.lock` open, alongside other projects and Docker Desktop.
+An isolated config queried the same daemon immediately. The wrapper now gives
+Buildx its own task-local metadata directory, without changing Docker registry
+credentials or restarting the shared daemon. No other process was stopped.
+
+Actual CLI execution also exposed an unsupported `buildx inspect --format`
+flag that the initial mock had missed. A regression first reproduced the
+failure, then passed after changing to captured standard inspection output
+and extracting its Driver field. The complete wrapper test passes again.
+
+## Initial gate and history
+
 The real-Auth browser stack passed at `ead4537`; the deployment runtime image
 has not yet been built or accepted. The test image is not deployment evidence.
 

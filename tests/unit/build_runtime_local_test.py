@@ -31,7 +31,9 @@ a = sys.argv[1:]
 with open(os.environ['BUILD_CALLS'], 'a') as f:
     f.write(json.dumps(a) + '\\n')
 if 'buildx' in a and 'inspect' in a:
-    print(os.environ.get('TEST_DRIVER', 'docker'))
+    assert '--format' not in a, 'installed buildx inspect does not support --format'
+    assert os.environ.get('BUILDX_CONFIG', '').startswith(os.environ['TMPDIR'])
+    print('Name: default\\nDriver: ' + os.environ.get('TEST_DRIVER', 'docker'))
 elif 'buildx' in a and 'build' in a:
     source = pathlib.Path(a[a.index('--build-context') + 1].split('=', 1)[1])
     assert (source / 'src' / 'services' / 'gateway' / 'package.json').is_file()

@@ -19,11 +19,14 @@ if [[ "$mode" == --dry-run ]]; then
   printf 'source=%s\nrecipe=%s\nendpoint=%s\nbuilder=default\nplatform=linux/amd64\ntarget=runtime\noutput=load\ntag=%s\n' "$revision" "$recipe" "$endpoint" "$tag"
   exit 0
 fi
-driver="$(docker --host "$endpoint" buildx inspect default --format '{{.Driver}}')"
-[[ "$driver" == docker ]] || { echo 'default builder must use the local docker driver' >&2; exit 2; }
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/muhan-runtime-build.XXXXXX")"
 # Retain this task-owned evidence and source on failure; never prune shared caches.
 printf 'Build evidence: %s\n' "$scratch"
+export BUILDX_CONFIG="$scratch/buildx"
+mkdir -p "$BUILDX_CONFIG"
+docker --host "$endpoint" buildx inspect default > "$scratch/builder.txt"
+driver="$(awk '$1 == "Driver:" {print $2}' "$scratch/builder.txt")"
+[[ "$driver" == docker ]] || { echo 'default builder must use the local docker driver' >&2; exit 2; }
 mkdir -p "$scratch/source/src" "$scratch/context"
 git -C "$root" archive "$revision" | tar -x -C "$scratch/source/src"
 cp "$recipe" "$scratch/Dockerfile"
