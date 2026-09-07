@@ -31,6 +31,7 @@ export interface WebStackClaimFixture extends WebStackFixture {
 export interface WebStackServer {
   baseUrl: string;
   child: ChildProcess;
+  postgrestUrl?: string;
 }
 
 interface TimerApi {
@@ -165,7 +166,7 @@ export function startWebStackServer({
       env: {
         ...process.env,
         NODE_ENV: "development",
-        SUPABASE_PUBLIC_URL: supabaseUrl,
+        SUPABASE_PUBLIC_URL: `http://127.0.0.1:${port}`,
         SUPABASE_PUBLISHABLE_KEY: supabasePublishableKey,
         MUD_GATEWAY_URL: gatewayUrl,
         MUD_ONBOARDING_ENABLED: "true",
@@ -179,7 +180,7 @@ export function startWebStackServer({
       process.stderr.write(`stack-e2e: web exited early (${code ?? signal}): ${output.read()}\n`);
     }
   });
-  return { baseUrl: `http://127.0.0.1:${port}`, child };
+  return { baseUrl: `http://127.0.0.1:${port}`, child, postgrestUrl: supabaseUrl };
 }
 
 async function fetchWebStackReadiness(
@@ -288,7 +289,19 @@ export async function stopWebStackServer(
   }
 }
 
-async function installAuthBoundary(page: Page, fixture: WebStackFixture): Promise<void> {
+async function installAuthBoundary(page: Page, fixture: WebStackFixture, server: WebStackServer): Promise<void> {
+  assert.ok(server.postgrestUrl, "real PostgREST endpoint is required");
+  // Mirror the production same-origin /rest/v1 ingress prefix, but forward
+  // every request and its bearer token to the real disposable database API.
+  // No roster response or database result is mocked here.
+  await page.route(`${server.baseUrl}/rest/v1/**`, async (route) => {
+    const requested = new URL(route.request().url());
+    const upstream = new URL(server.postgrestUrl!);
+    upstream.pathname = requested.pathname.slice("/rest/v1".length);
+    upstream.search = requested.search;
+    const response = await route.fetch({ url: upstream.toString() });
+    await route.fulfill({ response });
+  });
   const session = {
     access_token: fixture.accessToken,
     token_type: "bearer",
@@ -426,7 +439,7 @@ export async function runWebStackAcceptance({
   try {
     const provisionContext = await browser.newContext({ baseURL: server.baseUrl });
     const provisionPage = await provisionContext.newPage();
-    await installAuthBoundary(provisionPage, provision);
+    await installAuthBoundary(provisionPage, provision, server);
     await signInToEmptyRoster(provisionPage, provision);
     await provisionPage.getByRole("button", { name: "새 캐릭터 만들기" }).click();
     await expect(provisionPage.getByRole("heading", { name: "새 캐릭터 만들기" })).toBeVisible();
@@ -444,7 +457,7 @@ export async function runWebStackAcceptance({
 
     const claimContext = await browser.newContext({ baseURL: server.baseUrl });
     const claimPage = await claimContext.newPage();
-    await installAuthBoundary(claimPage, claim);
+    await installAuthBoundary(claimPage, claim, server);
     await signInToEmptyRoster(claimPage, claim);
     await claimPage.getByRole("button", { name: "기존 캐릭터 연결" }).click();
     await expect(claimPage.getByRole("heading", { name: "기존 캐릭터 연결" })).toBeVisible();
