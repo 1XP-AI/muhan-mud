@@ -115,3 +115,11 @@ Docker 사용량은 이미지 21.01GB(회수 가능 10.84GB), build cache 12.17G
 - 각 실행 후 artifact/receipt 파일 byte 불변 확인 및 raw payload SELECT 거부.
 
 테스트 runner는 auto-remove되었으며 임시 DB `muhan-linux-e2e-db-72c54a`도 ID/label 확인 후 종료·auto-remove·목록 부재를 확인했다. 합성 데이터는 제거되었고 로컬 검증 이미지는 후속 검증을 위해 남겨 두었다. 기존 공간 부족 및 Linux CLI E2E 차단은 해소됐다. 독립 리뷰, chart/job 연결, 실제 게임 onboarding 및 DB 저장 권위 전환은 여전히 미완료다.
+
+## 배포 저장소 선행 수정
+
+`/Users/jjangg96/Documents/1xp/tesnet-1xp.nosync`의 `codex/muhan-onboarding-safety`에서 기존 chart 구성을 확인했다. 이 chart는 아직 normalized recorder/reader migration과 Job을 포함하지 않는다. 기존 복사 SQL 5개(20260915/19/28, 20261001/03)에 소스에서 수정한 constraint 이름 충돌이 남아 있었고, 배포용 통합 Dockerfile도 normalized projector를 빌드·복사하지 않았다.
+
+배포 저장소 커밋 `673754d5`: 위 SQL은 이름 변경 외 차이가 없음을 확인한 뒤 소스와 byte 일치하도록 맞췄다. 원본 SQL hash를 고정하는 기존 렌더링 테스트도 해당 5개 hash만 갱신했다. 통합 Dockerfile에 normalized projector build/COPY/root-owned 0555 설정을 추가했다. 새 prerequisite 테스트 2개를 먼저 실패시키고 수정 후 기존 chart tests 44개와 함께 46 pass, 0 fail을 확인했다. 통합 이미지 자체의 새 빌드나 배포 실행 증거는 아니다.
+
+새 normalized 비교 Job, 전용 secret 및 DB migration 연결, network policy, 운영 입력 쌍 준비, amd64 통합 이미지 검증은 여전히 다음 작업이다. 두 저장소의 변경은 로컬 커밋이며 registry/Git 원격 push 및 k8s 작업은 하지 않았다.
