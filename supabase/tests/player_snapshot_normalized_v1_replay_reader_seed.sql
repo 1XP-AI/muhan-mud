@@ -5,13 +5,18 @@
 -- normalized_projection: exact JSON line emitted by Rust for that fixture
 -- This deliberately commits one fixed fixture for a SEPARATE reader session.
 -- A second run fails on its fixed character ID; it never deletes/replaces data.
+-- Define psql variable receipt_only to seed just identity/head/receipt for the
+-- manifest-first CLI integration. No manifest/artifact/projection is prefilled.
 \if :{?pvi_tree_payload}
 \else
   \quit 2
 \endif
-\if :{?normalized_projection}
+\if :{?receipt_only}
 \else
-  \quit 2
+  \if :{?normalized_projection}
+  \else
+    \quit 2
+  \endif
 \endif
 
 begin;
@@ -51,6 +56,10 @@ select private.record_legacy_published_receipt(
   'b9140000-0000-0000-0000-000000000001'::uuid, :'npr_request_sha256',
   1::bigint, 1::bigint, 'absent', null::text, repeat('a', 64), 1::smallint
 );
+\if :{?receipt_only}
+commit;
+\quit
+\endif
 select octet_length(:pvi_tree_payload) as snapshot_octets,
   encode(public.digest(:pvi_tree_payload, 'sha256'), 'hex') as snapshot_sha256,
   encode(:pvi_tree_payload, 'hex') as snapshot_hex
