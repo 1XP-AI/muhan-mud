@@ -28,7 +28,12 @@ function planned(state,direction,amount,badDigest=false) {
     input:Buffer.concat([lengths,state.player_payload,state.bank_payload]),maxBuffer:9*1024*1024,timeout:5000,
   })
 }
-const id='a9190000-0000-0000-0000-000000000001'
+const qualified=process.env.BANK_TRANSFER_QUALIFIED==='1'
+const id=qualified?'a9210000-0000-0000-0000-000000000001':'a9190000-0000-0000-0000-000000000001'
+const world=qualified?'qualified-rust-pair':'rust-pair'
+const actor='e9210000-0000-0000-0000-000000000001',session='f9210000-0000-0000-0000-000000000001',writer='b9210000-0000-0000-0000-000000000001'
+const signature='private.commit_qualified_money_transfer(uuid,text,uuid,uuid,text,uuid,bigint,uuid,bigint,text,bigint,bytea,bytea)'
+let login
 const read=async()=> (await db.query("select revision::text,player_payload,bank_payload,encode(public.digest(player_payload,'sha256'),'hex') player_hash,encode(public.digest(bank_payload,'sha256'),'hex') bank_hash from private.game_character_paired_snapshot_states where character_id=$1",[id])).rows[0]
 try {
   await db.connect()
@@ -52,9 +57,23 @@ try {
     assert.equal(rows[0].valid,valid)
   }
   await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format)
-    values($1,'rust-pair','Pvahero','Pvahero',substr(encode(public.digest(convert_to('Pvahero','UTF8'),'sha1'),'hex'),1,2),'imported_unclaimed',1)`,[id])
+    values($1,$2,'Pvahero','Pvahero',substr(encode(public.digest(convert_to('Pvahero','UTF8'),'sha1'),'hex'),1,2),'imported_unclaimed',1)`,[id,world])
   await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[id,player,bank])
   const commit='select * from private.commit_money_transfer_candidate($1,$2,$3,$4,$5,$6,$7)'
+  const qualifiedSql='select * from private.commit_qualified_money_transfer($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)'
+  const authority=[world,actor,session,'test-gateway',writer,1]
+  if(qualified) {
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
+    await db.query('insert into auth.users(id) values($1)',[actor])
+    await db.query("update public.game_characters set owner_user_id=$2,lifecycle='active',claimed_at=clock_timestamp() where id=$1",[id,actor])
+    await db.query("insert into private.game_character_sessions(character_id,session_id,actor_user_id,gateway_instance_id,expires_at) values($1,$2,$3,'test-gateway',clock_timestamp()+interval '3 minutes')",[id,session,actor])
+    await db.query("select * from private.acquire_game_world_writer_epoch($1,$2,clock_timestamp()+interval '3 minutes')",[world,writer])
+    // Disposable integration grant only; explicitly revoked in finally.
+    await db.query(`grant execute on function ${signature} to mud_writer`)
+    login=new Client({connectionString:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`})
+    await login.connect(); await login.query('set role mud_writer')
+  }
+  const execute=(args)=>qualified?login.query(qualifiedSql,[args[0],...authority,...args.slice(1)]):db.query(commit,args)
   assert.equal((await db.query("select has_function_privilege('mud_writer','private.commit_money_transfer_candidate(uuid,uuid,bigint,text,bigint,bytea,bytea)','EXECUTE') allowed")).rows[0].allowed,false)
   for(const [index,direction] of ['deposit','withdraw'].entries()) {
     const before=await read()
@@ -76,26 +95,44 @@ try {
     rebody(inner,innerBody).copy(bankBody,7)
     const renamedBank=rebody(b,bankBody)
     for(const [badPlayer,badBank] of [[renamed,b],[p,renamedBank],[playerGold(p,777n),b]]) {
-      await assert.rejects(db.query(commit,[...args.slice(0,5),badPlayer,badBank]),e=>e.code==='22023')
+      await assert.rejects(execute([...args.slice(0,5),badPlayer,badBank]),e=>e.code==='22023')
       assert.deepEqual(await read(),before,'invalid transfer leaves both snapshots and revision unchanged')
     }
     if(index===0) {
       await db.query("create function pg_temp.reject_money_intent() returns trigger language plpgsql as $$ begin raise exception using errcode='P0001',message='injected intent failure'; end $$")
       await db.query('create trigger injected_money_failure before insert on private.game_character_money_transfer_intents for each row execute function pg_temp.reject_money_intent()')
-      await assert.rejects(db.query(commit,args),e=>e.code==='P0001')
+      await assert.rejects(execute(args),e=>e.code==='P0001')
       assert.deepEqual(await read(),before)
       assert.equal((await db.query('select count(*)::int count from private.game_character_paired_snapshot_commands where character_id=$1',[id])).rows[0].count,0)
       await db.query('drop trigger injected_money_failure on private.game_character_money_transfer_intents')
     }
-    assert.equal((await db.query(commit,args)).rows[0].outcome,'COMMITTED')
-    assert.equal((await db.query(commit,args)).rows[0].outcome,'EXACT_RETRY')
-    await assert.rejects(db.query(commit,[...args.slice(0,3),direction,26,p,b]),e=>e.code==='P0001')
-    await assert.rejects(db.query(commit,[...args.slice(0,3),direction==='deposit'?'withdraw':'deposit',25,p,b]),e=>e.code==='P0001')
+    if(qualified) {
+      const wrong=[args[0],...authority,...args.slice(1)]; wrong[2]='e9210000-0000-0000-0000-000000000002'
+      await assert.rejects(login.query(qualifiedSql,wrong),e=>e.code==='P0001')
+      await assert.rejects(db.query(qualifiedSql,[args[0],...authority,...args.slice(1)]),e=>e.code==='P0001')
+    }
+    assert.equal((await execute(args)).rows[0].outcome,'COMMITTED')
+    assert.equal((await execute(args)).rows[0].outcome,'EXACT_RETRY')
+    await assert.rejects(execute([...args.slice(0,3),direction,26,p,b]),e=>e.code==='P0001')
+    await assert.rejects(execute([...args.slice(0,3),direction==='deposit'?'withdraw':'deposit',25,p,b]),e=>e.code==='P0001')
     const after=await read(); assert.equal(after.revision,String(index+1)); assert.deepEqual(after.player_payload,p); assert.deepEqual(after.bank_payload,b)
   }
   const final=await read(); assert.deepEqual(final.player_payload,player); assert.deepEqual(final.bank_payload,bank)
-  await assert.rejects(db.query(commit,[id,'c9190000-0000-0000-0000-000000000003',0,'deposit',25,player,bank]),e=>e.code==='40001')
+  await assert.rejects(execute([id,'c9190000-0000-0000-0000-000000000003',0,'deposit',25,player,bank]),e=>e.code==='40001')
   assert.deepEqual(await read(),final)
   assert.equal((await db.query('select count(*)::int count from private.game_character_money_transfer_intents where character_id=$1',[id])).rows[0].count,2)
+  if(qualified) {
+    const rows=(await db.query('select actor_user_id,session_id,writer_instance_id,writer_epoch::text from private.game_character_money_transfer_authorities where character_id=$1',[id])).rows
+    assert.equal(rows.length,2)
+    for(const row of rows) assert.deepEqual(row,{actor_user_id:actor,session_id:session,writer_instance_id:writer,writer_epoch:'1'})
+    console.log('GREEN qualified writer login: authority, Rust result, atomic commit and immutable command binding')
+  }
   console.log('GREEN DB snapshots -> digest-bound Rust deposit/withdraw -> atomic DB pair and exact retry; full-byte roundtrip preserved')
-} finally { await db.end() }
+} finally {
+  if(login) await login.end()
+  if(qualified) {
+    await db.query(`revoke execute on function ${signature} from mud_writer`)
+    assert.equal((await db.query('select has_function_privilege($1,$2,$3) allowed',['mud_writer',signature,'EXECUTE'])).rows[0].allowed,false)
+  }
+  await db.end()
+}
