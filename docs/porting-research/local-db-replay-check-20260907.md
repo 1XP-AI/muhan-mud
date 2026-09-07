@@ -2,6 +2,20 @@
 
 ## Verified result
 
+Extended Linux run at `df59c7b` also exits 0. It checks the reused image lockfile
+matches current sources, compiles the native C oracle and Rust projector, runs
+the full relay suite (163 pass, 0 fail, 1 deferred conformance case), then runs
+that remaining case with its actual C producer/Rust artifact verifier (1 pass,
+0 skipped), before the PG17 replay contracts. Thus all 164 relay cases ran
+successfully across the two required harnesses, including Linux-only descriptor
+and file replacement cases. Log: `/tmp/muhan-linux-all-conformance-replay.log`.
+
+The dedicated C unit gate initially failed GCC's fixed-array overread warning
+because its malformed UUID test supplied a 19-byte literal to a 37-byte API
+parameter. The malformed fixture now has the required storage length and still
+fails UUID validation; production parsing was not changed. The C artifact unit,
+C-to-Rust artifact verifier test, Node conformance, and DB rehearsal all pass.
+
 Independent confirmation at `c077cf9`: another fresh isolated Linux/PG17 run
 exited 0, now without the noisy ERR trap. Log:
 `/tmp/muhan-linux-replay-confirmation.log`.
