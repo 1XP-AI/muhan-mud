@@ -118,7 +118,11 @@ try {
         // session, so expiry rather than lock timeout decides this case.
         await login.query("set lock_timeout='5s'")
         const pid=(await login.query('select pg_backend_pid() pid')).rows[0].pid
-        await db.query("update private.game_character_sessions set expires_at=clock_timestamp()+interval '3 seconds' where character_id=$1",[id])
+        for(const [leaseTable,keyColumn,key,label] of [
+          ['game_character_sessions','character_id',id,'session'],
+          ['game_character_writer_epochs','world_id',world,'writer lease'],
+        ]) {
+        await db.query(`update private.${leaseTable} set expires_at=clock_timestamp()+interval '3 seconds' where ${keyColumn}=$1`,[key])
         await db.query('begin')
         let waiting
         try {
@@ -132,19 +136,51 @@ try {
             await new Promise(resolve=>setTimeout(resolve,20))
           }
           assert.equal(blocked,true,'writer must actually wait on the snapshot lock')
-          assert.equal((await db.query('select expires_at>clock_timestamp() live from private.game_character_sessions where character_id=$1',[id])).rows[0].live,true)
-          await db.query('select pg_sleep(greatest(0,extract(epoch from expires_at-clock_timestamp()))::double precision+0.05) from private.game_character_sessions where character_id=$1',[id])
+          assert.equal((await db.query(`select expires_at>clock_timestamp() live from private.${leaseTable} where ${keyColumn}=$1`,[key])).rows[0].live,true)
+          await db.query(`select pg_sleep(greatest(0,extract(epoch from expires_at-clock_timestamp()))::double precision+0.05) from private.${leaseTable} where ${keyColumn}=$1`,[key])
         } finally {
           await db.query('rollback')
         }
         const waited=await waiting
-        assert.equal(waited.error?.code,'P0001','expired session must not authorize the delayed commit')
+        assert.equal(waited.error?.code,'P0001',`expired ${label} must not authorize the delayed commit`)
         assert.deepEqual(await read(),before)
         for(const table of ['game_character_paired_snapshot_commands','game_character_money_transfer_intents','game_character_money_transfer_authorities']) {
           assert.equal((await db.query(`select count(*)::int count from private.${table} where character_id=$1`,[id])).rows[0].count,0)
         }
-        await db.query("update private.game_character_sessions set expires_at=clock_timestamp()+interval '3 minutes' where character_id=$1",[id])
-        console.log('GREEN session expiry during observed snapshot lock wait rejects commit without state or journal writes')
+        await db.query(`update private.${leaseTable} set expires_at=clock_timestamp()+interval '3 minutes' where ${keyColumn}=$1`,[key])
+        console.log(`GREEN ${label} expiry during observed snapshot lock wait rejects commit without state or journal writes`)
+        }
+        for(const [renewal,parameters,label] of [
+          ["select * from public.renew_game_character_session($1,$2,clock_timestamp()+interval '3 minutes')",[session,'test-gateway'],'session'],
+          ["select * from private.renew_game_world_writer_epoch($1,$2,$3,clock_timestamp()+interval '3 minutes')",[world,writer,1],'writer lease'],
+        ]) {
+          await db.query('begin')
+          await login.query('begin')
+          try {
+            await db.query(renewal,parameters)
+            const waiting=execute(args).then(result=>({result}),error=>({error}))
+            let blocked=false
+            const deadline=Date.now()+2000
+            while(Date.now()<deadline) {
+              blocked=(await db.query('select pg_backend_pid()=any(pg_blocking_pids($1)) blocked',[pid])).rows[0].blocked
+              if(blocked) break
+              await new Promise(resolve=>setTimeout(resolve,20))
+            }
+            assert.equal(blocked,true,`${label} renewal must block the concurrent commit`)
+            await db.query('commit')
+            const waited=await waiting
+            assert.equal(waited.error,undefined)
+            assert.equal(waited.result.rows[0].outcome,'COMMITTED')
+          } finally {
+            await db.query('rollback')
+            await login.query('rollback')
+          }
+          assert.deepEqual(await read(),before,'rolled-back probe must not advance either snapshot')
+          for(const table of ['game_character_paired_snapshot_commands','game_character_money_transfer_intents','game_character_money_transfer_authorities']) {
+            assert.equal((await db.query(`select count(*)::int count from private.${table} where character_id=$1`,[id])).rows[0].count,0)
+          }
+          console.log(`GREEN ${label} renewal serializes before qualified commit without deadlock`)
+        }
       }
     }
     assert.equal((await execute(args)).rows[0].outcome,'COMMITTED')
