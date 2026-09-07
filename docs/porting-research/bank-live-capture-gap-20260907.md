@@ -1,5 +1,29 @@
 # Live bank capture and transaction gap
 
+## Confirmed result to command acknowledgement — 2026-09-07
+
+Source `0d55a25` adds `bank_money_result_native`: only a fresh CONFIRMED result
+at expected revision + 1 may become a bank command acknowledgement. It validates
+bounded pair framing and both complete native codecs, normalizes the current
+live player, checks wallet/bank arithmetic without overflow, and compares every
+normalized player field including inventory after masking only the gold change.
+No live mutation occurs. Corrupt/truncated payloads, historical RETRY, UNKNOWN,
+wrong direction/revision or changed player stats expose a zero acknowledgement.
+This relies on the caller's qualified coordinator provenance; it is not itself
+a DB authentication/reconciliation operation.
+
+Test-first link exposed the missing API. Actual-codec ASan/UBSan tests cover
+success, all non-confirmed statuses, stale/overflow revision, wrong direction,
+player level drift and corrupt/truncated frame. Real PG coordinate-mode tests
+now pass each new confirmed result through this conversion before reporting
+success, including withdrawal, all-deposit and normalized Korean money tokens.
+The full frozen local ARM64 suite at `0d55a25` exited 0, including C onboarding
+and both restoration profiles: `/tmp/muhan-bank-result.log`.
+
+Still not a runtime route installer: production command callback wiring,
+durable pending fences/recovery and other save-path ownership remain required.
+No Actions run, feature enablement or deployment was performed.
+
 ## Wallet application arithmetic guard — 2026-09-07
 
 Source `7e40787` strengthens the actual compile-gated bank command dispatcher:
