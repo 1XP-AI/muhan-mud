@@ -1,5 +1,31 @@
 # Live bank capture and transaction gap
 
+## Socket-independent player-store dispatch boundary — 2026-09-07
+
+Source `6934fb5` adds a caller-owned composition adapter for the existing
+PlayerStore facade. It validates the bounded player-name lookup key, requires
+save-key/player-name agreement and asks an explicit selector for legacy vs DB.
+Only explicit legacy selection invokes the supplied legacy provider. DB error,
+unknown mapping, missing selector/provider or reentrancy cannot fall back.
+The adapter does not use fd, Ply or creature pointer identity; a copied save
+view and an offline/recovery player can use the same authority lookup.
+
+Unit coverage binds the real save_ply/load_ply facade to this adapter and uses
+counted providers: live and copied fd=-1 saves reach DB, DB save/load failure
+never invokes legacy, mismatched name is refused, explicit legacy still works,
+and managed unbinding restores the previous facade. Test-first link failed on
+the missing adapter. Full frozen ARM64 suite at `6934fb5` exited 0:
+`/tmp/muhan-player-authority.log`, including existing real DB bank entry-point,
+onboarding and backup/restore checks.
+
+Scope: the new selector and DB provider are still callback contracts with mock
+providers in this test, not a durable mapping implementation or DB player-save
+transaction. Name is only a lookup key, not proof of character identity. Runtime
+must supply held-world UUID/revision mapping and independently fenced DB save/
+load, including disconnect/recovery, before installing this adapter. Existing
+M3 adapter remains file-authoritative after PUBLISHED and is not relabeled DB
+authority. No runtime policy, production feature flag or deployment changed.
+
 ## Equipped inventory normalization and save-path audit — 2026-09-07
 
 Tracing command8.c savegame/savegame_nomsg exposed a missing normalization step:
