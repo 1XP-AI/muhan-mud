@@ -15,5 +15,9 @@ typedef struct bank_money_route_ops {
 } bank_money_route_ops;
 int bank_money_route_set(const bank_money_route_ops *);
 void bank_money_route_reset(void);
+/* Unported file-bank commands are allowed only with explicit legacy selection
+ * (or no installed routing policy). Invalid/missing binding must select error,
+ * not legacy. This check never invokes the money transfer callback. */
+int bank_money_route_allows_legacy(const struct creature *);
 int bank_money_route_dispatch(struct creature *,const struct cmd *,int,bank_money_ack *);
 #endif

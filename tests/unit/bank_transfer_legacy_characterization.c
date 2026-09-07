@@ -83,6 +83,24 @@ static int differential(int argc,char **argv)
 }
 #ifdef MUHAN_BANK_MONEY_ROUTING
 static int selection, transfer_status, transfer_calls;
+/* Selected authority must return before touching inventory/storage helpers. */
+#define FORBIDDEN_HELPER(name) int name() { abort(); return 0; }
+FORBIDDEN_HELPER(list_obj)
+FORBIDDEN_HELPER(count_inv)
+FORBIDDEN_HELPER(broadcast_rom)
+FORBIDDEN_HELPER(weight_obj)
+FORBIDDEN_HELPER(weight_ply)
+FORBIDDEN_HELPER(max_weight)
+FORBIDDEN_HELPER(add_obj_crt)
+FORBIDDEN_HELPER(add_obj_obj)
+FORBIDDEN_HELPER(del_obj_crt)
+FORBIDDEN_HELPER(del_obj_obj)
+FORBIDDEN_HELPER(get_perm_obj)
+object *find_obj() { abort(); return NULL; }
+char *obj_str() { abort(); return NULL; }
+extern int bank_inv(creature *,cmd *),bank(creature *,cmd *);
+extern int input_bank(creature *,cmd *),output_bank(creature *,cmd *);
+extern void drop_all_bank(creature *,object *,char *),get_all_bank(creature *,object *,char *);
 static int choose(void *ctx,const creature *player)
 { (void)ctx; (void)player; return selection; }
 static int transfer(void *ctx,const creature *player,const cmd *command,int taking,bank_money_ack *ack)
@@ -99,6 +117,8 @@ static void route_scenarios(void)
     int taking,status;
     memset(&ops,0,sizeof(ops)); ops.select=choose; ops.transfer=transfer;
     assert(bank_money_route_set(&ops)==0);
+    selection=0; assert(bank_money_route_allows_legacy(&player)==1);
+    assert(bank_money_route_allows_legacy(NULL)==0);
     for(taking=0;taking<2;taking++) for(status=-1;status<=2;status++) {
         memset(&player,0,sizeof(player)); memset(&bank_room,0,sizeof(bank_room));
         memset(&command,0,sizeof(command)); F_SET(&bank_room,RBANK);
@@ -115,7 +135,23 @@ static void route_scenarios(void)
     assert(transfer_calls==0 && load_calls==0 && bank_calls==0 && player_calls==0 && player.gold==100);
     selection=-1; withdraw(&player,&command);
     assert(load_calls==0 && bank_calls==0 && player_calls==0 && player.gold==100);
+    for(selection=-1;selection<=2;selection++) {
+        object container; int mode;
+        if(selection==0) continue;
+        memset(&container,0,sizeof(container));
+        for(mode=0;mode<2;mode++) {
+            command.num=mode?2:1; strcpy(command.str[1],mode?"모두":"검");
+            bank_inv(&player,&command); bank(&player,&command);
+            input_bank(&player,&command); output_bank(&player,&command);
+            drop_all_bank(&player,&container,command.str[1]);
+            get_all_bank(&player,&container,command.str[1]);
+            assert(load_calls==0 && bank_calls==0 && player_calls==0 && player.gold==100);
+            assert(container.first_obj==NULL && player.first_obj==NULL);
+        }
+    }
     bank_money_route_reset();
+    assert(bank_money_route_allows_legacy(&player)==1);
+    puts("GREEN selected DB authority fences all six legacy bank entry points before storage or inventory access");
     puts("GREEN actual bank commands: selected route never falls back, only confirmed commit changes wallet");
 }
 #endif

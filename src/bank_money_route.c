@@ -8,6 +8,11 @@ int bank_money_route_set(const bank_money_route_ops *ops)
     route=*ops; return 0;
 }
 void bank_money_route_reset(void) { memset(&route,0,sizeof(route)); }
+int bank_money_route_allows_legacy(const creature *player)
+{
+    if(!player) return 0;
+    return !route.select || route.select(route.context,player)==0;
+}
 int bank_money_route_dispatch(creature *player,const cmd *command,int withdraw,bank_money_ack *ack)
 {
     bank_money_ack reply;

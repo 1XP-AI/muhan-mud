@@ -21,6 +21,12 @@ static int route_bank_money(creature *player,cmd *command,int withdrawing)
     print(player->fd,"은행의 잔고가 %ld냥이 되었습니다.",ack.bank_gold);
     return 1;
 }
+static int refuse_legacy_bank(creature *player)
+{
+    if(bank_money_route_allows_legacy(player)) return 0;
+    print(player->fd,"이 캐릭터의 은행 조회·물품 보관은 DB 연동 준비 중입니다.");
+    return 1;
+}
 #endif
 #include <stdio.h>
 #include <sys/types.h>
@@ -113,6 +119,10 @@ cmd	*cmnd;
 	int		fd, n;
 	char	str[2048];
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
+
 	fd = ply_ptr->fd;
 	if(!F_ISSET(ply_ptr->parent_rom, RBANK)) {
 		print(fd, "은행에서만 가능합니다.");
@@ -152,6 +162,10 @@ cmd *cmnd;
 	object	*bnk_ptr;
 	room	*rom_ptr;
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
+
 	fd = ply_ptr->fd;
 	rom_ptr = ply_ptr->parent_rom;
 	if(!F_ISSET(ply_ptr->parent_rom, RBANK)) {
@@ -177,6 +191,10 @@ cmd	*cmnd;
 		int	fd, n;
 		object	*cnt_ptr, *obj_ptr;
 		room *rom_ptr;
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
 
 		fd = ply_ptr->fd;
 		rom_ptr = ply_ptr->parent_rom;
@@ -240,6 +258,10 @@ cmd	*cmnd;
 		object	*cnt_ptr, *obj_ptr;
 		room *rom_ptr;
 		int cnt=0, i;
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
 
 		fd = ply_ptr->fd;
 		rom_ptr = ply_ptr->parent_rom;
@@ -445,6 +467,10 @@ char *part_obj;
     int     fd, n = 1, found = 0, full = 0;
     int index=1;
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+    if(refuse_legacy_bank(ply_ptr)) return;
+#endif
+
     if(!strcmp(part_obj,"모두")) {
         index=0;
     }
@@ -541,6 +567,10 @@ char *part_obj;
     int index=1;
     int i,cnt;
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+    if(refuse_legacy_bank(ply_ptr)) return;
+#endif
+
         for(i=0,cnt=0; i<MAXWEAR; i++)
                 if(ply_ptr->ready[i]) cnt++;
         cnt += count_inv(ply_ptr, -1);
@@ -633,7 +663,6 @@ char *part_obj;
 		free_obj(cnt_ptr);
 		savegame_nomsg(ply_ptr);
 }
-
 
 
 
