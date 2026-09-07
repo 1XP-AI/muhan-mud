@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+extern int savegame_nomsg(creature *);
+static int save_errors;
+void merror(char *message,char kind)
+{(void)message;if(kind==FATAL) abort();save_errors++;}
 int file_player_store_save(char *name,creature *p) {(void)name;(void)p;abort();}
 int file_player_store_load(char *name,creature **p) {(void)name;(void)p;abort();}
 int main(int argc,char **argv)
@@ -28,7 +32,7 @@ int main(int argc,char **argv)
         creature *p=NULL,detached;
         assert(load_ply("Peerhero",&p)==PLAYER_STORE_OK);
         detached=*p;detached.fd=-1;detached.gold=201;
-        assert(save_ply("Peerhero",&detached)==PLAYER_STORE_OK);
+        assert(savegame_nomsg(&detached)==PLAYER_STORE_OK);
         assert(player_session_registry_remove(&registry,&peer)!=0);
         player_snapshot_v1_free_clone(p);
     }
@@ -39,13 +43,14 @@ int main(int argc,char **argv)
     assert(!strcmp(ctx.fields[6],"0"));
     // savegame uses a shallow copy; disconnect/recovery need not have a live fd.
     copy=*loaded;copy.fd=-1;copy.gold=strtol(argv[9],NULL,10);
-    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK);
+    assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(ctx.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx.committed_revision==1);
     assert(!strcmp(ctx.fields[6],"0"));
-    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
-    copy.gold++;assert(save_ply(argv[2],&copy)==PLAYER_STORE_IO_ERROR);
+    assert(savegame_nomsg(&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+    copy.gold++;assert(savegame_nomsg(&copy)==PLAYER_STORE_IO_ERROR);
+    assert(save_errors==1);
     assert(!strcmp(ctx.fields[6],"0"));
-    copy.gold--;assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK);
+    copy.gold--;assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001")!=0);
     assert(!strcmp(ctx.fields[6],"0")&&ctx.pending);
     puts("READY");fflush(stdout);
@@ -56,10 +61,11 @@ int main(int argc,char **argv)
     assert(!strcmp(ctx.fields[6],"1")&&!ctx.pending);
     assert(!strcmp(ctx.fields[5],"c9280000-0000-0000-0000-000000000001"));
     copy.gold++;
-    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK);
+    assert(savegame_nomsg(&copy)==PLAYER_STORE_OK);
     assert(ctx.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx.committed_revision==2);
     assert(!strcmp(ctx.fields[6],"1"));
-    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+    assert(savegame_nomsg(&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+    assert(save_errors==1);
     puts("READY2");fflush(stdout);
     assert(getchar()=='R');
     assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000002"));
