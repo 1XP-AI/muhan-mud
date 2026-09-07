@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include "mtype.h"
 #include "mstruct.h"
 #ifdef MUHAN_BANK_MONEY_ROUTING
@@ -82,7 +83,7 @@ static int differential(int argc,char **argv)
     return 0;
 }
 #ifdef MUHAN_BANK_MONEY_ROUTING
-static int selection, transfer_status, transfer_calls;
+static int selection, transfer_status, transfer_calls, reply_fault;
 /* Selected authority must return before touching inventory/storage helpers. */
 #define FORBIDDEN_HELPER(name) int name() { abort(); return 0; }
 FORBIDDEN_HELPER(list_obj)
@@ -108,6 +109,10 @@ static int transfer(void *ctx,const creature *player,const cmd *command,int taki
     (void)ctx; (void)player; (void)command;
     transfer_calls++;
     ack->amount=25; ack->player_gold=taking?125:75; ack->bank_gold=taking?25:75;
+    if(reply_fault==1) ack->player_gold++;
+    if(reply_fault==2) ack->amount=LONG_MAX;
+    if(reply_fault==3) ((creature *)player)->gold=99;
+    if(reply_fault==4) ack->bank_gold=taking?LONG_MAX:24;
     return transfer_status;
 }
 static void route_scenarios(void)
@@ -129,6 +134,17 @@ static void route_scenarios(void)
         assert(transfer_calls==1 && load_calls==0 && bank_calls==0 && player_calls==0);
         assert(player.gold==(status==1?(taking?125:75):100));
     }
+    for(taking=0;taking<2;taking++) for(reply_fault=1;reply_fault<=4;reply_fault++) {
+        bank_money_ack ack;
+        player.gold=100; selection=1; transfer_status=1;
+        transfer_calls=load_calls=bank_calls=player_calls=0;
+        memset(&ack,0x55,sizeof(ack));
+        assert(bank_money_route_dispatch(&player,&command,taking,&ack)==BANK_MONEY_REJECTED);
+        assert(player.gold==(reply_fault==3?99:100));
+        assert(ack.amount==0 && ack.player_gold==0 && ack.bank_gold==0);
+        assert(transfer_calls==1 && load_calls==0 && bank_calls==0 && player_calls==0);
+    }
+    reply_fault=0;
     ops.transfer=NULL; assert(bank_money_route_set(&ops)==0);
     transfer_calls=load_calls=bank_calls=player_calls=0; player.gold=100;
     deposit(&player,&command);

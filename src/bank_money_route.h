@@ -7,9 +7,11 @@ typedef struct bank_money_ack { long amount,player_gold,bank_gold; } bank_money_
 typedef struct bank_money_route_ops {
     /* 0 = legacy, 1 = DB authority selected, anything else = reject. */
     int (*select)(void *,const struct creature *);
-    /* Only 1 means durably committed/verified exact retry. No source mutation.
+    /* Only 1 means durably committed for this current source. No source mutation.
      * The coordinator owns command identity, parsing, timeout/retry and reply
-     * binding. It must not return success for a queued/unconfirmed write. */
+     * binding. It must not return success for a queued/unconfirmed write or
+     * historical retry whose state has already advanced. Dispatch checks wallet
+     * arithmetic but cannot establish DB identity/revision or bank provenance. */
     int (*transfer)(void *,const struct creature *,const struct cmd *,int,bank_money_ack *);
     void *context;
 } bank_money_route_ops;
