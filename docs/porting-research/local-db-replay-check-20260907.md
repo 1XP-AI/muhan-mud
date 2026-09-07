@@ -1,5 +1,29 @@
 # Local DB replay check — incomplete
 
+## Linux execution now available
+
+`scripts/run-replay-reader-local-docker.sh --allow-disposable` reuses an existing
+`REPLAY_RUNNER_IMAGE` without a new image build. It freezes current source,
+compiles TypeScript and Rust on Linux in tmpfs, and shares only a fresh PG17
+container's network namespace. No host port, Docker socket, production database,
+or writable host checkout is provided; cleanup removes only created IDs.
+The integration harness has an explicitly opted-in containerless psql mode for
+this setup, fixed to loopback and the disposable fixture password.
+
+Actual Linux execution passed the pre-migration DB_READ_ERROR negative control.
+It then exposed two latent SQL test errors, fixed from failing runs: SQL quoted
+identifier escaping used backslashes instead of doubled quotes; the password
+baseline scalar subquery returned two rows because two relations are recorded.
+The assertion now rejects any baseline row whose hash changed, preserving its
+intended strength. Source changes: `688a37e`, `c831294`.
+
+Latest full attempt at `c831294` still exited 1 after SQL assertions, without a
+clear final diagnostic. It is not GREEN. Log:
+`/tmp/muhan-linux-db-replay-baseline-fix.log`. Earlier failure logs:
+`/tmp/muhan-linux-db-replay-retry.log`, `/tmp/muhan-linux-db-replay-sql-fix.log`.
+Next preserve the CLI failure evidence before cleanup and locate the remaining
+failure; do not suppress the failing return code or relax read-only contracts.
+
 ## Root cause established
 
 The remaining INVALID_INPUT is an unsupported host, not demonstrated malformed
