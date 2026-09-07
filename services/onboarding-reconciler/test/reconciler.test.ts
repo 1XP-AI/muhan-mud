@@ -803,6 +803,56 @@ test('CLI output is aggregate-only and never includes service credentials or rec
   assert.equal(output.includes(fileHash), false)
 })
 
+test('CLI saved-handoff recovery defaults off and opts into ordered finalization and activation', async (t) => {
+  const calls: Array<{ path: string, body: Record<string, unknown> }> = []
+  t.mock.method(process.stdout, 'write', () => true)
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname
+    calls.push({ path, body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+    if (path === '/rpc/finalize_game_character_legacy_identity_evidence') return evidenceFinalizerResponse('claim', 'handoff_pending')
+    if (path === '/rpc/activate_game_character_onboarding_handoff') return activationResponse()
+    assert.equal(path, '/rpc/reconcile_game_character_provisioning')
+    return rpcResponse()
+  })
+  for (const setting of [undefined, 'false', 'true']) {
+    const data = await fixture()
+    t.after(data.cleanup)
+    calls.length = 0
+    assert.equal(await main({
+      MUHAN_HOME: data.home,
+      SUPABASE_INTERNAL_REST_URL: 'http://postgrest.internal:3000',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      ONBOARDING_RECONCILER_RECOVER_SAVED_HANDOFFS: setting,
+    }, ['--once']), 0)
+    assert.deepEqual(calls.map(({ path }) => path), setting === 'true' ? [
+      '/rpc/finalize_game_character_legacy_identity_evidence',
+      '/rpc/activate_game_character_onboarding_handoff',
+    ] : ['/rpc/reconcile_game_character_provisioning'])
+    if (setting === 'true') assert.deepEqual(calls[1]?.body, {
+      p_actor_user_id: actor,
+      p_correlation_id: correlation,
+      p_character_id: character,
+      p_mode: 'claim',
+    })
+  }
+})
+
+test('CLI saved-handoff recovery rejects noncanonical boolean settings before RPC calls', async (t) => {
+  const data = await fixture(receipt('pending'))
+  t.after(data.cleanup)
+  t.mock.method(process.stdout, 'write', () => true)
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => rpcResponse())
+  for (const setting of ['', 'TRUE', 'False', '1', '0', ' true ', 'yes']) {
+    await assert.rejects(main({
+      MUHAN_HOME: data.home,
+      SUPABASE_INTERNAL_REST_URL: 'http://postgrest.internal:3000',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      ONBOARDING_RECONCILER_RECOVER_SAVED_HANDOFFS: setting,
+    }, ['--once']), /configuration rejected/)
+  }
+  assert.equal(fetchMock.mock.callCount(), 0)
+})
+
 test('the filesystem boundary can be injected for a hermetic operational test', async () => {
   const fs: ReconcilerFilesystem = {
     assertSafeDirectory: async () => {},

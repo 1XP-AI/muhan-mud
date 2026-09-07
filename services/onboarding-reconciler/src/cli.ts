@@ -29,7 +29,14 @@ function environment(env: NodeJS.ProcessEnv, name: string): string {
   return value
 }
 
+function strictBoolean(value: string | undefined): boolean {
+  if (value === undefined || value === 'false') return false
+  if (value === 'true') return true
+  throw new Error('configuration rejected')
+}
+
 export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2), clock?: Clock): Promise<number> {
+  const recoverSavedReceiptHandoffs = strictBoolean(env.ONBOARDING_RECONCILER_RECOVER_SAVED_HANDOFFS)
   const fulfillmentRun = args.includes('--fulfill-pending-snapshot-eligibility')
   if (args.some((argument) => argument !== '--once' && argument !== '--fulfill-pending-snapshot-eligibility') ||
       (fulfillmentRun && args.length !== 1)) throw new Error('configuration rejected')
@@ -55,6 +62,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly 
     muhanHome: environment(env, 'MUHAN_HOME'),
     postgrestUrl: environment(env, 'SUPABASE_INTERNAL_REST_URL'),
     serviceRoleKey: environment(env, 'SUPABASE_SERVICE_ROLE_KEY'),
+    recoverSavedReceiptHandoffs,
     clock: pollingClock,
     rpcAttempts: positiveInteger(env.ONBOARDING_RECONCILER_RPC_ATTEMPTS, 3, 10),
     retryDelayMs: nonNegativeInteger(env.ONBOARDING_RECONCILER_RETRY_DELAY_MS, 250, 60_000),

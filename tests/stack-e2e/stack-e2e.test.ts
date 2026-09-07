@@ -404,6 +404,9 @@ async function runReconciler(restUrl: string): Promise<void> {
       SUPABASE_SERVICE_ROLE_KEY: process.env.STACK_E2E_SERVICE_ROLE_JWT,
       ONBOARDING_RECONCILER_RPC_ATTEMPTS: '2',
       ONBOARDING_RECONCILER_RETRY_DELAY_MS: '10',
+      // This acceptance lane verifies saved-receipt handoff recovery, not
+      // evidence-only reconciliation, which intentionally stays pending.
+      ONBOARDING_RECONCILER_RECOVER_SAVED_HANDOFFS: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -414,7 +417,7 @@ async function runReconciler(restUrl: string): Promise<void> {
   const [code, signal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
   assert.equal(signal, null)
   if (code !== 0) {
-    const diagnostic = await new OnboardingReconciler({ muhanHome: fixture, postgrestUrl: restUrl, serviceRoleKey: process.env.STACK_E2E_SERVICE_ROLE_JWT!, rpcAttempts: 1 }).runOnce()
+    const diagnostic = await new OnboardingReconciler({ muhanHome: fixture, postgrestUrl: restUrl, serviceRoleKey: process.env.STACK_E2E_SERVICE_ROLE_JWT!, rpcAttempts: 1, recoverSavedReceiptHandoffs: true }).runOnce()
     throw new Error(`onboarding reconciler exited unsuccessfully: ${output} ${JSON.stringify(diagnostic)}`)
   }
 }
