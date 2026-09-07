@@ -1,5 +1,47 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
+## Latest: activation ordering fixed; DB fulfillment passes, local receipt path next
+
+Fresh frozen `65a5bf1` run `/tmp/muhan-local-stack.PlL3mK/result.json`, console
+`/tmp/muhan-binding-order-stack-retry.log`, now reports every snapshot gate
+true, including receipt-after-binding. DB assertions for exact bound artifact,
+manifest, receipt, fulfilled outbox and fulfillment all pass before the next
+failure. Gateway suite is 144 PASS / 0 FAIL / 4 SKIP, typecheck passed.
+
+Next failure is ENOENT reading the claim correlation's local
+`onboarding-receipts/<correlation>.receipt` in assertM3OnboardingEvidence
+(caller 1131, browser claim). Check whether claim emits that provisioning
+receipt and what durable evidence is authoritative, rather than manufacturing
+a receipt or ignoring arbitrary missing files. Full suite stays 23 PASS /
+1 FAIL. No push/CI/deployment. A first frozen run hit ENOSPC before tests;
+ten explicitly identified unused old task images were removed (1788768241..
+1788769347), retaining source/evidence; no shared caches/volumes were pruned.
+
+## Latest: snapshot fulfillment rejects late command binding
+
+`2df0ae7` independent counts in `/tmp/muhan-local-stack.R5smkR/result.json`
+prove one binding/outbox/artifact/manifest/receipt and zero fulfillments.
+All 13 relay candidates exact-retry, including normalized projections, but
+fulfillment reports 13 NOT_ELIGIBLE with zero transport/validation errors.
+The former empty string was NULL propagation through the diagnostic LEFT JOIN
+concatenation, not evidence that all underlying rows were missing.
+
+`e8a1d45` run `/tmp/muhan-local-stack.Loy6fO/result.json`, console
+`/tmp/muhan-snapshot-gates.log`, isolates the false predicate:
+`receipt_after_binding=false`; artifact/manifest receipt timestamps, route,
+source octets, manifest format and payload validity all pass.
+Source agrees: Gateway startActivation sends ACTIVATED; C saves before ACTIVE;
+Gateway at that checkpoint binds only after ACTIVE. Fulfillment intentionally requires
+receipt acknowledgement strictly after binding. Fix this ordering, never
+relax the SQL chronological requirement. `65a5bf1` moves binding before
+ACTIVATED after the activated-handoff RPC. Three ordering regressions failed
+before the fix and pass afterward; Gateway suite 144 PASS / 0 FAIL / 4 SKIP,
+and typecheck passes. Fresh full-stack verification is recorded below.
+
+One earlier run ended before tests with Docker ENOSPC. Removed only eight
+explicit old unused task images (1788760525..1788761245), no broad prune,
+other-project images, volumes, or caches. Fresh reruns cleaned owned resources.
+
 ## Latest: bounded post-game preservation and DB receipt pass
 
 `607947e` introduces a native-layout post-game verifier, keeping the separate
