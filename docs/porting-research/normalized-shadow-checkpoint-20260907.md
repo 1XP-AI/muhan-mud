@@ -227,3 +227,13 @@ careful 절차에 따라 `muhan-normalized-write-db-92f1`의 ID/label/auto-remov
 최종 이미지를 --rm, --read-only, --network none으로 실행해 C 게임 및 normalized projector의 ldd 의존성이 해소됨을 확인했다. 같은 제한과 기본 사용자에서 실제 amd64 projector에 tree fixture를 stdin으로 전달했다. 정상 digest는 exit 0/빈 stderr/5개 item 및 canonical digest `96df4bf87d1012fbef2043f215b95b6bf0790780b731546b1fcd6a257ee2b76c`, 잘못된 digest는 exit 1/빈 stdout/고정 거부 문구를 검증했다. 단발 컨테이너는 auto-remove됐다.
 
 이 결과는 고정 로컬 archive를 source stage 대신 사용한 패키징·projector smoke 증거다. private remote fetch, DB 연결, 실제 게임 가입/계정 연동, k8s 배포 또는 DB 권위 전환 완료의 증거가 아니다. 원격 게시/검토 기준 SHA 정리, 통합 이미지의 DB E2E, 실제 C save 및 onboarding 검증이 남는다. 기존 pull 64431은 이전 확인에서 살아 있었으며 종료 확인 전 재실행하지 않는다.
+
+## 통합 이미지에서 신규 DB 저장·재시도·비교 E2E 통과
+
+동일 이미지 `sha256:4b8d40d2e37edd046958ac6082969ff62fcefc89059f689af085d78f2c040d06`의 amd64 및 기존 integration 입력 계약을 재확인했다. 별도 PostgreSQL 17 컨테이너 `muhan-integrated-db-0907a`(ID `f3bb41dc82d3386af9f8934988e19acf4a38e0226ebdc49aeda18e4dfa9ec1b9`, label `muhan.test=integrated-db-0907a`)에 tmpfs 데이터 디렉터리와 read-only SQL mount를 사용했다. 외부 포트 게시 없이 bootstrap + 44개 migration(Realtime 의존 20260901 제외)을 적용하고 receipt_only seed를 생성했다.
+
+runner `muhan-integrated-test-0907a`는 통합 이미지의 기본 muhan 사용자, --platform linux/amd64, read-only root filesystem, tmpfs /tmp, DB 컨테이너 network namespace를 사용했다. 테스트와 fixture만 read-only mount하고 실제 production relay `/opt/muhan/m4-file-snapshot-manifest-relay` 및 이미지 안의 Rust binary를 사용했다. 독립 reader/writer login과 명시적 disposable opt-in으로 manifest-first integration을 실행한 session `40644`는 exit 0 및 `Normalized manifest-first integration passed: new records, exact retry, reader comparison, unchanged evidence`를 반환했다. 개별 relay 이미지에서만 검증했던 경로가 이제 pnpm production 배포 산출물과 UID 10001의 통합 이미지에서도 통과했다.
+
+careful 절차에 따라 생성 시 ID, label, AutoRemove=true를 다시 확인한 뒤 정확한 DB 이름만 종료했다. DB와 runner 모두 목록 부재를 확인했다. tmpfs 합성 데이터는 제거됐고 운영 데이터는 접근하지 않았다. 이 lane은 trust 인증을 사용했으므로 비밀번호 인증·Supabase Auth·Realtime·실제 C wizard/save·k8s 네트워크 검증이 아니다.
+
+다음 onboarding 검증 경로를 읽었다. `scripts/run-stack-e2e.sh`는 명시적인 CI-only runner이며 로컬에서 CI=true를 임의 주입해 우회하지 않았다. `docs/web-mud/live-onboarding-smoke.md`의 실제 배포 테스트는 지정된 두 웹 계정/캐릭터 fixture 및 durable-data/전역 이름 유일성 승인이 필요하다. 현재 그런 fixture를 임의 생성하거나 운영 smoke를 실행하지 않았다. 다음 작업은 실제 C 경로의 로컬/CI 검증과 남은 source revision 게시·검토 절차이며, 전체 DB 권위 전환은 아직 완료되지 않았다.
