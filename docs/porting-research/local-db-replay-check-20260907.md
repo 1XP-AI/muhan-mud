@@ -1,6 +1,24 @@
 # Local DB replay check — passed on Linux
 
-## Backup/restore gate added — not yet passing
+## Backup/restore gate — valid fixture passed
+
+Source `a93180b` passes the full Linux conformance/replay/backup runner (exit 0).
+Log: `/tmp/muhan-valid-backup-writer.log`. The negative comparator database is
+left unchanged. A separate empty database receives its schema, then a valid
+fixture: setup inserts a character/absent head, acquires writer epoch and records
+a receipt; the M4 manifest, snapshot artifact and level projection are written
+through their RPCs under mud_writer_login session identity plus mud_writer role.
+Triggers and foreign keys stay enabled.
+
+Using the PG17 server image's pg_dump and pg_restore, the valid database is
+restored to a third database with --exit-on-error. Nonempty full-row evidence
+fingerprints match for artifacts, receipts and projections. This proves a
+same-cluster schema/data restore of synthetic evidence with pre-existing roles,
+not cross-cluster role/secret recovery, legacy PVC restoration, gameplay loading,
+or operational backup acceptance. Both earlier negative controls remain recorded
+below; no constraints were disabled to obtain this result.
+
+### Initial failing attempt
 
 Source `1fbe640` adds an actual server-version pg_dump/pg_restore into a second
 database, with full-row fingerprints for artifacts, receipts and projections.
