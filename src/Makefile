@@ -844,7 +844,7 @@ character-save-journal-v2-runtime-native-test: character-save-journal-v2-runtime
 	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" ../tests/unit/character_save_journal_v2_runtime_native_test.c -o $(MUHAN_UNIT_DIR)/character_save_journal_v2_runtime_native_test
 	$(MUHAN_UNIT_DIR)/character_save_journal_v2_runtime_native_test
 	$(CC) $(V2_TEST_CFLAGS) -I. -I"$$($(PG_CONFIG) --includedir)" -O1 -fno-omit-frame-pointer -fsanitize=address,undefined ../tests/unit/character_save_journal_v2_runtime_native_test.c -o $(MUHAN_UNIT_DIR)/character_save_journal_v2_runtime_native_sanitizer_test
-	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS) UBSAN_OPTIONS=halt_on_error=1 $(MUHAN_UNIT_DIR)/character_save_journal_v2_runtime_native_sanitizer_test
+	ASAN_OPTIONS=$(DECODER_ASAN_OPTIONS):detect_stack_use_after_return=1 UBSAN_OPTIONS=halt_on_error=1 $(MUHAN_UNIT_DIR)/character_save_journal_v2_runtime_native_sanitizer_test
 else
 character-save-journal-v2-runtime-native-test:
 	@echo "character-save-journal-v2-runtime-native-test skipped (Linux native lifecycle target)"

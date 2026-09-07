@@ -108,6 +108,7 @@ static character_player_snapshot_v1_read_rehearsal_result
 static int supplied_artifact_metadata_directory_fd;
 static char supplied_artifact_metadata_command[37];
 static const character_player_snapshot_v1_read_rehearsal *supplied_rehearsal;
+static character_player_snapshot_v1_read_rehearsal supplied_rehearsal_copy;
 static int snapshot_capture_native_init_calls;
 static int snapshot_handoff_init_calls;
 static int snapshot_handoff_enable_receipt_pair_calls;
@@ -270,7 +271,13 @@ int test_read_rehearsal_load(
     character_player_snapshot_v1_read_rehearsal_result *result_out)
 {
     read_rehearsal_load_calls++;
-    supplied_rehearsal=rehearsal;
+    /* The caller owns a stack-local descriptor. Capture it during the call,
+     * never retain its address for assertions after file_load returns. */
+    supplied_rehearsal=0;
+    if(rehearsal) {
+        supplied_rehearsal_copy=*rehearsal;
+        supplied_rehearsal=&supplied_rehearsal_copy;
+    }
     if(result_out) *result_out=supplied_read_rehearsal_result;
     return test_player_store_default_load(name,player);
 }

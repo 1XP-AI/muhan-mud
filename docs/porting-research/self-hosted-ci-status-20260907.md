@@ -28,6 +28,60 @@ result or a passing complete game acceptance suite.
 
 ## Verification
 
+### Latest terminal result (supersedes the in-progress observations below)
+
+Run `34093192597` has completed with failure. Rechecked through the GitHub
+run, job-log, annotation, workflow-state and default-branch APIs:
+
+- Linux ARM64 general: checkout, explicit dependency installation, Node,
+  pnpm, Rust and the C build passed. The native lifecycle sanitizer then
+  reported `stack-use-after-return` in
+  `test_native_read_rehearsal_is_exact_default_off_and_diagnostic_only`.
+  Its referenced stack object is `rehearsal` in `runtime_native_file_load`.
+  This is an actionable test/code failure, not a runner-access failure;
+  sanitizers must not be disabled to obtain a green run.
+- Linux database and macOS: terminal failure; both annotations report that
+  the self-hosted runner lost communication with GitHub. Neither suite passed.
+- Hosted x64/Windows: remain blocked by billing/spending limits.
+- The three local CI policy tests still pass.
+- A new dispatch on `codex/self-hosted-arm64-ci` was attempted and rejected
+  with HTTP 422 because the workflow is disabled. No new run was created.
+- Default branch `main` still contains `on: push`, hosted Ubuntu routing and
+  fixed PostgreSQL host port 5432. Re-enabling the repository workflow now
+  would also reactivate that older automatic workflow, so it was left disabled
+  to respect the local-first/budget constraint. Merge the reviewed migration
+  into the default branch before re-enabling and dispatching it.
+- Organization runner-group inspection still returns HTTP 403: an org admin
+  or a token with runner/runner-group permission must verify repository and
+  workflow access. Existing Linux execution already proves access for that run.
+
+Remaining acceptance: fix the sanitizer failure, restore runner connectivity,
+land the manual-only migration on the default branch, then enable and rerun.
+No successful remote CI completion is claimed.
+
+### Local sanitizer follow-up
+
+The native lifecycle failure was reproduced in the retained local Linux ARM64
+test image with `detect_stack_use_after_return=1` (exit 2, same ASan stack).
+The test double retained the address of `runtime_native_file_load`'s local
+`rehearsal` descriptor and dereferenced it after the call returned. It now
+copies that descriptor during the call; the existing writer/artifact identity
+assertions remain unchanged. Production code was not modified.
+
+The native lifecycle Make target now explicitly enables this ASan check so
+different compiler defaults cannot hide the regression. Fresh local results:
+
+- Native lifecycle test and ASan/UBSan: exit 0, including the default Make target.
+- Production-object/no-live-link guards: both passed.
+- Read-rehearsal unit and ASan/UBSan targets: exit 0 with the same strict option.
+
+These runs used a read-only source mount, no network, no host ports, tmpfs
+outputs and only self-removing task containers. No Actions run or deployment
+was started. The full remote suite and broader database migration acceptance
+remain unverified; the sanitizer item above is locally fixed, not remotely green.
+
+### Earlier in-progress observations
+
 Local checks passed again:
 
 - `tests/unit/self_hosted_ci_policy_test.py`
@@ -36,7 +90,11 @@ Local checks passed again:
 
 Actual run: https://github.com/1XP-Inc/muhan-mud/actions/runs/34093192597
 
-- Linux general and database jobs: queued, no test results yet.
+- Linux general job: queued, no test results yet.
+- Linux database job: assigned to the organization default runner group with
+  `[self-hosted, Linux, ARM64]`. Container initialization, checkout, and ARM64
+  verification passed; dependency installation is in progress. This proves
+  runner access for this job, not a passing database test suite.
 - macOS: failed before tests. GitHub's annotation says the self-hosted runner
   lost communication with the server; this does not establish a source failure.
 - Hosted x64 and Windows: did not start because of billing/spending limits.
@@ -48,9 +106,22 @@ workflow so that the old workflow cannot accidentally consume hosted minutes.
 
 ## Administrator follow-up
 
+Rechecked on 2026-09-07 for the renewed migration request: all three local
+policy tests above pass. The database job has now started on Linux ARM64,
+while the general Linux job remains queued; macOS has the runner-communication failure annotation, and the hosted
+x64 job has the billing/spending-limit annotation. The workflow remains
+disabled manually. No duplicate run was dispatched and no runner-group
+permissions were changed. The organization runner-group API explicitly
+returned HTTP 403 (organization administrator or runner-group permission
+required); repository runner discovery returned zero accessible runners.
+These observations do not establish that the tests pass on the new runners.
+
 1. Restore the macOS runner service and outbound GitHub connectivity; inspect
    its diagnostic logs and resource availability.
-2. Check Linux runner online/busy state and exact labels. In the organization
+2. Check Linux runner capacity and the in-progress dependency installation.
+   This run demonstrates that at least one Linux job has organization runner
+   access; do not treat the other queued job as proof of an access denial.
+   In the organization
    runner group's repository access settings, allow `1XP-Inc/muhan-mud`;
    if workflow access is restricted, allow this repository's CI workflow/ref.
 3. The repository runner-list API returned an empty list, which alone does not
