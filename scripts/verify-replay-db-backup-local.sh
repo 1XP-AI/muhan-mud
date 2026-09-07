@@ -10,9 +10,9 @@ sql() {
     psql -X -h 127.0.0.1 -U postgres -d "$1" -v ON_ERROR_STOP=1 -At -c "$2"
 }
 fingerprint() {
-  sql "$1" "select count(*)::text || ':' || coalesce(md5(string_agg(to_jsonb(t)::text, '' order by character_id, command_id)), '') from private.$2 t"
+  sql "$1" "select count(*)::text || ':' || coalesce(md5(string_agg(to_jsonb(t)::text, '' order by to_jsonb(t)::text)), '') from private.$2 t"
 }
-tables=(game_character_player_snapshot_v1_artifacts game_character_shadow_receipts game_character_player_snapshot_v1_level_projections)
+tables=(game_character_player_snapshot_v1_artifacts game_character_shadow_receipts game_character_player_snapshot_v1_level_projections game_character_m4_file_snapshot_manifests game_character_legacy_heads game_character_writer_epochs)
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 sql postgres 'create database replay_backup_source template template0' >/dev/null
 # Copy schema only: negative comparator rows must not enter the valid restore fixture.
@@ -36,6 +36,9 @@ docker exec -e PGPASSWORD=contract-only-password "$container_id" \
   pg_dump -h 127.0.0.1 -U postgres -d replay_backup_source --format=custom |
   docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
     pg_restore -h 127.0.0.1 -U postgres -d replay_restore_check --exit-on-error
+docker exec -i -e PGPASSWORD=contract-only-password "$container_id" \
+  psql -X -q -h 127.0.0.1 -U postgres -d replay_restore_check -v ON_ERROR_STOP=1 \
+    -v "fixture_hex=$fixture_hex" < "$root/supabase/tests/replay_backup_restored_contract.sql"
 for index in "${!tables[@]}"; do
   [[ "$(fingerprint replay_restore_check "${tables[$index]}")" == "${before[$index]}" ]] || {
     echo 'replay backup restore data mismatch' >&2; exit 1;
