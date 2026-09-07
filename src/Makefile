@@ -49,7 +49,7 @@ EXTRA_LIBS += $(RUST_FFI_LIB) -ldl -lpthread
 endif
 
 
-OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o command1.o command2.o \
+OBJECTS = global.o main.o files1.o files2.o files3.o bank.o bank_store.o bank_money_route.o command1.o command2.o \
 	  command3.o command4.o command5.o command6.o command7.o \
 	  command8.o command9.o command10.o command11.o command12.o magic1.o magic2.o \
 	 magic3.o magic4.o  magic5.o magic6.o magic7.o magic8.o \
