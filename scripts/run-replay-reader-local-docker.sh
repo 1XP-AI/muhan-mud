@@ -72,8 +72,9 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     # This scenario injects EACCES by changing its own fixture permissions.
     # Root would bypass that failure, so build/run a private copy as uid 1000.
     mkdir /tmp/onboarding-work
-    chown 1000:1000 /tmp/onboarding-work
-    setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs bash -c "cp -r /workspace/. /tmp/onboarding-work/ && python3 /tmp/onboarding-work/tests/harness/run_onboarding_scenario.py --repo-root /tmp/onboarding-work --output /tmp/onboarding-close.json"
+    cp -r /workspace/. /tmp/onboarding-work/
+    chown -hR 1000:1000 /tmp/onboarding-work
+    setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs python3 /tmp/onboarding-work/tests/harness/run_onboarding_scenario.py --repo-root /tmp/onboarding-work --output /tmp/onboarding-close.json
   ')"
 created=("$runner" "${created[@]}")
 docker start -ai "$runner"
