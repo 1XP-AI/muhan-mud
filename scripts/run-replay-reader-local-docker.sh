@@ -42,6 +42,7 @@ runner="$(docker create --read-only --user 0:0 --network "container:$pg" \
     make -C src bank-transfer-snapshot-v1-test bank-transfer-snapshot-v1-sanitizer-test
     cc -std=gnu89 -fcommon -ffunction-sections -fdata-sections -Isrc \
       -fsanitize=address,undefined -fno-omit-frame-pointer \
+      -Dfopen=child_reaper_test_fopen -Dunlink=child_reaper_test_unlink \
       tests/unit/child_reaper_test.c src/io.c -Wl,--gc-sections -o /tmp/child-reaper-test
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/child-reaper-test
     # Characterization only: explicitly exposes the legacy cross-file failure gap.
