@@ -78,3 +78,26 @@ does not authenticate the actor or bind revisions, world/character identity,
 command replay or writer epoch. The future transaction must perform those
 checks and compare both input versions before publishing either output.
 Live command integration and C/Rust command-level differential tests remain.
+
+## Actual C / Rust command differential verified
+
+Source `7db0146` extends the C characterization harness with a bounded numeric
+command interface. Rust launches the binary linked with actual `src/bank.c`
+deposit/withdraw code for 686 deterministic combinations (two directions,
+seven wallet balances, seven bank balances, seven amounts). Compared results
+include accepted final balances and rejected unchanged durable balances, with
+zero amounts, insufficient funds and values around the 300-million deposit cap.
+All 686 agree with the Rust planner. This replaces the command-differential
+gap above for the tested explicit-amount money-transfer domain only.
+
+The test requires an explicit C oracle and is ignored by default cargo runs;
+the local Linux runner compiles the oracle and explicitly runs `--ignored`.
+Full local runner passed exit 0, including bank file/PG E2E and both player/bank
+restore profiles: `/tmp/muhan-bank-command-differential.log`.
+
+Not covered by this comparison: item transfers, "all" parsing, i64 overflow
+behavior in legacy C, storage failure recovery or a DB transaction. The known
+legacy failed-save defect is still separately characterized and not reproduced
+as desired Rust behavior. Next persistence work must bind both snapshot input
+revisions and command identity, atomically commit both outputs, and prove retry
+and crash behavior before any live switch.
