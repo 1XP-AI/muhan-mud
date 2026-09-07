@@ -123,6 +123,11 @@ async function prepareFixture(): Promise<void> {
     await cp(join(root, directory), join(fixture, directory), { recursive: true })
   }
   await cp(join(root, 'resources_utf8', 'player'), join(fixture, 'player'), { recursive: true })
+  // Git archives preserve resource-directory mode 0755. The live publisher
+  // requires the private writable player root before the first shadow save.
+  await chmod(fixture, 0o700)
+  await chmod(join(fixture, 'player'), 0o700)
+  assert.equal((await stat(join(fixture, 'player'))).mode & 0o777, 0o700)
   for (const directory of ['alias', 'bank', 'simul', 'suic', 'fal', 'invite', 'vote', 'marriage', 'family']) {
     await mkdir(join(fixture, 'player', directory), { recursive: true })
   }
