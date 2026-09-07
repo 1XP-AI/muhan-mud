@@ -24,6 +24,21 @@
 
 ## Deployment blockers and next executable gates
 
+Update: standalone real GoTrue lifecycle probe is GREEN. The new
+`scripts/run-real-auth-local-docker.sh --allow-disposable` requires an existing
+local stack runner image via `AUTH_SMOKE_RUNNER_IMAGE`; it never builds or
+pushes images. PostgreSQL 17 and pinned GoTrue v2.189.0 share a loopback-only
+network namespace, with no host ports/mounts/socket. Synthetic signup,
+wrong-password denial, password login, HS256 signature/audience/subject/expiry,
+user endpoint, refresh rotation, logout and revoked-refresh denial all passed.
+The three owned containers were removed. First fresh initialization exposed
+the missing Auth-role search_path; setting it to auth (without granting public
+schema creation) made GoTrue's own migrations pass. An intermediate run was
+invalidated by editing its running shell script; only the subsequent clean
+run's explicit success is evidence. No production credentials/data were used.
+This is not yet real Auth **inside the full browser stack**, and the DB image
+is the disposable PG17 fixture, not production Supabase PostgreSQL.
+
 1. Extend disposable stack acceptance to the pinned real GoTrue Auth service.
    Use only synthetic test users/passwords and isolated DB/network; verify real
    password login/JWT consumption and both browser onboarding paths. Do not
