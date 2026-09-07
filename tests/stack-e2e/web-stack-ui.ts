@@ -306,6 +306,7 @@ async function installAuthBoundary(page: Page, fixture: WebStackFixture): Promis
   };
 
   await page.route("**/auth/v1/token**", async (route) => {
+    process.stderr.write(`stack-e2e: auth-fixture method=${route.request().method()}\n`);
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) });
   });
   await page.route("**/auth/v1/user**", async (route) => {
@@ -315,6 +316,12 @@ async function installAuthBoundary(page: Page, fixture: WebStackFixture): Promis
 
 async function signInToEmptyRoster(page: Page, fixture: WebStackFixture): Promise<void> {
   const statuses: number[] = [];
+  const failures: string[] = [];
+  const failed = (request: import("@playwright/test").Request) => {
+    const code = request.failure()?.errorText.match(/net::[A-Z_]+/)?.[0] ?? "unclassified";
+    failures.push(code);
+  };
+  page.on("requestfailed", failed);
   const observe = (response: import("@playwright/test").Response) => {
     if (new URL(response.url()).pathname === "/rest/v1/game_characters") statuses.push(response.status());
   };
@@ -332,10 +339,11 @@ async function signInToEmptyRoster(page: Page, fixture: WebStackFixture): Promis
     for (const secret of [fixture.accessToken, fixture.email, fixture.gamePassword, "web-stack-password", `refresh-${fixture.userId}`]) {
       if (secret) alerts = alerts.split(secret).join("<REDACTED>");
     }
-    process.stderr.write(`stack-e2e: login-alerts=${JSON.stringify(alerts.slice(0, 500))}\n`);
+    process.stderr.write(`stack-e2e: login-alerts=${JSON.stringify(alerts.slice(0, 500))} network-failures=${JSON.stringify(failures)}\n`);
     throw error;
   } finally {
     page.off("response", observe);
+    page.off("requestfailed", failed);
   }
 }
 
