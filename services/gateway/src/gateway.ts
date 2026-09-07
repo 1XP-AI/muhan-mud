@@ -868,15 +868,6 @@ class OnboardingSession {
     try {
       if (this.controlPhase === 'activation') {
         if (event.type !== 'ACTIVE' || event.commandId !== this.activationCommandId) throw new OnboardingProtocolError()
-        const request: BindSnapshotCommandRequest = {
-          actorUserId: this.actorUserId!, correlationId: this.correlationId!, characterId: this.characterId!,
-          mode: this.mode!, commandId: this.activationCommandId!,
-        }
-        // The binding RPC is immutable and exact-correlation idempotent. A
-        // lost response must not strand an already-active handoff without its
-        // browser completion acknowledgement.
-        await this.retryIndeterminate(() => this.authorizer.bindSnapshotCommand(request))
-        if (this.closed) return
         this.controlPhase = 'done'; this.state = 'closed'; this.normalClosing = true
         this.sendText({ type: this.mode === 'provision' ? 'provisioned' : 'claimed', characterId: this.characterId! })
         closeSocket(this.ws, CLOSE_NORMAL, 'onboarding complete')
@@ -1039,6 +1030,11 @@ class OnboardingSession {
     if (!isStrictLowerUuid(commandId)) throw new OnboardingProtocolError()
     this.activationCommandId = commandId
     this.characterId = characterId
+    const binding: BindSnapshotCommandRequest = { ...request, commandId }
+    // C can acknowledge the save before replying ACTIVE. Commit its immutable
+    // command binding first, retrying the same tuple after a lost RPC response.
+    await this.retryIndeterminate(() => this.authorizer.bindSnapshotCommand(binding))
+    if (this.closed) return
     this.controlPhase = 'activation'
     await this.writeControl(`MUD1O ACTIVATED|${commandId}\n`)
   }

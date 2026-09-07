@@ -341,8 +341,7 @@ test('provision relays the original wizard before DB finalize and blocks only at
   ws.send(Buffer.from('m\n'))
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii').includes('MUD1O COMMIT\n'))))
   await eventually(() => assert.equal(activationCommandId !== undefined, true))
-  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate'])
-  assert.equal(authorizer.calls.includes('bind'), false)
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate', 'bind'])
   clientSocket!.write(`MUD1O ACTIVE|${activationCommandId}\n`)
   await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'activate', 'bind']))
   assert.match(toMud[0]!.toString('ascii'), /^MUD1O\|P\|\d+\|000102030405060708090a0b0c0d0e0f\|123e4567-e89b-12d3-a456-426614174000\|123e4567-e89b-12d3-a456-426614174001\|[0-9a-f]{64}\n$/)
@@ -431,8 +430,7 @@ test('uncertain provision finalize reconciles exactly once, provisions the brows
   await eventually(() => assert.deepEqual(authorizer.reconciliations, [expectedFinalize]))
   await eventually(() => assert.ok(toMud.some((value) => value.toString('ascii').includes('MUD1O COMMIT\n'))))
   await eventually(() => assert.equal(activationCommandId !== undefined, true))
-  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate'])
-  assert.equal(authorizer.calls.includes('bind'), false)
+  assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate', 'bind'])
   clientSocket!.write(`MUD1O ACTIVE|${activationCommandId}\n`)
   await eventually(() => assert.deepEqual(authorizer.calls, ['begin', 'reserve', 'finalize', 'reconcile', 'activate', 'bind']))
   await eventually(() => assert.ok(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"provisioned","characterId":"${character}"}`)))
@@ -1068,10 +1066,10 @@ test('claim completion ignores synchronous C error and end events after CLAIMED'
 })
 
 for (const outcome of ['accepted', 'rejected', 'missing ACTIVE'] as const) {
-test(`claim EOF respects deferred snapshot binding (${outcome})`, async (t) => {
+test(`claim binds before activation and handles C EOF (${outcome})`, async (t) => {
   const bindingFails = outcome === 'rejected'
   const sendsActive = outcome !== 'missing ACTIVE'
-  const mud = new ClaimCompletionRaceMudSocket(sendsActive)
+  const mud = new ClaimCompletionRaceMudSocket(false)
   let releaseBinding!: () => void
   const bindingGate = new Promise<void>((resolve) => { releaseBinding = resolve })
   const authorizer = new RecordingOnboardingAuthorizer()
@@ -1099,16 +1097,23 @@ test(`claim EOF respects deferred snapshot binding (${outcome})`, async (t) => {
   ws.send(Buffer.from('Alice\n'))
   await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii') === 'MUD1O ALLOW\n')))
   ws.send(Buffer.from('old-secret\n'))
-  await eventually(() => assert.ok(sendsActive ? authorizer.calls.includes('bind') :
-    mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|'))))
-  // C closes immediately after ACTIVE. Deliver its EOF while the database
-  // binding is definitely pending, then give the EOF handler a full turn.
-  mud.emit('end')
+  await eventually(() => assert.ok(authorizer.calls.includes('bind')))
+  assert.equal(mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|')), false,
+    'C must not save the activation command before its database binding commits')
   await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(messages.some(({ data, binary }) => !binary && JSON.parse(Buffer.from(data).toString()).type === 'claimed'), false)
   releaseBinding()
+  if (!bindingFails) {
+    await eventually(() => assert.ok(mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|'))))
+    const activation = mud.writes.find((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|'))!
+    if (sendsActive) mud.emit('data', Buffer.from(activation.toString('ascii').replace('ACTIVATED', 'ACTIVE')))
+    // Real C emits ACTIVE followed immediately by EOF; queued control must win.
+    mud.emit('end')
+  }
   const [code] = await closed as [number]
   assert.equal(code, !sendsActive ? 1011 : bindingFails ? 1008 : 1000)
-  assert.deepEqual(authorizer.calls, sendsActive ? ['begin', 'challenge', 'claim', 'activate', 'bind'] : ['begin', 'challenge', 'claim', 'activate'])
+  assert.deepEqual(authorizer.calls, ['begin', 'challenge', 'claim', 'activate', 'bind'])
+  assert.equal(mud.writes.some((value) => value.toString('ascii').startsWith('MUD1O ACTIVATED|')), !bindingFails)
   assert.equal(messages.some(({ data, binary }) => !binary && Buffer.from(data).toString() === `{"type":"claimed","characterId":"${character}"}`), outcome === 'accepted')
   assert.equal(messages.some(({ data, binary }) => !binary && JSON.parse(Buffer.from(data).toString()).type === 'error'), outcome !== 'accepted')
 })
