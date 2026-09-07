@@ -297,7 +297,7 @@ async function crashMud(child: ChildProcess): Promise<void> {
 async function waitForMud(port: number, child: ChildProcess): Promise<void> {
   const net = await import('node:net')
   await eventually(async () => {
-    if (child.exitCode !== null) throw new Error(`MUD exited before listening (${child.exitCode})`)
+    if (child.exitCode !== null) throw new Error(`MUD exited before listening (${child.exitCode}): ${redact(mudDiagnostics)}`)
     await new Promise<void>((resolveConnect, reject) => {
       const socket = net.createConnection({ host: '127.0.0.1', port })
       socket.once('connect', () => { socket.destroy(); resolveConnect() })
