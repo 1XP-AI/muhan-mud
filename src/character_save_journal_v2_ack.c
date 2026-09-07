@@ -834,6 +834,204 @@ done:
     return result;
 }
 
+/* Historical proof never repairs or creates evidence. In particular an ACK
+ * temporary cannot stand in for a durable, canonical DB_ACKED marker. */
+static int ack_history_absent(parent, leaf)
+int parent;
+const char *leaf;
+{
+    struct stat st;
+    return fstatat(parent, leaf, &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+}
+
+static character_save_journal_v2_ack_result ack_history_evidence(writer,
+    ids, count, wires, compare, eligible)
+const character_save_journal_v2_writer_context *writer;
+const char *const *ids;
+size_t count;
+character_save_journal_v2_wire *wires;
+int compare;
+int *eligible;
+{
+    v2_ack_tree tree;
+    character_save_journal_v2_wire wire;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_writer_context_status status;
+    character_save_journal_v2_ack_result result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
+    char leaf[64], temporary[64], text[V2_ACK_TEXT_MAX];
+    unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    size_t i, length;
+    int root_fd = -1;
+    *eligible = 0;
+    memset(&tree, 0, sizeof(tree));
+    tree.root_fd = tree.player_fd = tree.shard_fd = tree.journal_fd = tree.stage_fd = -1;
+    status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) return ack_context_result(status);
+    if(ack_tree_open(root_fd, 0, 0, &tree)) goto done;
+    status = character_save_journal_v2_writer_validate_held(writer, &tuple);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = ack_context_result(status); goto done;
+    }
+    for(i = 0; i < count; i++) {
+        snprintf(leaf, sizeof(leaf), "%s.prepared", ids[i]);
+        if(ack_read_text(tree.journal_fd, leaf, text, sizeof(text)) ||
+           ack_parse_prepared(text, &wire) || strcmp(wire.command_uuid, ids[i])) goto done;
+        if(!ack_tuple_matches(&tuple, &wire)) {
+            result = CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE; goto done;
+        }
+        if(compare && memcmp(&wires[i], &wire, sizeof(wire))) goto done;
+        if(i) {
+            const character_save_journal_v2_wire *previous = &wires[i - 1];
+            if(strcmp(previous->character_id, wire.character_id) ||
+               strcmp(previous->legacy_name_key_hex, wire.legacy_name_key_hex) ||
+               strcmp(previous->legacy_shard, wire.legacy_shard) ||
+               previous->storage_format != wire.storage_format ||
+               wire.writer_revision <= previous->writer_revision ||
+               wire.writer_revision != previous->writer_revision + 1 ||
+               wire.expected_state != CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ||
+               strcmp(wire.expected_sha256, previous->post_sha256)) goto done;
+        }
+        if(!compare) wires[i] = wire;
+    }
+    tree.player_fd = ack_component(tree.root_fd, "player");
+    if(tree.player_fd < 0) goto done;
+    tree.shard_fd = ack_component(tree.player_fd, wires[0].legacy_shard);
+    tree.stage_fd = ack_component(tree.root_fd, "character-save-stage");
+    if(tree.shard_fd < 0 || tree.stage_fd < 0) goto done;
+    snprintf(leaf, sizeof(leaf), "%s.acked", ids[0]);
+    snprintf(temporary, sizeof(temporary), "%s.acked.tmp", ids[0]);
+    if(!ack_history_absent(tree.journal_fd, temporary) ||
+       ack_exact_marker(&tree, leaf, &wires[0], "DB_ACKED")) goto done;
+    for(i = 0; i < count; i++) {
+        snprintf(leaf, sizeof(leaf), "%s.published", ids[i]);
+        snprintf(temporary, sizeof(temporary), "%s.published.tmp", ids[i]);
+        if(!ack_history_absent(tree.journal_fd, temporary)) goto done;
+        if(i == count - 1 && ack_history_absent(tree.journal_fd, leaf)) {
+            result = CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED; goto done;
+        }
+        if(ack_exact_marker(&tree, leaf, &wires[i], "LEGACY_PUBLISHED")) goto done;
+        if(character_save_journal_v2_stage_leaf(ids[i], leaf, sizeof(leaf)) ||
+           !ack_history_absent(tree.stage_fd, leaf)) goto done;
+    }
+    if(ack_decode_name(&wires[count - 1], name, &length) ||
+       ack_live_post(&tree, &wires[count - 1], name)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_LIVE; goto done;
+    }
+    *eligible = 1;
+    result = CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+done:
+    ack_tree_close(&tree);
+    memset(&wire, 0, sizeof(wire));
+    memset(text, 0, sizeof(text));
+    return result;
+}
+
+static character_save_journal_v2_ack_result ack_history_run(writer, ids, count,
+    callback, opaque, eligible_out)
+const character_save_journal_v2_writer_context *writer;
+const char *const *ids;
+size_t count;
+character_save_journal_v2_receipt_callback callback;
+void *opaque;
+int *eligible_out;
+{
+    character_save_journal_v2_wire *wires;
+    character_save_journal_v2_writer_tuple tuple;
+    character_save_journal_v2_writer_context_status status;
+    character_save_journal_v2_ack_result result;
+    character_save_journal_v2_receipt receipt;
+    character_save_journal_v2_receipt_result answer;
+    unsigned char name[CHARACTER_SAVE_JOURNAL_V2_NAME_MAX + 1];
+    uint64_t before, after;
+    size_t i, length;
+    int eligible = 0;
+    if(eligible_out) *eligible_out = 0;
+    if(!writer || !ids || count < 2 || count > SIZE_MAX / sizeof(*wires))
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_ARGUMENT;
+    for(i = 0; i < count; i++) if(!ack_uuid(ids[i]))
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_ARGUMENT;
+    status = character_save_journal_v2_writer_validate_held_for_route(writer, &tuple, &before);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) return ack_context_result(status);
+    wires = calloc(count, sizeof(*wires));
+    if(!wires) return CHARACTER_SAVE_JOURNAL_V2_ACK_IO;
+    result = ack_history_evidence(writer, ids, count, wires, 0, &eligible);
+    if(result != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED) goto done;
+    status = character_save_journal_v2_writer_validate_held_for_route(writer, &tuple, &after);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK) {
+        result = ack_context_result(status); goto done;
+    }
+    if(before != after || !ack_tuple_matches(&tuple, &wires[0])) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE; goto done;
+    }
+    if(!callback) { *eligible_out = eligible; goto done; }
+    if(!eligible) { result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL; goto done; }
+    if(ack_decode_name(&wires[0], name, &length)) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL; goto done;
+    }
+    memset(&receipt, 0, sizeof(receipt));
+    receipt.world_id = wires[0].world_id;
+    receipt.legacy_name_key = name;
+    receipt.legacy_name_key_length = length;
+    receipt.character_id = wires[0].character_id;
+    receipt.command_id = wires[0].command_uuid;
+    receipt.writer_instance_id = wires[0].writer_instance_id;
+    receipt.request_sha256 = wires[0].request_sha256;
+    receipt.writer_epoch = (unsigned long long)wires[0].writer_epoch;
+    receipt.writer_revision = (unsigned long long)wires[0].writer_revision;
+    receipt.expected_state = wires[0].expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ? "existing" : "absent";
+    receipt.expected_sha256 = wires[0].expected_state == CHARACTER_SAVE_JOURNAL_V2_EXPECT_EXISTING ? wires[0].expected_sha256 : 0;
+    receipt.post_sha256 = wires[0].post_sha256;
+    receipt.storage_format = wires[0].storage_format;
+    answer = callback(opaque, &receipt);
+    ack_crash_after(CHARACTER_SAVE_JOURNAL_V2_CRASH_RECEIPT_RETURNED);
+    if(answer == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_DEFERRED; goto done;
+    }
+    if(answer == CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_FREEZE; goto done;
+    }
+    if(answer != CHARACTER_SAVE_JOURNAL_V2_RECEIPT_ACKED) {
+        result = CHARACTER_SAVE_JOURNAL_V2_ACK_REJECTED_FREEZE; goto done;
+    }
+    result = CHARACTER_SAVE_JOURNAL_V2_ACK_DB_ACKED_LOCAL_INCOMPLETE;
+    status = character_save_journal_v2_writer_validate_held_for_route(writer, &tuple, &after);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK || before != after ||
+       !ack_tuple_matches(&tuple, &wires[0])) goto done;
+    if(ack_history_evidence(writer, ids, count, wires, 1, &eligible) !=
+       CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED || !eligible) goto done;
+    status = character_save_journal_v2_writer_validate_held_for_route(writer, &tuple, &after);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK || before != after ||
+       !ack_tuple_matches(&tuple, &wires[0])) goto done;
+    result = CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+done:
+    memset(wires, 0, count * sizeof(*wires));
+    free(wires);
+    return result;
+}
+
+character_save_journal_v2_ack_result character_save_journal_v2_ack_history_probe(
+    writer, command_ids, command_count, eligible_out)
+const character_save_journal_v2_writer_context *writer;
+const char *const *command_ids;
+size_t command_count;
+int *eligible_out;
+{
+    if(!eligible_out) return CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_ARGUMENT;
+    return ack_history_run(writer, command_ids, command_count, 0, 0, eligible_out);
+}
+
+character_save_journal_v2_ack_result character_save_journal_v2_ack_replay_history(
+    writer, command_ids, command_count, callback, callback_opaque)
+const character_save_journal_v2_writer_context *writer;
+const char *const *command_ids;
+size_t command_count;
+character_save_journal_v2_receipt_callback callback;
+void *callback_opaque;
+{
+    if(!callback) return CHARACTER_SAVE_JOURNAL_V2_ACK_INVALID_ARGUMENT;
+    return ack_history_run(writer, command_ids, command_count, callback, callback_opaque, 0);
+}
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
 void character_save_journal_v2_ack_set_trusted_uid_for_test(uid)
 uid_t uid;

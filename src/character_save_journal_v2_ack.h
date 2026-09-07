@@ -85,6 +85,21 @@ character_save_journal_v2_ack_result character_save_journal_v2_ack(
     const char *command_id, character_save_journal_v2_receipt_callback callback,
     void *callback_opaque);
 
+/* Recovery-only, read-only historical receipt replay. Command IDs name a
+ * contiguous chain from the already ACKed receipt to a published live anchor.
+ * Every identity and hash is reread from canonical journal evidence. */
+character_save_journal_v2_ack_result character_save_journal_v2_ack_replay_history(
+    const character_save_journal_v2_writer_context *writer,
+    const char *const *command_ids, size_t command_count,
+    character_save_journal_v2_receipt_callback callback, void *callback_opaque);
+
+/* No callback or mutation. ACK_ACKED plus eligible_out=0 means only that the
+ * final candidate has no published marker; callers may try a shorter chain.
+ * All other missing/malformed evidence fails closed. */
+character_save_journal_v2_ack_result character_save_journal_v2_ack_history_probe(
+    const character_save_journal_v2_writer_context *writer,
+    const char *const *command_ids, size_t command_count, int *eligible_out);
+
 #ifdef CHARACTER_SAVE_JOURNAL_V2_ACK_TESTING
 #include <sys/types.h>
 void character_save_journal_v2_ack_set_trusted_uid_for_test(uid_t uid);

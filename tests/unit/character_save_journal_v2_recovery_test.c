@@ -238,8 +238,68 @@ static int test_stage_observer_is_pre_publish_and_non_authoritative(void)
 static int test_lexical_retry_and_totals(void)
 { char root[PATH_MAX];character_save_journal_v2_writer_context writer;character_save_journal_v2_recovery_report report;mock state;int failed=0;if(setup(root,"lexical",&writer)||prepare(root,COMMAND_B,NAME_B,"B",1)||prepare(root,COMMAND_A,NAME_A,"A",1))return 1;memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_A)&&!strcmp(state.order[1],COMMAND_B)&&report.discovered==2&&report.visited==2&&report.publish_attempted==2&&report.ack_attempted==2&&report.publish_results[CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK]==2&&report.ack_results[CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED]==2&&report_totals_match(&report),"scrambled creation is visited lexically with exact enum totals");memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_A)&&!strcmp(state.order[1],COMMAND_B)&&report_totals_match(&report),"already published and acked commands retry exactly");if(teardown(&writer,root))return failed+1;return failed; }
 
+static int test_history_anchor_variants(void)
+{
+    char root[PATH_MAX], hash1[65], hash2[65], relative[128];
+    character_save_journal_v2_writer_context writer;
+    character_save_journal_v2_recovery_report report;
+    evidence_snapshot before, after;
+    mock state;
+    const char *ids[2] = { COMMAND_REVISION_1, COMMAND_REVISION_2 };
+    int failed = 0, mode;
+    for(mode = 0; mode < 9; mode++) {
+        if(setup(root, "history-anchor", &writer) ||
+           prepare_published_first(root, &writer, ids[0], CHARACTER_REVISION,
+                                   NAME_B, "1", 1, hash1)) return failed + 1;
+        memset(&state, 0, sizeof(state));
+        if(character_save_journal_v2_ack(&writer, ids[0], receipt, &state) !=
+           CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED ||
+           prepare_revision_existing(root, ids[1], CHARACTER_REVISION, 2,
+                                     NAME_B, "2", 1, hash1, hash2) ||
+           character_save_journal_v2_publish_recover(&writer, ids[1]) !=
+           CHARACTER_SAVE_JOURNAL_V2_PUBLISH_OK) return failed + 1;
+        if(mode == 1 && prepare_revision_existing(root, COMMAND_C,
+            CHARACTER_REVISION, 3, NAME_B, "3", 1, hash2, 0)) return failed + 1;
+        memset(&state, 0, sizeof(state));
+        failed += bad(character_save_journal_v2_ack(&writer, ids[0], receipt,
+            &state) == CHARACTER_SAVE_JOURNAL_V2_ACK_LIVE && state.calls == 0,
+            "ordinary ACK remains strict for historical live bytes");
+        if(snapshot(root, "player/b2/M3beta", &before)) return failed + 1;
+        if(mode == 2) state.results[0] = CHARACTER_SAVE_JOURNAL_V2_RECEIPT_DEFERRED;
+        if(mode == 3) state.results[0] = CHARACTER_SAVE_JOURNAL_V2_RECEIPT_INVALID_FREEZE;
+        if(mode == 4) state.results[0] = CHARACTER_SAVE_JOURNAL_V2_RECEIPT_REJECTED_FREEZE;
+        if(mode == 5) { state.reopen_writer = 1; state.writer = &writer; state.root = root; }
+        if(mode == 6 && leaf(root, "player/b2/M3beta", "corrupt", 7)) return failed + 1;
+        if(mode == 7 && (journal_relative(relative, sizeof(relative), ids[1],
+            "published") || leaf(root, relative, "malformed", 9))) return failed + 1;
+        if(mode == 8 && (journal_relative(relative, sizeof(relative), ids[0],
+            "acked") || leaf(root, relative, "malformed", 9))) return failed + 1;
+        memset(&report, 0, sizeof(report));
+        if(mode < 2) {
+            failed += bad(character_save_journal_v2_recovery_run(&writer, receipt,
+                &state, &report) == CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK &&
+                state.calls == (mode == 1 ? 3 : 2) &&
+                !strcmp(state.order[0], ids[0]) && !strcmp(state.order[1], ids[1]) &&
+                report.publish_attempted == (mode == 1 ? 2U : 1U) &&
+                report_totals_match(&report),
+                "historical receipt replays before unacked anchor and staged tail");
+        } else {
+            failed += bad(character_save_journal_v2_recovery_run(&writer, receipt,
+                &state, &report) != CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK &&
+                state.calls == (mode >= 6 ? 0 : 1) &&
+                !command_exists(root, ids[1], "acked") && report_totals_match(&report),
+                "historical defer, rejection, generation change or corruption stops later ACKs");
+        }
+        if(mode != 1 && mode != 6)
+            failed += bad(snapshot(root, "player/b2/M3beta", &after) == 0 &&
+                same_snapshot(&before, &after), "history replay never republishes old bytes");
+        if(teardown(&writer, root)) return failed + 1;
+    }
+    return failed;
+}
+
 static int test_same_character_revision_order(void)
-{ char root[PATH_MAX],post_sha256[65];character_save_journal_v2_writer_context writer;character_save_journal_v2_recovery_report report;mock state;int failed=0;if(setup(root,"revision-order",&writer)||prepare_published_first(root,&writer,COMMAND_REVISION_1,CHARACTER_REVISION,NAME_B,"1",1,post_sha256)||prepare_revision_existing(root,COMMAND_REVISION_2,CHARACTER_REVISION,2,NAME_B,"2",1,post_sha256,0))return 1;memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_REVISION_1)&&!strcmp(state.order[1],COMMAND_REVISION_2)&&report.discovered==2&&report.visited==2&&report.publish_attempted==2&&report.ack_attempted==2&&report_totals_match(&report),"a physically possible reverse-lexical backlog ACKs in writer revision order");if(teardown(&writer,root))return failed+1;return failed; }
+{ char root[PATH_MAX],post_sha256[65];character_save_journal_v2_writer_context writer;character_save_journal_v2_recovery_report report;mock state;int failed=0;if(setup(root,"revision-order",&writer)||prepare_published_first(root,&writer,COMMAND_REVISION_1,CHARACTER_REVISION,NAME_B,"1",1,post_sha256)||prepare_revision_existing(root,COMMAND_REVISION_2,CHARACTER_REVISION,2,NAME_B,"2",1,post_sha256,0))return 1;memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&state.calls==2&&!strcmp(state.order[0],COMMAND_REVISION_1)&&!strcmp(state.order[1],COMMAND_REVISION_2)&&report.discovered==2&&report.visited==2&&report.publish_attempted==2&&report.ack_attempted==2&&report_totals_match(&report),"a physically possible reverse-lexical backlog ACKs in writer revision order");memset(&state,0,sizeof(state));memset(&report,0,sizeof(report));failed+=bad(character_save_journal_v2_recovery_run(&writer,receipt,&state,&report)==CHARACTER_SAVE_JOURNAL_V2_RECOVERY_OK&&report_totals_match(&report),"fully acknowledged same-character history remains recoverable after a later save");if(teardown(&writer,root))return failed+1;return failed; }
 
 static int test_snapshot_chain_rejections(void)
 {
@@ -462,4 +522,4 @@ static int test_malformed_marker_callback_replay(void)
 }
 
 int main(void)
-{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();failed+=test_stage_observer_is_pre_publish_and_non_authoritative();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }
+{ int failed;character_save_journal_v2_set_trusted_uid_for_test(getuid());character_save_journal_v2_writer_set_trusted_uid_for_test(getuid());character_save_journal_v2_publish_set_trusted_uid_for_test(getuid());character_save_journal_v2_ack_set_trusted_uid_for_test(getuid());failed=test_lexical_retry_and_totals();failed+=test_history_anchor_variants();failed+=test_same_character_revision_order();failed+=test_snapshot_chain_rejections();failed+=test_revision_snapshot_rejections_and_fence();failed+=test_deferred_and_freeze();failed+=test_live_and_snapshot_boundaries();failed+=test_structure_and_non_authority();failed+=test_scan_failures_and_writer_reopen();failed+=test_malformed_marker_callback_replay();failed+=test_stage_observer_is_pre_publish_and_non_authoritative();if(failed)fprintf(stderr,"recovery failures: %d\n",failed);return failed?1:0; }

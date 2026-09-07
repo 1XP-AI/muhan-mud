@@ -1,6 +1,32 @@
 # Local Docker full-stack acceptance — 2026-09-07
 
-## Latest restart investigation: failing local regression reproduced
+## Latest: historical recovery regression green locally; full-stack pending
+
+Implemented a separate historical receipt replay path. Ordinary publish/ACK
+still requires its own live post-hash. Recovery selects the latest existing
+published successor, validates the complete canonical contiguous chain and
+historical ACK, and replays the original DB receipt without publishing old
+bytes. Evidence and the held writer generation are checked again after ACK.
+Malformed candidates cannot fall back to an older anchor. Historical calls
+count as ACK attempts only, not successful publications.
+
+Fresh local verification: recovery, ACK, and publish static/unit targets and
+all three AddressSanitizer/UndefinedBehaviorSanitizer targets passed. The
+previous two-save replay assertion was observed failing before integration.
+Nine added scenarios cover published-but-unacknowledged anchor, staged tail,
+deferred/invalid/rejected receipt, writer reopen, corrupt live file, malformed
+published marker, and malformed historical ACK. Ordinary historical ACK stays
+strict; replay preserves the live inode/bytes when no new save is pending.
+
+This does not yet prove the original full Docker restart scenario. Next add
+callback-time evidence mutation and longer-chain coverage, review the helper,
+then rebuild the committed source and rerun isolated full-stack acceptance
+after scoped Docker artifact space recovery. No deployment or push this turn.
+The Astra worker completed and is idle. CI run 34093192597 remains live:
+macOS in progress, Linux queued, hosted Windows/x64 billing-blocked; no duplicate
+CI run was dispatched.
+
+## Prior restart investigation: failing local regression reproduced
 
 Frozen `77cf875` narrows restart failure to owner startup 7 / recovery 8
 (RECOVERY / INCOMPLETE), not DB transport or writer bootstrap. Evidence:

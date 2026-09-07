@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -225,6 +226,65 @@ character_save_journal_v2_ack_result result;
         report->ack_results[(unsigned int)result]++;
 }
 
+/* Presence chooses a candidate, never authorizes a receipt. Historical ACK
+ * rereads and validates every marker and chain link through the held writer.
+ * Choosing the last existing marker avoids treating staged tails as anchors;
+ * a malformed existing marker is deliberately never skipped. */
+static character_save_journal_v2_ack_result rec_history_commands(writer,
+    entries, start, count, commands_out, command_count_out)
+const character_save_journal_v2_writer_context *writer;
+const v2_recovery_entry *entries;
+unsigned int start, count;
+const char ***commands_out;
+size_t *command_count_out;
+{
+    character_save_journal_v2_wire acknowledged_wire;
+    character_save_journal_v2_writer_context_status status;
+    character_save_journal_v2_ack_result result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
+    unsigned int i, anchor = start;
+    int root_fd = -1, journal_fd = -1;
+    uid_t uid;
+    struct stat st;
+    char leaf[64];
+    const char **commands;
+    *commands_out = 0;
+    *command_count_out = 0;
+    if(start + 1 >= count || !rec_same_character(&entries[start], &entries[start + 1]))
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+    /* A current receipt with incomplete local ACK evidence retains the
+     * ordinary strict repair path. Only canonical ACKed history is eligible. */
+    if(character_save_journal_v2_ack_marker_verify(writer,
+        entries[start].wire.command_uuid, &acknowledged_wire) !=
+        CHARACTER_SAVE_JOURNAL_V2_ACK_MARKER_ACKED)
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+    if(memcmp(&acknowledged_wire, &entries[start].wire, sizeof(acknowledged_wire)))
+        return CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
+    status = character_save_journal_v2_writer_dup_held_root_fd(writer, &root_fd);
+    if(status != CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_OK)
+        return status == CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_STALE ?
+            CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE :
+            (status == CHARACTER_SAVE_JOURNAL_V2_WRITER_CONTEXT_LOCK ?
+             CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_LOCK :
+             CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_INVALID);
+    if(rec_snapshot_open(root_fd, &journal_fd, &uid)) goto done;
+    for(i = start + 1; i < count && rec_same_character(&entries[start], &entries[i]); i++) {
+        snprintf(leaf, sizeof(leaf), "%s.published", entries[i].wire.command_uuid);
+        if(fstatat(journal_fd, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0) anchor = i;
+        else if(errno != ENOENT) goto done;
+    }
+    result = CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+done:
+    if(journal_fd >= 0 && close(journal_fd)) result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
+    if(close(root_fd)) result = CHARACTER_SAVE_JOURNAL_V2_ACK_JOURNAL;
+    if(result != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED || anchor == start) return result;
+    commands = calloc((size_t)(anchor - start + 1), sizeof(*commands));
+    if(!commands) return CHARACTER_SAVE_JOURNAL_V2_ACK_IO;
+    for(i = start; i <= anchor; i++) commands[i - start] = entries[i].wire.command_uuid;
+    *commands_out = commands;
+    *command_count_out = (size_t)(anchor - start + 1);
+    return CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED;
+}
+
 character_save_journal_v2_recovery_result
 character_save_journal_v2_recovery_run_with_stage_observer(writer,
     receipt_callback, receipt_opaque, stage_observer, stage_observer_opaque,
@@ -356,6 +416,8 @@ character_save_journal_v2_recovery_report *report_out;
     for(i = 0; i < count; i++) {
         character_save_journal_v2_publish_result published;
         character_save_journal_v2_ack_result acknowledged;
+        const char **history_commands = 0;
+        size_t history_count = 0;
         int same_character = i && rec_same_character(&entries[i - 1], &entries[i]);
         if(!same_character) blocked_character = 0;
         if(blocked_character) continue;
@@ -369,6 +431,18 @@ character_save_journal_v2_recovery_report *report_out;
                 report.snapshot_failed++;
             else
                 report.snapshot_succeeded++;
+        }
+        acknowledged = rec_history_commands(writer, entries, i, count,
+                                             &history_commands, &history_count);
+        if(acknowledged != CHARACTER_SAVE_JOURNAL_V2_ACK_ACKED)
+            goto acknowledge_result;
+        if(history_commands) {
+            report.ack_attempted++;
+            acknowledged = character_save_journal_v2_ack_replay_history(writer,
+                history_commands, history_count, receipt_callback, receipt_opaque);
+            free(history_commands);
+            rec_ack_count(&report, acknowledged);
+            goto acknowledge_result;
         }
         report.publish_attempted++;
         published = character_save_journal_v2_publish_recover(writer,
@@ -393,6 +467,7 @@ character_save_journal_v2_recovery_report *report_out;
         acknowledged = character_save_journal_v2_ack(writer, entries[i].wire.command_uuid,
                                                        receipt_callback, receipt_opaque);
         rec_ack_count(&report, acknowledged);
+acknowledge_result:
         if(acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_INVALID ||
            acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_STALE ||
            acknowledged == CHARACTER_SAVE_JOURNAL_V2_ACK_CONTEXT_LOCK) {
