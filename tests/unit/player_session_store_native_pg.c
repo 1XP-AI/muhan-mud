@@ -41,6 +41,15 @@ int main(int argc,char **argv)
     assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000001"));
     assert(!strcmp(ctx.fields[6],"1")&&!ctx.pending);
     assert(!strcmp(ctx.fields[5],"c9280000-0000-0000-0000-000000000001"));
+    copy.gold++;
+    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK);
+    assert(ctx.status==PLAYER_SNAPSHOT_SAVE_COMMITTED&&ctx.committed_revision==2);
+    assert(!strcmp(ctx.fields[6],"1"));
+    assert(save_ply(argv[2],&copy)==PLAYER_STORE_OK&&ctx.status==PLAYER_SNAPSHOT_SAVE_RETRY);
+    puts("READY2");fflush(stdout);
+    assert(getchar()=='R');
+    assert(!player_session_store_adopt(&ctx,&copy,"c9280000-0000-0000-0000-000000000002"));
+    assert(!strcmp(ctx.fields[6],"2")&&!ctx.pending);
     assert(player_store_unbind(&binding)==PLAYER_STORE_UNBIND_RESTORED);
     player_session_store_dispose(&ctx);player_snapshot_v1_free_clone(loaded);PQfinish(db);
     return 0;

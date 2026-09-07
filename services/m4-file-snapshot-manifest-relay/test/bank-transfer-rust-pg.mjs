@@ -115,7 +115,7 @@ try {
     {
       const saveId='a9260000-0000-0000-0000-000000000001',name='Savehero'
       const body=Buffer.from(player.subarray(16,-32));body.fill(0,7,87);body.write(name,7,'utf8')
-      const initial=rebody(player,body),changed=playerGold(initial,101n)
+      const initial=rebody(player,body),changed=playerGold(initial,101n),second=playerGold(initial,102n)
       await db.query(`insert into public.game_characters(id,world_id,legacy_name,legacy_name_key,legacy_shard,lifecycle,storage_format,owner_user_id,claimed_at)
         values($1,$2,$3,$3,substr(encode(public.digest(convert_to($3,'UTF8'),'sha1'),'hex'),1,2),'active',1,$4,clock_timestamp())`,[saveId,world,name,actor])
       await db.query('insert into private.game_character_paired_snapshot_states values($1,0,$2,$3)',[saveId,initial,bank])
@@ -169,55 +169,64 @@ try {
             env:{...process.env,PGPORT:port,PGPASSWORD:'bank-local-contract-password',PGOPTIONS:'',
               ASAN_OPTIONS:'detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS:'halt_on_error=1'},stdio:['pipe','pipe','pipe'],
           })
-          let output='',errors='',releasing=false,failure
+          let output='',errors='',releases=0,failure
           const timer=setTimeout(()=>{failure=new Error('native adoption watchdog');child.kill('SIGKILL')},12000)
           child.stderr.on('data',b=>{errors=(errors+b).slice(-8192)})
           child.on('error',e=>{failure=e})
           child.stdout.on('data',b=>{
             output+=b
-            if(output==='READY\n'&&!releasing) {
-              releasing=true
+            if(output==='READY\n'&&releases===0) {
+              releases=1
               releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login)
-                .then(()=>child.stdin.end('R')).catch(e=>{failure=e;child.kill('SIGKILL')})
+                .then(()=>child.stdin.write('R')).catch(e=>{failure=e;child.kill('SIGKILL')})
+            } else if(output==='READY\nREADY2\n'&&releases===1) {
+              releases=2
+              const nextArgs=[...request.slice(0,8)];nextArgs[5]='c9280000-0000-0000-0000-000000000001';nextArgs[6]='1';nextArgs[7]=sha(changed).toString('hex')
+              ;(async()=>{
+                assert.deepEqual(await state(),{revision:'2',player_payload:second,bank_payload:bank})
+                assert.deepEqual(await readPlayerPending(pending,nextArgs[5]),{args:nextArgs,payload:second})
+                await releaseConfirmedPlayer(pending,nextArgs,second,writer,'1',login)
+                child.stdin.end('R')
+              })().catch(e=>{failure=e;child.kill('SIGKILL')})
             }
           })
-          child.on('close',code=>{clearTimeout(timer);if(failure||code!==0||!releasing) reject(failure??new Error(`native adoption ${code}: ${errors}`));else resolve()})
+          child.on('close',code=>{clearTimeout(timer);if(failure||code!==0||releases!==2) reject(failure??new Error(`native adoption ${code}: ${errors}`));else resolve()})
         })
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         nativeSave(request,'2 1\n')
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         assert.deepEqual(await readPlayerPending(pending,request[5]),{args:request.slice(0,8),payload:request[8]})
         // Retained resolved history no longer blocks a different operation's CLI.
-        const bankArgs=[saveId,world,actor,session,'test-gateway',writer,'1','c9270000-0000-0000-0000-000000000001','1','deposit','1']
-        const lengths=Buffer.alloc(8);lengths.writeUInt32BE(changed.length);lengths.writeUInt32BE(bank.length,4)
-        const frame=Buffer.concat([lengths,changed,bank])
+        const bankArgs=[saveId,world,actor,session,'test-gateway',writer,'1','c9270000-0000-0000-0000-000000000001','2','deposit','1']
+        const lengths=Buffer.alloc(8);lengths.writeUInt32BE(second.length);lengths.writeUInt32BE(bank.length,4)
+        const frame=Buffer.concat([lengths,second,bank])
         const next=spawnSync(process.execPath,[fileURLToPath(new URL('../dist/money-pending-prepare-cli.js',import.meta.url)),'--prepare',pending,...bankArgs],{input:frame,timeout:5000})
         assert.equal(next.status,0,next.stderr.toString());assert.deepEqual(next.stdout,frame)
         await assert.rejects(releaseConfirmedPlayer(pending,request.slice(0,8),request[8],writer,'1',login))
       } finally {await rm(pending,{recursive:true,force:true})}
       assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
-      const after=await state();assert.deepEqual(after,{revision:'1',player_payload:changed,bank_payload:bank})
+      const after=await state();assert.deepEqual(after,{revision:'2',player_payload:second,bank_payload:bank})
       await assert.rejects(login.query(sql,[...request.slice(0,8),playerGold(initial,102n)]),e=>e.code==='P0001')
       const stale=[...request];stale[5]='c9260000-0000-0000-0000-000000000002'
       await assert.rejects(login.query(sql,stale),e=>e.code==='40001')
-      const bad=[...stale];bad[6]='1';bad[7]=sha(changed).toString('hex');bad[8]=Buffer.from(changed);bad[8][bad[8].length-1]^=1
+      const bad=[...stale];bad[6]='2';bad[7]=sha(second).toString('hex');bad[8]=Buffer.from(second);bad[8][bad[8].length-1]^=1
       await assert.rejects(login.query(sql,bad),e=>e.code==='22023')
       nativeSave(bad,'-2 0\n')
       assert.deepEqual(await state(),after)
       const peer=new Client({connectionString:`postgresql://mud_writer_login:bank-local-contract-password@127.0.0.1:${port}/postgres`,connectionTimeoutMillis:2000,statement_timeout:3000})
       try {
         await peer.connect();await peer.query('set role mud_writer')
-        const a=[...stale];a[6]='1';a[7]=sha(changed).toString('hex');a[8]=playerGold(changed,102n)
-        const b=[...a];b[5]='c9260000-0000-0000-0000-000000000003';b[8]=playerGold(changed,103n)
+        const a=[...stale];a[6]='2';a[7]=sha(second).toString('hex');a[8]=playerGold(second,103n)
+        const b=[...a];b[5]='c9260000-0000-0000-0000-000000000003';b[8]=playerGold(second,104n)
         const outcomes=await Promise.allSettled([login.query(sql,a),peer.query(sql,b)])
         assert.equal(outcomes.filter(x=>x.status==='fulfilled').length,1)
         assert.equal(outcomes.find(x=>x.status==='rejected').reason.code,'40001')
-        const latest=await state();assert.equal(latest.revision,'2');assert.deepEqual(latest.bank_payload,bank)
+        const latest=await state();assert.equal(latest.revision,'3');assert.deepEqual(latest.bank_payload,bank)
         assert.deepEqual((await login.query(sql,request)).rows,[{outcome:'EXACT_RETRY',committed_revision:'1'}])
         nativeSave(request,'2 1\n')
         assert.deepEqual(await state(),latest)
       } finally {await peer.end()}
-      assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,2)
+      assert.equal((await db.query('select count(*)::int n from private.game_character_player_save_intents where character_id=$1',[saveId])).rows[0].n,3)
       const recovery=[...request,writer,'1'],stable=await state()
       assert.deepEqual((await login.query(playerRecoverySql,recovery)).rows,[{outcome:'CONFIRMED',committed_revision:'1'}])
       await assert.rejects(db.query(playerRecoverySql,recovery),e=>e.code==='P0001')
