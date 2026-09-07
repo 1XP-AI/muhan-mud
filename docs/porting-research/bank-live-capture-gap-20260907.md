@@ -1,5 +1,26 @@
 # Live bank capture and transaction gap
 
+## Actual savegame command through DB registry — 2026-09-08
+
+Source `a6b59b4` links the real command8.c savegame_nomsg and player.c object
+list routines into the native session fixture. Both characters now save through
+savegame_nomsg, including both Savehero commit/retry/release/adoption cycles.
+This exercises the actual temporary creature allocation/copy and save_ply
+dispatch rather than a hand-written call to the storage seam. A changed
+pending request returns PLAYER_STORE_IO_ERROR and invokes the nonfatal game
+error callback exactly once; later valid retries do not add errors. FileStore
+callbacks remain fatal test guards. Production command code was unchanged.
+
+Frozen full local ARM64 runner at `a6b59b4` exited 0 through its process handle;
+evidence `/tmp/muhan-real-savegame-db.log`. Actual PG exact bytes, bank
+preservation, durable request/release, cross-character independence, C/Rust
+differential, ASan/UBSan, real C onboarding and both restore profiles passed.
+
+This fixture currently has no ready-slot equipment, so it does not prove the
+equipped-object branch of savegame. Interactive savegame output, actual uninit/
+io disconnect, player_recovery queue ownership and production admission remain
+separate integration gaps. No production grant, push, Actions run or deployment.
+
 ## Native multi-character registry — 2026-09-08
 
 Source `20a97c7` adds a zero-initialized caller-owned registry exposing the
