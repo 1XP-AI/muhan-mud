@@ -29,9 +29,9 @@ int main(int argc,char **argv)
         memset(&a,0,sizeof(a));memset(&z,0,sizeof(z));strcpy(a.name,"A");strcpy(z.name,"Z");
         memset(&ta,0,sizeof(ta));memset(&tz,0,sizeof(tz));ta.obj=&a;tz.obj=&z;
         equipped.first_obj=&ta;equipped.ready[0]=&z;normalized=equipped;
-        normalized.ready[0]=NULL;ta.next_tag=&tz;
+        normalized.ready[0]=NULL;ta.next_tag=&tz;a.parent_crt=&normalized;z.parent_crt=&normalized;
         assert(!player_snapshot_v1_encode_loaded(&normalized,&wanted,&wanted_length));
-        ta.next_tag=NULL;saved_player=equipped;saved_z=z;
+        ta.next_tag=NULL;a.parent_crt=&equipped;z.parent_crt=NULL;saved_player=equipped;saved_z=z;
         assert(!bank_money_live_snapshot(&equipped,&got,&got_length));
         assert(got_length==wanted_length&&!memcmp(got,wanted,got_length));
         assert(!memcmp(&equipped,&saved_player,sizeof(equipped))&&!memcmp(&z,&saved_z,sizeof(z))&&ta.next_tag==NULL);
