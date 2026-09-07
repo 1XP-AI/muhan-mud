@@ -328,6 +328,11 @@ async function signInToEmptyRoster(page: Page, fixture: WebStackFixture): Promis
     await expect(page.getByText("이 계정에 연결된 캐릭터가 없습니다")).toBeVisible();
   } catch (error) {
     process.stderr.write(`stack-e2e: empty-roster responses=${JSON.stringify(statuses)} auth-visible=${await page.getByRole("heading", { name: /글자로 열린 세계/ }).isVisible()} alerts=${await page.getByRole("alert").count()}\n`);
+    let alerts = (await page.getByRole("alert").allTextContents()).join(" | ");
+    for (const secret of [fixture.accessToken, fixture.email, fixture.gamePassword, "web-stack-password", `refresh-${fixture.userId}`]) {
+      if (secret) alerts = alerts.split(secret).join("<REDACTED>");
+    }
+    process.stderr.write(`stack-e2e: login-alerts=${JSON.stringify(alerts.slice(0, 500))}\n`);
     throw error;
   } finally {
     page.off("response", observe);
