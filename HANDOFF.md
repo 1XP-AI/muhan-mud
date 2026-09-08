@@ -271,6 +271,15 @@ replay·출금을 통과했다. 기존 bank graph 전체 이관, 상점·거래�
 기존 `Depart`/cleanup queue가 실행되도록 했다. 정상 종료와 소켓 단절은 같은 durable
 departure 경계를 공유한다. 전체 quit alias·자동저장·재접속 UX는 아직 미구현이다.
 
+`시간` read-only 명령도 중앙 parser와 `WorldConnector`에 연결했다. C `prt_time`의
+게임 시각(주/야간 표시와 12시간 변환) 및 PST wall-clock을 request에 고정하고,
+world snapshot bytes는 그대로 반환하는 durable receipt로 처리한다. 같은 command ID의
+재시도는 새 시각을 렌더링하거나 reducer를 다시 실행하지 않으며, unsupported
+`도움말`/인자 포함 시간 명령은 receipt 없이 fail-closed한다. `WallClock` 주입점을 둬
+transport 테스트가 실제 시계에 의존하지 않도록 했고, local unit/race/vet와
+`TestWorldConnectorSubmitDispatchesReadTimeWithoutMutatingWorld`를 통과했다. C의
+continuation 기반 도움말/정보 명령과 전체 출력 포맷은 아직 남아 있다.
+
 ## 아래는 이전 C/Rust 작업의 역사적 인계 기록
 
 아래 날짜·완료 상태·후속 작업은 당시 기록이며 Go 개발 지시나 최신 검증 결과가 아니다.

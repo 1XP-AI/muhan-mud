@@ -18,6 +18,7 @@ type WorldConnectorConfig struct {
 	Store       engine.CommandStore
 	WorldID     string
 	Clock       func() (int32, int)
+	WallClock   func() time.Time
 	Catalog     world.SpawnCatalog
 	Roll        func(int, int) int
 	Allocate    func() (string, error)
@@ -55,10 +56,16 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.Store == nil || config.WorldID == "" || config.Clock == nil || config.MaxSessions < 1 {
 		return nil, errors.New("invalid world connector configuration")
 	}
+	if config.WallClock == nil {
+		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
+	}
 	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1}
 	g.cleanup = session.NewWorldCleanupQueue(&g.owners, config.Store, config.WorldID)
 	return g, nil
 }
+
+var mudPST = time.FixedZone("PST", -8*60*60)
+
 func (g *WorldConnector) PendingCleanup() []session.PendingCleanup { return g.cleanup.Pending() }
 func (g *WorldConnector) RunCleanup(ctx context.Context) error {
 	return g.cleanup.Run(ctx, time.Second, 5*time.Second)
@@ -258,6 +265,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteEquipmentLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandBank:
 		receipt, err = c.game.owners.ExecuteBankLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandRead:
+		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandQuit:
 		receipt, err = c.game.owners.ExecuteQuitLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	default:
@@ -274,6 +283,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedItemMutationLine) ||
 		errors.Is(err, session.ErrUnsupportedEquipmentLine) ||
 		errors.Is(err, session.ErrUnsupportedBankLine) ||
+		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
