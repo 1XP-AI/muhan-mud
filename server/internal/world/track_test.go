@@ -117,3 +117,15 @@ func TestTrackRejectsUnauthorizedAndInvalidRandomSource(t *testing.T) {
 		t.Fatal("missing random source accepted")
 	}
 }
+
+func TestApplyTrackRejectsTamperedCommittedResponse(t *testing.T) {
+	s := trackStateFixture(trackRangerClass, 15, 4, "동")
+	proposal, err := s.PlanTrack("ranger", 100, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal.Response = "추적 실패!\r\n"
+	if _, _, err := s.ApplyTrack(proposal); err == nil {
+		t.Fatal("tampered track response accepted")
+	}
+}

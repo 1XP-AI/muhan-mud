@@ -198,8 +198,30 @@ func (s State) ApplyTrack(proposal TrackProposal) (State, TrackResult, error) {
 		if int64(proposal.Now) < deadline || proposal.WaitSeconds != 0 {
 			return State{}, TrackResult{}, fmt.Errorf("track cooldown changed")
 		}
-		if proposal.Broadcast && room.Resource.Track == "" {
-			return State{}, TrackResult{}, fmt.Errorf("track broadcast without room trace")
+		blind := flag(actor.Body.Flags[:], playerBlindFlag)
+		if blind {
+			if proposal.Chance != 0 || proposal.Broadcast || proposal.Response != "당신은 눈이 멀어 있습니다. 도저히 추적을 할 수 없습니다.\r\n" {
+				return State{}, TrackResult{}, fmt.Errorf("track blind response mismatch")
+			}
+		} else {
+			chance := 25 + (dexBonus+((int(actor.Body.Level)+3)/4))*5
+			if proposal.Chance != chance {
+				return State{}, TrackResult{}, fmt.Errorf("stale track chance proposal")
+			}
+			switch {
+			case proposal.Response == "추적 실패!\r\n":
+				if proposal.Broadcast {
+					return State{}, TrackResult{}, fmt.Errorf("track failure broadcast mismatch")
+				}
+			case room.Resource.Track == "":
+				if proposal.Broadcast || proposal.Response != "아무런 흔적이 남아있지 않습니다.\r\n" {
+					return State{}, TrackResult{}, fmt.Errorf("track empty-trace response mismatch")
+				}
+			default:
+				if !proposal.Broadcast || proposal.Response != fmt.Sprintf("%s쪽으로 흔적이 나 있습니다.\r\n", room.Resource.Track) {
+					return State{}, TrackResult{}, fmt.Errorf("track success response mismatch")
+				}
+			}
 		}
 		actor.Body.Timers[trackTimerIndex].LastTime = proposal.Now
 		actor.Body.Timers[trackTimerIndex].Interval = interval
