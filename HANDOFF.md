@@ -21,11 +21,21 @@ player-vital phase를 결정론적 slot ID로 실행하고, 불확실한 저장 
 필수 조건에서 제외한다. [터미널 전용 UI 계획](docs/web-mud/terminal-only-ui-plan.md)의
 입력 포커스·모바일·한글 입력 인수 기준까지 구현 범위에 포함한다.
 
-현재 작업 디렉터리의 `server/`와 최근 Go 계획/테스트 문서는 아직 커밋되지 않은
-untracked 변경이다. 따라서 `git log`나 다른 워크트리의 커밋 기준만 보면 Go 작업이
-처음부터 없는 것처럼 보일 수 있다. 파일을 삭제하거나 브랜치를 되돌린 상태가
-아니며, `src/frp.new`를 포함한 사용자 dirty 파일은 건드리지 않는다. 다음 인계 시
-먼저 `git status --short`와 이 문서의 최신 추가 기록을 확인한다.
+Go 서버·터미널 UI·실행 계획은 로컬 커밋
+`518502bd4c86a5ab73d6bce962004ddd3ec07188` (`Go 서버 전환 기반과 터미널 런타임 정리`)로
+묶었다. 인프라 저장소의 Go/ARM64 Helm·Docker·migration/seed 경로도 로컬 커밋
+`ba9a9c14` (`Go 런타임과 ARM64 Helm 경로 연결`)로 묶었다. 두 커밋 모두 아직 원격에
+push하지 않았기 때문에 GitHub의 기존 브랜치나 immutable Docker fetch에서는 Go 서버가
+보이지 않는다. `src/frp.new`는 사용자 변경으로 계속 dirty 상태이며 stage하거나
+되돌리지 않았다.
+
+현재 인프라 로컬 검증은 Go/legacy Helm lint·render, migration graph 47개, Secret·release
+wrapper·Docker source-path를 포함한 72개 Node 테스트, ARM64 BuildKit Dockerfile check를
+통과했다. Go는 `go test ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go test -race`와
+`go vet`를 통과했다. 다만 `private` 원격 브랜치는 아직 `a45ec8e...`이고 Go 커밋을
+포함하지 않으므로 실제 Docker registry build/deploy는 push와 immutable source 승인 뒤에만
+재현할 수 있다. 다음 인계 시 먼저 `git status --short`와 이 문서의 최신 추가 기록을
+확인한다.
 
 사용자가 이전 목표를 삭제한 뒤 새 Go 목표 생성과 실행을 지시했다. 현재 원본 방
 데이터를 Go로 읽는 G1 작업 중이다. 엄격한 디코더는 3,216개 중 3,153개만 허용한다.
