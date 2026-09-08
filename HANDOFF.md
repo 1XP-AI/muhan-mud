@@ -1210,3 +1210,12 @@ infra Docker source revision pin은 `eacaa9d7`에서
 `500aee64b8af73370e880c8e9202246edafaf22c`로 갱신했다.
 
 root 작업 트리의 유일한 미커밋 변경은 사용자 소유 `src/frp.new`이며 보존한다.
+
+## 2026-09-08 bounded reconnect follow-up
+
+직접 Luna max read-only review가 유효한 view마다 `reconnectAttempt`를 0으로 되돌려
+반복 transient close가 무한 재연결할 수 있는 P2를 발견했다. `6e86daa`에서 메시지별
+reset을 제거하고 반복 drop 뒤 다섯 번째 WebSocket 연결이 생기지 않는 Playwright
+회귀를 추가했다. 최종 web typecheck/42 unit tests/build와 xterm Playwright 3 tests가
+통과했다. infra source pin은 `e0b2161d`에서 최종 root SHA
+`6e86daac1dab719f80c4bb5d0a3c45c431d075b9`를 가리킨다.

@@ -407,3 +407,8 @@ MaxSessions=32에서 32개만 admission된다. DB pool 16, connector 전역 comm
 chart gateway 200 제한은 별도 운영 부하 검증이 필요하며, 이번 수치만으로 1000 동접
 승격·배포 승인을 하지 않는다. 다음 게이트는 실제 disposable PostgreSQL 17 ARM64와
 Chromium stack E2E가 가능한 환경에서 replay/ingress를 재실행하는 것이다.
+
+추가 안정성 검토에서 xterm reconnect budget이 view 수신마다 초기화되던 P2를
+`6e86daa`에서 제거했다. 반복 transient drop 회귀를 포함한 Playwright 3 tests,
+web typecheck/build가 통과했으며, 운영 WSS/Ingress와 실제 모바일 키보드 검증은
+여전히 별도 배포 게이트다.

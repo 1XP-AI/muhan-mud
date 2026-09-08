@@ -2029,3 +2029,7 @@ cleanup/namespace/loopback 충돌을 검증한다.
 build, web typecheck/42 tests/build, classic-terminal Playwright 2 tests, load harness
 race와 100/1000 smoke에서 통과했다. persistent 결과의 32-session 경계와 REST-like
 수치는 메모리 fixture의 방향성 자료일 뿐 PostgreSQL/gateway 운영 동접 보증이 아니다.
+
+bounded reconnect 후속(`6e86daa`)에서 유효 view 수신마다 retry budget을 초기화하던
+경로를 제거했다. 반복 transient close에서도 최대 재연결 횟수가 유지되며, classic
+terminal Playwright 3 tests와 web typecheck/build가 통과했다.
