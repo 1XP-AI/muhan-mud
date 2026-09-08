@@ -2033,3 +2033,30 @@ race와 100/1000 smoke에서 통과했다. persistent 결과의 32-session 경�
 bounded reconnect 후속(`6e86daa`)에서 유효 view 수신마다 retry budget을 초기화하던
 경로를 제거했다. 반복 transient close에서도 최대 재연결 횟수가 유지되며, classic
 terminal Playwright 3 tests와 web typecheck/build가 통과했다.
+
+## 2026-09-08 직접 Luna max 후속 slice
+
+root가 Orca 없이 직접 병렬 배치한 세 lane을 통합했다.
+
+- `153efb7`: 실제 help 문서가 존재하는 `help.21`, `22`, `24–29`, `32–35`, `61`, `100`
+  alias를 source-backed `도움말` projection에 추가했다. `help.31`처럼 없는 문서는
+  연결하지 않으며 missing/invalid UTF-8과 receipt replay를 검증한다.
+- `f09b0a4`: `보아 <prefix> <positive occurrence>`를 canonical NPC-first/player
+  order와 display-name/three-key prefix로 제한적으로 지원한다. object/exit occurrence,
+  bare `보아`, 전체 ANSI inspection은 아직 미지원이며 ambiguous/unresolved identity는
+  receipt 전에 거부한다. WebSocket recipient/room projection과 replay suppression도
+  회귀 테스트했다.
+- `cbf6b8b`: player-vital scheduler가 NPC/room refresh를 암묵적으로 실행하지 않는
+  경계를 고정했다. NPC spawn origin·active-order 권위가 준비되기 전에는 scheduler를
+  확장하지 않는다.
+
+이번 통합에서 다음 검증이 통과했다.
+
+```text
+go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1
+go vet ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+```
+
+strict room corpus 기존 63개 예외, 전체 C 명령/tick/경제, 실제 PostgreSQL/Chromium 재실행,
+WSS/Ingress와 testnet 배포 인수는 계속 남아 있다.

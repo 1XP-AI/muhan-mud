@@ -1219,3 +1219,29 @@ reset을 제거하고 반복 drop 뒤 다섯 번째 WebSocket 연결이 생기�
 회귀를 추가했다. 최종 web typecheck/42 unit tests/build와 xterm Playwright 3 tests가
 통과했다. infra source pin은 `e0b2161d`에서 최종 root SHA
 `6e86daac1dab719f80c4bb5d0a3c45c431d075b9`를 가리킨다.
+
+## 2026-09-08 ChatGPT 직접 Luna max 후속 병렬 통합
+
+Orca를 사용하지 않고 root가 직접 세 개의 Luna max lane을 배치·회수했다. lane은
+서로 다른 파일 경계를 사용했고 root가 각 커밋을 재검토한 뒤 통합했다.
+
+- `153efb7` 도움말 catalog: 원본 `help.21`, `22`, `24–29`, `32–35`, `61`, `100`이
+  실제 존재하는지 확인한 뒤 exact alias를 `도움말`에 연결했다. 없는 `help.31`은 연결하지
+  않았고, 문서 누락/invalid UTF-8은 receipt 전에 거부하며 replay에서는 문서를 다시 읽지
+  않는다.
+- `f09b0a4` target occurrence: `보아 <prefix> <positive occurrence>`를 canonical
+  NPC→player 순서로 연결했다. C `find_crt`의 display name/세 key prefix와 1-based
+  occurrence를 적용하되 object/exit occurrence는 canonical identity가 없어 fail-closed한다.
+  WebSocket room/recipient fan-out도 동일 occurrence를 재해석하며 replay에서는 event를
+  재방송하지 않는다.
+- `cbf6b8b` NPC scheduler boundary: 현재 `RunPlayerVitalTick`이 NPC/room refresh를
+  주장하지 않도록 contract regression만 추가했다. canonical spawn origin과 active-order
+  replay가 준비되지 않은 상태에서 새 scheduler를 추측해 만들지 않았다.
+
+통합 검증은 `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`와 새 session/world/transport
+focused tests가 통과했다. strict room corpus의 기존 63개 예외, 전체 C command/tick/경제,
+실제 PostgreSQL/Chromium 재실행, WSS/Ingress와 testnet 인수는 여전히 미완료다.
+인프라 저장소의 `scripts/docker-source-paths.test.mjs` reviewed source pin은 새 root
+`f09b0a4a606f61d0ffb8505f660d421d31bda030`을 가리키도록 갱신했으며, infra 테스트 재실행과
+commit은 별도 통합 단계다. `src/frp.new`는 계속 사용자 dirty 변경으로 보존한다.
