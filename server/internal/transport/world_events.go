@@ -361,3 +361,26 @@ func (g *WorldConnector) publishPeek(after world.State, actorID string, result w
 		}
 	}
 }
+
+// publishDoor emits the committed open/close room projection. The actor
+// already received the durable response; replayed receipts never call this
+// path, and slow clients are dropped without blocking the command loop.
+func (g *WorldConnector) publishDoor(after world.State, actorID string, result world.DoorCommandResult) {
+	event, ok, err := after.RoomDoorEvent(actorID, result.Action, result.ExitName)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the actor's durable door command.
+		}
+	}
+}

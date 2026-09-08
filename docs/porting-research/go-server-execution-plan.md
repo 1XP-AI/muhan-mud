@@ -334,3 +334,21 @@ flag를 재검증하고, stale proposal·malformed numeric value·미확인 acto
 가입→월드 입장→`설정 색`→재로그인 E2E도 **1 passed (11.2s)**다. 전체 C flag-list
 출력의 ANSI/약어·관리자 전용 설정, 나머지 154 handler와 full tick/경제/배포 인수는
 여전히 미완료다.
+
+## 2026-09-08 `열어`·`닫아` door state 후속
+
+원본 `command6.c:openexit`/`closeexit`의 same-room 출구 경계를 Go에 연결했다.
+권위 방 snapshot에서 source-style 첫 prefix match를 선택하고, 잠김/닫힘/문 여부를
+검사한 뒤 `XCLOSD`·`ltime`·actor `PHIDDN`을 한 후보에서 원자적으로 갱신한다.
+실패 문구는 상태를 바꾸지 않으며, 계획 시점의 room/exit와 actor 상태가 달라지면
+Apply가 fail-closed한다. 성공 결과만 committed room snapshot에서 다른 연결에
+fan-out하고 actor/replay에는 중복 event를 보내지 않는다.
+
+`풀어`/`잠궈`/`따`는 key object type, key 번호, 내구도, `LT_PICKL` 확률과
+`XUNPCK` 예외가 필요한 별도 slice라 이번 경계에 포함하지 않았다. 또한 full
+occurrence parser는 아직 source-compatible 전체 명령 table로 승격하지 않았다.
+
+world/session/transport TDD, `MUHAN_DOOR_TEST_DATABASE_URL` 격리 ARM64 PostgreSQL
+17 replay, Linux ARM64 build와 실제 Go+PG+Chromium의 `열어 __missing_door__` 경로
+**1 passed (10.8s)**를 통과했다. 전체 door/key alias, ANSI/legacy formatting 및
+나머지 명령·tick·경제·배포 인수는 계속 남아 있다.

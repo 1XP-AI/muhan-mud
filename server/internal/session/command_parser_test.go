@@ -38,6 +38,8 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"엿봐 Bob", CommandPeek},
 		{"설정 색", CommandSettings},
 		{"해제 방이름", CommandSettings},
+		{"열어 북", CommandDoor},
+		{"닫아 북", CommandDoor},
 		{"마법", CommandUnknown},
 	}
 	for _, tt := range tests {

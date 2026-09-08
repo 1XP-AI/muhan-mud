@@ -1141,3 +1141,16 @@ flag-list, unknown `해제`는 오류 문구를 반환한다.
 PostgreSQL+Chromium 가입→`설정 색`→재로그인 E2E **1 passed (11.2s)**. 전체 C flag-list
 ANSI/관리자 옵션과 나머지 명령·tick·경제·배포 인수는 여전히 남아 있다. 이 slice의
 root 변경 후 infra Docker source revision pin을 갱신해야 한다.
+
+## 2026-09-08 `열어`·`닫아` door slice
+
+`command6.c:openexit`/`closeexit`의 bounded same-room 출구 전이를 Go에 연결했다.
+첫 prefix match, `XLOCKD`/`XCLOSD`/`XCLOSS`, open timestamp, actor `PHIDDN`을
+하나의 world proposal/apply와 PostgreSQL receipt/replay로 처리한다. 성공 receipt만
+committed room event를 다른 연결에 보내며, actor/replay에는 중복 event가 없다.
+새 출구가 계획 이후 나타나도 stale proposal로 거절한다.
+
+검증: door world/session/transport TDD, 전체 Go race/vet, Linux ARM64 build,
+격리 ARM64 PostgreSQL 17 `TestPostgresDoorCommandPersistsAndReplays`, 실제 Go+
+PostgreSQL+Chromium `열어 __missing_door__` 경로 **1 passed (10.8s)**. `풀어`/`잠궈`/
+`따`의 key object·내구도·picklock 및 전체 occurrence/ANSI formatting은 다음 slice다.

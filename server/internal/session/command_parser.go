@@ -41,6 +41,7 @@ const (
 	CommandHide
 	CommandPeek
 	CommandSettings
+	CommandDoor
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -191,6 +192,8 @@ func commandKind(first string) CommandKind {
 		return CommandPeek
 	case "설정", "해제":
 		return CommandSettings
+	case "열어", "닫아":
+		return CommandDoor
 	default:
 		if world.IsEmoteAlias(first) {
 			return CommandEmote

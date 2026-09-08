@@ -1951,3 +1951,21 @@ object branch, 전체 C `list_obj`/ANSI parity는 아직 별도 범위다.
 
 전체 C settings alias/ANSI formatting, 관리자 전용 옵션, 나머지 명령·tick·경제·배포
 인수는 아직 완료되지 않았다.
+
+## 2026-09-08 `열어`·`닫아` door command slice
+
+`command6.c:openexit`/`closeexit`의 bounded same-room 출구 전이를 연결했다. 방의
+권위 snapshot에서 첫 prefix match를 선택하고 `XLOCKD`/`XCLOSD`/`XCLOSS` 경계를
+확인한 뒤 exit flags, open timestamp, actor `PHIDDN`을 함께 저장한다. 실패·stale
+room/exit는 상태를 바꾸지 않고, 성공한 command receipt만 다른 방 연결에 event를
+fan-out한다.
+
+검증:
+
+- world/session/transport door TDD 및 parser 회귀 통과
+- `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64 cross-build 통과
+- 격리 `postgres:17-alpine`에서 `TestPostgresDoorCommandPersistsAndReplays` 통과 후 컨테이너 제거
+- 실제 Go + PostgreSQL + Chromium에서 `열어 __missing_door__` fail-safe 경로 **1 passed (10.8s)**
+
+`풀어`/`잠궈`/`따`의 열쇠·내구도·picklock 확률과 전체 occurrence/ANSI formatting은
+별도 미완료 slice다.
