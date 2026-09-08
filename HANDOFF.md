@@ -992,6 +992,25 @@ server drain 뒤 scheduler/cleanup worker를 취소하고 session cleanup을 마
 재시도한다. `TestRunPlayerVitalTickUsesDeterministicSlotAndSkipsDuplicate`,
 `TestRunPlayerVitalTickRetriesExactPendingCommand`,
 `TestRunPlayerVitalSchedulerStopsAfterContextCancellation`, ARM64 PG17의
-`TestWorldConnectorPlayerVitalTickReplaysAcrossConnectorRestart`가 통과했다. 이는
+ `TestWorldConnectorPlayerVitalTickReplaysAcrossConnectorRestart`가 통과했다. 이는
 player-vital 부분 루프만 운영 연결한 것이며 NPC/room spawn, combat tick, persistent
 game clock와 전체 `update.c` scheduler는 여전히 미완료다.
+
+## 2026-09-08 실제 Go + PostgreSQL + 브라우저 E2E
+
+실제 브라우저 경계를 가짜 WebSocket과 분리한 하네스를 추가했다. 실행 명령은
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`이며,
+로컬 ARM64 `postgres:17-alpine` 전용 컨테이너를 무작위 loopback 포트에 만들고
+종료 시 자기 컨테이너만 제거한다. Go `cmd/muhan`과 fixture seed 명령을 `-race`로
+빌드한 뒤 Next 중앙 xterm을 실제 Go WebSocket에 연결한다.
+
+Playwright는 xterm 안에서 이름·한글 IME 커밋(예/남/선/봐)·성별/직업/능력치/무기/
+성향/종족·암호를 입력하고, PostgreSQL에 캐릭터와 세계를 저장한 뒤 첫 방에 입장한다.
+페이지 재로드 후 같은 이름/암호로 재로그인하고 `봐`를 실행하며, 암호가 출력되지
+않는 것도 검사한다. 2026-09-08 실행 결과는 **1 passed (9.7s)**였고, 전용 컨테이너는
+정리 후 남지 않았다. 상세 계약과 제한은
+`docs/porting-research/go-process-postgres-browser-e2e-20260908.md`를 따른다.
+
+이 증거는 가입·월드 입장·재로그인 경계를 증명하지만 전체 legacy 명령/전투/tick,
+OS IME·모바일 키보드, WSS/Ingress, testnet 배포 인수를 의미하지 않는다. strict
+`TestRoomBodyCorpus`의 기존 63개 예외와 전체 게임 기능 미완료 상태는 유지한다.

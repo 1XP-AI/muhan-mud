@@ -11,7 +11,11 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 상태의 첫 페이지 통계 receipt까지 `WorldConnector`에 연결했다. 둘 다 state purity와
 동일 command ID replay를 검증했지만, 전체 C command table·continuation/help·title
 출력 동등성의 완료를 의미하지 않는다. 중앙 xterm 브라우저 smoke는 별도 문서와
-`pnpm test:browser`에서 검증하며 실제 Go+PostgreSQL 게임 플레이는 아직 남아 있다.
+`pnpm test:browser`에서 검증한다. 실제 Go+PostgreSQL 게임 경계도
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
+ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 입장→재로그인→
+`봐`까지 **1 passed (9.7s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
+인수를 뜻하지 않는다.
 
 ## 로컬 검증
 
