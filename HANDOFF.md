@@ -4,10 +4,10 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 최신 커밋은
-`4a7bd2c` (`feat: add durable peek command slice`)이며
-`private/codex/mud-identity-foundation`보다 332개 앞서 있다. 인프라
-최신 커밋은 `06aee3f0` (`ci: pin reviewed source to peek slice`)이며
-`origin/codex/muhan-onboarding-safety`보다 22개 앞서 있다. 원격에는 아직 push하지
+`8535f64` (`docs: record peek checkpoint`)이며
+`private/codex/mud-identity-foundation`보다 333개 앞서 있다. 인프라
+최신 커밋은 `8b5d5644` (`ci: pin reviewed source to latest peek handoff`)이며
+`origin/codex/muhan-onboarding-safety`보다 27개 앞서 있다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
