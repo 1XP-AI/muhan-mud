@@ -1080,3 +1080,35 @@ target에는 개인 출력, 같은 방의 다른 연결에는 room 출력, 본�
 모바일 IME/WSS/Ingress, testnet 배포 인수를 완료했다는 뜻이 아니다. `src/frp.new`는
 사용자 dirty 상태라 보존했고 수정하지 않았다. 다음 통합 후 root commit SHA를 infra
 저장소의 Docker source revision test에 반영하고, infra 72-test suite를 재실행한다.
+
+## 2026-09-08 `표현`·`보아 <대상>` 통합 체크포인트
+
+다음 병렬 Luna max slice도 통합했다. `표현`은 `command11.c:emote`의 free-form UTF-8
+payload를 255바이트·제어문자 경계로 제한하고, 빈 입력/침묵/PLECHO/PHIDDN ordering을
+receipt로 고정했다. actor 응답만 durable receipt에 넣고, commit 뒤 같은 방의
+`:이름님이 <text>.` event를 본인과 replay를 제외해 fan-out한다. 임의 payload는
+receipt에 저장하지 않는다.
+
+`보아 <대상>`은 `action.c`의 explicit target branch를 bounded 포팅했다. NPC-first
+canonical room traversal, exact display-name, same-room online/visibility/detect 경계를
+적용하고, player target은 대상자 개인 projection과 observer room projection을 분리한다.
+NPC target은 검증된 room projection만 제공한다. bare `보아`, prefix/occurrence/object
+inspection 및 전체 `조사` parity는 아직 남아 있다. source처럼 PHIDDN은 PSILNC보다 먼저
+clear된다.
+
+추가/검증 파일:
+
+- `server/internal/world/express.go`, `look_at_target.go` 및 reducer 테스트
+- `server/internal/session/express_command.go`, `look_at_target_command.go` 및 unit/PG 테스트
+- `server/internal/transport/world_connector_express_look_test.go`와 parser/transport 통합
+
+검증 결과:
+
+- 전체 Go race `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1` 통과
+- `go vet ./...`, Linux ARM64 CGO-free cross-build 통과
+- 전용 ARM64 PostgreSQL 17에서 `TestPostgres(Emote|Express|LookAtTarget|Yell)CommandPersistsAndReplays` 통과
+- 실제 Go+PostgreSQL+Chromium 가입→월드→`환영`→`도움말 정보`→`표현`→`외쳐`→재로그인 E2E **1 passed (10.1s)**
+
+이 체크포인트도 전체 154 C handler/전체 action alias, strict room corpus 63개 legacy
+예외, 모바일/WSS/Ingress 및 testnet 전환 인수를 완료한 것은 아니다. 다음 commit에서
+root/infra source revision과 이 문서를 함께 확인한다.

@@ -34,6 +34,8 @@ const (
 	CommandYell
 	CommandWelcome
 	CommandEmote
+	CommandLookAtTarget
+	CommandExpress
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -170,6 +172,10 @@ func commandKind(first string) CommandKind {
 		return CommandYell
 	case "환영":
 		return CommandWelcome
+	case "표현":
+		return CommandExpress
+	case "보아":
+		return CommandLookAtTarget
 	default:
 		if world.IsEmoteAlias(first) {
 			return CommandEmote

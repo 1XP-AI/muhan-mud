@@ -200,3 +200,56 @@ func (g *WorldConnector) publishEmote(after world.State, actorID, alias, targetN
 		}
 	}
 }
+
+func (g *WorldConnector) publishExpress(after world.State, actorID, text string) {
+	event, ok, err := after.RoomExpressEvent(actorID, text)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the actor's durable command.
+		}
+	}
+}
+
+func (g *WorldConnector) publishLookAtTarget(after world.State, actorID, targetName string) {
+	event, ok, err := after.LookAtTargetEventForName(actorID, targetName)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.events == nil || connection.lease.ActorID == event.ExcludeActorID {
+			continue
+		}
+		if connection.lease.ActorID == event.ExcludeTargetID {
+			if event.TargetText == "" {
+				continue
+			}
+			select {
+			case connection.events <- event.TargetText:
+			default:
+			}
+			continue
+		}
+		if event.Text == "" {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the actor's durable command.
+		}
+	}
+}

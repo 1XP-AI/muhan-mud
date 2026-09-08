@@ -244,6 +244,10 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	yellText, yellCommand := "", false
 	emoteCommand := false
 	var emote session.EmoteCommand
+	expressText := ""
+	expressCommand := false
+	lookAtTargetCommand := false
+	var lookAtTarget session.LookAtTargetCommand
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -271,6 +275,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			return "아직 구현되지 않은 명령입니다.\r\n", nil
 		}
 		receipt, err = c.game.owners.ExecuteEmoteLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandExpress:
+		expressText, expressCommand = session.ExpressLineText(line)
+		if !expressCommand {
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		receipt, err = c.game.owners.ExecuteExpressLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandLookAtTarget:
+		lookAtTarget, lookAtTargetCommand = session.ParseLookAtTargetLine(line)
+		if !lookAtTargetCommand {
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		receipt, err = c.game.owners.ExecuteLookAtTargetLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandWelcome:
 		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
@@ -308,6 +324,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
 		errors.Is(err, session.ErrUnsupportedYellLine) ||
 		errors.Is(err, session.ErrUnsupportedEmoteLine) ||
+		errors.Is(err, session.ErrUnsupportedExpressLine) ||
+		errors.Is(err, session.ErrUnsupportedLookAtTargetLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
@@ -334,6 +352,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if emoteCommand && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
 			c.game.publishEmote(after, c.lease.ActorID, emote.Alias, emote.Target)
+		}
+	}
+	if expressCommand && !receipt.Replayed {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishExpress(after, c.lease.ActorID, expressText)
+		}
+	}
+	if lookAtTargetCommand && !receipt.Replayed {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishLookAtTarget(after, c.lease.ActorID, lookAtTarget.Target)
 		}
 	}
 	if session.IsQuitLine(line) {

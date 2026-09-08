@@ -263,3 +263,16 @@ NPC death drop은 canonical ID를 다시 만들지 않고 room graph로 transfer
 이관/Ingress/testnet 인수를 완료한 증거가 아니다. 다음 구현은 C oracle fixture와
 미구현 ledger 행을 우선순위별로 계속 줄이고, root commit 뒤 infra Docker source
 revision pin과 ARM64 Helm 검증을 갱신하는 것이다.
+
+## 2026-09-08 bounded action/command 후속
+
+`표현`과 `보아 <대상>`을 기존 `외쳐`·감정표현 slice와 함께 central parser/transport에
+연결했다. free-form payload는 receipt에 직접 저장하지 않고, committed snapshot에서만
+room event를 파생한다. target action은 exact canonical identity, room membership,
+visibility/detect와 NPC-first 순서를 확인하며 미검증 prefix/occurrence/object 경계는
+추측하지 않는다. 동일 command ID replay는 state reducer와 event fan-out을 반복하지 않는다.
+
+검증은 unit/race/vet, 전용 ARM64 PG17 command replay, Linux ARM64 cross-build, 실제 Go+
+PG+Chromium E2E **1 passed (10.1s)**다. 전체 C command/action alias와 strict room corpus
+63개 예외는 여전히 G3/G4 전환 조건이며, 다음은 hide/track/search 및 combat/economy
+잔여 handler를 같은 TDD/differential 기준으로 줄이는 작업이다.

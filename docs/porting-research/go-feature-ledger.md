@@ -518,3 +518,19 @@ fan-out과 actor 제외는 transport에서 committed snapshot으로만 수행한
 (10.4s)**, `pnpm test:browser`의 표준/feature-off 각 1 passed. 이는 전체 154 C command,
 strict room corpus의 기존 63개 예외, 전체 action alias·모바일/WSS/Ingress·testnet 인수를
 완료했다는 의미가 아니다.
+
+## 2026-09-08 express/look-at-target 후속
+
+`표현`(`command11.c:emote`)은 actor response만 receipt에 저장하고, 255 UTF-8 byte
+bound·control/invalid UTF-8 fail-closed, empty/silent no-op, non-silent PHIDDN clear와
+PLECHO response ordering을 검증한다. committed snapshot에서만 `:이름님이 <text>.` room
+event를 파생해 actor/replay 중복 fan-out을 막는다. `보아 <대상>`은 `action.c` explicit
+target branch의 bounded slice로, exact same-room canonical target과 NPC-first traversal,
+visibility/detect/DM-invisible gate를 적용한다. player target에는 target-specific event,
+observer에는 room event를 주며 NPC target은 room projection만 허용한다. bare `보아`,
+prefix/occurrence/object inspection과 전체 `조사`는 미구현 ledger 항목으로 유지한다.
+
+`TestPostgresExpressCommandPersistsAndReplays`, `TestPostgresLookAtTargetCommandPersistsAndReplays`,
+transport fan-out/receipt tests, full Go race/vet, Linux ARM64 cross-build와 실제
+Go+PostgreSQL+Chromium E2E **1 passed (10.1s)**가 통과했다. 이는 전체 명령/alias,
+strict room corpus의 기존 63개 예외, testnet 배포 인수를 승격하지 않는다.

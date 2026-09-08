@@ -1,0 +1,116 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/1XP-Inc/muhan-mud/server/internal/world"
+)
+
+func lookAtTargetCommandFixture(t *testing.T, hidden, silent bool) []byte {
+	t.Helper()
+	s, err := world.DecodeState(followCommandFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Players["a"]
+	if hidden {
+		p.Body.Flags[1/8] |= 1 << (1 % 8) // PHIDDN
+	}
+	if silent {
+		p.Body.Flags[44/8] |= 1 << (44 % 8) // PSILNC
+	}
+	s.Players["a"] = p
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestParseLookAtTargetLineAcceptsOnlyExactExplicitTarget(t *testing.T) {
+	command, ok := ParseLookAtTargetLine("  보아  Bob  ")
+	if !ok || command.Target != "Bob" {
+		t.Fatalf("command=%+v ok=%v", command, ok)
+	}
+	quoted, ok := ParseLookAtTargetLine(`보아 "Bob"`)
+	if !ok || quoted.Target != "Bob" {
+		t.Fatalf("quoted command=%+v ok=%v", quoted, ok)
+	}
+	for _, line := range []string{"", "보아", "봐 Bob", "보다 Bob", "조사 Bob", "보아 Bob extra", "보아 Bob\textra", "보아 \"Bob extra\"", "보아 Bob\n", "보아 Bob\x00"} {
+		if _, ok := ParseLookAtTargetLine(line); ok {
+			t.Fatalf("unsupported look-at line accepted: %q", line)
+		}
+	}
+}
+
+func TestExecuteLookAtTargetLinePersistsPHIDDNRevealAndReplays(t *testing.T) {
+	initial := lookAtTargetCommandFixture(t, true, false)
+	store := &departureStore{state: initial}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-1", lease, "보아 Bob")
+	if err != nil || first.Replayed || store.commits != 1 || string(first.Response) != `"당신은 Bob님을 봅니다.\r\n"` {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	savedActor := saved.Players["a"]
+	if err != nil || lookAtTargetFlag(savedActor.Body.Flags[:], 1) {
+		t.Fatalf("saved=%+v err=%v", saved.Players["a"], err)
+	}
+	event, ok, err := saved.RoomLookAtTargetEvent("a", "player", "b")
+	if err != nil || !ok || !strings.Contains(event.Text, "Alice님이 Bob님을 봅니다.") || event.TargetText != "\nAlice님이 당신을 봅니다.\r\n" {
+		t.Fatalf("event=%+v ok=%v err=%v", event, ok, err)
+	}
+
+	replay, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-1", lease, "보아 Bob")
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteLookAtTargetLineSilenceRunsAfterPHIDDNOrdering(t *testing.T) {
+	initial := lookAtTargetCommandFixture(t, true, true)
+	store := &departureStore{state: initial}
+	var owners Ownership
+	lease, _ := owners.Acquire("a")
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-silent", lease, "보아 missing")
+	if err != nil || store.commits != 1 || string(first.Response) != `"한마디도 할수 없습니다!\r\n"` {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	savedActor := saved.Players["a"]
+	if err != nil || lookAtTargetFlag(savedActor.Body.Flags[:], 1) || !lookAtTargetFlag(savedActor.Body.Flags[:], 44) {
+		t.Fatalf("silence state=%+v err=%v", saved.Players["a"], err)
+	}
+}
+
+func TestExecuteLookAtTargetLineFailsClosedWithoutReceiptForUnsupportedTarget(t *testing.T) {
+	for _, line := range []string{"보아", "보아 Nobody", "보아 늑", "보아 Carol", "봐 Bob"} {
+		store := &departureStore{state: lookAtTargetCommandFixture(t, false, false)}
+		var owners Ownership
+		lease, _ := owners.Acquire("a")
+		if err := owners.Admit(lease, func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-bad", lease, line); err == nil || store.commits != 0 {
+			t.Fatalf("line=%q err=%v commits=%d", line, err, store.commits)
+		}
+	}
+}
+
+func lookAtTargetFlag(flags []byte, bit uint) bool {
+	return flags[bit/8]&(1<<(bit%8)) != 0
+}

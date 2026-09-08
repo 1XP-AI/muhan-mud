@@ -9,14 +9,15 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 
 최신 명령 slice: `시간`은 clock-bound read-only receipt, `정보`는 canonical player
 상태의 첫 페이지 통계 receipt, `도움말`/`환영`은 UTF-8 legacy 문서 receipt,
-`외쳐`와 bounded `action.c` 감정표현은 state/event receipt까지 `WorldConnector`에
-연결했다. 모두 state purity와 동일 command ID replay를 검증했지만, 전체 C command
-table·continuation/info title·prefix/occurrence 출력 동등성의 완료를 의미하지 않는다.
+`외쳐`·`표현`·`보아 <대상>`·bounded `action.c` 감정표현은 state/event receipt까지
+`WorldConnector`에 연결했다. 모두 state purity와 동일 command ID replay를 검증했지만,
+전체 C command table·continuation/info title·prefix/occurrence 출력 동등성의 완료를
+의미하지 않는다.
 중앙 xterm 브라우저 smoke는 별도 문서와
 `pnpm test:browser`에서 검증한다. 실제 Go+PostgreSQL 게임 경계도
 `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
 ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 입장→재로그인→
-`봐`, `환영`, `도움말 정보`까지 **1 passed (10.4s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
+`봐`, `환영`, `도움말 정보`, `표현`, `외쳐`까지 **1 passed (10.1s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
 인수를 뜻하지 않는다.
 
 ## 로컬 검증
@@ -1845,3 +1846,28 @@ pnpm test:browser
 `TestRoomBodyCorpus`의 기존 63개 strict legacy 예외, 전체 action alias/명령 table,
 모바일 IME/WSS/Ingress 및 testnet 배포 인수는 여전히 남아 있다. `src/frp.new`는
 사용자 변경으로 계속 보존하며 이 slice에서 수정하지 않았다.
+
+## 2026-09-08 `표현`·`보아 <대상>` 수직 슬라이스
+
+원본 `command11.c:emote`의 `표현` 명령은 free-form UTF-8 payload를 최대 255바이트로
+제한하고 제어문자·잘못된 UTF-8·oversize를 receipt 전에 거부한다. 빈 입력은
+`무슨말을 표현하시려구요?`, 침묵 상태는 `당신은 지금당장 그것을 할 수 없습니다.`를
+반환하며 snapshot을 바꾸지 않는다. 비침묵 성공만 PHIDDN을 해제하고, `PLECHO`가
+있어도 서버가 임의 formatting을 실행하지 않는다. commit 뒤 같은 방에
+`:이름님이 <text>.`를 fan-out하고 본인/replay에는 중복 event를 보내지 않는다.
+임의 payload는 receipt에 저장하지 않고 actor 응답만 저장한다.
+
+원본 `action.c:보아`의 bounded explicit target도 연결했다. exact same-room canonical
+identity만 허용하며 NPC를 player보다 먼저 탐색하고, invisible/DM-invisible 및 detect
+경계를 source에 맞춰 확인한다. player target은 대상자에게 `당신을 봅니다` projection,
+같은 방의 다른 연결에는 room projection을 보내고, NPC target은 검증된 room projection만
+보낸다. bare `보아`, prefix/occurrence, object inspection, 전체 `조사` parity는 아직
+별도 범위다. PHIDDN 해제는 source처럼 PSILNC 검사보다 먼저 적용한다.
+
+TDD/검증: `express_command_test.go`, `look_at_target_command_test.go`, world reducer
+tests, transport fan-out tests 및 실제 ARM64 PostgreSQL의
+`TestPostgres(Emote|Express|LookAtTarget|Yell)CommandPersistsAndReplays`가 통과했다.
+전체 `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`도 통과했으며 실제 Go+PG+Chromium
+E2E는 **1 passed (10.1s)**다. strict room corpus의 기존 63개 예외와 전체 명령/배포
+인수는 그대로 미완료다.
