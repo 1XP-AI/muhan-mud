@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,76 @@ func TestRunPlayerVitalTickUsesDeterministicSlotAndSkipsDuplicate(t *testing.T) 
 	}
 	if store.command != "player-vitals-7" {
 		t.Fatalf("next command=%q", store.command)
+	}
+}
+
+type boundaryTickSpawnCatalog struct{}
+
+func (boundaryTickSpawnCatalog) Monster(int16) (world.LegacyMonster, error) {
+	return world.LegacyMonster{}, errors.New("unexpected NPC room refresh")
+}
+
+func (boundaryTickSpawnCatalog) Object(int16) (world.LegacyObject, error) {
+	return world.LegacyObject{}, errors.New("unexpected room object refresh")
+}
+
+func TestRunPlayerVitalTickDoesNotClaimNPCRoomRefreshPhase(t *testing.T) {
+	var initial world.State
+	if err := json.Unmarshal(vitalTickState(), &initial); err != nil {
+		t.Fatal(err)
+	}
+	room := initial.Rooms[1]
+	room.Resource.PermanentMonsters[0] = world.LegacyTimer{LastTime: 0, Interval: 1, Misc: 7}
+	room.Resource.PermanentObjects[0] = world.LegacyTimer{LastTime: 0, Interval: 1, Misc: 8}
+	room.NPCIDs = []string{"wolf"}
+	initial.Rooms[1] = room
+	initial.NPCs = map[string]world.NPCState{
+		"wolf": {
+			Body:    world.LegacyMonster{Name: "늑대", Type: 1, RoomID: 1, HPMax: 30, HPCurrent: 30},
+			Enemies: []world.NPCEnemy{},
+		},
+	}
+	initial.ActiveNPCIDs = []string{"wolf"}
+	if err := initial.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	initialRaw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &connectorCommandStore{state: initialRaw}
+	rollCalls, allocateCalls := 0, 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "tick-boundary-world", MaxSessions: 1,
+		Clock:   func() (int32, int) { return 123, 12 },
+		Catalog: boundaryTickSpawnCatalog{},
+		Roll: func(int, int) int {
+			rollCalls++
+			return 0
+		},
+		Allocate: func() (string, error) {
+			allocateCalls++
+			return "", errors.New("unexpected room identity allocation")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran, err := connector.RunPlayerVitalTick(context.Background(), 20*time.Second); err != nil || !ran {
+		t.Fatalf("vital tick ran=%v err=%v", ran, err)
+	}
+	if rollCalls != 0 || allocateCalls != 0 {
+		t.Fatalf("NPC/room refresh dependencies consumed: rolls=%d allocations=%d", rollCalls, allocateCalls)
+	}
+	stateRaw, _ := store.snapshot()
+	after, err := world.DecodeState(stateRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after.Rooms[1], initial.Rooms[1]) ||
+		!reflect.DeepEqual(after.NPCs, initial.NPCs) ||
+		!reflect.DeepEqual(after.ActiveNPCIDs, initial.ActiveNPCIDs) {
+		t.Fatalf("player vital tick claimed room/NPC state: room=%+v NPCs=%+v active=%v", after.Rooms[1], after.NPCs, after.ActiveNPCIDs)
 	}
 }
 
