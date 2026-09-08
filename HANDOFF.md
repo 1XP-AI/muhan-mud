@@ -3,12 +3,11 @@
 ## 현재 로컬 체크포인트 — 2026-09-08
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
-앞선 상태다. 애플리케이션 최신 커밋은
-`8535f64` (`docs: record peek checkpoint`)이며
-`private/codex/mud-identity-foundation`보다 333개 앞서 있다. 인프라
-최신 커밋은 `8b5d5644` (`ci: pin reviewed source to latest peek handoff`)이며
-`origin/codex/muhan-onboarding-safety`보다 27개 앞서 있다. 원격에는 아직 push하지
-않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
+앞선 상태다. 애플리케이션 기능 기준 체크포인트는
+`8535f64` (`docs: record peek checkpoint`)이고, 이후 핸드오프 문서 정렬 커밋이
+추가되어 있다. 인프라의 검토된 소스 고정 커밋은 `32331ad6`이며 루트의 현재
+핸드오프 기준을 가리킨다. 원격에는 아직 push하지 않았으므로 새 clone이나 다른
+에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
 현재 Go 수직 슬라이스에는 `환영`, `도움말`, `외쳐`, `검색`/`찾아`, `추적`,
