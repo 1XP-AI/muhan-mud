@@ -1244,4 +1244,5 @@ focused tests가 통과했다. strict room corpus의 기존 63개 예외, 전체
 실제 PostgreSQL/Chromium 재실행, WSS/Ingress와 testnet 인수는 여전히 미완료다.
 인프라 저장소의 `scripts/docker-source-paths.test.mjs` reviewed source pin은 새 root
 `f09b0a4a606f61d0ffb8505f660d421d31bda030`을 가리키도록 갱신했으며, infra 테스트 재실행과
-commit은 별도 통합 단계다. `src/frp.new`는 계속 사용자 dirty 변경으로 보존한다.
+commit `ae3f6769`까지 완료했다. `node --test scripts/docker-source-paths.test.mjs`는 2/2
+통과했다. `src/frp.new`는 계속 사용자 dirty 변경으로 보존한다.
