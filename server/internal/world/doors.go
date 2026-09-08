@@ -135,7 +135,10 @@ func (s State) ApplyDoor(proposal DoorProposal) (State, DoorCommandResult, error
 			if !ok || SelectExit(room.Resource.Exits, proposal.Target, 1, flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) >= 0 {
 				return State{}, DoorCommandResult{}, fmt.Errorf("stale missing-door proposal")
 			}
-			return s, DoorCommandResult{Response: doorResponse(proposal.Action, proposal.Target)}, nil
+			if proposal.Response != doorResponse(proposal.Action, proposal.Target) {
+				return State{}, DoorCommandResult{}, fmt.Errorf("stale missing-door response")
+			}
+			return s, DoorCommandResult{Response: proposal.Response}, nil
 		}
 		if proposal.Response != doorResponse(proposal.Action, proposal.Target) {
 			return State{}, DoorCommandResult{}, fmt.Errorf("stale door missing-target response")
