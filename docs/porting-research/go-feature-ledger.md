@@ -534,3 +534,36 @@ prefix/occurrence/object inspection과 전체 `조사`는 미구현 ledger 항�
 transport fan-out/receipt tests, full Go race/vet, Linux ARM64 cross-build와 실제
 Go+PostgreSQL+Chromium E2E **1 passed (10.1s)**가 통과했다. 이는 전체 명령/alias,
 strict room corpus의 기존 63개 예외, testnet 배포 인수를 승격하지 않는다.
+
+## 2026-09-08 strict 방 본문 예외 감사
+
+`TestRoomBodyCorpus`의 기준 실패를 다시 실행한 결과, 원본 `rooms/` 3,216개 중
+63개가 계속 strict body decode를 거부했다. `InspectLegacyRoom` 기준 이슈는
+`invalid-euc-kr` 80건, `missing-text-terminator` 13건, `trailing-data` 7건으로
+총 100건이며, 이슈 offset은 변환 대상 필드의 시작 위치다. 이 기준선은
+`server/internal/world/legacy_room_audit_fixture.go`의 63개 path/크기/소비 위치/
+SHA-256/이슈 위치 fixture와 `TestRoomBodyCorpusExceptionAudit`가 고정한다.
+
+이번 조사에서는 공통 runtime 변환을 적용하지 않았다.
+
+- `invalid-euc-kr`는 일반 한글 문자열뿐 아니라 원본 바이트에 EUC-KR 표에 없는
+  2바이트열(예: `r00/r00100`의 offset 588)과 그래픽성 바이트가 섞인 필드다.
+  `resources_utf8/rooms`는 해당 파일의 바이트와 동일하여 독립적인 정정 원천이
+  아니며, 대체 문자·삭제·임의 매핑은 원작 출력과 저장 값을 바꾼다.
+- `missing-text-terminator`는 고정 폭 텍스트 필드가 폭을 모두 사용한 사례다.
+  inspection은 필드 경계에서 읽기를 제한해 원본을 보존하지만, NUL을 합성하거나
+  자르는 것은 C의 실제 문자열 사용 계약을 확보하기 전에는 runtime 변환으로
+  승격할 수 없다.
+- `trailing-data` 7건은 알려진 구조를 `Consumed`까지 읽은 뒤 비영(非零) 데이터가
+  남는다. `r00/r00173`의 offset 751처럼 남은 바이트가 몬스터·아이템·타이머처럼
+  보이는 경우도 있어, C reader가 EOF를 검사하지 않았다는 사실만으로 폐기 또는
+  재해석을 결정할 수 없다. 원본 writer의 파일 길이 축소 보장과 파일별 oracle이
+  없으므로 자동 절삭은 금지한다.
+
+fixture는 각 예외의 원본 SHA-256·소비 위치·이슈 순서를 비교하고, caller raw bytes가
+  변하지 않는 것과 `DecodeLegacyRoom` 및 zero-value `LegacyRoomAdmissionPolicy`가
+  계속 거부하는 것을 확인한다. 따라서 이번 lane의 strict 예외 수는 **63개에서
+  63개로 유지**되며, raw corpus와 strict/default 정책을 보존한 감사 증거만 추가됐다.
+  호환 정책으로 runtime catalog에 넣을 때도 기존 evidence 보존·명시적 검토 경계를
+  유지해야 한다. 후속 runtime 변환은 C 실행 transcript 또는 파일별 수동 매핑과
+  상태/출력 fixture가 확보된 뒤 한 issue class 이하의 bounded change로 재검토한다.
