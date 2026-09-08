@@ -61,7 +61,7 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await expect(page.locator(".xterm-screen")).toContainText("== 브라우저 광장 ==");
   await expect(page.locator(".xterm-screen")).toContainText("실제 Go 서버와 PostgreSQL");
   await expect(page.locator(".xterm-screen")).not.toContainText(gamePassword);
-  await submitAndWait(page, "환영", "레벨 5가 넘으면 많은 제약이 따릅니다.");
+  await submitAndWait(page, "환영", "이게임은 아직도 제작중입니다.");
   await submitAndWait(page, "설정 색", "색        :  사용 ");
   await submitAndWait(page, "열어 __missing_door__", "그런 출구는 없습니다.");
   await submitAndWait(page, "따 __missing_door__", "도둑만 자물쇠를 딸 수 있습니다.");
