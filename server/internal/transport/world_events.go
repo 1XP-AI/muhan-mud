@@ -384,3 +384,31 @@ func (g *WorldConnector) publishDoor(after world.State, actorID string, result w
 		}
 	}
 }
+
+// publishDoorKey emits unlock/lock events and the ordered picklock attempt /
+// success projections. The durable actor response is sent by Submit; replayed
+// receipts never enter this path.
+func (g *WorldConnector) publishDoorKey(after world.State, actorID string, result world.DoorKeyCommandResult) {
+	events, err := after.RoomDoorKeyEvents(actorID, result)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || connection.events == nil {
+			continue
+		}
+		for _, event := range events {
+			if event.ExcludeActorID == connection.lease.ActorID || player.Body.RoomID != event.RoomID {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+				// A slow client cannot block the key command's durable commit.
+			}
+		}
+	}
+}

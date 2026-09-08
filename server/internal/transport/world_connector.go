@@ -254,6 +254,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	peekCommand := false
 	settingsCommand := false
 	doorCommand := false
+	doorKeyCommand := false
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -311,6 +312,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDoor:
 		doorCommand = true
 		receipt, err = c.game.owners.ExecuteDoorLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, now)
+	case session.CommandDoorKey:
+		doorKeyCommand = true
+		receipt, err = c.game.owners.ExecuteDoorKeyLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.DoorKeyOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandWelcome:
 		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
@@ -356,6 +360,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedPeekLine) ||
 		errors.Is(err, session.ErrUnsupportedSettingsLine) ||
 		errors.Is(err, session.ErrUnsupportedDoorLine) ||
+		errors.Is(err, session.ErrUnsupportedDoorKeyLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
@@ -434,6 +439,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if doorKeyCommand && !receipt.Replayed {
+		var result world.DoorKeyCommandResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishDoorKey(after, c.lease.ActorID, result)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -465,6 +478,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if doorCommand {
 		var result world.DoorCommandResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if doorKeyCommand {
+		var result world.DoorKeyCommandResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

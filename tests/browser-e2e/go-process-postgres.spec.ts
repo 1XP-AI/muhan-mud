@@ -64,6 +64,7 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await submitAndWait(page, "환영", "레벨 5가 넘으면 많은 제약이 따릅니다.");
   await submitAndWait(page, "설정 색", "색        :  사용 ");
   await submitAndWait(page, "열어 __missing_door__", "그런 출구는 없습니다.");
+  await submitAndWait(page, "따 __missing_door__", "도둑만 자물쇠를 딸 수 있습니다.");
   await submitAndWait(page, "도움말 정보", "'정보'는");
   await submitAndWait(page, "표현 웹 테스트", "님이 웹 테스트");
   await submitAndWait(page, "외쳐 웹 테스트", "예. 좋습니다.");
