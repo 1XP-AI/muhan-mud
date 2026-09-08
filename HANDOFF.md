@@ -6,7 +6,8 @@
 앞선 상태다. 애플리케이션 기능 기준 체크포인트는
 `66b0108` (`feat: add durable open and close door commands`)이다. 이전 settings 기능
 기준은 `2b82e32`이며, 인프라의 검토된 소스 고정 커밋은 `21863341`로 이 기능
-체크포인트를 가리킨다. 이전 source pin은 `1434134e`였다. 원격에는 아직 push하지
+체크포인트를 가리킨다. door hardening은 root `25beba8`, infra pin은 `2f15179a`다.
+이전 source pin은 `21863341`였다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
