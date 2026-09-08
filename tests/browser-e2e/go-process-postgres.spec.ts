@@ -72,6 +72,9 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await submitAndWait(page, "엿봐 Bob", "직업으로는");
   await submitAndWait(page, "보아 gob 2", "당신은 Goblin를 봅니다.");
   await submitAndWait(page, "정보", "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ");
+  await submitAndWait(page, "", "주문: 없음.");
+  await expect(page.locator(".xterm-screen")).toContainText("당신은 현재 달성한 임무가 없습니다.");
+  await submitAndWait(page, "정보", "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ");
   await submitAndWait(page, ".", "중단되었습니다.");
 }
 
