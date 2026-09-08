@@ -164,6 +164,39 @@ func TestPlanLookAtTargetUsesNPCFirstExactSameRoomOrder(t *testing.T) {
 	}
 }
 
+func TestPlanLookAtTargetPrefixOccurrenceUsesCNameOrKeyAndCanonicalOrder(t *testing.T) {
+	s := lookAtTargetFixture()
+	s.NPCs = map[string]NPCState{
+		"npc-key":  {Body: LegacyMonster{Name: "Guard", Keys: [3]string{"goblin"}, Type: 1, RoomID: 1}},
+		"npc-name": {Body: LegacyMonster{Name: "Goblin", Type: 1, RoomID: 1}},
+	}
+	room := s.Rooms[1]
+	room.NPCIDs = []string{"npc-key", "npc-name"}
+	s.Rooms[1] = room
+
+	result, err := s.PlanLookAtTargetProposalWithOccurrence("a", "gob", 1)
+	if err != nil || result.TargetKind != "npc" || result.TargetID != "npc-key" || result.TargetName != "Guard" || result.Response != "당신은 Guard를 봅니다.\r\n" {
+		t.Fatalf("first occurrence result=%+v err=%v", result, err)
+	}
+	result, err = s.PlanLookAtTargetProposalWithOccurrence("a", "gob", 2)
+	if err != nil || result.TargetKind != "npc" || result.TargetID != "npc-name" || result.TargetName != "Goblin" {
+		t.Fatalf("second occurrence result=%+v err=%v", result, err)
+	}
+	if _, err := s.PlanLookAtTargetProposalWithOccurrence("a", "gob", 3); err == nil {
+		t.Fatal("missing occurrence accepted")
+	}
+}
+
+func TestPlanLookAtTargetPrefixOccurrenceDoesNotInferObjectOrExitTargets(t *testing.T) {
+	s := canonicalLookAtRoomState()
+	if _, err := s.PlanLookAtTargetProposalWithOccurrence("a", "검", 1); err == nil {
+		t.Fatal("object prefix occurrence accepted")
+	}
+	if _, err := s.PlanLookAtTargetProposalWithOccurrence("a", "동", 1); err == nil {
+		t.Fatal("exit prefix occurrence accepted")
+	}
+}
+
 func TestPlanLookAtTargetBuildsDeterministicPlayerProjection(t *testing.T) {
 	s := lookAtTargetFixture()
 	original := s

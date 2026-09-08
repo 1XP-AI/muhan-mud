@@ -221,8 +221,8 @@ func (g *WorldConnector) publishExpress(after world.State, actorID, text string)
 	}
 }
 
-func (g *WorldConnector) publishLookAtTarget(after world.State, actorID, targetName string) {
-	event, ok, err := after.LookAtTargetEventForName(actorID, targetName)
+func (g *WorldConnector) publishLookAtTarget(after world.State, actorID, targetName string, occurrence int) {
+	event, ok, err := after.LookAtTargetEventForNameOccurrence(actorID, targetName, occurrence)
 	if err != nil || !ok {
 		return
 	}

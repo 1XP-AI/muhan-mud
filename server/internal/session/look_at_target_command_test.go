@@ -32,17 +32,80 @@ func lookAtTargetCommandFixture(t *testing.T, hidden, silent bool) []byte {
 
 func TestParseLookAtTargetLineAcceptsOnlyExactExplicitTarget(t *testing.T) {
 	command, ok := ParseLookAtTargetLine("  보아  Bob  ")
-	if !ok || command.Target != "Bob" {
+	if !ok || command.Target != "Bob" || command.Occurrence != 0 {
 		t.Fatalf("command=%+v ok=%v", command, ok)
 	}
 	quoted, ok := ParseLookAtTargetLine(`보아 "Bob"`)
 	if !ok || quoted.Target != "Bob" {
 		t.Fatalf("quoted command=%+v ok=%v", quoted, ok)
 	}
-	for _, line := range []string{"", "보아", "봐 Bob", "보다 Bob", "조사 Bob", "보아 Bob extra", "보아 Bob\textra", "보아 \"Bob extra\"", "보아 Bob\n", "보아 Bob\x00"} {
+	occurrence, ok := ParseLookAtTargetLine("보아 Gob 2")
+	if !ok || occurrence.Target != "Gob" || occurrence.Occurrence != 2 {
+		t.Fatalf("occurrence command=%+v ok=%v", occurrence, ok)
+	}
+	for _, line := range []string{"", "보아", "봐 Bob", "보다 Bob", "조사 Bob", "보아 Bob extra", "보아 Bob\textra", "보아 \"Bob extra\"", "보아 Bob\n", "보아 Bob\x00", "보아 Bob 0", "보아 Bob -1", "보아 Bob +1", "보아 Bob nope", "보아 Bob 1 extra"} {
 		if _, ok := ParseLookAtTargetLine(line); ok {
 			t.Fatalf("unsupported look-at line accepted: %q", line)
 		}
+	}
+}
+
+func TestExecuteLookAtTargetLinePrefixOccurrenceUsesCanonicalCreatureOrderAndReplays(t *testing.T) {
+	s, err := world.DecodeState(lookAtTargetCommandFixture(t, false, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := s.Rooms[1]
+	r.NPCIDs = []string{"npc-key", "npc-name"}
+	s.Rooms[1] = r
+	s.NPCs = map[string]world.NPCState{
+		"npc-key":  {Body: world.LegacyMonster{Name: "Guard", Keys: [3]string{"goblin"}, Type: 1, RoomID: 1}},
+		"npc-name": {Body: world.LegacyMonster{Name: "Goblin", Type: 1, RoomID: 1}},
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-occurrence", lease, "보아 gob 2")
+	if err != nil || first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "Goblin") {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok, err := saved.RoomLookAtTargetEvent("a", "npc", "npc-name")
+	if err != nil || !ok || !strings.Contains(event.Text, "Goblin") {
+		t.Fatalf("event=%+v ok=%v err=%v", event, ok, err)
+	}
+	replay, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-occurrence", lease, "보아 gob 2")
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteLookAtTargetLineRejectsPrefixOccurrenceWithoutCanonicalCreatureReceipt(t *testing.T) {
+	store := &departureStore{state: canonicalLookAtCommandFixture(t)}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", "look-at-occurrence-bad", lease, "보아 검 1"); err == nil || store.commits != 0 {
+		t.Fatalf("unsupported occurrence reached receipt: err=%v commits=%d", err, store.commits)
 	}
 }
 

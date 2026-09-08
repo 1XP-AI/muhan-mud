@@ -13,10 +13,11 @@ import (
 // a room event in the persisted response: callers derive Event from the
 // committed snapshot and suppress it when a receipt is replayed.
 //
-// This is not the general 조사/look command.  Only canonical same-room floor
-// roots and exact visible LegacyExit names are admitted in addition to the
-// existing player/NPC branch; occurrence selectors, prefixes, legacy object
-// fallback and full ANSI room formatting remain outside this slice.
+// This is not the general 조사/look command. Exact target names admit
+// canonical same-room floor roots, visible exits and the existing player/NPC
+// branch. The bounded prefix/occurrence form is limited to canonical
+// player/NPC identities because that is the authority used by action.c's
+// find_crt; objects/exits remain exact-only in this slice.
 type LookAtTargetResult struct {
 	Response   string
 	Broadcast  bool
@@ -130,7 +131,9 @@ const (
 	lookAtCaretakerClass = 10
 )
 
-// PlanLookAtTargetProposal ports the explicit-target action.c "보아" branch.
+// PlanLookAtTargetProposal ports the exact explicit-target action.c "보아"
+// branch. Prefix/occurrence callers use
+// PlanLookAtTargetProposalWithOccurrence.
 //
 // C clears PHIDDN before checking PSILNC (action.c:58-63), so even a silent
 // actor gets a candidate with its hidden bit cleared. Target lookup is then
@@ -139,8 +142,24 @@ const (
 // otherwise unresolved target fails closed rather than silently falling back
 // to targetless action output.
 func (s State) PlanLookAtTargetProposal(actorID, targetName string) (LookAtTargetProposal, error) {
+	return s.planLookAtTargetProposal(actorID, targetName, 0)
+}
+
+// PlanLookAtTargetProposalWithOccurrence admits the legacy find_crt shape:
+// targetName is a name/key prefix and occurrence is one-based. NPC room order
+// precedes player room order, matching action.c. Occurrence zero is reserved
+// for the exact bounded form and is accepted here only for compatibility with
+// the wrapper above; positive occurrences never inspect floor objects/exits.
+func (s State) PlanLookAtTargetProposalWithOccurrence(actorID, targetName string, occurrence int) (LookAtTargetProposal, error) {
+	return s.planLookAtTargetProposal(actorID, targetName, occurrence)
+}
+
+func (s State) planLookAtTargetProposal(actorID, targetName string, occurrence int) (LookAtTargetProposal, error) {
 	if err := s.Validate(); err != nil {
 		return LookAtTargetProposal{}, err
+	}
+	if occurrence < 0 {
+		return LookAtTargetProposal{}, fmt.Errorf("invalid look-at occurrence")
 	}
 	actor, ok := s.Players[actorID]
 	if !ok || !actor.Online {
@@ -170,7 +189,7 @@ func (s State) PlanLookAtTargetProposal(actorID, targetName string) (LookAtTarge
 
 	selectionState := s.clone()
 	selectionState.Players[actorID] = actor
-	target, err := selectionState.selectLookAtTarget(actorID, targetName)
+	target, err := selectionState.selectLookAtTarget(actorID, targetName, occurrence)
 	if err != nil {
 		return LookAtTargetProposal{}, err
 	}
@@ -305,7 +324,19 @@ func (s State) RoomLookAtTargetEvent(actorID, targetKind, targetID string) (Look
 // recipient-specific projection. It is intentionally read-only and exists so
 // the transport never treats a client-supplied name as an identity.
 func (s State) LookAtTargetEventForName(actorID, targetName string) (LookAtTargetEvent, bool, error) {
-	target, err := s.selectLookAtTarget(actorID, targetName)
+	return s.lookAtTargetEventForNameOccurrence(actorID, targetName, 0)
+}
+
+// LookAtTargetEventForNameOccurrence re-resolves the same bounded target form
+// after a committed receipt so transport can derive the room projection from
+// canonical state without trusting a client-supplied ID. It is read-only and
+// never consumes randomness.
+func (s State) LookAtTargetEventForNameOccurrence(actorID, targetName string, occurrence int) (LookAtTargetEvent, bool, error) {
+	return s.lookAtTargetEventForNameOccurrence(actorID, targetName, occurrence)
+}
+
+func (s State) lookAtTargetEventForNameOccurrence(actorID, targetName string, occurrence int) (LookAtTargetEvent, bool, error) {
+	target, err := s.selectLookAtTarget(actorID, targetName, occurrence)
 	if err != nil {
 		return LookAtTargetEvent{}, false, err
 	}
@@ -313,11 +344,12 @@ func (s State) LookAtTargetEventForName(actorID, targetName string) (LookAtTarge
 }
 
 // selectLookAtTarget preserves find_crt's canonical traversal order: NPCs
-// precede players in the room. Canonical room object roots and exits are
-// considered only after that existing branch. Unlike EQUAL, this bounded
-// command admits only exact display-name matching for objects/exits; no
-// key/prefix/occurrence interpretation is inferred from a client line.
-func (s State) selectLookAtTarget(actorID, targetName string) (lookAtTarget, error) {
+// precede players in the room. With occurrence > 0 it applies C's EQUAL
+// semantics (name or any key prefix) and one-based occurrence to that
+// creature traversal. Canonical room object roots and exits are considered
+// only for the exact form; no prefix/occurrence interpretation is inferred
+// for those extensions.
+func (s State) selectLookAtTarget(actorID, targetName string, occurrence int) (lookAtTarget, error) {
 	actor, ok := s.Players[actorID]
 	if !ok || !actor.Online {
 		return lookAtTarget{}, fmt.Errorf("online look-at actor absent")
@@ -329,6 +361,12 @@ func (s State) selectLookAtTarget(actorID, targetName string) (lookAtTarget, err
 	room, ok := s.Rooms[actor.Body.RoomID]
 	if !ok {
 		return lookAtTarget{}, fmt.Errorf("look-at actor room absent")
+	}
+	if occurrence < 0 {
+		return lookAtTarget{}, fmt.Errorf("invalid look-at occurrence")
+	}
+	if occurrence > 0 {
+		return s.selectLookAtCreatureOccurrence(actorID, room, targetName, occurrence)
 	}
 
 	// A non-nil NPC map is the admission boundary for canonical NPC identity.
@@ -365,6 +403,74 @@ func (s State) selectLookAtTarget(actorID, targetName string) (lookAtTarget, err
 		return exit, nil
 	}
 	return lookAtTarget{}, fmt.Errorf("look-at target absent")
+}
+
+func (s State) selectLookAtCreatureOccurrence(actorID string, room RoomState, targetName string, occurrence int) (lookAtTarget, error) {
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online {
+		return lookAtTarget{}, fmt.Errorf("online look-at actor absent")
+	}
+	if targetName == "" || !utf8.ValidString(targetName) {
+		return lookAtTarget{}, fmt.Errorf("invalid look-at target")
+	}
+	// C's find_crt scans first_mon before first_ply. The canonical ID slices
+	// retain those source orders; map iteration is deliberately not involved.
+	for _, id := range room.NPCIDs {
+		npc, exists := s.NPCs[id]
+		if !exists || id == "" || npc.Body.Type != 1 || npc.Body.RoomID != room.Resource.ID {
+			return lookAtTarget{}, fmt.Errorf("unresolved NPC look-at identity")
+		}
+		if id == actorID || !legacyCreaturePrefixMatch(npc.Body, targetName) || !lookAtVisible(actor.Body, npc.Body) {
+			continue
+		}
+		occurrence--
+		if occurrence == 0 {
+			return lookAtTarget{Kind: "npc", ID: id, Name: npc.Body.Name, Body: npc.Body}, nil
+		}
+	}
+	for _, id := range room.PlayerIDs {
+		player, exists := s.Players[id]
+		if !exists || id == "" || !player.Online || player.Body.Type != 0 || player.Body.RoomID != room.Resource.ID {
+			return lookAtTarget{}, fmt.Errorf("unresolved player look-at identity")
+		}
+		if id == actorID || !legacyCreaturePrefixMatch(player.Body, targetName) || !lookAtVisible(actor.Body, player.Body) {
+			continue
+		}
+		occurrence--
+		if occurrence == 0 {
+			return lookAtTarget{Kind: "player", ID: id, Name: player.Body.Name, Body: player.Body}, nil
+		}
+	}
+	return lookAtTarget{}, fmt.Errorf("look-at target occurrence absent")
+}
+
+// legacyCreaturePrefixMatch is the Go equivalent of C's EQUAL macro for the
+// occurrence form: one input prefix may match the display name or any of the
+// three legacy keys. A candidate counts once even when multiple fields match.
+func legacyCreaturePrefixMatch(body LegacyMonster, prefix string) bool {
+	if prefix == "" || !utf8.ValidString(prefix) {
+		return false
+	}
+	if equalFoldPrefix(body.Name, prefix) {
+		return true
+	}
+	for _, key := range body.Keys {
+		if key != "" && equalFoldPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFoldPrefix(value, prefix string) bool {
+	if value == "" || !utf8.ValidString(value) || !utf8.ValidString(prefix) {
+		return false
+	}
+	valueRunes, prefixRunes := []rune(value), []rune(prefix)
+	if len(prefixRunes) > len(valueRunes) {
+		return false
+	}
+	return strings.EqualFold(string(valueRunes[:len(prefixRunes)]), prefix)
 }
 
 func (s State) lookAtTargetByID(actorID, targetKind, targetID string) (lookAtTarget, error) {

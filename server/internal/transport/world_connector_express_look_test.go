@@ -107,3 +107,28 @@ func TestWorldConnectorSubmitDispatchesLookAtTargetWithRecipientProjection(t *te
 	default:
 	}
 }
+
+func TestWorldConnectorSubmitDispatchesLookAtTargetPrefixOccurrenceWithRecipientProjection(t *testing.T) {
+	store := connectorExpressionLookFixture(t)
+	_, actor, target, observer := connectorThreeWorldConnections(t, store, "look-at-occurrence-world")
+	text, err := actor.Submit(context.Background(), "보아 B 1")
+	if err != nil || !strings.Contains(text, "Bob님을 봅니다") {
+		t.Fatalf("actor response=%q err=%v", text, err)
+	}
+	select {
+	case event := <-target.events:
+		if event != "\nAlice님이 당신을 봅니다.\r\n" {
+			t.Fatalf("target event=%q", event)
+		}
+	default:
+		t.Fatal("target occurrence look-at event missing")
+	}
+	select {
+	case event := <-observer.events:
+		if event != "\nAlice님이 Bob님을 봅니다.\r\n" {
+			t.Fatalf("observer event=%q", event)
+		}
+	default:
+		t.Fatal("observer occurrence look-at event missing")
+	}
+}

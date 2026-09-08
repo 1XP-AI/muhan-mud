@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -14,22 +15,26 @@ import (
 )
 
 // ErrUnsupportedLookAtTargetLine is returned before a receipt exists when a
-// line is outside the bounded exact explicit-target "보아" slice. Bare 보아
-// (the targetless action branch), room look aliases, occurrence selectors,
-// name prefixes, legacy object fallback and full ANSI inspection remain
-// separate follow-up work.
+// line is outside the bounded explicit-target "보아" slice. Bare 보아 (the
+// targetless action branch), legacy object fallback and full ANSI inspection
+// remain separate follow-up work. A positive one-based occurrence is admitted
+// only for the canonical NPC/player prefix form; the world reducer rejects
+// unsupported object/exit occurrences without creating a receipt.
 var ErrUnsupportedLookAtTargetLine = errors.New("line is not an implemented 보아 target command")
 
 // LookAtTargetCommand is the parsed, bounded form of action.c's explicit
 // target command. Target is a display name; the reducer resolves its
 // authoritative player/NPC identity from the committed world snapshot.
 type LookAtTargetCommand struct {
-	Target string
+	Target     string
+	Occurrence int
 }
 
-// ParseLookAtTargetLine accepts exactly one 보아 target token. Legacy token
-// quoting is retained at this boundary, but a quoted multi-token target is
-// not guessed to be a canonical character name.
+// ParseLookAtTargetLine accepts one 보아 target token, optionally followed by
+// a positive one-based occurrence. The latter is the shape produced by the
+// legacy parser for find_crt's prefix/occurrence lookup. Legacy token quoting
+// is retained at this boundary, but a quoted multi-token target is not
+// guessed to be a canonical character name.
 func ParseLookAtTargetLine(line string) (LookAtTargetCommand, bool) {
 	if !utf8.ValidString(line) {
 		return LookAtTargetCommand{}, false
@@ -44,10 +49,33 @@ func ParseLookAtTargetLine(line string) (LookAtTargetCommand, bool) {
 		}
 	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || len(tokens) != 2 || tokens[0] != "보아" || strings.TrimSpace(tokens[1]) == "" || strings.IndexFunc(tokens[1], unicode.IsSpace) >= 0 {
+	if err != nil || len(tokens) < 2 || len(tokens) > 3 || tokens[0] != "보아" || strings.TrimSpace(tokens[1]) == "" || strings.IndexFunc(tokens[1], unicode.IsSpace) >= 0 {
 		return LookAtTargetCommand{}, false
 	}
-	return LookAtTargetCommand{Target: tokens[1]}, true
+	if len(tokens) == 2 {
+		return LookAtTargetCommand{Target: tokens[1]}, true
+	}
+	occurrence, ok := parseLookAtOccurrence(tokens[2])
+	if !ok {
+		return LookAtTargetCommand{}, false
+	}
+	return LookAtTargetCommand{Target: tokens[1], Occurrence: occurrence}, true
+}
+
+func parseLookAtOccurrence(token string) (int, bool) {
+	if token == "" {
+		return 0, false
+	}
+	for _, r := range token {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	value, err := strconv.ParseUint(token, 10, 31)
+	if err != nil || value < 1 {
+		return 0, false
+	}
+	return int(value), true
 }
 
 // LookAtTargetLineText mirrors the naming used by other command boundaries;
@@ -68,9 +96,10 @@ func (o *Ownership) ExecuteLookAtTargetLine(ctx context.Context, store engine.Co
 		return storage.WorldReceipt{}, ErrUnsupportedLookAtTargetLine
 	}
 	payload, err := json.Marshal(struct {
-		Line   string
-		Target string
-	}{Line: line, Target: command.Target})
+		Line       string
+		Target     string
+		Occurrence int
+	}{Line: line, Target: command.Target, Occurrence: command.Occurrence})
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
@@ -79,7 +108,7 @@ func (o *Ownership) ExecuteLookAtTargetLine(ctx context.Context, store engine.Co
 		if err != nil {
 			return nil, nil, err
 		}
-		proposal, err := s.PlanLookAtTargetProposal(actorID, command.Target)
+		proposal, err := s.PlanLookAtTargetProposalWithOccurrence(actorID, command.Target, command.Occurrence)
 		if err != nil {
 			return nil, nil, err
 		}

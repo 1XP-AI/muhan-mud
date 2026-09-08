@@ -396,7 +396,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	}
 	if lookAtTargetCommand && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
-			c.game.publishLookAtTarget(after, c.lease.ActorID, lookAtTarget.Target)
+			c.game.publishLookAtTarget(after, c.lease.ActorID, lookAtTarget.Target, lookAtTarget.Occurrence)
 		}
 	}
 	if searchCommand && !receipt.Replayed {
