@@ -80,8 +80,11 @@ func TestExecuteInfoLinePersistsCanonicalProjectionAndReplays(t *testing.T) {
 			t.Errorf("info response missing %q: %q", want, text)
 		}
 	}
-	if strings.Contains(text, "엔터") || strings.Contains(text, "주문:") {
-		t.Fatalf("info response crossed unsupported continuation boundary: %q", text)
+	if !strings.Contains(text, "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ") {
+		t.Fatalf("info response missing source-backed continuation prompt: %q", text)
+	}
+	if strings.Contains(text, "주문:") {
+		t.Fatalf("info response crossed unsupported spell continuation boundary: %q", text)
 	}
 	if string(store.state) != string(raw) {
 		t.Fatal("info command mutated world state")
@@ -90,6 +93,12 @@ func TestExecuteInfoLinePersistsCanonicalProjectionAndReplays(t *testing.T) {
 	replay, err := owners.ExecuteInfoLine(context.Background(), store, "w", "info-1", lease, "정보")
 	if err != nil || !replay.Replayed || replay.Revision != first.Revision || store.commits != 1 || string(replay.Response) != string(first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestInfoContinuationCancellationTextMatchesCommand4(t *testing.T) {
+	if InfoContinuationCancelResponse != "중단되었습니다.\n" {
+		t.Fatalf("cancellation text=%q", InfoContinuationCancelResponse)
 	}
 }
 

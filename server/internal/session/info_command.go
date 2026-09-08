@@ -11,10 +11,21 @@ import (
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
-// ErrUnsupportedInfoLine keeps command4.c's continuation and argument forms
-// out of this first-page slice. The [엔터] -> info_2 spell display, title
-// lookup and document-backed help remain explicit follow-up work.
+// ErrUnsupportedInfoLine keeps command4.c's argument forms and unsupported
+// continuation input out of this slice. The [엔터] -> info_2 spell/effect/
+// quest display remains fail-closed: the canonical snapshot has raw bit
+// fields, but this Go boundary has not admitted the complete immutable spell
+// name table, effect mapping, or quest-display contract.
 var ErrUnsupportedInfoLine = errors.New("line is not an implemented info command")
+
+// InfoContinuationPrompt and InfoContinuationCancelResponse are copied from
+// command4.c's info()/info_2() boundary. The prompt is part of the durable
+// first-page response; cancellation is handled by the connection-local
+// continuation gate and does not mutate world state.
+const (
+	InfoContinuationPrompt         = "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: "
+	InfoContinuationCancelResponse = "중단되었습니다.\n"
+)
 
 // ExecuteInfoLine renders the deterministic first page of command4.c info.
 // It is a no-state-change receipt: PlayerInfo validates and reads the
@@ -36,6 +47,7 @@ func (o *Ownership) ExecuteInfoLine(ctx context.Context, store engine.CommandSto
 		if err != nil {
 			return nil, nil, err
 		}
+		text += InfoContinuationPrompt
 		response, err := json.Marshal(text)
 		return raw, response, err
 	})

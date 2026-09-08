@@ -206,6 +206,7 @@ type worldConnection struct {
 	events           chan string
 	ready, closed    bool
 	closeAfterSubmit bool
+	infoPending      bool
 }
 
 // Events is an optional asynchronous room-output stream. The WebSocket
@@ -229,6 +230,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	}
 	c.game.commandMu.Lock()
 	defer c.game.commandMu.Unlock()
+	if c.infoPending {
+		// command4.c routes exactly one following line to info_2. The complete
+		// spell/effect/quest projection is not admitted in canonical Go state;
+		// consume the pending continuation and expose only the source-backed
+		// cancellation branch. Other input fails closed without a receipt.
+		c.infoPending = false
+		if line == "." {
+			return session.InfoContinuationCancelResponse, nil
+		}
+		return "아직 구현되지 않은 명령입니다.\r\n", nil
+	}
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
 	commandID := "command-" + rand.Text()
@@ -252,6 +264,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	trackCommand := false
 	hideCommand := false
 	peekCommand := false
+	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
 	doorKeyCommand := false
@@ -328,6 +341,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
+		infoCommand = true
 		receipt, err = c.game.owners.ExecuteInfoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandHelp:
 		receipt, err = c.game.owners.ExecuteHelpLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
@@ -368,6 +382,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if err != nil {
 		c.ready = false
 		return "", err
+	}
+	if infoCommand {
+		// Establish this only after the durable first-page receipt succeeds;
+		// receipt replay also restores the prompt/continuation contract after a
+		// lost response.
+		c.infoPending = true
 	}
 	if directional && !receipt.Replayed && beforeOK {
 		if after, ok := c.game.snapshot(ctx); ok {
