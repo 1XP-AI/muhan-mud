@@ -2058,5 +2058,9 @@ go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
 ```
 
+추가로 격리 `postgres:17-alpine`에서 `TestPostgresLookAtTargetOccurrencePersistsAndReplays`
+를 실행해 prefix/occurrence receipt 저장과 동일 command ID replay를 확인했다. 이 결과는
+전체 PostgreSQL+Chromium E2E나 운영 동시성 인수를 대체하지 않는다.
+
 strict room corpus 기존 63개 예외, 전체 C 명령/tick/경제, 실제 PostgreSQL/Chromium 재실행,
 WSS/Ingress와 testnet 배포 인수는 계속 남아 있다.

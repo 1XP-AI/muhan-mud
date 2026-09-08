@@ -1241,7 +1241,9 @@ Orca를 사용하지 않고 root가 직접 세 개의 Luna max lane을 배치·�
 통합 검증은 `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
 `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`와 새 session/world/transport
 focused tests가 통과했다. strict room corpus의 기존 63개 예외, 전체 C command/tick/경제,
-실제 PostgreSQL/Chromium 재실행, WSS/Ingress와 testnet 인수는 여전히 미완료다.
+격리 `postgres:17-alpine`의 `TestPostgresLookAtTargetOccurrencePersistsAndReplays`는
+추가로 통과했지만, 전체 PostgreSQL+Chromium 재실행, C command/tick/경제, WSS/Ingress와
+testnet 인수는 여전히 미완료다.
 인프라 저장소의 `scripts/docker-source-paths.test.mjs` reviewed source pin은 새 root
 `f09b0a4a606f61d0ffb8505f660d421d31bda030`을 가리키도록 갱신했으며, infra 테스트 재실행과
 commit `ae3f6769`까지 완료했다. `node --test scripts/docker-source-paths.test.mjs`는 2/2
