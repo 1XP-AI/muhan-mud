@@ -2014,3 +2014,18 @@ bare `보아`, prefix/occurrence와 legacy fallback은 여전히 별도 범위�
 cross-build가 통과했다. PostgreSQL 환경 변수가 없는 로컬에서는 새 PG 컨테이너를 만들지
 않아 canonical object/exit PG replay는 아직 실행 증거가 아니다. 기존 strict room corpus
 63개 예외와 전체 command/tick/경제/배포 인수는 계속 남아 있다.
+
+## 2026-09-08 병렬 데이터·웹·부하 검증 후속
+
+데이터 감사 fixture(`6631e5c`)는 3,216개 원본 방의 strict 거부 63개를 SHA-256,
+소비 위치, issue kind별로 고정하며 runtime 변환 allow-list를 만들지 않는다. 웹
+중앙 xterm 보강(`9b49c55`)은 reconnect/resize/submit 포커스, 한글 IME, 모바일
+visualViewport, secret echo와 pending input 폐기를 TDD로 확인한다. 로컬 load harness
+(`500aee6`)는 운영 REST endpoint가 아니라 httptest 어댑터로 REST-like와 persistent
+connector 비용을 비교하며 staged target 100/250/500/1000과 MaxSessions=32,
+cleanup/namespace/loopback 충돌을 검증한다.
+
+통합 검증은 Go exception audit, 전체 Go race(기존 corpus test 제외), vet, ARM64
+build, web typecheck/42 tests/build, classic-terminal Playwright 2 tests, load harness
+race와 100/1000 smoke에서 통과했다. persistent 결과의 32-session 경계와 REST-like
+수치는 메모리 fixture의 방향성 자료일 뿐 PostgreSQL/gateway 운영 동접 보증이 아니다.

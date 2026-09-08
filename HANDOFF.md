@@ -1188,3 +1188,25 @@ committed room event를 다른 연결에 보내며, actor/replay에는 중복 ev
 격리 ARM64 PostgreSQL 17 `TestPostgresDoorCommandPersistsAndReplays`, 실제 Go+
 PostgreSQL+Chromium `열어 __missing_door__` 경로 **1 passed (10.8s)**. `풀어`/`잠궈`/
 `따`의 key object·내구도·picklock 및 전체 occurrence/ANSI formatting은 다음 slice다.
+
+## 2026-09-08 ChatGPT 직접 병렬 통합 체크포인트
+
+세 개의 독립 Luna max lane을 서로 다른 worktree에서 실행한 뒤 root가 직접 diff·테스트
+검증하고 통합했다. 데이터 lane `6631e5c`는 3,216개 방 중 strict 예외 63개(총 이슈
+100건)의 SHA/소비 위치/이슈 분류와 raw 불변·strict 거부 회귀를 고정했다. C 출력
+oracle이 없어 자동 EUC-KR 치환·NUL 합성·tail 절삭은 보류했다.
+
+웹 lane `9b49c55`는 중앙 xterm reconnect/resize/submit focus 복구, 한글 IME 보호,
+모바일 visualViewport, 비밀번호 로컬 echo 차단과 미전송 입력 폐기를 추가했다. load
+lane `500aee6`는 운영 endpoint를 바꾸지 않는 httptest REST-like/persistent capacity
+probe와 100/250/500/1000 staged target, cleanup/namespace/loopback 충돌 검증을
+추가했다. persistent probe의 32-session 결과는 운영 동접 보증이 아니다.
+
+통합 검증은 Go exception audit, `go test -race ./... -skip '^TestRoomBodyCorpus$'`,
+`go vet ./...`, Linux ARM64 CGO-free build, web typecheck/42 tests/build,
+classic-terminal Playwright 2 tests, load harness race/100·1000 smoke에서 통과했다.
+실제 Go+PostgreSQL+Chromium은 PostgreSQL 이미지가 없는 환경에서 실행하지 않았다.
+infra Docker source revision pin은 `eacaa9d7`에서
+`500aee64b8af73370e880c8e9202246edafaf22c`로 갱신했다.
+
+root 작업 트리의 유일한 미커밋 변경은 사용자 소유 `src/frp.new`이며 보존한다.

@@ -393,3 +393,17 @@ proposal/apply 경계를 추가했다. actor `PHIDDN` 선행 해제, silent bran
 event replay를 보존하며, full ANSI object description·bare action·legacy fallback은
 범위 밖이다. unit/session/transport replay 회귀와 Linux ARM64 race/vet/build는 통과했지만
 실제 PG replay는 전용 PostgreSQL 컨테이너 부재로 이번 턴 실행하지 않았다.
+
+## 2026-09-08 직접 관리 병렬 lane 결과
+
+데이터 lane은 strict room corpus의 63개 예외를 원본 증거 fixture로 고정했으며,
+oracle이 없는 자동 EUC-KR 치환·NUL 합성·trailing tail 절삭은 하지 않았다. 웹 lane은
+중앙 xterm focus와 IME/mobile/reconnect 경계를 보강했고, load lane은 production API를
+변경하지 않는 httptest connector probe를 추가했다. 세 커밋은 root에서 diff 검토 후
+통합했으며 `src/frp.new`는 제외했다.
+
+load probe의 REST-like 1000 target은 모두 완료되지만 persistent는 현재
+MaxSessions=32에서 32개만 admission된다. DB pool 16, connector 전역 command mutex,
+chart gateway 200 제한은 별도 운영 부하 검증이 필요하며, 이번 수치만으로 1000 동접
+승격·배포 승인을 하지 않는다. 다음 게이트는 실제 disposable PostgreSQL 17 ARM64와
+Chromium stack E2E가 가능한 환경에서 replay/ingress를 재실행하는 것이다.
