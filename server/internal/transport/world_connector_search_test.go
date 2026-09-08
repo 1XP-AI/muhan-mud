@@ -18,9 +18,12 @@ func connectorSearchFixture(t *testing.T) *connectorCommandStore {
 	state := world.State{
 		Version: 1,
 		Rooms: map[int16]world.RoomState{1: {
-			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1}},
+			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Exits: []world.LegacyExit{{Name: "비밀문", Flags: [4]byte{1}}}}},
 			PlayerIDs: []string{"a", "b", "c"},
-			Items:     &world.ItemCollection{Items: map[string]world.Item{}},
+			Items: &world.ItemCollection{
+				Items:     map[string]world.Item{"hidden-root": {Object: world.LegacyObject{Name: "숨은상자", Flags: [8]byte{0: 1 << 1}}}},
+				Inventory: []string{"hidden-root"},
+			},
 		}},
 		Players: map[string]world.PlayerState{
 			"a": {Body: a, Online: true, Items: &world.ItemCollection{Items: map[string]world.Item{}}},
@@ -40,7 +43,7 @@ func TestWorldConnectorSubmitDispatchesSearchResponseAndCommittedRoomEvents(t *t
 	connector, actor, target, observer := connectorThreeWorldConnections(t, store, "search-world")
 	connector.config.Roll = func(_, _ int) int { return 1 }
 	text, err := actor.Submit(context.Background(), "검색")
-	if err != nil || !strings.Contains(text, "Bob") {
+	if err != nil || !strings.Contains(text, "Bob") || !strings.Contains(text, "비밀문") || !strings.Contains(text, "숨은상자") {
 		t.Fatalf("search response=%q err=%v", text, err)
 	}
 	for name, connection := range map[string]*worldConnection{"target": target, "observer": observer} {

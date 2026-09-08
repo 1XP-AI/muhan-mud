@@ -117,3 +117,57 @@ func TestSearchFailsClosedForMissingRandomSourceAndStaleTarget(t *testing.T) {
 		t.Fatal("stale visible target was accepted")
 	}
 }
+
+func TestPlanAndApplySearchUsesCanonicalExitAndObjectRootsBeforePlayers(t *testing.T) {
+	s := searchStateFixture()
+	room := s.Rooms[1]
+	room.Resource.Exits = []LegacyExit{{Name: "비밀문", Flags: [4]byte{1}}, {Name: "보이지않는북문", Flags: [4]byte{1, 0, 8}}, {Name: "북문"}}
+	room.Items = &ItemCollection{
+		Items: map[string]Item{
+			"hidden-root": {Object: LegacyObject{Name: "숨은상자", Flags: [8]byte{0: 1 << objectHiddenFlag}}},
+		},
+		Inventory: []string{"hidden-root"},
+	}
+	s.Rooms[1] = room
+	calls := 0
+	proposal, err := s.PlanSearch("a", 100, func(low, high int) int {
+		calls++
+		if low != 1 || high != 100 {
+			t.Fatalf("random range=%d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 6 || len(proposal.Targets) != 4 {
+		t.Fatalf("calls=%d targets=%+v", calls, proposal.Targets)
+	}
+	want := []SearchTarget{
+		{ID: "exit:1:0", Kind: "exit", Name: "비밀문"},
+		{ID: "hidden-root", Kind: "object", Name: "숨은상자"},
+		{ID: "b", Kind: "player", Name: "Bob"},
+		{ID: "goblin", Kind: "npc", Name: "Goblin"},
+	}
+	if !reflect.DeepEqual(proposal.Targets, want) {
+		t.Fatalf("targets=%+v want=%+v", proposal.Targets, want)
+	}
+	next, result, err := s.ApplySearch(proposal)
+	if err != nil || len(result.Targets) != len(want) || !strings.Contains(result.Response, "출구를 찾았습니다: 비밀문") || !strings.Contains(result.Response, "숨은상자") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	event, ok, err := next.RoomSearchEvent("a", result.Targets)
+	if err != nil || !ok || len(event.Texts) != 2 {
+		t.Fatalf("event=%+v ok=%v err=%v", event, ok, err)
+	}
+}
+
+func TestSearchRejectsLegacyRoomObjectFallback(t *testing.T) {
+	s := searchStateFixture()
+	room := s.Rooms[1]
+	room.Resource.Objects = []LegacyObject{{Name: "legacy-hidden", Flags: [8]byte{0: 1 << objectHiddenFlag}}}
+	s.Rooms[1] = room
+	if _, err := s.PlanSearch("a", 100, func(int, int) int { t.Fatal("legacy fallback consumed random"); return 1 }); err == nil {
+		t.Fatal("legacy room object fallback accepted")
+	}
+}

@@ -1,10 +1,71 @@
 package world
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 )
+
+// CanonicalRoomObject is the small identity/view pair admitted by target
+// inspection.  ID is the durable ItemCollection identity; Object is copied so
+// callers cannot mutate the committed snapshot while rendering a response.
+type CanonicalRoomObject struct {
+	ID     string
+	Object LegacyObject
+}
+
+var (
+	// ErrCanonicalRoomObjectUnavailable distinguishes an un-migrated legacy
+	// floor from an ordinary name miss.  A caller must not use Resource.Objects
+	// as a fallback when this error is returned.
+	ErrCanonicalRoomObjectUnavailable = errors.New("canonical room object root unavailable")
+	ErrCanonicalRoomObjectNotFound    = errors.New("canonical room object root not found")
+	ErrAmbiguousCanonicalRoomObject   = errors.New("ambiguous canonical room object root")
+)
+
+// SelectCanonicalRoomObjectRoot resolves one exact, visible floor root. It
+// intentionally does not inspect nested Contents, occurrence numbers, keys,
+// prefixes, or LegacyRoom.Objects. A nil collection with legacy floor data is
+// an unresolved migration boundary, not an empty room.
+func SelectCanonicalRoomObjectRoot(items *ItemCollection, name string, detectInvisible bool) (CanonicalRoomObject, error) {
+	if items == nil {
+		return CanonicalRoomObject{}, ErrCanonicalRoomObjectUnavailable
+	}
+	if err := items.Validate(); err != nil {
+		return CanonicalRoomObject{}, fmt.Errorf("%w: %v", ErrCanonicalRoomObjectUnavailable, err)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || !utf8.ValidString(name) {
+		return CanonicalRoomObject{}, fmt.Errorf("canonical room object name required")
+	}
+	found := false
+	var selected CanonicalRoomObject
+	for _, id := range items.Inventory {
+		item, ok := items.Items[id]
+		if !ok || id == "" {
+			return CanonicalRoomObject{}, fmt.Errorf("%w: missing root %q", ErrCanonicalRoomObjectUnavailable, id)
+		}
+		if item.Object.Name == "" || !utf8.ValidString(item.Object.Name) {
+			return CanonicalRoomObject{}, fmt.Errorf("%w: invalid root name", ErrCanonicalRoomObjectUnavailable)
+		}
+		if item.Object.Name != name {
+			continue
+		}
+		if flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible {
+			continue
+		}
+		if found {
+			return CanonicalRoomObject{}, ErrAmbiguousCanonicalRoomObject
+		}
+		found = true
+		selected = CanonicalRoomObject{ID: id, Object: item.Object}
+	}
+	if !found {
+		return CanonicalRoomObject{}, fmt.Errorf("%w: %q", ErrCanonicalRoomObjectNotFound, name)
+	}
+	return selected, nil
+}
 
 type ObjectListing struct {
 	Text      string

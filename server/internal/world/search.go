@@ -2,15 +2,19 @@ package world
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	searchTimerIndex     = 7 // LT_SERCH
-	searchRangerClass    = 7
-	searchCaretakerClass = 10
+	searchTimerIndex        = 7 // LT_SERCH
+	searchRangerClass       = 7
+	searchCaretakerClass    = 10
+	searchExitSecretFlag    = 0  // XSECRT
+	searchExitInvisibleFlag = 1  // XINVIS
+	searchExitNoSeeFlag     = 19 // XNOSEE
 )
 
 // SearchTarget is an authoritative identity found by a search.  The client
@@ -26,10 +30,10 @@ type SearchTarget struct {
 // deliberately independent of State so a caller can inspect or test the
 // chance/cooldown/target decisions before applying them atomically.
 //
-// Targets are limited to canonical same-room players and NPCs.  Legacy
-// hidden exits/objects are intentionally not guessed here; the corresponding
-// resource graphs do not yet have the durable search contract needed by this
-// slice.
+// Targets are limited to canonical same-room players/NPCs, ordered exits and
+// canonical floor roots. Legacy linked-list objects are intentionally not
+// guessed here; a room with legacy objects but no canonical ItemCollection is
+// rejected rather than reported as empty.
 type SearchProposal struct {
 	ActorID     string
 	RoomID      int16
@@ -113,11 +117,12 @@ func validSearchName(name string) bool {
 }
 
 // PlanSearch implements the bounded same-room hidden-target part of
-// command5.c:search.  It consumes one 1..100 roll for every hidden canonical
-// target in C's player-then-monster order, even when an invisible target is
-// not visible to the actor; this preserves the source condition ordering.
-// Objects and exits are not admitted by this slice and are never treated as
-// found.  Cooldown returns a successful no-op proposal, matching C's early
+// command5.c:search. It consumes one 1..100 roll for every hidden canonical
+// exit, room-object root, player, and NPC in C's exit/object/player/monster
+// order. The existing player-then-NPC order is preserved. An invisible target
+// still consumes its roll before the visibility gate, matching C. Legacy
+// linked-list room objects are not used. Cooldown returns a successful no-op,
+// matching C's early
 // please_wait return before PHIDDN/timer mutation or room broadcast.
 func (s State) PlanSearch(actorID string, now int32, roll func(int, int) int) (SearchProposal, error) {
 	if err := s.Validate(); err != nil {
@@ -164,6 +169,56 @@ func (s State) PlanSearch(actorID string, now int32, roll func(int, int) int) (S
 		return proposal, nil
 	}
 	proposal.ClearHidden = true
+
+	// C scans exits first. Exits have no independent persisted UUID in the
+	// current contract, so the room ID plus ordered exit index is their only
+	// safe canonical identity. Empty/invalid names are rejected only for hidden
+	// exits; visible exits do not participate in this command.
+	for index, exit := range room.Resource.Exits {
+		if !flag(exit.Flags[:], searchExitSecretFlag) {
+			continue
+		}
+		if !validSearchName(exit.Name) {
+			return SearchProposal{}, fmt.Errorf("unresolved canonical hidden exit")
+		}
+		found, err := searchRoll(roll, chance)
+		if err != nil {
+			return SearchProposal{}, err
+		}
+		if found && (flag(actor.Body.Flags[:], playerDetectInvisibleFlag) || !flag(exit.Flags[:], searchExitInvisibleFlag)) && !flag(exit.Flags[:], searchExitNoSeeFlag) {
+			proposal.Targets = append(proposal.Targets, SearchTarget{ID: searchExitID(room.Resource.ID, index), Kind: "exit", Name: exit.Name})
+		}
+	}
+
+	// Only canonical floor roots are searchable. A nil collection with legacy
+	// objects would otherwise turn an unresolved migration boundary into a
+	// false "nothing found" result. Nested contents are not room roots and are
+	// intentionally not scanned here.
+	if room.Items == nil {
+		if len(room.Resource.Objects) != 0 {
+			return SearchProposal{}, fmt.Errorf("legacy room objects lack canonical roots")
+		}
+	} else {
+		for _, id := range room.Items.Inventory {
+			item, exists := room.Items.Items[id]
+			if !exists || id == "" {
+				return SearchProposal{}, fmt.Errorf("unresolved canonical room object root")
+			}
+			if !flag(item.Object.Flags[:], objectHiddenFlag) {
+				continue
+			}
+			if !validSearchName(item.Object.Name) {
+				return SearchProposal{}, fmt.Errorf("unresolved hidden room object name")
+			}
+			found, err := searchRoll(roll, chance)
+			if err != nil {
+				return SearchProposal{}, err
+			}
+			if found && (flag(actor.Body.Flags[:], playerDetectInvisibleFlag) || !flag(item.Object.Flags[:], objectInvisibleFlag)) {
+				proposal.Targets = append(proposal.Targets, SearchTarget{ID: id, Kind: "object", Name: item.Object.Name})
+			}
+		}
+	}
 
 	// The canonical room lists are authoritative. Validate has already
 	// checked their referential integrity; repeat the identity checks here so
@@ -213,7 +268,14 @@ func (s State) PlanSearch(actorID string, now int32, roll func(int, int) int) (S
 	} else {
 		var out strings.Builder
 		for _, target := range proposal.Targets {
-			fmt.Fprintf(&out, "\n당신은 숨어있는 %s 찾아내었습니다.", target.Name)
+			switch target.Kind {
+			case "exit":
+				fmt.Fprintf(&out, "\n출구를 찾았습니다: %s.", target.Name)
+			case "object":
+				fmt.Fprintf(&out, "\n당신은 %s 찾았습니다.", target.Name)
+			default:
+				fmt.Fprintf(&out, "\n당신은 숨어있는 %s 찾아내었습니다.", target.Name)
+			}
 		}
 		proposal.Response = out.String()
 	}
@@ -258,6 +320,23 @@ func (s State) ApplySearch(proposal SearchProposal) (State, SearchResult, error)
 			return State{}, SearchResult{}, fmt.Errorf("invalid search target")
 		}
 		switch found.Kind {
+		case "exit":
+			index, ok := parseSearchExitID(found.ID, proposal.RoomID)
+			if !ok || index < 0 || index >= len(room.Resource.Exits) {
+				return State{}, SearchResult{}, fmt.Errorf("search exit moved")
+			}
+			exit := room.Resource.Exits[index]
+			if exit.Name != found.Name || !flag(exit.Flags[:], searchExitSecretFlag) || flag(exit.Flags[:], searchExitNoSeeFlag) || (flag(exit.Flags[:], searchExitInvisibleFlag) && !flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
+				return State{}, SearchResult{}, fmt.Errorf("search exit target changed")
+			}
+		case "object":
+			if room.Items == nil || !containsString(room.Items.Inventory, found.ID) {
+				return State{}, SearchResult{}, fmt.Errorf("search object moved")
+			}
+			item, exists := room.Items.Items[found.ID]
+			if !exists || item.Object.Name != found.Name || !flag(item.Object.Flags[:], objectHiddenFlag) || (flag(item.Object.Flags[:], objectInvisibleFlag) && !flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
+				return State{}, SearchResult{}, fmt.Errorf("search object target changed")
+			}
 		case "player":
 			if !containsString(room.PlayerIDs, found.ID) {
 				return State{}, SearchResult{}, fmt.Errorf("search player moved")
@@ -315,6 +394,23 @@ func (s State) RoomSearchEvent(actorID string, targets []SearchTarget) (SearchEv
 			return SearchEvent{}, false, fmt.Errorf("invalid search event target")
 		}
 		switch target.Kind {
+		case "exit":
+			index, ok := parseSearchExitID(target.ID, room.Resource.ID)
+			if !ok || index < 0 || index >= len(room.Resource.Exits) {
+				return SearchEvent{}, false, fmt.Errorf("search event exit target changed")
+			}
+			exit := room.Resource.Exits[index]
+			if exit.Name != target.Name || !flag(exit.Flags[:], searchExitSecretFlag) || flag(exit.Flags[:], searchExitNoSeeFlag) || (flag(exit.Flags[:], searchExitInvisibleFlag) && !flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
+				return SearchEvent{}, false, fmt.Errorf("search event exit target changed")
+			}
+		case "object":
+			if room.Items == nil || !containsString(room.Items.Inventory, target.ID) {
+				return SearchEvent{}, false, fmt.Errorf("search event object target changed")
+			}
+			item, exists := room.Items.Items[target.ID]
+			if !exists || item.Object.Name != target.Name || !flag(item.Object.Flags[:], objectHiddenFlag) || (flag(item.Object.Flags[:], objectInvisibleFlag) && !flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
+				return SearchEvent{}, false, fmt.Errorf("search event object target changed")
+			}
 		case "player":
 			p, exists := s.Players[target.ID]
 			if !exists || !containsString(room.PlayerIDs, target.ID) || !p.Online || p.Body.RoomID != room.Resource.ID || p.Body.Name != target.Name || !flag(p.Body.Flags[:], playerHiddenStateFlag) || flag(p.Body.Flags[:], playerDMInvisibleFlag) {
@@ -341,3 +437,23 @@ func (s State) RoomSearchEvent(actorID string, targets []SearchTarget) (SearchEv
 }
 
 const playerMaleFlag = 12 // PMALES
+
+func searchExitID(roomID int16, index int) string {
+	return fmt.Sprintf("exit:%d:%d", roomID, index)
+}
+
+func parseSearchExitID(id string, roomID int16) (int, bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) != 3 || parts[0] != "exit" {
+		return 0, false
+	}
+	parsedRoom, err := strconv.ParseInt(parts[1], 10, 16)
+	if err != nil || int16(parsedRoom) != roomID || strconv.FormatInt(parsedRoom, 10) != parts[1] {
+		return 0, false
+	}
+	index, err := strconv.Atoi(parts[2])
+	if err != nil || index < 0 || strconv.Itoa(index) != parts[2] {
+		return 0, false
+	}
+	return index, true
+}

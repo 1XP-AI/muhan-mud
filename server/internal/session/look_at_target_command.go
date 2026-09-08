@@ -14,9 +14,10 @@ import (
 )
 
 // ErrUnsupportedLookAtTargetLine is returned before a receipt exists when a
-// line is outside the exact explicit-target "보아" slice.  Bare 보아 (the
-// targetless action branch), room look aliases, occurrence selectors, name
-// prefixes and object inspection remain separate follow-up work.
+// line is outside the bounded exact explicit-target "보아" slice. Bare 보아
+// (the targetless action branch), room look aliases, occurrence selectors,
+// name prefixes, legacy object fallback and full ANSI inspection remain
+// separate follow-up work.
 var ErrUnsupportedLookAtTargetLine = errors.New("line is not an implemented 보아 target command")
 
 // LookAtTargetCommand is the parsed, bounded form of action.c's explicit
@@ -58,7 +59,9 @@ func LookAtTargetLineText(line string) (LookAtTargetCommand, bool) {
 // ExecuteLookAtTargetLine connects the bounded action.c "보아 <target>"
 // reducer to the durable receipt boundary. The response is stored in the
 // receipt; a transport may derive world.RoomLookAtTargetEvent from the
-// committed state only for a first (non-replayed) receipt.
+// committed state only for a first (non-replayed) receipt. Canonical room
+// roots and exact visible exits are resolved by the world proposal/apply
+// reducer; no client identity is persisted or trusted here.
 func (o *Ownership) ExecuteLookAtTargetLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
 	command, ok := ParseLookAtTargetLine(line)
 	if !ok {
@@ -76,7 +79,11 @@ func (o *Ownership) ExecuteLookAtTargetLine(ctx context.Context, store engine.Co
 		if err != nil {
 			return nil, nil, err
 		}
-		next, result, err := s.PlanLookAtTarget(actorID, command.Target)
+		proposal, err := s.PlanLookAtTargetProposal(actorID, command.Target)
+		if err != nil {
+			return nil, nil, err
+		}
+		next, result, err := s.ApplyLookAtTarget(proposal)
 		if err != nil {
 			return nil, nil, err
 		}

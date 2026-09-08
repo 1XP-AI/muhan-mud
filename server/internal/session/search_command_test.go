@@ -22,6 +22,11 @@ func searchCommandFixture(t *testing.T) []byte {
 	target.Body.Flags[1/8] |= 1 << (1 % 8)
 	s.Players["b"] = target
 	room := s.Rooms[1]
+	room.Resource.Exits = []world.LegacyExit{{Name: "비밀문", Flags: [4]byte{1}}}
+	room.Items = &world.ItemCollection{
+		Items:     map[string]world.Item{"hidden-root": {Object: world.LegacyObject{Name: "숨은상자", Flags: [8]byte{0: 1 << 1}}}},
+		Inventory: []string{"hidden-root"},
+	}
 	room.PlayerIDs = append(room.PlayerIDs, "b")
 	s.Rooms[1] = room
 	raw, err := json.Marshal(s)
@@ -63,7 +68,7 @@ func TestExecuteSearchLinePersistsResponseEnvelopeAndReplaysWithoutReroll(t *tes
 		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
 	}
 	var result world.SearchResult
-	if err := json.Unmarshal(first.Response, &result); err != nil || !result.Broadcast || len(result.Targets) != 1 || result.Targets[0].ID != "b" || !strings.Contains(result.Response, "Bob") {
+	if err := json.Unmarshal(first.Response, &result); err != nil || !result.Broadcast || len(result.Targets) != 3 || result.Targets[0].ID != "exit:1:0" || result.Targets[1].ID != "hidden-root" || result.Targets[2].ID != "b" || !strings.Contains(result.Response, "Bob") || !strings.Contains(result.Response, "비밀문") || !strings.Contains(result.Response, "숨은상자") {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	saved, err := world.DecodeState(store.state)
