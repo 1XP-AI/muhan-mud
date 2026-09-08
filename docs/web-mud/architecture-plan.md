@@ -1,5 +1,8 @@
 # 무한대전 웹 MUD 아키텍처 및 실행 계획
 
+> 2026-09-08: 현재 기준은 [Go 서버 전환 계획](../porting-research/go-server-execution-plan.md)이다.
+> 아래는 과거 아키텍처·배포 기록이다. 새 게임 런타임은 Go이며 C/Rust 서버 확장을 지시하지 않는다.
+
 > 이 문서의 Vercel/managed Supabase 초기안은 보존된 조사 기록이다. 현재
 > 실행안은 self-hosted Supabase Docker 구성 요소(Postgres/Auth/PostgREST/
 > Realtime)와 Kubernetes Helm 배포이며, identity·저장 권위와 단계별 계획은

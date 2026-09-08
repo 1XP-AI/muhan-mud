@@ -27,6 +27,10 @@ assert 'python-is-python3' in workflow and 'build-essential' in workflow
 assert workflow.count('Acquire::Retries=3 update --error-on=any') == 2
 assert 'sudo apt-get update\n' not in workflow
 assert workflow.count('sudo -n true ||') == 2
+assert workflow.count('unzip util-linux') == 2
+assert workflow.count('test -x /usr/bin/flock') == 2
+assert workflow.count('ca-certificates git pkg-config') == 2
+assert 'M3_RUNTIME_LINK_OUTFILE="$TMPDIR/muhan-m3-runtime"' in workflow
 assert makefile.count('/tmp/muhan-unit') == 1  # local default only
 assert 'MUHAN_UNIT_DIR ?= /tmp/muhan-unit' in makefile
 for config in ('playwright.config.ts', 'playwright.feature-off.config.ts'):

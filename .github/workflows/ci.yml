@@ -58,7 +58,8 @@ jobs:
           set -euo pipefail
           # Other repositories share this host: wait/retry rather than deleting apt locks.
           sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip util-linux
+          test -x /usr/bin/flock
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -95,7 +96,7 @@ jobs:
           set -euo pipefail
           make -C src m3-runtime-linux-link \
             CC=gcc PG_CONFIG=pg_config \
-            M3_RUNTIME_LINK_OUTFILE="$RUNNER_TEMP/muhan-m3-runtime"
+            M3_RUNTIME_LINK_OUTFILE="$TMPDIR/muhan-m3-runtime"
 
       - name: Run identity and onboarding contracts
         shell: bash
@@ -567,7 +568,8 @@ jobs:
           set -euo pipefail
           # Other repositories share this host: wait/retry rather than deleting apt locks.
           sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update --error-on=any
-          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates pkg-config jq xz-utils unzip
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip util-linux
+          test -x /usr/bin/flock
 
       - name: Setup Node
         if: matrix.lane == 'linux-arm64'

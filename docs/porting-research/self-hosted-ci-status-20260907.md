@@ -1,6 +1,49 @@
 # Self-hosted ARM64 CI migration — 2026-09-07
 
+## 2026-09-08 renewed request — verified outcome
+
+Reviewed the sole workflow, including its complete matrix; no reusable workflow
+exists. Preserved the Linux/macOS ARM64 label routing and the explicit hosted
+x64/Windows compatibility exceptions. Added Git to the general Linux dependency
+list and moved the database runtime-link output into the unique job TMPDIR.
+The pending util-linux/flock setup is also covered by the policy regression.
+All three local policy tests (routing/tools/isolation, manual-only execution,
+owned-container cleanup) and `git diff --check` pass.
+
+Docker Hub tag metadata was queried again: postgres:17-alpine and
+postgrest/postgrest:v12.2.8 both publish Linux ARM64 images. This is manifest
+compatibility evidence, not proof of passing all runtime tests.
+
+A real dispatch against the existing remote migration branch was attempted:
+HTTP 422, workflow disabled, no new run. The latest run remains 34093192597,
+completed with failure. GitHub's main workflow was read again and still uses
+push/ubuntu-latest/fixed port 5432. Organization runner-group discovery returned
+403 for missing administrator or runner-group permissions, not a demonstrated
+repository access denial. Local follow-up changes have not been pushed.
+
+To proceed safely under the local-first budget policy, land only the CI
+migration on main before enabling CI, then dispatch the migrated source ref.
+This needs confirmation before merging the default branch; do not merge the
+unrelated in-progress game port as part of the CI change. An org administrator
+must verify repository/workflow access in the runner group and runner health.
+Linux requires apt plus noninteractive sudo and Docker; macOS requires Xcode
+Command Line Tools. No successful new remote verification is claimed.
+
 ## Renewed request: current verification
+
+Current working-tree follow-up explicitly installs `util-linux` and verifies
+`/usr/bin/flock` in both Linux dependency lanes: the durable money request
+lock now requires this executable. The regression policy covers both setup
+steps. All three local policy tests and `git diff --check` pass after this
+change. This follow-up has not been pushed or tested remotely.
+
+The latest requested dispatch was actually attempted and again rejected with
+HTTP 422 because CI is disabled; it created no new run. The main workflow was
+read from GitHub and still declares `push`, `ubuntu-latest`, and `5432:5432`.
+Runner-group inspection returned HTTP 403 requiring organization runner-group
+permissions. Enabling alone would expose the old automatic hosted workflow;
+the remaining action is to land the CI-only migration on main, then enable
+and dispatch. The previous failed run is not new verification evidence.
 
 The latest follow-up also checks noninteractive sudo before either Linux
 dependency installation, so an unprepared runner fails with an actionable
