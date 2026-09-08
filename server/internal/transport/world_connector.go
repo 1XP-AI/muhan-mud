@@ -249,6 +249,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	lookAtTargetCommand := false
 	var lookAtTarget session.LookAtTargetCommand
 	searchCommand := false
+	trackCommand := false
+	hideCommand := false
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -291,6 +293,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandSearch:
 		searchCommand = true
 		receipt, err = c.game.owners.ExecuteSearchLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.SearchOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandTrack:
+		trackCommand = true
+		receipt, err = c.game.owners.ExecuteTrackLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.TrackOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandHide:
+		hideCommand = true
+		receipt, err = c.game.owners.ExecuteHideLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.HideOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandWelcome:
 		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
@@ -331,6 +339,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedExpressLine) ||
 		errors.Is(err, session.ErrUnsupportedLookAtTargetLine) ||
 		errors.Is(err, session.ErrUnsupportedSearchLine) ||
+		errors.Is(err, session.ErrUnsupportedTrackLine) ||
+		errors.Is(err, session.ErrUnsupportedHideLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
@@ -377,12 +387,38 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if trackCommand && !receipt.Replayed {
+		var result world.TrackResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishTrack(after, c.lease.ActorID)
+			}
+		}
+	}
+	if hideCommand && !receipt.Replayed {
+		var result world.HideResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishHide(after, c.lease.ActorID, result.Succeeded)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
 	var output string
 	if searchCommand {
 		var result world.SearchResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if trackCommand {
+		var result world.TrackResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if hideCommand {
+		var result world.HideResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

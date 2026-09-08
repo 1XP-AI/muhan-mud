@@ -281,3 +281,46 @@ func (g *WorldConnector) publishSearch(after world.State, actorID string, target
 		}
 	}
 }
+
+func (g *WorldConnector) publishTrack(after world.State, actorID string) {
+	event, ok, err := after.RoomTrackEvent(actorID)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the durable tracker response.
+		}
+	}
+}
+
+// publishHide emits the committed bare-player hide projection. The actor
+// already received the durable response; every other online occupant gets the
+// room event, and replayed receipts never enter this path.
+func (g *WorldConnector) publishHide(after world.State, actorID string, succeeded bool) {
+	event, ok, err := after.RoomHideEvent(actorID, succeeded)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the hider's durable command.
+		}
+	}
+}

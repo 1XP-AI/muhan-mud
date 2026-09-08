@@ -276,3 +276,24 @@ visibility/detect와 NPC-first 순서를 확인하며 미검증 prefix/occurrenc
 PG+Chromium E2E **1 passed (10.1s)**다. 전체 C command/action alias와 strict room corpus
 63개 예외는 여전히 G3/G4 전환 조건이며, 다음은 hide/track/search 및 combat/economy
 잔여 handler를 같은 TDD/differential 기준으로 줄이는 작업이다.
+
+## 2026-09-08 `추적`·`숨겨`/`숨어` bounded stealth 후속
+
+원본 `command4.c:track`의 ranger/관리자 bare 추적 경계를 `PlanTrack`/`ApplyTrack`으로
+옮겼다. `LT_TRACK` cooldown, PHIDDN 해제 순서, DEX·레벨 확률, blind/빈 흔적/성공
+응답과 같은 방 broadcast를 명시적 proposal/result로 저장한다. 클라이언트가 방향이나
+대상을 제출하지 않으며, 객체·출구 추적은 권위 graph가 준비될 때까지 추측하지 않는다.
+
+원본 `command5.c:hide`의 bare player branch도 `PlanHide`/`ApplyHide`로 옮겼다. C의
+ASSASSIN/THIEF/RANGER/관리자 확률·interval, blind cap, `LT_HIDES`, 단일 RNG 소비,
+성공·실패 PHIDDN 상태와 room projection을 고정했다. 객체 숨김은 ONOTAK 및 object
+inventory 권위가 아직 없어 `ErrHideObjectUnsupported`로 fail-closed한다. 입력은 C의
+실제 별칭 `숨겨`/`숨어`만 허용하고 추가 토큰은 receipt 전에 거절한다.
+
+두 명령은 central parser → session durable receipt → PostgreSQL replay → WebSocket
+fan-out 경계를 통과한다. receipt에 actor 응답과 broadcast outcome을 보존해 같은 command
+ID 재시도에서 RNG·reducer·room event가 재실행되지 않는다. unit/race/vet, 실제 격리
+ARM64 PostgreSQL 17의 hide replay, Linux ARM64 cross-build, Go+PostgreSQL+Chromium
+가입→입장→재로그인 E2E **1 passed (10.9s)**를 통과했다. strict room corpus의 기존
+63개 예외, 객체/출구 hide/track/search, 전체 C 명령 table·tick·경제·배포 인수는
+여전히 남아 있다.

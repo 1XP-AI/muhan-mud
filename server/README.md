@@ -1894,3 +1894,25 @@ RNG/reducer/event fan-out을 다시 실행하지 않는다. 최초 commit 뒤 �
 `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`가 통과했다.
 PG 통합 테스트는 이 실행에 격리 DB 환경 변수가 없어 skip했으며, 기존 strict room corpus
 63개 예외와 전체 C search(객체/출구 포함) parity는 여전히 미완료다.
+
+## 2026-09-08 `추적`·`숨겨`/`숨어` stealth command slices
+
+`추적`은 `src/command4.c:track`의 bare ranger/관리자 branch를 중앙 parser와
+`WorldConnector`에 연결했다. `PlanTrack`/`ApplyTrack`이 `LT_TRACK` cooldown, PHIDDN
+해제, DEX·level chance, blind/empty-trace/found response와 committed room event를
+원자적으로 처리한다. 방향·대상 인자는 받지 않으며 객체·출구 graph가 준비될 때까지
+fail-closed한다.
+
+`숨겨`/`숨어`는 `src/command5.c:hide`의 bare player branch를 연결했다. class별 chance와
+5/15초 interval, blind 20 cap, 단일 `1..100` RNG, `LT_HIDES`, 성공/실패 PHIDDN 및
+room broadcast를 durable result로 저장한다. 객체 hide는 C의 ONOTAK/object inventory
+권위가 없어 `ErrHideObjectUnsupported`로 거절하고, 추가 토큰은 receipt를 만들지 않는다.
+
+session receipt는 응답·broadcast outcome을 함께 저장하므로 command ID replay가 RNG,
+state reducer, async event를 재실행하지 않는다. `hide_command_test.go`/`track_command_test.go`,
+transport fan-out 회귀와 환경 변수 `MUHAN_HIDE_TEST_DATABASE_URL`/
+`MUHAN_TRACK_TEST_DATABASE_URL`를 사용하는 ARM64 PostgreSQL replay가 통과했다.
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`, 실제 Go+PG+Chromium E2E
+**1 passed (10.9s)**도 통과했다. 기존 strict room corpus 63개 예외와 객체/출구
+stealth, 전체 C command parity·tick·경제·Ingress 인수는 미완료다.
