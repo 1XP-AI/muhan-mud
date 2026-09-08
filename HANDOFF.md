@@ -1014,3 +1014,21 @@ Playwright는 xterm 안에서 이름·한글 IME 커밋(예/남/선/봐)·성별
 이 증거는 가입·월드 입장·재로그인 경계를 증명하지만 전체 legacy 명령/전투/tick,
 OS IME·모바일 키보드, WSS/Ingress, testnet 배포 인수를 의미하지 않는다. strict
 `TestRoomBodyCorpus`의 기존 63개 예외와 전체 게임 기능 미완료 상태는 유지한다.
+
+## 2026-09-08 `도움말` 문서 receipt 연결
+
+`server/internal/session/help_command.go`와 `CommandHelp`를 추가해 C `help()`의
+문서 경계를 실제 Go 월드 커넥터까지 연결했다. `도움말`/`?`는 `helpfile`, `도움말
+주술`은 `spellfile`, `도움말 정책`은 `policy`, 현재 durable Go handler가 있는
+명령 주제는 원본 `help.<cmdno>`를 읽는다. source는 `fs.FS` 주입이며, 배포 기본은
+`-help-dir /home/muhan/help`, 로컬 브라우저 하네스는 repository `help/`다. missing
+또는 invalid UTF-8 문서는 추정하지 않고 실패하고, unknown topic은 C의 고정 no-help
+응답을 receipt로 저장한다.
+
+TDD는 문서 읽기, unknown topic, missing document fail-closed, state purity, 동일
+command ID replay, connector dispatch를 확인한다. 실제 `bash
+scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`도
+`도움말 정보`까지 포함해 **1 passed (11.0s)**였고, 전용 PostgreSQL 컨테이너는
+정리됐다. 이 slice는 전체 C help alias/약어, continuation prompt, info title,
+전체 command table parity를 완료한 것이 아니다. `src/frp.new`는 여전히 사용자
+변경으로 dirty이며 손대지 않았다.

@@ -45,6 +45,7 @@ LISTEN_ADDR="127.0.0.1:${MUHAN_GO_PORT}" \
 "$scratch/muhan" \
   -world "$world_id" \
   -templates "$templates" \
+  -help-dir "$repo_root/help" \
   -game-hour 12 \
   -player-tick 1h \
   >"$scratch/go-server.log" 2>&1 &

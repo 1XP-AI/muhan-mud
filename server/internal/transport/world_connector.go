@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ type WorldConnectorConfig struct {
 	Catalog     world.SpawnCatalog
 	Roll        func(int, int) int
 	Allocate    func() (string, error)
+	HelpFS      fs.FS
 	MaxSessions int
 }
 
@@ -269,6 +271,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
 		receipt, err = c.game.owners.ExecuteInfoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandHelp:
+		receipt, err = c.game.owners.ExecuteHelpLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandQuit:
 		receipt, err = c.game.owners.ExecuteQuitLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	default:
@@ -287,6 +291,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedBankLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
+		errors.Is(err, session.ErrUnsupportedHelpLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}

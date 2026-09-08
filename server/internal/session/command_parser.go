@@ -30,6 +30,7 @@ const (
 	CommandQuit
 	CommandRead
 	CommandInfo
+	CommandHelp
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -160,6 +161,8 @@ func commandKind(first string) CommandKind {
 		return CommandRead
 	case "정보":
 		return CommandInfo
+	case "도움말", "?":
+		return CommandHelp
 	default:
 		return CommandUnknown
 	}

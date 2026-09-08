@@ -38,8 +38,12 @@ Items·정의된 class/race/proficiency가 없으면 fail-closed하며, C의 tit
 `[엔터]` 후 `info_2` 주문 continuation은 아직 구현하지 않았다. 따라서 이 행의 전체
 `info` 인수 상태는 계속 `미구현`이다.
 `시간` bare 명령은 게임 시각과 PST wall-clock을 request에 고정한 read-only receipt로
-연결했고 동일 command ID replay에서 시계를 다시 읽지 않는다. `도움말`/문서 조회와
-전체 parser는 별도 후속이다.
+연결했고 동일 command ID replay에서 시계를 다시 읽지 않는다. `도움말`/`?`도
+프로세스가 주입한 UTF-8 `help/` 문서를 receipt로 읽는 첫 slice를 추가했다. bare
+`helpfile`, `주술`/`정책`, 현재 Go handler가 있는 명령 주제의 `help.<cmdno>`를
+지원하고, unknown topic은 C의 고정 no-help 응답을 저장한다. 누락/비 UTF-8 문서는
+추정하지 않고 fail-closed하며, 동일 command ID replay와 state purity를 검증한다.
+전체 C alias/약어, continuation prompt, title 출력 및 parser parity는 별도 후속이다.
 `따라 <플레이어>`와 `내보내` 관계 명령도 same-room exact-name 및 reciprocal replay
 회귀를 통과했다. `내보내`의 자기 leader 이탈과 지정 follower 해제 경로까지 연결했지만,
 ARM64 PostgreSQL 17 `TestPostgresFollowAndLoseCommandPersistsAndReplays`도 통과했다.
@@ -478,3 +482,12 @@ shutdown worker cancellation을 `world_tick_test.go`에서 검증했다. 이 항
 `command_parser_test.go`와 transport dispatch 회귀로 검증했다. C의 전체 154 positive
 command handler, prefix ambiguity, occurrence 문법, alias persistence는 여전히
 미구현 ledger 항목으로 유지한다.
+
+## 2026-09-08 document help 후속
+
+`CommandHelp`를 parser/transport에 추가하고 `ExecuteHelpLine`을 durable receipt 경계에
+연결했다. `help/`의 `helpfile`, `spellfile`, `policy`, 현재 Go handler 명령의
+`help.<cmdno>`를 읽으며, source가 없거나 UTF-8이 아니면 receipt를 만들지 않는다.
+unknown topic은 원본 C와 같은 no-help 응답을 결정론적으로 재생한다. unit/transport
+TDD와 실제 ARM64 PostgreSQL 17 + Chromium E2E(`1 passed (11.0s)`)가 통과했지만, 이는
+전체 C command table·문서 continuation·info title·약어 동등성 인수가 아니다.

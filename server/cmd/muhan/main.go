@@ -34,6 +34,7 @@ func main() {
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
+	helpDir := flag.String("help-dir", os.Getenv("MUD_HELP_DIR"), "directory containing UTF-8 help, spell and policy documents")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	flag.Parse()
 	dsn := os.Getenv("DATABASE_URL")
@@ -121,12 +122,19 @@ func main() {
 		if *gameHour < 0 || *gameHour > 23 || *templates == "" {
 			log.Fatal("world mode requires templates and explicit game-hour 0..23")
 		}
+		if *helpDir == "" {
+			*helpDir = "/home/muhan/help"
+		}
 		if *playerTickInterval <= 0 || *playerTickInterval%time.Second != 0 {
 			log.Fatal("player-tick must be a positive whole number of seconds")
 		}
 		info, err := os.Stat(*templates)
 		if err != nil || !info.IsDir() {
 			log.Fatal("template directory unavailable")
+		}
+		helpInfo, err := os.Stat(*helpDir)
+		if err != nil || !helpInfo.IsDir() {
+			log.Fatal("help document directory unavailable")
 		}
 		startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
 		writer, _, err := engine.StartWorld(startupCtx, repo, *worldID, "boot-"+rand.Text())
@@ -138,6 +146,7 @@ func main() {
 			Store: writer, WorldID: *worldID, MaxSessions: 32,
 			Clock:    func() (int32, int) { return int32(time.Now().Unix()), *gameHour },
 			Catalog:  world.TemplateCatalog{FS: os.DirFS(*templates)},
+			HelpFS:   os.DirFS(*helpDir),
 			Roll:     func(low, high int) int { return low + mathrand.IntN(high-low+1) },
 			Allocate: func() (string, error) { return "item-" + rand.Text(), nil },
 		})

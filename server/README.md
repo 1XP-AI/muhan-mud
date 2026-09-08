@@ -8,13 +8,14 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 작업을 Luna max로 배치하는 것이다.
 
 최신 명령 slice: `시간`은 clock-bound read-only receipt, `정보`는 canonical player
-상태의 첫 페이지 통계 receipt까지 `WorldConnector`에 연결했다. 둘 다 state purity와
-동일 command ID replay를 검증했지만, 전체 C command table·continuation/help·title
-출력 동등성의 완료를 의미하지 않는다. 중앙 xterm 브라우저 smoke는 별도 문서와
+상태의 첫 페이지 통계 receipt, `도움말`은 UTF-8 legacy `help/` 문서 receipt까지
+`WorldConnector`에 연결했다. 모두 state purity와 동일 command ID replay를 검증했지만,
+전체 C command table·continuation/info title·prefix 출력 동등성의 완료를 의미하지 않는다.
+중앙 xterm 브라우저 smoke는 별도 문서와
 `pnpm test:browser`에서 검증한다. 실제 Go+PostgreSQL 게임 경계도
 `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
 ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 입장→재로그인→
-`봐`까지 **1 passed (9.7s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
+`봐`와 `도움말 정보`까지 **1 passed (11.0s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
 인수를 뜻하지 않는다.
 
 ## 로컬 검증
@@ -1787,3 +1788,19 @@ receipt identity용으로 보존한다. C 호환 7-token 제한과 quoted token 
 `command_parser_test.go`의 alias/quote/seven-token/오인 분류 회귀와 기존 transport
 dispatch 테스트를 통과했다. 이는 command table 전체 이관이나 full parser parity를
 의미하지 않는다.
+
+## 2026-09-08 document help receipt 연결
+
+`session.ExecuteHelpLine`을 추가해 C `help()`의 문서 경계를 Go receipt에 연결했다.
+`도움말`/`?`는 `helpfile`, `도움말 주술`은 `spellfile`, `도움말 정책`은 `policy`,
+현재 Go handler가 있는 명령 주제는 원본 `help.<cmdno>`를 읽는다. 문서 디렉터리는
+프로세스가 주입한 `fs.FS`만 사용하며, 파일이 없거나 UTF-8이 아니면 추정 응답을 만들지
+않고 실패한다. 미지원 주제는 C의 고정된 `그 명령어에 대한 도움말은 없습니다.`를
+receipt로 저장한다. `WorldConnector`는 `-help-dir`(배포 기본 `/home/muhan/help`)로
+이 경계를 구성한다.
+
+TDD는 `help_command_test.go`, `world_connector_help_test.go`에서 문서 읽기·unknown
+topic·누락 문서 fail-closed·동일 command ID replay·world state purity를 고정했다.
+실제 ARM64 PostgreSQL 17 + Go `-race` + Chromium E2E도 `도움말 정보`를 포함해
+**1 passed (11.0s)**였다. 이는 전체 C help alias/약어, continuation prompt, info title,
+전체 command table 인수를 의미하지 않는다.
