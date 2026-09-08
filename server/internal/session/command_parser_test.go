@@ -18,6 +18,7 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"장", CommandItems},
 		{"\"안녕 세계", CommandSay},
 		{"누구", CommandSocial},
+		{"무리", CommandSocial},
 		{"주워 가방", CommandItemMutation},
 		{"입어 갑옷", CommandEquipment},
 		{"입금 100냥", CommandBank},

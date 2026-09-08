@@ -16,7 +16,7 @@ func socialCommand(line string) (string, bool) {
 	switch line {
 	case "누구":
 		return "who", true
-	case "그룹":
+	case "그룹", "무리":
 		return "group", true
 	default:
 		return "", false

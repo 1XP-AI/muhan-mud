@@ -159,7 +159,7 @@ func commandKind(first string) CommandKind {
 		return CommandFollow
 	case "소지품", "장비", "장":
 		return CommandItems
-	case "누구", "그룹":
+	case "누구", "그룹", "무리":
 		return CommandSocial
 	case "주워", "주", "가져", "꺼내", "버려", "넣어":
 		return CommandItemMutation
