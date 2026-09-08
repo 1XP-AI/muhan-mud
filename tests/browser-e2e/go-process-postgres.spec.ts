@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 const characterName = process.env.MUHAN_BROWSER_CHARACTER_NAME ?? "BrowserAlice";
 const gamePassword = process.env.MUHAN_BROWSER_GAME_PASSWORD ?? "pw1234";
+const infoPrompt = "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ";
 
 async function submitLine(page: Page, value: string): Promise<void> {
   const input = page.locator("textarea.xterm-helper-textarea");
@@ -39,6 +40,17 @@ async function submitAndWait(page: Page, value: string, expected: string): Promi
   await expect(page.locator(".xterm-screen")).toContainText(expected);
 }
 
+async function submitInfoAndWait(page: Page): Promise<void> {
+  const screen = page.locator(".xterm-screen");
+  const before = (await screen.textContent()) ?? "";
+  const promptCount = before.split(infoPrompt).length - 1;
+  await submitLine(page, "정보");
+  await expect.poll(async () => {
+    const current = (await screen.textContent()) ?? "";
+    return current.split(infoPrompt).length - 1;
+  }).toBeGreaterThan(promptCount);
+}
+
 async function waitForLoginPrompt(page: Page): Promise<void> {
   await expect(page.locator(".xterm-screen")).toContainText("당신의 이름은 무엇입니까?");
   await expect(page.locator("textarea.xterm-helper-textarea")).toBeFocused();
@@ -71,11 +83,11 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await submitAndWait(page, "검색", "아무것도 찾지 못했습니다.");
   await submitAndWait(page, "엿봐 Bob", "직업으로는");
   await submitAndWait(page, "보아 gob 2", "당신은 Goblin를 봅니다.");
-  await submitAndWait(page, "정보", "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ");
+  await submitInfoAndWait(page);
+  await submitAndWait(page, ".", "중단되었습니다.");
+  await submitInfoAndWait(page);
   await submitAndWait(page, "", "주문: 없음.");
   await expect(page.locator(".xterm-screen")).toContainText("당신은 현재 달성한 임무가 없습니다.");
-  await submitAndWait(page, "정보", "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ");
-  await submitAndWait(page, ".", "중단되었습니다.");
 }
 
 async function reloginAndLook(page: Page): Promise<void> {
