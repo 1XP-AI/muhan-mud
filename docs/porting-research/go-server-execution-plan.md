@@ -335,6 +335,32 @@ flag를 재검증하고, stale proposal·malformed numeric value·미확인 acto
 출력의 ANSI/약어·관리자 전용 설정, 나머지 154 handler와 full tick/경제/배포 인수는
 여전히 미완료다.
 
+## 2026-09-08 `풀어`·`잠궈`·`따` key-door 후속
+
+`command6.c:unlock`/`lock`/`picklock`의 bounded same-room 경계를 다음 Go 수직 조각으로
+옮겼다. parser는 `풀어 [출구] [열쇠]`, `잠궈 [출구] [열쇠]`, `따 [출구]`를 원작의
+인자 수·응답 순서로 분류하고, world proposal은 권위 snapshot의 첫 exit prefix와
+canonical/legacy root key identity를 캡처한다. unlock 성공만 key `shotscur`를 감소시키고
+exit `ltime`을 기록하며, lock은 C처럼 내구도를 확인하되 감소시키지 않는다.
+
+picklock은 THIEF/INVINCIBLE 이상·blind·`XLOCKD`를 source 순서대로 검사하고,
+`LT_PICKL` 슬롯의 10초 cooldown, DEX bonus·level band·`XUNPCK` chance 0 및 단일
+`1..100` RNG를 deterministic receipt outcome으로 보존한다. eligible 시도와 성공을
+순서 있는 room event로 fan-out하며 replay에서는 RNG/reducer/event를 재실행하지 않는다.
+cooldown에도 C와 같이 PHIDDN을 먼저 해제한다. stale room/exit/key/timer/RNG는
+부분 상태 없이 거절한다.
+
+이번 경계의 item lookup은 canonical `ItemCollection.Inventory` 또는 아직 legacy인
+`Body.Inventory`의 exact case-insensitive root name으로만 제한한다. nested/equipped
+objects와 full prefix/occurrence `find_obj` 정책은 item identity ledger가 확정될 때까지
+추측하지 않는다.
+
+검증 증거: world/session/transport/parser TDD, 격리 ARM64 PostgreSQL 17
+`TestPostgresDoorKeyCommandPersistsAndReplays`, 전체 Go race/vet, Linux ARM64 cross-build,
+실제 Go+PostgreSQL+Chromium `따 __missing_door__` 권한 경계 **1 passed (11.3s)**.
+전체 C key lookup/ANSI·occurrence parity, NPC/tick·경제·전체 배포 인수는 여전히
+미완료이며 다음 우선순위 ledger에서 계속 줄인다.
+
 ## 2026-09-08 `열어`·`닫아` door state 후속
 
 원본 `command6.c:openexit`/`closeexit`의 same-room 출구 경계를 Go에 연결했다.

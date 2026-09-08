@@ -4,17 +4,19 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 기능 기준 체크포인트는
-`66b0108` (`feat: add durable open and close door commands`)이다. 이전 settings 기능
+`7671582` (`feat: port key door commands`)이다. 이전 settings 기능
 기준은 `2b82e32`이며, 인프라의 검토된 소스 고정 커밋은 `21863341`로 이 기능
 체크포인트를 가리킨다. door hardening은 root `25beba8`, infra pin은 `2f15179a`다.
-이전 source pin은 `21863341`였다. 원격에는 아직 push하지
+최신 key-door source pin은 infra `32ecdd3a`이며 root `7671582`를 가리킨다. 이전
+source pin은 `21863341`이었다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
 현재 Go 수직 슬라이스에는 `환영`, `도움말`, `외쳐`, `검색`/`찾아`, `추적`,
 `숨겨`/`숨어`, `엿봐 <대상>`, `설정`/`해제`, 제한된 원작 감정표현 alias, 자유 문장 `표현`, 같은 방의
-정확한 대상에 대한 `보아`가 포함된다. 각 명령은 parser→world 계획→PostgreSQL receipt/replay→
-WebSocket room event 경계를 가지며, unit/race/vet, ARM64 PostgreSQL 17 회귀,
+정확한 대상에 대한 `보아`, `열어`/`닫아`, `풀어`/`잠궈`/`따`가 포함된다. 각 명령은
+parser→world 계획→PostgreSQL receipt/replay→WebSocket room event 경계를 가지며,
+unit/race/vet, ARM64 PostgreSQL 17 회귀,
 Linux ARM64 cross-build와 실제 Go+PG+Chromium E2E를 통과했다. 객체/출구 stealth,
 전체 C 명령 parity, tick/경제/배포 인수는 남아 있다. 이는 전체 C 명령 인수 완료가
 아니라 다음 포팅을 이어갈 수 있는 보존된 체크포인트다.
@@ -34,6 +36,23 @@ C/Rust는 비교 테스트·이관 참고 자산으로 보존한다. Go에서 �
 full tick scheduler(NPC/room spawn·combat round는 여전히 별도), 이관 예외 63개,
 실제 브라우저/모바일 및 비정상 종료 인수는 남아 있다.
 최신 테스트와 제한은 server/README.md의 마지막 기록을 따른다.
+
+## 최신 작업 증거 — 2026-09-08 key-door slice
+
+root `7671582`에서 원본 `command6.c`의 제한된 `풀어`/`잠궈`/`따` 경계를 Go로
+연결했다. 열쇠 object type·key 번호·내구도·잠금/닫힘 순서, 도둑/무적 권한,
+blind·`XLOCKD`, `LT_PICKL` 10초 cooldown, deterministic picklock RNG, unlock 시
+열쇠 사용 횟수 차감, actor `PHIDDN`과 room event 순서를 world proposal/apply와
+durable receipt/replay로 보존했다. `풀어`/`잠궈` 성공 event와 `따` 시도/성공 event는
+최초 commit에서만 다른 연결에 fan-out한다.
+
+검증은 전체 Go race/vet, Linux ARM64 cross-build, 격리 ARM64 PostgreSQL 17
+`TestPostgresDoorKeyCommandPersistsAndReplays`, 실제 Go+PostgreSQL+Chromium의
+`따 __missing_door__` 권한 경계 **1 passed (11.3s)**로 완료했다. 인프라 root
+source-path 검증은 infra `32ecdd3a`에서 2/2 통과하며 root `7671582`를 고정한다.
+두 저장소 모두 아직 push/deploy하지 않았다. key lookup은 현재 canonical/legacy
+root inventory의 exact case-insensitive 이름으로 제한하며 nested/equipped occurrence,
+전체 C handler/ANSI parity, NPC/tick·경제와 testnet 운영 인수는 계속 남아 있다.
 
 추가 사용자 결정: 웹 가입/로그인 화면 없이 새롬 데이터맨 느낌의 중앙 xterm에서
 원작의 캐릭터 생성·이름/비밀번호 로그인을 제공한다. Supabase 웹 계정 연결은

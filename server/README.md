@@ -1969,3 +1969,29 @@ fan-out한다.
 
 `풀어`/`잠궈`/`따`의 열쇠·내구도·picklock 확률과 전체 occurrence/ANSI formatting은
 별도 미완료 slice다.
+
+## 2026-09-08 `풀어`·`잠궈`·`따` door-key slice
+
+원본 `command6.c:unlock`/`lock`/`picklock`의 bounded same-room 경계를 Go에 연결했다.
+`풀어`와 `잠궈`는 열쇠 object type·`ndice`/exit key 일치·내구도·잠금 가능/닫힘
+순서를 확인하고, unlock 성공 때만 열쇠 사용 횟수와 `ltime`을 갱신한다. `따`는
+도둑/무적 이상 권한, blind, `XLOCKD`, `LT_PICKL=6` 10초 cooldown, source chance와
+`XUNPCK`를 적용하며, eligible 시 단일 `1..100` RNG 결과를 receipt-bound outcome으로
+저장한다. cooldown에서도 C처럼 actor `PHIDDN`을 먼저 해제하고, pick 시도와 성공
+room event는 원래 순서를 보존한다.
+
+canonical ID item graph와 아직 legacy inventory인 snapshot을 모두 지원하되, 이 slice의
+key lookup은 root inventory의 exact case-insensitive 이름으로 제한한다. nested/equipped
+occurrence와 전체 `find_obj` prefix 정책은 item identity 계약이 확정될 때까지
+추측하지 않고 별도 범위로 남겼다. stale exit·timer·inventory identity, 잘못된 RNG와
+replay 재실행은 fail-closed한다.
+
+검증:
+
+- `door_keys_test.go`, session receipt/replay, transport fan-out 및 parser TDD 통과
+- 격리 `linux/arm64` `postgres:17-alpine`에서 `TestPostgresDoorKeyCommandPersistsAndReplays` 통과
+- `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64 cross-build 통과
+- 실제 Go + PostgreSQL + Chromium 가입→월드 입장→`따 __missing_door__` 권한 경계 **1 passed (11.3s)**
+
+전체 C key lookup/occurrence·ANSI formatting, 나머지 command table·NPC/tick·경제·전체
+배포 인수는 계속 미완료다.
