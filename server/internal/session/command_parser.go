@@ -31,6 +31,9 @@ const (
 	CommandRead
 	CommandInfo
 	CommandHelp
+	CommandYell
+	CommandWelcome
+	CommandEmote
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -163,14 +166,21 @@ func commandKind(first string) CommandKind {
 		return CommandInfo
 	case "도움말", "?":
 		return CommandHelp
+	case "외쳐":
+		return CommandYell
+	case "환영":
+		return CommandWelcome
 	default:
+		if world.IsEmoteAlias(first) {
+			return CommandEmote
+		}
 		return CommandUnknown
 	}
 }
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome:
 		return true
 	default:
 		return false

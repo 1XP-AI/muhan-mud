@@ -8,14 +8,15 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 작업을 Luna max로 배치하는 것이다.
 
 최신 명령 slice: `시간`은 clock-bound read-only receipt, `정보`는 canonical player
-상태의 첫 페이지 통계 receipt, `도움말`은 UTF-8 legacy `help/` 문서 receipt까지
-`WorldConnector`에 연결했다. 모두 state purity와 동일 command ID replay를 검증했지만,
-전체 C command table·continuation/info title·prefix 출력 동등성의 완료를 의미하지 않는다.
+상태의 첫 페이지 통계 receipt, `도움말`/`환영`은 UTF-8 legacy 문서 receipt,
+`외쳐`와 bounded `action.c` 감정표현은 state/event receipt까지 `WorldConnector`에
+연결했다. 모두 state purity와 동일 command ID replay를 검증했지만, 전체 C command
+table·continuation/info title·prefix/occurrence 출력 동등성의 완료를 의미하지 않는다.
 중앙 xterm 브라우저 smoke는 별도 문서와
 `pnpm test:browser`에서 검증한다. 실제 Go+PostgreSQL 게임 경계도
 `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
 ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 입장→재로그인→
-`봐`와 `도움말 정보`까지 **1 passed (11.0s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
+`봐`, `환영`, `도움말 정보`까지 **1 passed (10.4s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
 인수를 뜻하지 않는다.
 
 ## 로컬 검증
@@ -1804,3 +1805,43 @@ topic·누락 문서 fail-closed·동일 command ID replay·world state purity�
 실제 ARM64 PostgreSQL 17 + Go `-race` + Chromium E2E도 `도움말 정보`를 포함해
 **1 passed (11.0s)**였다. 이는 전체 C help alias/약어, continuation prompt, info title,
 전체 command table 인수를 의미하지 않는다.
+
+## 2026-09-08 `환영`·`외쳐`·감정표현 receipt 연결
+
+`환영`은 프로세스가 주입한 `fs.FS`의 고정 `welcome` 문서를 읽는 read-only receipt로
+연결했다. 문서가 없거나 UTF-8이 아니면 추정 응답을 만들지 않고 실패하며, 동일 command
+ID replay에서는 파일을 다시 읽거나 commit하지 않는다. 실제 browser E2E는 원본 welcome
+문서의 `레벨 5가 넘으면 많은 제약이 따릅니다.` 문장을 확인한다.
+
+`외쳐`는 `command6.c:yell`의 빈 입력·침묵·은신 해제 순서를 원자 reducer로 옮겼다.
+commit 뒤 같은 방에는 발화자 이름이 포함된 메시지를, 연결된 출구 방에는 익명 메시지를
+출구 순서대로 fan-out하며, 본인과 replay에는 재방송하지 않는다. 알 수 없는 출구는
+부분 상태를 저장하지 않고 fail-closed한다. `TestPostgresYellCommandPersistsAndReplays`
+가 ARM64 PostgreSQL 17에서 저장·동일 command ID replay를 확인한다.
+
+감정표현은 `src/action.c`의 일반 플레이어 alias 중 현재 출력 계약이 확보된 bounded
+집합(`감정표현`, `노려봐`, `끄덕`/`응`, `감`/`감사`, `미소`, `청혼`, `떨어`, `해`,
+`하품`, `웃어`, `미안`, `악수`, `하이파이브`, `박수`, `흡연`/`담배`, `절`, `찔러`,
+`춤`, `노래`, `울어`, `달래`, `당황`, `생각`, `부끄러`, `놀려`, `설레`, `바이`/`잘가`,
+`안녕`, `뽀뽀`, `윙크`, `구걸`, `구박`, `안아`/`껴안아`)만 exact alias로 인정한다.
+PHIDDN 해제와 PSILNC 출력 순서를 보존하고, 대상은 exact same-room online player만
+허용한다. 대상에게는 target-specific 출력, 같은 방의 다른 연결에는 room 출력,
+본인에게는 비동기 event를 보내지 않는다. NPC/prefix/occurrence/미검증 target은
+부분 receipt 없이 거부한다. `TestPostgresEmoteCommandPersistsAndReplays`와
+`TestWorldConnectorSubmitDispatchesEmoteWithTargetAndRoomProjection`가 저장·replay와
+fan-out 경계를 확인한다.
+
+검증 명령:
+
+```sh
+go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1
+go vet ./...
+bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable
+pnpm test:browser
+```
+
+실행 결과는 각각 Go 전체 race 통과, vet 통과, 실제 ARM64 PostgreSQL 17 + Go
+`-race` + Chromium **1 passed (10.4s)**, 표준 xterm/feature-off **각 1 passed**다.
+`TestRoomBodyCorpus`의 기존 63개 strict legacy 예외, 전체 action alias/명령 table,
+모바일 IME/WSS/Ingress 및 testnet 배포 인수는 여전히 남아 있다. `src/frp.new`는
+사용자 변경으로 계속 보존하며 이 slice에서 수정하지 않았다.

@@ -133,3 +133,70 @@ func (g *WorldConnector) publishSay(after world.State, actorID, text string) {
 		}
 	}
 }
+
+func (g *WorldConnector) publishYell(after world.State, actorID, text string) {
+	events, err := after.RoomYellEvents(actorID, text)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || connection.events == nil {
+			continue
+		}
+		for _, event := range events {
+			if event.ExcludeActorID == connection.lease.ActorID || player.Body.RoomID != event.RoomID {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+				// A slow client cannot block the yeller's durable command.
+			}
+		}
+	}
+}
+
+// publishEmote fans out the committed action projection. The actor already
+// received the durable receipt response; a targeted recipient gets its
+// target-specific projection and everyone else in the room gets the room
+// projection. Replayed receipts never call this method.
+func (g *WorldConnector) publishEmote(after world.State, actorID, alias, targetName string) {
+	targetID := ""
+	if targetName != "" {
+		var err error
+		targetID, err = after.SelectPlayerInRoom(actorID, targetName)
+		if err != nil {
+			return
+		}
+	}
+	event, ok, err := after.RoomEmoteEvent(actorID, alias, targetID)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.events == nil {
+			continue
+		}
+		if connection.lease.ActorID == event.ExcludeActorID {
+			continue
+		}
+		message := event.Text
+		if connection.lease.ActorID == event.TargetID {
+			message = event.TargetText
+		}
+		if message == "" {
+			continue
+		}
+		select {
+		case connection.events <- message:
+		default:
+			// A slow client cannot block the actor's durable command.
+		}
+	}
+}

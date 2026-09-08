@@ -248,3 +248,18 @@ NPC death drop은 canonical ID를 다시 만들지 않고 room graph로 transfer
 `TestPostgresSeedCanonicalRoomGraphs`, 실제 ARM64 PostgreSQL 17 CLI seed가 통과했다.
 이 경계는 전체 player/bank 이관, full command/tick, 브라우저 E2E, 63개 strict corpus
 예외의 최종 승인까지 포함하지 않는다.
+
+## 2026-09-08 명령 수직 슬라이스 후속
+
+`환영`·`외쳐`·bounded 감정표현을 G1/G2의 receipt 경계에 추가했다. 문서 명령은
+프로세스 주입 `fs.FS`에서만 읽고, yell/emote의 room event는 committed snapshot에서만
+파생한다. 대상·출구·침묵·은신 상태를 확인하지 못하면 부분 저장 없이 fail-closed하며,
+동일 command ID replay는 reducer/RNG/event fan-out을 반복하지 않는다.
+
+현재 검증은 unit/race/vet, 전용 ARM64 PostgreSQL 17의 emote/yell 저장·replay, 실제 Go
+`-race` + PostgreSQL + Chromium 가입→월드 입장→`환영`→`도움말 정보`→재로그인 E2E
+**1 passed (10.4s)**, 표준 xterm/feature-off browser 각 1 passed다. 이는 전체 C
+`action.c` alias/154 positive handler, strict room corpus의 63개 예외, 전체 tick/경제/
+이관/Ingress/testnet 인수를 완료한 증거가 아니다. 다음 구현은 C oracle fixture와
+미구현 ledger 행을 우선순위별로 계속 줄이고, root commit 뒤 infra Docker source
+revision pin과 ARM64 Helm 검증을 갱신하는 것이다.

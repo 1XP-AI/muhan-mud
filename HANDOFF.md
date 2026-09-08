@@ -1043,3 +1043,40 @@ scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`도
 정리됐다. 이 slice는 전체 C help alias/약어, continuation prompt, info title,
 전체 command table parity를 완료한 것이 아니다. `src/frp.new`는 여전히 사용자
 변경으로 dirty이며 손대지 않았다.
+
+## 2026-09-08 `환영`·`외쳐`·감정표현 후속 체크포인트
+
+이번 로컬 체크포인트에서는 `환영`·`외쳐`와 bounded 일반 플레이어 감정표현을 Go
+월드 receipt 경계에 연결했다. `환영`은 프로세스가 주입한 `help/welcome` 문서를
+read-only로 읽고, 누락/비 UTF-8이면 fail-closed하며 동일 command ID replay에서
+파일 재읽기/commit을 하지 않는다. 브라우저 검증은 실제 문서의
+`레벨 5가 넘으면 많은 제약이 따릅니다.` 문장을 확인한다.
+
+`외쳐`는 빈 입력·침묵·PHIDDN 해제 순서를 보존하고, commit 뒤 현재 방의 이름 있는
+메시지와 ordered exit의 익명 메시지를 fan-out한다. 본인·replay에는 재방송하지 않고,
+알 수 없는 출구는 후보 저장 전에 거절한다. `미소` 등 `src/action.c`에서 현재 exact
+출력 계약을 확보한 감정표현 alias는 exact same-room online player target만 허용한다.
+target에는 개인 출력, 같은 방의 다른 연결에는 room 출력, 본인에는 비동기 event를
+보낸다. NPC/prefix/occurrence/미검증 target은 receipt 없이 거절한다.
+
+추가 파일:
+
+- `server/internal/session/welcome_command.go`, `yell_command.go`, `emote_command.go`
+  및 단위/PG 회귀 테스트
+- `server/internal/world/yell.go`, `emote.go` 및 deterministic state/event 테스트
+- `server/internal/transport/world_connector_*_test.go` fan-out/dispatch 회귀
+
+검증 결과:
+
+- `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1` 통과
+- `go vet ./...` 통과
+- 전용 ARM64 `postgres:17-alpine`에서 `TestPostgres(Emote|Yell)CommandPersistsAndReplays`
+  통과 후 해당 컨테이너 제거
+- `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`:
+  실제 Go `-race` + PostgreSQL + Chromium **1 passed (10.4s)**
+- `pnpm test:browser`: 표준 xterm과 feature-off **각 1 passed**
+
+이는 전체 `action.c` alias/154 명령, strict `TestRoomBodyCorpus`의 기존 63개 예외,
+모바일 IME/WSS/Ingress, testnet 배포 인수를 완료했다는 뜻이 아니다. `src/frp.new`는
+사용자 dirty 상태라 보존했고 수정하지 않았다. 다음 통합 후 root commit SHA를 infra
+저장소의 Docker source revision test에 반영하고, infra 72-test suite를 재실행한다.

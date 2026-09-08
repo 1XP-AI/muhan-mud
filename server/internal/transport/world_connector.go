@@ -241,6 +241,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	}
 	directional := parsed.Kind == session.CommandDirectional
 	sayText, sayCommand := "", false
+	yellText, yellCommand := "", false
+	emoteCommand := false
+	var emote session.EmoteCommand
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -259,6 +262,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandSay:
 		sayText, sayCommand = session.SayLineText(line)
 		receipt, err = c.game.owners.ExecuteSayLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandYell:
+		yellText, yellCommand = session.YellLineText(line)
+		receipt, err = c.game.owners.ExecuteYellLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandEmote:
+		emote, emoteCommand = session.ParseEmoteLine(line)
+		if !emoteCommand {
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		receipt, err = c.game.owners.ExecuteEmoteLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandWelcome:
+		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
 		receipt, err = c.game.owners.ExecuteSocialLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandItemMutation:
@@ -292,6 +306,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
+		errors.Is(err, session.ErrUnsupportedYellLine) ||
+		errors.Is(err, session.ErrUnsupportedEmoteLine) ||
+		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
@@ -307,6 +324,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if sayCommand && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
 			c.game.publishSay(after, c.lease.ActorID, sayText)
+		}
+	}
+	if yellCommand && !receipt.Replayed {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishYell(after, c.lease.ActorID, yellText)
+		}
+	}
+	if emoteCommand && !receipt.Replayed {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishEmote(after, c.lease.ActorID, emote.Alias, emote.Target)
 		}
 	}
 	if session.IsQuitLine(line) {

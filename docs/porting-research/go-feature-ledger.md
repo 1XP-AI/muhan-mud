@@ -491,3 +491,30 @@ command handler, prefix ambiguity, occurrence 문법, alias persistence는 여�
 unknown topic은 원본 C와 같은 no-help 응답을 결정론적으로 재생한다. unit/transport
 TDD와 실제 ARM64 PostgreSQL 17 + Chromium E2E(`1 passed (11.0s)`)가 통과했지만, 이는
 전체 C command table·문서 continuation·info title·약어 동등성 인수가 아니다.
+
+## 2026-09-08 welcome/yell/emote 후속
+
+`환영`은 고정 `help/welcome` 문서를 `fs.FS` 주입 경계에서 읽는 read-only receipt다.
+누락·비 UTF-8은 fail-closed하고, 동일 command ID replay는 문서 재읽기와 commit을
+재실행하지 않는다. `외쳐`는 `command6.c:yell`의 empty/silent/PHIDDN 순서를 원자
+상태 전이로 옮기고, commit 후 current-room named event와 ordered-exit anonymous event를
+파생한다. 본인·replay 재방송을 막고, unknown exit topology는 후보 상태를 저장하지
+않는다. `TestPostgresYellCommandPersistsAndReplays`가 ARM64 PostgreSQL 17 저장·replay를
+검증한다.
+
+`action.c` 일반 플레이어 감정표현은 현재 출력 계약이 확보된 bounded exact alias 집합만
+등록했다. `감정표현`, `노려봐`, `끄덕`/`응`, `감`/`감사`, `미소`, `청혼`, `떨어`, `해`,
+`하품`, `웃어`, `미안`, `악수`, `하이파이브`, `박수`, `흡연`/`담배`, `절`, `찔러`, `춤`,
+`노래`, `울어`, `달래`, `당황`, `생각`, `부끄러`, `놀려`, `설레`, `바이`/`잘가`, `안녕`,
+`뽀뽀`, `윙크`, `구걸`, `구박`, `안아`/`껴안아`를 exact command로 처리한다. PHIDDN 해제와
+PSILNC ordering을 보존하고, exact same-room online player target에만 target-specific
+projection을 허용한다. NPC/prefix/occurrence/미검증 target은 fail-closed다. target·room
+fan-out과 actor 제외는 transport에서 committed snapshot으로만 수행한다.
+`TestPostgresEmoteCommandPersistsAndReplays`와 `TestWorldConnectorSubmitDispatchesEmoteWithTargetAndRoomProjection`
+이 저장·replay·event 경계를 검증한다.
+
+검증 명령과 결과: `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+전용 ARM64 `postgres:17-alpine` PG command tests, 실제 Go+PG+Chromium E2E **1 passed
+(10.4s)**, `pnpm test:browser`의 표준/feature-off 각 1 passed. 이는 전체 154 C command,
+strict room corpus의 기존 63개 예외, 전체 action alias·모바일/WSS/Ingress·testnet 인수를
+완료했다는 의미가 아니다.
