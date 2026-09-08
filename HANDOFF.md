@@ -1121,3 +1121,22 @@ clear된다.
 이 체크포인트도 전체 154 C handler/전체 action alias, strict room corpus 63개 legacy
 예외, 모바일/WSS/Ingress 및 testnet 전환 인수를 완료한 것은 아니다. 다음 commit에서
 root/infra source revision과 이 문서를 함께 확인한다.
+
+## 2026-09-08 `설정`·`해제` settings slice
+
+원본 `command5.c:set`/`clear`의 player option 경계를 Go에 연결했다. legacy flag 번호를
+그대로 사용해 일반 display/broadcast/room 옵션, `도망수치`, `패거리귀환`과
+`hexline`/`eavesdropper`/`~robot~`/`수동공격`을 canonical state에 저장한다.
+`설정` 인자 없음의 flag-list, `해제` 도움말·오류, source-backed 응답 문구를 고정했고,
+`WimpyValue`는 raw C decoder와 분리된 JSON canonical 상태 필드다.
+
+parser→world proposal/apply→PostgreSQL receipt/replay→WebSocket Submit 경계를 통과한다.
+ordinary toggle의 expected bit, wimpy value, family membership을 Apply에서 재검증하며
+stale proposal과 malformed numeric input은 fail-closed한다. unknown `설정`은 C처럼
+flag-list, unknown `해제`는 오류 문구를 반환한다.
+
+검증: settings world/session/transport TDD, 전체 Go race/vet, Linux ARM64 cross-build,
+격리 ARM64 PostgreSQL 17 `TestPostgresSettingsCommandPersistsAndReplays`, 실제 Go+
+PostgreSQL+Chromium 가입→`설정 색`→재로그인 E2E **1 passed (11.2s)**. 전체 C flag-list
+ANSI/관리자 옵션과 나머지 명령·tick·경제·배포 인수는 여전히 남아 있다. 이 slice의
+root 변경 후 infra Docker source revision pin을 갱신해야 한다.

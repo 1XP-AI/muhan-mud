@@ -252,6 +252,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	trackCommand := false
 	hideCommand := false
 	peekCommand := false
+	settingsCommand := false
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -303,6 +304,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandPeek:
 		peekCommand = true
 		receipt, err = c.game.owners.ExecutePeekLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.PeekOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandSettings:
+		settingsCommand = true
+		receipt, err = c.game.owners.ExecuteSettingsLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandWelcome:
 		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
@@ -346,6 +350,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedTrackLine) ||
 		errors.Is(err, session.ErrUnsupportedHideLine) ||
 		errors.Is(err, session.ErrUnsupportedPeekLine) ||
+		errors.Is(err, session.ErrUnsupportedSettingsLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
@@ -437,6 +442,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if peekCommand {
 		var result world.PeekResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if settingsCommand {
+		var result world.SettingsResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

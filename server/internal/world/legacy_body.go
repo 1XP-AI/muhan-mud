@@ -36,7 +36,7 @@ type LegacyMonster struct {
 	Stats                                   [5]byte
 	HPMax, HPCurrent, MPMax, MPCurrent      int16
 	Armor, Thaco                            byte
-	Experience, Gold                        int32
+	Experience, Gold, WimpyValue            int32
 	DiceCount, DiceSides, DicePlus, Special int16
 	Proficiency                             [5]int32
 	Realm                                   [4]int32

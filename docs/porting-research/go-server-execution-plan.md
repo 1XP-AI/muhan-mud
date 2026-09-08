@@ -314,3 +314,23 @@ legacy inventory projection에서 보이는 root 이름만 응답하고 대상 i
 Linux ARM64 cross-build, 실제 Go+PG+Chromium E2E의 권한 거절 경로 **1 passed (10.9s)**를
 통과했다. full prefix/occurrence parser, object peek, PVP/NPC 출력 포맷의 전체 C 동등성,
 strict room corpus 63개 예외와 나머지 명령/tick/경제/배포 인수는 여전히 남아 있다.
+
+## 2026-09-08 `설정`·`해제` durable player settings 후속
+
+원본 `command5.c:set`/`clear`의 player option 경계를 Go에 연결했다. C의 legacy flag
+번호를 그대로 사용해 이야기/잡담/환호/묘사, 소환, 행삽입, 상태, 반향, 색·밝은색,
+방이름·설명·출구 표시와 `hexline`/`eavesdropper`/`~robot~`/`수동공격`을 처리한다.
+`도망수치`는 `WimpyValue`와 `PWIMPY`를 한 후보에서 갱신하고, `패거리귀환`은
+`PFAMIL`이 확인되지 않으면 경고만 반환한다. `설정`의 인자 없는 flag-list와
+`해제`의 도움말·명시적 오류 응답도 source formatting으로 고정했다.
+
+입력은 중앙 parser → session reducer → PostgreSQL receipt/replay → WebSocket response로
+연결되며, client가 flag 번호를 제출하지 않는다. ordinary `설정` 토글은 계획 당시의
+flag를 재검증하고, stale proposal·malformed numeric value·미확인 actor는 fail-closed한다.
+`WimpyValue`는 raw C decoder에 영향을 주지 않는 canonical JSON 상태 필드로만 저장한다.
+
+`settings_test.go`, session/transport TDD, `MUHAN_SETTINGS_TEST_DATABASE_URL`를 사용하는
+격리 ARM64 PostgreSQL 17 replay가 통과했다. 실제 Go `-race` + PostgreSQL + Chromium
+가입→월드 입장→`설정 색`→재로그인 E2E도 **1 passed (11.2s)**다. 전체 C flag-list
+출력의 ANSI/약어·관리자 전용 설정, 나머지 154 handler와 full tick/경제/배포 인수는
+여전히 미완료다.
