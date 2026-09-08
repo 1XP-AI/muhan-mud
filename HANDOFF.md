@@ -29,17 +29,18 @@ push하지 않았기 때문에 GitHub의 기존 브랜치나 immutable Docker fe
 보이지 않는다. `src/frp.new`는 사용자 변경으로 계속 dirty 상태이며 stage하거나
 되돌리지 않았다.
 
-현재 최신 로컬 증거는 애플리케이션 `d2ee07db1b36b4b0f68e67a222d65cc2bfae52ff`
-(`시간` read-only 명령 기록; 기능 연결은 `a1bf9555884340a4e623e4c2b553d94489021727`),
-인프라 `5fd1915702306c19015c1911c3464fea962e402a` (immutable Docker source gate 갱신)다.
-애플리케이션 브랜치는 private 원격보다 315개, 인프라 브랜치는 origin보다 13개 앞서
+현재 최신 애플리케이션 로컬 증거는 `e9599edf7801059dfd2bee0d50b809b8f7bae86b`
+(`정보` read-only 첫 페이지와 중앙 xterm 브라우저 경계 포함), 인프라는
+`d9f2f74dbc86fd887f7f8a8c9afe0071b93df69f` (immutable Docker source gate 갱신)다.
+애플리케이션 브랜치는 private 원격보다 317개, 인프라 브랜치는 origin보다 14개 앞서
 있으므로 원격 clone/새 세션에서 과거 상태처럼 보이는 것이 정상이다. 이 로컬 커밋들은
 사용자 승인 전까지 push·배포하지 않는다.
 
 현재 인프라 로컬 검증은 Go/legacy Helm lint·render, migration graph 47개, Secret·release
 wrapper·Docker source-path를 포함한 72개 Node 테스트, ARM64 BuildKit Dockerfile check를
 통과했다. Go는 `go test ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go test -race`와
-`go vet`를 통과했다. 다만 `private` 원격 브랜치는 아직 `a45ec8e...`이고 Go 커밋을
+`go vet`를 통과했고, web typecheck/test/build 및 `pnpm test:browser`의 중앙 xterm 2개
+case도 통과했다. 다만 `private` 원격 브랜치는 아직 `a45ec8e...`이고 Go 커밋을
 포함하지 않으므로 실제 Docker registry build/deploy는 push와 immutable source 승인 뒤에만
 재현할 수 있다. 다음 인계 시 먼저 `git status --short`와 이 문서의 최신 추가 기록을
 확인한다.
