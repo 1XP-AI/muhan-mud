@@ -6,8 +6,8 @@
 앞선 상태다. 애플리케이션 최신 커밋은
 `7d9bc3c0b5dc69286b6b3b7004fdadc322595d49` (`Go 월드에 표현과 대상 조사 명령
 연결`)이며 `private/codex/mud-identity-foundation`보다 324개 앞서 있다. 인프라
-최신 커밋은 `0b5ddef10e2281477ce8f75eed975a9bd52c444a`이며
-`origin/codex/muhan-onboarding-safety`보다 21개 앞서 있다. 원격에는 아직 push하지
+최신 커밋은 `5a3bfac8` (`ci: pin reviewed source to search slice`)이며
+`origin/codex/muhan-onboarding-safety`보다 22개 앞서 있다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
