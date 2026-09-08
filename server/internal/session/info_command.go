@@ -11,11 +11,9 @@ import (
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
-// ErrUnsupportedInfoLine keeps command4.c's argument forms and unsupported
-// continuation input out of this slice. The [엔터] -> info_2 spell/effect/
-// quest display remains fail-closed: the canonical snapshot has raw bit
-// fields, but this Go boundary has not admitted the complete immutable spell
-// name table, effect mapping, or quest-display contract.
+// ErrUnsupportedInfoLine keeps command4.c's argument forms out of this first
+// page reducer. The connection-local [엔터] -> info_2 continuation is rendered
+// from a fresh canonical snapshot by transport and never creates a receipt.
 var ErrUnsupportedInfoLine = errors.New("line is not an implemented info command")
 
 // InfoContinuationPrompt and InfoContinuationCancelResponse are copied from

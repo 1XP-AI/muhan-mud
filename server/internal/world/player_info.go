@@ -2,6 +2,7 @@ package world
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -18,10 +19,46 @@ var legacyInfoRaceNames = [...]string{
 	"인간족", "도깨비족", "거인족", "땅귀신족", "개구리족",
 }
 
+// legacyInfoSpellNames is the immutable command4.c spllist projection for
+// spell bits 0..55. Keep indices aligned with src/global.c; info_2 sorts the
+// selected names by strcmp before rendering them.
+var legacyInfoSpellNames = [...]string{
+	"회복", "삭풍", "발광", "해독", "성현진", "수호진", "화궁", "은둔법",
+	"도력반", "은둔감지술", "주문감지술", "축지법", "혼동", "뇌전", "동설주", "빙의",
+	"귀환", "소환", "원기회복", "완치", "추적", "부양술", "방열진", "비상술",
+	"보마진", "권풍술", "지동술", "화선도", "탄수공", "풍마현", "파초식", "폭진",
+	"낙석", "화풍술", "화룡대천", "토합술", "주작현", "열사천", "파천풍", "지옥패",
+	"태양안", "선악감지", "저주해소", "방한진", "수생술", "지방호", "천리안", "백치술",
+	"치료", "개안술", "공포", "전회복", "전송", "실명", "봉합구", "이혼대법",
+}
+
+type legacyInfoEffect struct {
+	bit  uint
+	name string
+}
+
+// legacyInfoEffects preserves info_2's fixed F_ISSET order and Korean labels.
+var legacyInfoEffects = [...]legacyInfoEffect{
+	{bit: 0, name: "성현진"},
+	{bit: 17, name: "발광"},
+	{bit: 8, name: "수호진"},
+	{bit: 2, name: "은둔법"},
+	{bit: 21, name: "은둔감지"},
+	{bit: 20, name: "주문감지"},
+	{bit: 25, name: "부양술"},
+	{bit: 30, name: "방열진"},
+	{bit: 31, name: "비상술"},
+	{bit: 32, name: "보마진"},
+	{bit: 33, name: "선악감지"},
+	{bit: 36, name: "방한진"},
+	{bit: 37, name: "수생술"},
+	{bit: 38, name: "지방호"},
+}
+
 // PlayerInfo renders the deterministic first page of command4.c's info().
 // It reads only canonical State and never updates timers, flags, equipment or
-// prompts. The legacy title and info_2 spell continuation are deliberately not
-// included: neither has an admitted canonical projection at this boundary.
+// prompts. The legacy title remains unprojected because the canonical player
+// model has no stored title.
 func (s State) PlayerInfo(actorID string) (string, error) {
 	if err := s.Validate(); err != nil {
 		return "", err
@@ -95,6 +132,63 @@ func (s State) PlayerInfo(actorID string) (string, error) {
 	fmt.Fprintf(&out, "[ 창 ] %2d%%         [ 궁 ] %2d%%\n\n", weapon[3], weapon[4])
 	out.WriteString("## 주 술 계 열 ##\n")
 	fmt.Fprintf(&out, "[ 땅 ] %2d%%      [바람] %2d%%    [ 불 ] %2d%%   [ 물 ] %2d%%\n\n", magic[0], magic[1], magic[2], magic[3])
+	return out.String(), nil
+}
+
+// PlayerInfoContinuation renders command4.c's info_2 page from the same
+// canonical snapshot contract as PlayerInfo. It is pure: the spell/effect and
+// quest projections read only actor fields and never mutate State.
+func (s State) PlayerInfoContinuation(actorID string) (string, error) {
+	if err := s.Validate(); err != nil {
+		return "", err
+	}
+	p, ok := s.Players[actorID]
+	if !ok || !p.Online {
+		return "", fmt.Errorf("online player required")
+	}
+
+	spells := make([]string, 0, len(legacyInfoSpellNames))
+	for i, name := range legacyInfoSpellNames {
+		if legacyInfoFlag(p.Body.Spells[:], uint(i)) {
+			spells = append(spells, name)
+		}
+	}
+	sort.Strings(spells)
+
+	var out strings.Builder
+	out.WriteString("\n주문: ")
+	if len(spells) == 0 {
+		out.WriteString("없음.")
+	} else {
+		out.WriteString(strings.Join(spells, ", "))
+		out.WriteByte('.')
+	}
+	out.WriteByte('\n')
+
+	out.WriteString("당신의 현주문: ")
+	effects := make([]string, 0, len(legacyInfoEffects))
+	for _, effect := range legacyInfoEffects {
+		if legacyInfoFlag(p.Body.Flags[:], effect.bit) {
+			effects = append(effects, effect.name)
+		}
+	}
+	if len(effects) == 0 {
+		out.WriteString("없음.")
+	} else {
+		out.WriteString(strings.Join(effects, ", "))
+		out.WriteByte('.')
+	}
+	out.WriteByte('\n')
+
+	quest := 0
+	for quest < len(p.Body.Quests)*8 && legacyInfoFlag(p.Body.Quests[:], uint(quest)) {
+		quest++
+	}
+	if quest == 0 {
+		out.WriteString("당신은 현재 달성한 임무가 없습니다.")
+	} else {
+		fmt.Fprintf(&out, "당신은 현재 임무 %d까지 달성하였습니다.", quest)
+	}
 	return out.String(), nil
 }
 

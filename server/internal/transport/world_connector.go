@@ -231,15 +231,24 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	c.game.commandMu.Lock()
 	defer c.game.commandMu.Unlock()
 	if c.infoPending {
-		// command4.c routes exactly one following line to info_2. The complete
-		// spell/effect/quest projection is not admitted in canonical Go state;
-		// consume the pending continuation and expose only the source-backed
-		// cancellation branch. Other input fails closed without a receipt.
+		// command4.c routes exactly one following line to info_2. Consume the
+		// connection-local continuation before either branch; no continuation
+		// input creates a durable command receipt.
 		c.infoPending = false
 		if line == "." {
 			return session.InfoContinuationCancelResponse, nil
 		}
-		return "아직 구현되지 않은 명령입니다.\r\n", nil
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			c.ready = false
+			return "", errors.New("info continuation snapshot unavailable")
+		}
+		text, err := state.PlayerInfoContinuation(c.lease.ActorID)
+		if err != nil {
+			c.ready = false
+			return "", err
+		}
+		return text, nil
 	}
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
