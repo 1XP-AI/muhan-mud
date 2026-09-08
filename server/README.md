@@ -1660,6 +1660,14 @@ bank graph 전체 이관, 상점·거래와 전체 room corpus의 원본 63개 �
 같은 durable departure 경로를 공유한다. 전체 quit alias·자동저장·재접속 UX는 아직
 별도 인수 범위다.
 
+2026-09-08 read-only time slice: `시간`을 중앙 parser와 `WorldConnector`에 연결했다.
+C `prt_time`의 게임 시각(오전/오후·12시간 변환)과 PST wall-clock을 request에 포함해
+`ExecuteReadLine` durable receipt로 렌더링하며, reducer는 world snapshot bytes를 그대로
+반환한다. 같은 command ID replay는 새 시계를 읽거나 reducer를 재실행하지 않는다.
+`도움말`과 인자가 붙은 시간 입력은 아직 continuation/info 경계가 없어 receipt 없이
+fail-closed한다. `WallClock` 주입을 사용한 local unit/transport 회귀, session/transport
+race와 `go vet`가 통과했다. 전체 C 출력/ANSI 포맷과 도움말·정보 명령은 별도 후속이다.
+
 2026-09-08 NPC lethal combat slice: `PlanNPCMeleeAttackWithOptions`가 치명타를
 `PlanNPCDeath`와 같은 후보에 묶는다. canonical NPC를 room/active 순서에서 제거하고,
 다른 NPC의 적대 참조와 monster follower edge를 정리하며, C의 damage 비례 XP/성향,
