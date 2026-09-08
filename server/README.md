@@ -1871,3 +1871,26 @@ tests, transport fan-out tests 및 실제 ARM64 PostgreSQL의
 `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`도 통과했으며 실제 Go+PG+Chromium
 E2E는 **1 passed (10.1s)**다. strict room corpus의 기존 63개 예외와 전체 명령/배포
 인수는 그대로 미완료다.
+
+## 2026-09-08 `검색`·`찾아` same-room hidden target 수직 슬라이스
+
+`src/command5.c:search`의 확정된 플레이어/NPC 경계만 Go에 연결했다. 순수
+`PlanSearch`/`ApplySearch`는 C의 piety·level·class·blind 확률, ranger/caretaker
+override 순서, LT_SERCH(7) cooldown, actor PHIDDN 해제와 player-then-NPC room
+identity 순서를 보존한다. DM-invisible·invisible 대상은 C의 조건 순서대로 처리하며
+객체/출구 검색과 prefix/occurrence는 durable 계약이 없어 이번 slice에서 제외했다.
+canonical identity, random source, 이름/수치 범위를 확인할 수 없으면 부분 상태 없이
+fail-closed한다.
+
+`검색`/`찾아`는 중앙 parser와 WebSocket connector에 연결했다. receipt response는
+actor 문자열과 탐지된 canonical target ID를 함께 보존하므로 동일 command ID replay는
+RNG/reducer/event fan-out을 다시 실행하지 않는다. 최초 commit 뒤 같은 방의 다른 연결에
+검색 행동 및 발견 힌트를 순서대로 fan-out하고 actor는 자신의 receipt만 받는다.
+
+검증은 `search_command_test.go`, `search_command_pg_test.go`(환경 변수
+`MUHAN_SEARCH_TEST_DATABASE_URL`가 있을 때 ARM64 PostgreSQL 17 저장/replay),
+`world_connector_search_test.go`로 고정했다. 로컬에서
+`go test ./... -skip '^TestRoomBodyCorpus$' -count=1`,
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`가 통과했다.
+PG 통합 테스트는 이 실행에 격리 DB 환경 변수가 없어 skip했으며, 기존 strict room corpus
+63개 예외와 전체 C search(객체/출구 포함) parity는 여전히 미완료다.

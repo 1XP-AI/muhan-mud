@@ -253,3 +253,31 @@ func (g *WorldConnector) publishLookAtTarget(after world.State, actorID, targetN
 		}
 	}
 }
+
+// publishSearch fans out the two committed search broadcasts in source order.
+// The actor already receives the durable response; replayed receipts never
+// call this method, so a lost response cannot duplicate room output.
+func (g *WorldConnector) publishSearch(after world.State, actorID string, targets []world.SearchTarget) {
+	event, ok, err := after.RoomSearchEvent(actorID, targets)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+			continue
+		}
+		for _, text := range event.Texts {
+			if text == "" {
+				continue
+			}
+			select {
+			case connection.events <- text:
+			default:
+				// A slow client cannot block the actor's durable command.
+			}
+		}
+	}
+}
