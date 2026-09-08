@@ -4,9 +4,9 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 최신 커밋은
-`69279fd` (`feat: add durable track and hide command slices`)이며
-`private/codex/mud-identity-foundation`보다 328개 앞서 있다. 인프라
-최신 커밋은 `5a3bfac8` (`ci: pin reviewed source to search slice`)이며
+`59fcf6e` (`fix: validate track response before commit`)이며
+`private/codex/mud-identity-foundation`보다 330개 앞서 있다. 인프라
+최신 커밋은 `ce609eab` (`ci: pin reviewed source after track hardening`)이며
 `origin/codex/muhan-onboarding-safety`보다 22개 앞서 있다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
