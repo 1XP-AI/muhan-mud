@@ -4,12 +4,18 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 최신 커밋은
-`855d81188bb52947f18183f319409038d3e2bbba` (`Go 월드에 원본 도움말 문서 receipt
-연결`)이며 `private/codex/mud-identity-foundation`보다 321개 앞서 있다. 인프라
-최신 커밋은 `54375eedaf2064c84752a312013c21974240665e` (`Go 런타임에 도움말 경로
-전달`)이며 `origin/codex/muhan-onboarding-safety`보다 18개 앞서 있다. 원격에는
-아직 push하지 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는
-것이 정상이다. 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
+`7d9bc3c0b5dc69286b6b3b7004fdadc322595d49` (`Go 월드에 표현과 대상 조사 명령
+연결`)이며 `private/codex/mud-identity-foundation`보다 324개 앞서 있다. 인프라
+최신 커밋은 `0b5ddef10e2281477ce8f75eed975a9bd52c444a`이며
+`origin/codex/muhan-onboarding-safety`보다 21개 앞서 있다. 원격에는 아직 push하지
+않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
+사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
+
+현재 Go 수직 슬라이스에는 `환영`, `도움말`, `외쳐`, 제한된 원작 감정표현 alias,
+자유 문장 `표현`, 같은 방의 정확한 대상에 대한 `보아`가 포함된다. 각 명령은
+parser→world 계획→PostgreSQL receipt/replay→WebSocket room event 경계를 가지며,
+unit/race/vet와 ARM64 PostgreSQL 17 회귀를 통과했다. 이는 전체 C 명령 인수 완료가
+아니라 다음 포팅을 이어갈 수 있는 보존된 체크포인트다.
 
 ## 현재 인계 기준 — 2026-09-08 Go 전환
 
@@ -20,10 +26,10 @@ C/Rust는 비교 테스트·이관 참고 자산으로 보존한다. Go에서 �
 캐릭터 생성 초안의 PostgreSQL 저장과 재로그인, WebSocket 및 xterm 연결을 구현했다.
 추가로 실제 Go 실행 파일(-race)의 터미널 가입→월드 입장→보기→SIGTERM→재시작→
 재로그인과 상태 보존을 격리 PG17에서 검증했다. 실행 경로는 명시적 -world/
--templates/-game-hour 옵션이며 배포하지 않았다. 이제 `-player-tick`으로 durable
-player-vital phase를 결정론적 slot ID로 실행하고, 불확실한 저장 결과는 같은 요청으로
-재시도하며 종료 전에 worker를 멈추도록 연결했다. 보기 외 전체 게임 명령, 지속 게임
-시계와 full tick scheduler(NPC/room spawn·combat round는 여전히 별도), 이관 예외63개,
+-templates/-game-hour 옵션이며 배포하지 않았다. `-player-tick` durable phase와 위
+수직 명령들은 결정론적 slot/receipt로 저장하고, 불확실한 저장 결과는 같은 요청으로
+재시도하며 종료 전에 worker를 멈추도록 연결했다. 전체 C 명령 parity, 지속 게임 시계와
+full tick scheduler(NPC/room spawn·combat round는 여전히 별도), 이관 예외 63개,
 실제 브라우저/모바일 및 비정상 종료 인수는 남아 있다.
 최신 테스트와 제한은 server/README.md의 마지막 기록을 따른다.
 
@@ -31,6 +37,8 @@ player-vital phase를 결정론적 slot ID로 실행하고, 불확실한 저장 
 원작의 캐릭터 생성·이름/비밀번호 로그인을 제공한다. Supabase 웹 계정 연결은
 필수 조건에서 제외한다. [터미널 전용 UI 계획](docs/web-mud/terminal-only-ui-plan.md)의
 입력 포커스·모바일·한글 입력 인수 기준까지 구현 범위에 포함한다.
+
+## 이전 인계 기록 (역사적 체크포인트)
 
 Go 서버·터미널 UI·실행 계획은 로컬 커밋
 `518502bd4c86a5ab73d6bce962004ddd3ec07188` (`Go 서버 전환 기반과 터미널 런타임 정리`)로
@@ -40,18 +48,18 @@ push하지 않았기 때문에 GitHub의 기존 브랜치나 immutable Docker fe
 보이지 않는다. `src/frp.new`는 사용자 변경으로 계속 dirty 상태이며 stage하거나
 되돌리지 않았다.
 
-현재 최신 애플리케이션 로컬 증거는 `e9599edf7801059dfd2bee0d50b809b8f7bae86b`
+당시 최신 애플리케이션 로컬 증거는 `e9599edf7801059dfd2bee0d50b809b8f7bae86b`
 (`정보` read-only 첫 페이지와 중앙 xterm 브라우저 경계 포함), 인프라는
 `d9f2f74dbc86fd887f7f8a8c9afe0071b93df69f` (immutable Docker source gate 갱신)다.
-애플리케이션 브랜치는 private 원격보다 317개, 인프라 브랜치는 origin보다 14개 앞서
-있으므로 원격 clone/새 세션에서 과거 상태처럼 보이는 것이 정상이다. 이 로컬 커밋들은
+당시 애플리케이션 브랜치는 private 원격보다 317개, 인프라 브랜치는 origin보다 14개
+앞서 있었으므로 원격 clone/새 세션에서 과거 상태처럼 보이는 것이 정상이다. 이 로컬 커밋들은
 사용자 승인 전까지 push·배포하지 않는다.
 
 현재 인프라 로컬 검증은 Go/legacy Helm lint·render, migration graph 47개, Secret·release
 wrapper·Docker source-path를 포함한 72개 Node 테스트, ARM64 BuildKit Dockerfile check를
 통과했다. Go는 `go test ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go test -race`와
 `go vet`를 통과했고, web typecheck/test/build 및 `pnpm test:browser`의 중앙 xterm 2개
-case도 통과했다. 다만 `private` 원격 브랜치는 아직 `a45ec8e...`이고 Go 커밋을
+case도 통과했다. 최신 Go PostgreSQL 브라우저 E2E와 `표현`/`외쳐` 흐름도 통과했다. 다만 `private` 원격 브랜치는 아직 `a45ec8e...`이고 Go 커밋을
 포함하지 않으므로 실제 Docker registry build/deploy는 push와 immutable source 승인 뒤에만
 재현할 수 있다. 다음 인계 시 먼저 `git status --short`와 이 문서의 최신 추가 기록을
 확인한다.
