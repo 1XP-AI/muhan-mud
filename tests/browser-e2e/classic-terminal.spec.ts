@@ -176,3 +176,26 @@ test("xterm preserves Korean composition and restores focus across mobile resize
     JSON.stringify({ type: "line", text: "한글" }),
   ]);
 });
+
+test("xterm bounds reconnects across repeated transient drops", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.goto("/");
+
+  await expect(page.locator(".xterm-screen")).toContainText("이름을 입력하세요:");
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.connectionCount ?? 0)).toBe(1);
+
+  for (const expectedConnectionCount of [2, 3, 4]) {
+    await page.evaluate(() => window.__muhanGateway?.dropConnection());
+    await expect.poll(
+      () => page.evaluate(() => window.__muhanGateway?.connectionCount ?? 0),
+      { timeout: 5_000 },
+    ).toBe(expectedConnectionCount);
+  }
+
+  await page.evaluate(() => window.__muhanGateway?.dropConnection());
+  await expect(page.locator(".xterm-screen")).toContainText(
+    "접속이 끝났습니다. 다시 접속하려면 페이지를 새로고침하십시오.",
+  );
+  await page.waitForTimeout(1_000);
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.connectionCount ?? 0)).toBe(4);
+});

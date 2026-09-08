@@ -292,7 +292,6 @@ export function ClassicTerminal({ url }: { url: string | null }) {
             term.write(`${view.text}\x1b7`, () => {
               if (disposed || view.closed) return;
               line.prompt(view.secret);
-              reconnectAttempt = 0;
               queueFocus();
             });
           } catch {
