@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 type FakeGateway = {
+  connectionCount: number;
+  dropConnection: () => void;
   messages: string[];
   emitView: (text: string, secret?: boolean, closed?: boolean) => void;
 };
@@ -16,6 +18,7 @@ async function installFakeGateway(page: Page): Promise<void> {
     const nativeWebSocket = window.WebSocket;
     const messages: string[] = [];
     let socket: FakeSocket | undefined;
+    let connectionCount = 0;
 
     class FakeSocket extends EventTarget {
       static readonly CONNECTING = 0;
@@ -41,6 +44,7 @@ async function installFakeGateway(page: Page): Promise<void> {
         super();
         this.url = String(url);
         socket = this;
+        connectionCount += 1;
         queueMicrotask(() => {
           this.readyState = FakeSocket.OPEN;
           const event = new Event("open");
@@ -75,9 +79,14 @@ async function installFakeGateway(page: Page): Promise<void> {
     }
 
     window.__muhanGateway = {
+      connectionCount,
+      dropConnection: () => socket?.close(1006, "network drop"),
       messages,
       emitView: (text, secret = false, closed = false) => socket?.emitView(text, secret, closed),
     };
+    Object.defineProperty(window.__muhanGateway, "connectionCount", {
+      get: () => connectionCount,
+    });
     window.WebSocket = new Proxy(nativeWebSocket, {
       construct(target, args) {
         return String(args[0]).includes("gateway.local")
@@ -86,6 +95,25 @@ async function installFakeGateway(page: Page): Promise<void> {
       },
     });
   });
+}
+
+async function commitKoreanComposition(page: Page, text: string): Promise<void> {
+  const input = page.locator("textarea.xterm-helper-textarea");
+  await input.evaluate((element, value) => {
+    element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    element.value = value;
+    element.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: value }));
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: value,
+      inputType: "insertCompositionText",
+      isComposing: true,
+    }));
+    element.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: value }));
+  }, text);
+  // xterm waits one task after compositionend so Chromium can commit the
+  // textarea value before it forwards the Korean code points to onData.
+  await page.waitForTimeout(10);
 }
 
 test("xterm opens the original line protocol and keeps terminal focus", async ({ page }) => {
@@ -111,4 +139,40 @@ test("xterm opens the original line protocol and keeps terminal focus", async ({
   });
   await expect(input).toBeFocused();
   await expect(page.locator("main input[type=email], main input[type=password], main button")).toHaveCount(0);
+});
+
+test("xterm preserves Korean composition and restores focus across mobile resize and reconnect", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const input = page.getByRole("textbox", { name: "Terminal input" });
+  await expect(input).toBeFocused();
+  const mobileTerminal = await page.locator(".terminal").boundingBox();
+  expect(mobileTerminal?.height ?? 0).toBeGreaterThan(0);
+  expect(mobileTerminal?.height ?? 0).toBeLessThanOrEqual(844);
+
+  await commitKoreanComposition(page, "한글");
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".xterm-screen")).toContainText("받은 입력: 한글");
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.messages ?? [])).toEqual([
+    JSON.stringify({ type: "line", text: "한글" }),
+  ]);
+
+  await input.evaluate((element) => element.blur());
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await expect(input).toBeFocused();
+
+  await page.keyboard.type("draft");
+  await page.evaluate(() => window.__muhanGateway?.dropConnection());
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.connectionCount ?? 0), {
+    timeout: 5_000,
+  }).toBe(2);
+  await expect(page.locator(".xterm-screen")).toContainText("이름을 입력하세요:");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("");
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.messages ?? [])).toEqual([
+    JSON.stringify({ type: "line", text: "한글" }),
+  ]);
 });
