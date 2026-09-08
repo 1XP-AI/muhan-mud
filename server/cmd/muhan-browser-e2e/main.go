@@ -58,9 +58,24 @@ func main() {
 					LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "브라우저 광장"},
 					ShortDescription: "실제 Go 서버와 PostgreSQL이 연결된 테스트 방입니다.",
 				},
+				NPCIDs: []string{"npc-key", "npc-name"},
 			},
 		},
 		Players: map[string]world.PlayerState{},
+		NPCs: map[string]world.NPCState{
+			"npc-key": {
+				Body: world.LegacyMonster{
+					Name: "Guard", Keys: [3]string{"goblin"}, Type: 1, RoomID: 1,
+					HPMax: 30, HPCurrent: 30,
+				},
+				Enemies: []world.NPCEnemy{},
+			},
+			"npc-name": {
+				Body:    world.LegacyMonster{Name: "Goblin", Type: 1, RoomID: 1, HPMax: 30, HPCurrent: 30},
+				Enemies: []world.NPCEnemy{},
+			},
+		},
+		ActiveNPCIDs: []string{},
 	}
 	raw, err := json.Marshal(state)
 	if err != nil {

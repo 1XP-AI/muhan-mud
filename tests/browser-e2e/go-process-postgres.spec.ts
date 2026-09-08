@@ -70,6 +70,7 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await submitAndWait(page, "외쳐 웹 테스트", "예. 좋습니다.");
   await submitAndWait(page, "검색", "아무것도 찾지 못했습니다.");
   await submitAndWait(page, "엿봐 Bob", "직업으로는");
+  await submitAndWait(page, "보아 gob 2", "당신은 Goblin를 봅니다.");
 }
 
 async function reloginAndLook(page: Page): Promise<void> {
