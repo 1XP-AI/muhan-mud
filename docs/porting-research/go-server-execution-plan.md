@@ -378,3 +378,18 @@ world/session/transport TDD, `MUHAN_DOOR_TEST_DATABASE_URL` 격리 ARM64 Postgre
 17 replay, Linux ARM64 build와 실제 Go+PG+Chromium의 `열어 __missing_door__` 경로
 **1 passed (10.8s)**를 통과했다. 전체 door/key alias, ANSI/legacy formatting 및
 나머지 명령·tick·경제·배포 인수는 계속 남아 있다.
+
+## 2026-09-08 canonical search/inspection 후속
+
+`검색`/`찾아`를 C `command5.c:search`의 exit/object branch까지 bounded하게 확장했다.
+출구의 `XSECRT`/`XINVIS`/`XNOSEE`와 canonical `RoomState.Items` root의 `OHIDDN`/
+`OINVIS`를 source 순서대로 검사하고, player/NPC 뒤의 기존 hidden target RNG 순서를
+변경하지 않는다. exit identity는 room ID+ordered index, object identity는 root item ID로
+receipt에 저장하며 Apply와 room event가 stale 이동/visibility를 거절한다. legacy linked
+list, nested object, prefix/occurrence는 fail-closed한다.
+
+`보아 <대상>`은 player/NPC 다음 canonical floor root와 exact visible exit를 검사하는
+proposal/apply 경계를 추가했다. actor `PHIDDN` 선행 해제, silent branch, target identity와
+event replay를 보존하며, full ANSI object description·bare action·legacy fallback은
+범위 밖이다. unit/session/transport replay 회귀와 Linux ARM64 race/vet/build는 통과했지만
+실제 PG replay는 전용 PostgreSQL 컨테이너 부재로 이번 턴 실행하지 않았다.

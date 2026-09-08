@@ -1995,3 +1995,22 @@ replay 재실행은 fail-closed한다.
 
 전체 C key lookup/occurrence·ANSI formatting, 나머지 command table·NPC/tick·경제·전체
 배포 인수는 계속 미완료다.
+
+## 2026-09-08 canonical search/inspection follow-up
+
+`검색`/`찾아`는 원본 `command5.c:search`의 출구→방 객체→플레이어→NPC 순서를
+canonical identity로 확장했다. secret exit는 방 ID와 ordered exit index를, 방 객체는
+`RoomState.Items`의 root item ID를 receipt에 저장하며, 각 대상의 visibility와 단일
+RNG 소비 순서를 Apply/room event에서 재검증한다. legacy linked-list room object,
+nested object, prefix/occurrence는 identity가 확정되지 않아 fail-closed한다.
+
+`보아 <대상>`도 기존 player/NPC branch 뒤에 canonical floor root와 exact visible exit만
+허용한다. proposal/apply에서 actor 은신 해제와 target identity를 원자적으로 재검증하고,
+object/exit room event는 최초 commit에서만 생성한다. 전체 C ANSI object description,
+bare `보아`, prefix/occurrence와 legacy fallback은 여전히 별도 범위다.
+
+검증: search/look world·session·transport TDD와 receipt/replay 회귀, 전체
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64
+cross-build가 통과했다. PostgreSQL 환경 변수가 없는 로컬에서는 새 PG 컨테이너를 만들지
+않아 canonical object/exit PG replay는 아직 실행 증거가 아니다. 기존 strict room corpus
+63개 예외와 전체 command/tick/경제/배포 인수는 계속 남아 있다.

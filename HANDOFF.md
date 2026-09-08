@@ -4,10 +4,12 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 기능 기준 체크포인트는
-`7671582` (`feat: port key door commands`)이다. 이전 settings 기능
+`aecdb60` (`test: cover canonical inspection replay`)이며 기능 구현 기준은
+`288c8d2` (`feat: port canonical search and inspection targets`)이다. 이전 settings 기능
 기준은 `2b82e32`이며, 인프라의 검토된 소스 고정 커밋은 `21863341`로 이 기능
 체크포인트를 가리킨다. door hardening은 root `25beba8`, infra pin은 `2f15179a`다.
-최신 key-door source pin은 infra `32ecdd3a`이며 root `7671582`를 가리킨다. 이전
+최신 key-door source pin은 infra `32ecdd3a`이며 root `7671582`를 가리킨다. canonical
+search/inspection source pin은 다음 infra 커밋에서 root `aecdb60`로 갱신한다. 이전
 source pin은 `21863341`이었다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
@@ -20,6 +22,19 @@ unit/race/vet, ARM64 PostgreSQL 17 회귀,
 Linux ARM64 cross-build와 실제 Go+PG+Chromium E2E를 통과했다. 객체/출구 stealth,
 전체 C 명령 parity, tick/경제/배포 인수는 남아 있다. 이는 전체 C 명령 인수 완료가
 아니라 다음 포팅을 이어갈 수 있는 보존된 체크포인트다.
+
+## 최신 병렬 포팅 증거 — 2026-09-08 search/inspection
+
+Luna max 병렬 wave에서 `검색`/`찾아`의 canonical secret-exit·room-object branch와
+`보아`의 canonical floor-root·exact-exit branch를 파일 소유권을 분리해 구현했다.
+root `288c8d2`와 replay 회귀 `aecdb60`에 반영됐으며, 기존 player/NPC target 및
+search RNG 순서를 유지한다. prefix/occurrence·legacy linked-list·full ANSI formatting은
+계약 밖으로 남겼다.
+
+검증: 전체 Go race/vet, Linux ARM64 cross-build와 targeted look/search 회귀 통과.
+이번 턴에는 `postgres:17-alpine` 이미지가 없어 새 PG 컨테이너를 만들지 않았으므로
+canonical object/exit PG replay는 미검증 상태다. `src/frp.new`는 여전히 사용자 dirty
+변경으로 보존한다.
 
 ## 현재 인계 기준 — 2026-09-08 Go 전환
 
