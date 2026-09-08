@@ -251,6 +251,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	searchCommand := false
 	trackCommand := false
 	hideCommand := false
+	peekCommand := false
 	var receipt storage.WorldReceipt
 	var err error
 	switch parsed.Kind {
@@ -299,6 +300,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandHide:
 		hideCommand = true
 		receipt, err = c.game.owners.ExecuteHideLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.HideOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandPeek:
+		peekCommand = true
+		receipt, err = c.game.owners.ExecutePeekLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.PeekOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandWelcome:
 		receipt, err = c.game.owners.ExecuteWelcomeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.HelpFS)
 	case session.CommandSocial:
@@ -341,6 +345,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedSearchLine) ||
 		errors.Is(err, session.ErrUnsupportedTrackLine) ||
 		errors.Is(err, session.ErrUnsupportedHideLine) ||
+		errors.Is(err, session.ErrUnsupportedPeekLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
 		errors.Is(err, session.ErrUnsupportedQuitLine) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
@@ -403,6 +408,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if peekCommand && !receipt.Replayed {
+		var result world.PeekResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Alert {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishPeek(after, c.lease.ActorID, result)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -419,6 +432,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if hideCommand {
 		var result world.HideResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if peekCommand {
+		var result world.PeekResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

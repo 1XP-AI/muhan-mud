@@ -324,3 +324,40 @@ func (g *WorldConnector) publishHide(after world.State, actorID string, succeede
 		}
 	}
 }
+
+// publishPeek mirrors broadcast_rom2: the actor already has the durable
+// response, the target receives the private alert, and other room occupants
+// receive the room alert. Both projections are receipt-bound and only run on
+// the first committed command.
+func (g *WorldConnector) publishPeek(after world.State, actorID string, result world.PeekResult) {
+	if result.TargetID == "" || result.TargetText == "" {
+		return
+	}
+	actor, ok := after.Players[actorID]
+	if !ok || !actor.Online {
+		return
+	}
+	roomID := actor.Body.RoomID
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != roomID || connection.events == nil || connection.lease.ActorID == actorID {
+			continue
+		}
+		message := ""
+		if connection.lease.ActorID == result.TargetID && result.TargetKind == "player" {
+			message = result.TargetText
+		} else if connection.lease.ActorID != result.TargetID {
+			message = result.RoomText
+		}
+		if message == "" {
+			continue
+		}
+		select {
+		case connection.events <- message:
+		default:
+			// A slow client cannot block the peeker's durable command.
+		}
+	}
+}

@@ -1916,3 +1916,19 @@ transport fan-out 회귀와 환경 변수 `MUHAN_HIDE_TEST_DATABASE_URL`/
 `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`, 실제 Go+PG+Chromium E2E
 **1 passed (10.9s)**도 통과했다. 기존 strict room corpus 63개 예외와 객체/출구
 stealth, 전체 C command parity·tick·경제·Ingress 인수는 미완료다.
+
+## 2026-09-08 `엿봐 <대상>` peek command slice
+
+`command4.c:peek`의 bounded player/NPC branch를 추가했다. `엿봐 <정확한 이름>`만
+받고 NPC를 먼저 찾으며, 도둑/무적 이상 권한·blind·invisible/DM-invisible와 보호
+대상 flag를 committed snapshot에서 판정한다. `LT_PEEKS` 5초 timer, 레벨 차이 기반
+성공률, 성공 후 두 번째 발각 RNG의 순서를 유지하고, 성공 시 canonical item graph의
+보이는 inventory root만 actor receipt에 렌더링한다. 보호 대상도 C처럼 timer를 기록하고
+응답만 반환한다.
+
+발각 시 receipt가 대상 ID/kind와 대상 개인 메시지·room 메시지를 함께 보유하며,
+`WorldConnector`는 target을 제외한 room fan-out과 target private event를 최초 commit에만
+보낸다. 동일 command ID replay는 item read나 난수를 다시 실행하지 않는다.
+`peek_command_test.go`, transport 회귀, `MUHAN_PEEK_TEST_DATABASE_URL` ARM64
+PostgreSQL replay와 browser E2E의 fighter 권한 거절을 통과했다. prefix/occurrence,
+object branch, 전체 C `list_obj`/ANSI parity는 아직 별도 범위다.

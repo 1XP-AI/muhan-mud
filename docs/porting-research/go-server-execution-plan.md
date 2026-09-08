@@ -297,3 +297,20 @@ ARM64 PostgreSQL 17의 hide replay, Linux ARM64 cross-build, Go+PostgreSQL+Chrom
 가입→입장→재로그인 E2E **1 passed (10.9s)**를 통과했다. strict room corpus의 기존
 63개 예외, 객체/출구 hide/track/search, 전체 C 명령 table·tick·경제·배포 인수는
 여전히 남아 있다.
+
+## 2026-09-08 `엿봐 <대상>` bounded peek 후속
+
+원본 `command4.c:peek`의 NPC-first same-room 대상 선택과 도둑/무적 이상 권한,
+blind·invisible/DM-invisible 경계를 Go world proposal로 고정했다. exact 대상 이름만
+허용하며 prefix/occurrence와 미이관 object identity는 추측하지 않는다. `LT_PEEKS`의
+5초 cooldown, 보호 대상(`MUNSTL`/`MTRADE`/`MPURIT`)의 timer 선행 기록, 레벨 차이
+확률과 성공 뒤 발각 확률의 두 RNG 순서를 유지한다. canonical item graph 또는 명시된
+legacy inventory projection에서 보이는 root 이름만 응답하고 대상 item ID는 클라이언트에
+노출하지 않는다.
+
+발각 결과는 durable receipt에 대상 ID/kind, 대상 개인 메시지와 room 메시지를 함께
+저장한다. WebSocket은 최초 commit에서만 `broadcast_rom2` 경계를 투영하고 replay에서는
+재전송하지 않는다. unit/session/transport TDD, 격리 ARM64 PostgreSQL 17 replay,
+Linux ARM64 cross-build, 실제 Go+PG+Chromium E2E의 권한 거절 경로 **1 passed (10.9s)**를
+통과했다. full prefix/occurrence parser, object peek, PVP/NPC 출력 포맷의 전체 C 동등성,
+strict room corpus 63개 예외와 나머지 명령/tick/경제/배포 인수는 여전히 남아 있다.

@@ -35,6 +35,7 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"추적", CommandTrack},
 		{"숨겨", CommandHide},
 		{"숨어", CommandHide},
+		{"엿봐 Bob", CommandPeek},
 		{"마법", CommandUnknown},
 	}
 	for _, tt := range tests {

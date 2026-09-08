@@ -39,6 +39,7 @@ const (
 	CommandSearch
 	CommandTrack
 	CommandHide
+	CommandPeek
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -185,6 +186,8 @@ func commandKind(first string) CommandKind {
 		return CommandTrack
 	case "숨겨", "숨어":
 		return CommandHide
+	case "엿봐":
+		return CommandPeek
 	default:
 		if world.IsEmoteAlias(first) {
 			return CommandEmote
