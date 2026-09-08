@@ -1932,3 +1932,22 @@ stealth, 전체 C command parity·tick·경제·Ingress 인수는 미완료다.
 `peek_command_test.go`, transport 회귀, `MUHAN_PEEK_TEST_DATABASE_URL` ARM64
 PostgreSQL replay와 browser E2E의 fighter 권한 거절을 통과했다. prefix/occurrence,
 object branch, 전체 C `list_obj`/ANSI parity는 아직 별도 범위다.
+
+## 2026-09-08 `설정`·`해제` settings command slice
+
+`설정`/`해제`를 `command5.c:set`/`clear`의 source-backed player flag 경계로 연결했다.
+설정 flag-list, 일반 toggle, `도망수치`, `패거리귀환`, `hexline`, `eavesdropper`,
+`~robot~`, `수동공격`과 해제 응답을 canonical `LegacyMonster.Flags`/`WimpyValue`에
+원자적으로 적용한다. flag 번호는 클라이언트가 제출할 수 없고, stale flag/value·잘못된
+숫자·미확인 actor는 receipt 전에 거절한다. `설정` unknown key는 C처럼 flag-list를
+반환하고, `해제` unknown key는 C의 오류 문구를 반환한다.
+
+검증:
+
+- world/session/transport settings TDD 및 parser 회귀 통과
+- `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64 cross-build 통과
+- 격리 `postgres:17-alpine`에서 `TestPostgresSettingsCommandPersistsAndReplays` 통과 후 컨테이너 제거
+- 실제 Go + PostgreSQL + Chromium 가입→`설정 색`→재로그인 E2E **1 passed (11.2s)**
+
+전체 C settings alias/ANSI formatting, 관리자 전용 옵션, 나머지 명령·tick·경제·배포
+인수는 아직 완료되지 않았다.
