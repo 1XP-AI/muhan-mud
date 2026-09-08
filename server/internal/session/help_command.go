@@ -53,8 +53,14 @@ var helpTopicFiles = map[string]string{
 	"입어": "help.9", "벗어": "help.10", "장비": "help.11", "장": "help.11",
 	"쥐어": "help.12", "잡아": "help.12", "무장": "help.13", "건강": "help.15", "점수": "help.15",
 	"정보": "help.16", "따라": "help.18", "내보내": "help.19", "그룹": "help.20", "무리": "help.20",
+	"추적": "help.21", "엿봐": "help.22", "검색": "help.24", "찾아": "help.24", "표현": "help.25",
+	"숨겨": "help.26", "숨어": "help.26", "설정": "help.27", "해제": "help.28", "외쳐": "help.29",
+	// help.31 is not present in the checked-in document source; keep the
+	// open command out of this catalog until its source document is admitted.
+	"닫아": "help.32", "풀어": "help.33", "잠궈": "help.34", "따": "help.35",
 	"공격": "help.23", "공": "help.23", "쳐": "help.23", "때려": "help.23", "시간": "help.49",
 	"보관물": "help.63", "잔액": "help.63", "입금": "help.63", "출금": "help.63", "받아": "help.63",
+	"환영": "help.61", "보아": "help.100",
 }
 
 func helpDocumentName(tokens []string) (string, string, bool) {
