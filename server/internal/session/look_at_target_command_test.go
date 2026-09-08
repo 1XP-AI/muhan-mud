@@ -111,6 +111,64 @@ func TestExecuteLookAtTargetLineFailsClosedWithoutReceiptForUnsupportedTarget(t 
 	}
 }
 
+func canonicalLookAtCommandFixture(t *testing.T) []byte {
+	t.Helper()
+	s, err := world.DecodeState(lookAtTargetCommandFixture(t, false, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := s.Rooms[1]
+	room.Items = &world.ItemCollection{
+		Items: map[string]world.Item{
+			"floor-sword": {Object: world.LegacyObject{Name: "검", Description: "빛나는 검."}},
+		},
+		Inventory: []string{"floor-sword"},
+	}
+	room.Resource.Exits = []world.LegacyExit{{Name: "동", Destination: 2}}
+	s.Rooms[1] = room
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestExecuteLookAtTargetLinePersistsCanonicalObjectAndExitAndReplays(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, id string
+	}{
+		{"검", "object", "floor-sword"},
+		{"동", "exit", "exit:1:0"},
+	} {
+		store := &departureStore{state: canonicalLookAtCommandFixture(t)}
+		var owners Ownership
+		lease, err := owners.Acquire("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := owners.Admit(lease, func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		commandID := "look-at-" + tc.kind
+		first, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", commandID, lease, "보아 "+tc.name)
+		if err != nil || first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), tc.name) {
+			t.Fatalf("target=%q first=%s err=%v commits=%d", tc.name, first.Response, err, store.commits)
+		}
+		saved, err := world.DecodeState(store.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, ok, err := saved.RoomLookAtTargetEvent("a", tc.kind, tc.id)
+		if err != nil || !ok || !strings.Contains(event.Text, tc.name) || event.TargetText != "" {
+			t.Fatalf("target=%q event=%+v ok=%v err=%v", tc.name, event, ok, err)
+		}
+		replay, err := owners.ExecuteLookAtTargetLine(context.Background(), store, "w", commandID, lease, "보아 "+tc.name)
+		if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+			t.Fatalf("target=%q replay=%+v err=%v commits=%d", tc.name, replay, err, store.commits)
+		}
+	}
+}
+
 func lookAtTargetFlag(flags []byte, bit uint) bool {
 	return flags[bit/8]&(1<<(bit%8)) != 0
 }
