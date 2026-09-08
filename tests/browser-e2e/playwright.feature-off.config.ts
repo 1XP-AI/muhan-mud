@@ -30,10 +30,7 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     env: {
       NODE_ENV: "development",
-      SUPABASE_PUBLIC_URL: `http://127.0.0.1:${port}`,
-      SUPABASE_PUBLISHABLE_KEY: "public-test-key-placeholder",
-      MUD_GATEWAY_URL: "ws://gateway.local:9911/ws",
-      MUD_ONBOARDING_ENABLED: "false",
+      MUD_GO_GATEWAY_URL: "",
     },
   },
 });

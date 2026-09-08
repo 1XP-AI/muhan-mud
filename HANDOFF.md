@@ -287,6 +287,15 @@ transport 테스트가 실제 시계에 의존하지 않도록 했고, local uni
 `TestWorldConnectorSubmitDispatchesReadTimeWithoutMutatingWorld`를 통과했다. C의
 continuation 기반 도움말/정보 명령과 전체 출력 포맷은 아직 남아 있다.
 
+후속 `정보` slice는 C `command4.c:info`의 첫 페이지 통계를 `PlayerInfo` pure
+projection과 `ExecuteInfoLine` receipt로 연결했다. canonical Items와 정의된
+class/race/proficiency가 없으면 fail-closed하고, title/ANSI 및 `[엔터]` 후 `info_2`
+주문 continuation은 제외했다. parser/transport와 replay·state purity·race/vet 회귀가
+통과했다. 브라우저는 `tests/browser-e2e/classic-terminal.spec.ts`와 feature-off 회귀로
+중앙 xterm/line protocol/focus/웹 계정 경계만 검증했으며, 실제 Go+PG 브라우저 게임,
+IME/mobile, 전체 command parity는 아직 남아 있다. 상세는
+`docs/porting-research/go-terminal-only-browser-20260908.md`에 기록했다.
+
 ## 아래는 이전 C/Rust 작업의 역사적 인계 기록
 
 아래 날짜·완료 상태·후속 작업은 당시 기록이며 Go 개발 지시나 최신 검증 결과가 아니다.

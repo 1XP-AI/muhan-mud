@@ -23,6 +23,7 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"입금 100냥", CommandBank},
 		{"끝", CommandQuit},
 		{"시간", CommandRead},
+		{"정보", CommandInfo},
 		{"마법", CommandUnknown},
 	}
 	for _, tt := range tests {

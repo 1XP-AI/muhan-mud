@@ -31,6 +31,15 @@ allocator가 없거나 summon side effect가 필요한 경우 fail-closed한다.
 `TestPostgresAttackCommandPersistsPowerDamageSequence`로 실제 PG replay를 검증했다.
 `건강`/`점수` numeric status receipt도 blind/replay 회귀로 확인하지만, 전체 상태 명령
 및 ANSI/title parser 인수로 승격하지 않는다.
+`정보`의 첫 페이지 통계(이름·레벨·종족·직업·성향·접속시간·능력치·HP/MP·경험치·돈·
+방어력·무게/개수·무기/마법 숙련도)도 `ExecuteInfoLine`과 `PlayerInfo`의 pure
+read-only receipt로 연결하고 local race/vet/transport replay를 통과했다. canonical
+Items·정의된 class/race/proficiency가 없으면 fail-closed하며, C의 title 계산과
+`[엔터]` 후 `info_2` 주문 continuation은 아직 구현하지 않았다. 따라서 이 행의 전체
+`info` 인수 상태는 계속 `미구현`이다.
+`시간` bare 명령은 게임 시각과 PST wall-clock을 request에 고정한 read-only receipt로
+연결했고 동일 command ID replay에서 시계를 다시 읽지 않는다. `도움말`/문서 조회와
+전체 parser는 별도 후속이다.
 `따라 <플레이어>`와 `내보내` 관계 명령도 same-room exact-name 및 reciprocal replay
 회귀를 통과했다. `내보내`의 자기 leader 이탈과 지정 follower 해제 경로까지 연결했지만,
 ARM64 PostgreSQL 17 `TestPostgresFollowAndLoseCommandPersistsAndReplays`도 통과했다.

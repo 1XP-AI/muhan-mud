@@ -29,6 +29,7 @@ const (
 	CommandBank
 	CommandQuit
 	CommandRead
+	CommandInfo
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -157,6 +158,8 @@ func commandKind(first string) CommandKind {
 		return CommandQuit
 	case "시간":
 		return CommandRead
+	case "정보":
+		return CommandInfo
 	default:
 		return CommandUnknown
 	}
@@ -164,7 +167,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo:
 		return true
 	default:
 		return false

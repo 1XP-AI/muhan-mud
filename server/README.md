@@ -7,6 +7,12 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 문서 아래쪽의 Astra/Terra 표기는 과거 조사 기록이며 현재 실행 정책은 모든 하위
 작업을 Luna max로 배치하는 것이다.
 
+최신 명령 slice: `시간`은 clock-bound read-only receipt, `정보`는 canonical player
+상태의 첫 페이지 통계 receipt까지 `WorldConnector`에 연결했다. 둘 다 state purity와
+동일 command ID replay를 검증했지만, 전체 C command table·continuation/help·title
+출력 동등성의 완료를 의미하지 않는다. 중앙 xterm 브라우저 smoke는 별도 문서와
+`pnpm test:browser`에서 검증하며 실제 Go+PostgreSQL 게임 플레이는 아직 남아 있다.
+
 ## 로컬 검증
 
 이 디렉터리에서 실행한다. Go 1.27.1 툴체인이 필요하며 `go.mod`에 고정했다.
