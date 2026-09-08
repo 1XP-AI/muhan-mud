@@ -4,16 +4,16 @@
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
 앞선 상태다. 애플리케이션 최신 커밋은
-`59fcf6e` (`fix: validate track response before commit`)이며
-`private/codex/mud-identity-foundation`보다 330개 앞서 있다. 인프라
-최신 커밋은 `ce609eab` (`ci: pin reviewed source after track hardening`)이며
+`4a7bd2c` (`feat: add durable peek command slice`)이며
+`private/codex/mud-identity-foundation`보다 332개 앞서 있다. 인프라
+최신 커밋은 `06aee3f0` (`ci: pin reviewed source to peek slice`)이며
 `origin/codex/muhan-onboarding-safety`보다 22개 앞서 있다. 원격에는 아직 push하지
 않았으므로 새 clone이나 다른 에이전트가 이 로컬 진행분을 보지 못하는 것이 정상이다.
 사용자 소유의 `src/frp.new` 변경은 계속 dirty로 보존한다.
 
 현재 Go 수직 슬라이스에는 `환영`, `도움말`, `외쳐`, `검색`/`찾아`, `추적`,
-`숨겨`/`숨어`, 제한된 원작 감정표현 alias, 자유 문장 `표현`, 같은 방의 정확한 대상에
-대한 `보아`가 포함된다. 각 명령은 parser→world 계획→PostgreSQL receipt/replay→
+`숨겨`/`숨어`, `엿봐 <대상>`, 제한된 원작 감정표현 alias, 자유 문장 `표현`, 같은 방의
+정확한 대상에 대한 `보아`가 포함된다. 각 명령은 parser→world 계획→PostgreSQL receipt/replay→
 WebSocket room event 경계를 가지며, unit/race/vet, ARM64 PostgreSQL 17 회귀,
 Linux ARM64 cross-build와 실제 Go+PG+Chromium E2E를 통과했다. 객체/출구 stealth,
 전체 C 명령 parity, tick/경제/배포 인수는 남아 있다. 이는 전체 C 명령 인수 완료가
