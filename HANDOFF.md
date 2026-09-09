@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 검증 체크포인트 — 2026-09-10 (실제 PG·브라우저 기존 캐릭터 경로)
+
+격리된 ARM64 `postgres:17-alpine` 컨테이너에서 Go `-race` 서버, xterm 브라우저와
+PostgreSQL을 함께 기동해 `bash scripts/run-go-process-postgres-browser-e2e-local.sh
+--allow-disposable`를 실행했다. 가입→월드 입장→재로그인 시나리오와, 명시적
+`LinkExistingWorldCharacter` 이관 캐릭터의 로그인·단일 입장·중복 세션 거부 시나리오가
+각각 통과해 **2 passed (16.2s)**였다. 암호가 터미널 출력에 나타나지 않는 것도 확인했고,
+래퍼가 자신이 만든 PostgreSQL 컨테이너만 종료했다. 실제 OS IME 조합기·모바일 키보드,
+운영 WSS/Ingress 및 전체 명령 인수는 이 테스트의 범위를 넘으므로 미완료로 유지한다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-10 (패거리 가입/탈퇴 세션·전송 연결)
 
 `command11.c:family`·`add_family`·`out_family`의 보수적인 실행 경계를 메인

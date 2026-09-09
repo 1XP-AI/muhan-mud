@@ -40,8 +40,9 @@ ARM64 cross-build를 포함한 최종 Go gate다. 실제 PG/browser/release matr
 `pnpm test:browser`에서 검증한다. 실제 Go+PostgreSQL 게임 경계도
 `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
 ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 입장→재로그인→
-`봐`, `환영`, `도움말 정보`, `표현`, `외쳐`까지 **1 passed (10.1s)**를 확인했다. 이는 전체 게임 기능·모바일/WSS·testnet
-인수를 뜻하지 않는다.
+`봐`, `환영`, `도움말 정보`, `표현`, `외쳐`와 명시적 이관 캐릭터 로그인→단일 입장→
+중복 세션 거부까지 **2 passed (16.2s)**를 확인했다. 이는 전체 게임 기능·실제 OS IME/
+모바일/WSS·testnet 인수를 뜻하지 않는다.
 
 ## 로컬 검증
 
