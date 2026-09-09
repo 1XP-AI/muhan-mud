@@ -7,7 +7,8 @@
 컴포넌트/테스트는 비교 자산으로 보존하지만 새 루트 진입에서는 사용하지 않는다.
 회색 바탕·남색 중앙 xterm, 기본 focus/창 복귀/선택 보존, 한글 코드포인트 삭제,
 암호 echo 금지와 응답 대기 중 입력 차단, 모바일 IME 조합·viewport·재접속 focus
-경계가 구현되어 있다. 웹 전체 library 테스트 51개와 TypeScript 검사가 통과했다.
+경계가 구현되어 있다. 웹 전체 library 테스트 58개와 TypeScript 검사가 통과했다. IME 조합 중 xterm의
+선행 CR/LF를 `compositionend` 다음 task로 미루는 Enter 제출 경계도 추가했다.
 실제 브라우저 스크린샷·Go 연결 E2E·IME·모바일 키보드·긴 줄 wrap 검증은 남아 있다.
 아래 인수 체크리스트 전체를 통과한 것으로 읽지 않는다. 배포하지 않았다.
 

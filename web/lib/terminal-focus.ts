@@ -34,6 +34,18 @@ export function shouldDeferTerminalResize(composing: boolean): boolean {
   return composing;
 }
 
+/**
+ * xterm can emit an Enter data event before the browser's compositionend
+ * event. Defer that line break so a composed Korean syllable is not submitted
+ * twice (or before its final text reaches the line buffer).
+ */
+export function shouldDeferTerminalSubmission(
+  data: string,
+  composing: boolean,
+): boolean {
+  return composing && /[\r\n]/u.test(data);
+}
+
 /** Do not submit a mobile command until the socket is ready and IME is idle. */
 export function canSubmitMobileLine({
   value,

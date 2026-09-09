@@ -1,5 +1,17 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 legacy bank file locator·raw 검사 CLI 및 웹 IME Enter
+
+| 이관 경계 | Go/웹 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| C `bank_file_locator.c` raw source 수집 | `LocateLegacyBankSnapshotRawV1`가 명시적 absolute root 아래 `player/bank/<canonical-name>`을 descriptor-anchored no-follow로 열고 0700/euid·0600/regular/nlink·4MiB·교체 여부를 검증. 결과는 owned bytes와 SHA-256·filesystem metadata만 반환 | `TestLegacyBankFileLocator` race PASS, Linux amd64/arm64 compile 및 Darwin build 확인. 운영 raw 위치/대량 batch·account/character 대조는 미완료 |
+| raw bank review CLI | `-inspect-bank-raw-root` + `-inspect-bank-raw-player`가 exact LP64 ABI를 확인하고 raw→kind-8 parser evidence를 DB/listener 전에 실행. source/canonical digest·크기·graph count·파일 metadata JSON만 출력 | `TestLegacyBankRaw`·`BankSnapshotInspectionCLI` race 및 vet PASS. `ImportBankSnapshot` 연결·라이브 입출금 parity·운영 Supabase는 미완료 |
+| xterm IME 제출 경계 | `shouldDeferTerminalSubmission`과 `ClassicTerminal`이 조합 중 CR/LF를 `compositionend` 다음 task로 지연하고 일반 문자/Backspace·focus/reconnect/cleanup을 유지 | `npm test` 58·typecheck·build PASS. 실제 OS IME·iOS/Android 키보드·브라우저 E2E는 미검증 |
+
+raw locator와 검사 CLI는 identity claim이나 gameplay authority를 만들지 않는다. 운영 전환은
+사람의 source/name 대조와 명시적 import receipt를 거쳐야 하며, 웹은 여전히 별도 계정 가입
+없이 터미널 이름/비밀번호 흐름을 사용한다.
+
 ## 2026-09-10 legacy native player raw reader·inspection
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

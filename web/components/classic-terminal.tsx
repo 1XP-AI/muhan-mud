@@ -6,6 +6,7 @@ import { TerminalLine } from "@/lib/terminal-line";
 import {
   canRestoreTerminalFocus,
   getMobileViewportHeight,
+  shouldDeferTerminalSubmission,
   shouldDeferTerminalResize,
 } from "@/lib/terminal-focus";
 import { validateGatewayUrl } from "@/lib/gateway-url";
@@ -96,10 +97,39 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       let resizePending = false;
       let composing = false;
       let permanentlyClosed = false;
+      let deferredSubmission = false;
+      let deferredSubmissionTimer: number | undefined;
+
+      const clearDeferredSubmission = () => {
+        deferredSubmission = false;
+        if (deferredSubmissionTimer !== undefined) {
+          window.clearTimeout(deferredSubmissionTimer);
+          deferredSubmissionTimer = undefined;
+        }
+      };
 
       const clearPendingInput = () => {
+        clearDeferredSubmission();
         line.clear();
         if (textarea) textarea.value = "";
+      };
+
+      let processTerminalData = (_value: string) => {};
+      const flushDeferredSubmission = () => {
+        if (
+          !deferredSubmission ||
+          disposed ||
+          composing ||
+          deferredSubmissionTimer !== undefined
+        ) {
+          return;
+        }
+        deferredSubmissionTimer = window.setTimeout(() => {
+          deferredSubmissionTimer = undefined;
+          if (disposed || composing || !deferredSubmission) return;
+          deferredSubmission = false;
+          processTerminalData("\r");
+        }, 0);
       };
 
       const hasSelection = () =>
@@ -182,6 +212,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         } else {
           queueFocus();
         }
+        flushDeferredSubmission();
       };
       const pointerUp = () => {
         // Do not collapse an xterm selection or a browser text selection just
@@ -200,7 +231,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       observer.observe(element);
 
       term.attachCustomKeyEventHandler((event) => event.key !== "Tab");
-      const data = term.onData((value) => {
+      processTerminalData = (value: string) => {
         const currentSocket = socket;
         if (
           disposed ||
@@ -216,6 +247,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         const before = line.display;
         const submissions = line.input(value);
         if (submissions.length > 0) {
+          deferredSubmission = false;
           const submitted = submissions[0] ?? "";
           term.write(`\x1b8\x1b[J${secret ? "" : submitted}\r\n`);
           try {
@@ -232,6 +264,16 @@ export function ClassicTerminal({ url }: { url: string | null }) {
           term.write(`\x1b8\x1b[J${line.display}`);
           queueFocus();
         }
+      };
+      const data = term.onData((value) => {
+        if (shouldDeferTerminalSubmission(value, composing)) {
+          deferredSubmission = true;
+          const compositionData = value.replace(/[\r\n]/gu, "");
+          if (compositionData.length === 0) return;
+          processTerminalData(compositionData);
+          return;
+        }
+        processTerminalData(value);
       });
 
       term.writeln("무한대전 · 터미널 접속\r\n");
@@ -344,6 +386,11 @@ export function ClassicTerminal({ url }: { url: string | null }) {
           window.cancelAnimationFrame(focusFrame);
           focusFrame = undefined;
         }
+        if (deferredSubmissionTimer !== undefined) {
+          window.clearTimeout(deferredSubmissionTimer);
+          deferredSubmissionTimer = undefined;
+        }
+        deferredSubmission = false;
         data.dispose();
         observer.disconnect();
         textarea?.removeEventListener("compositionstart", compositionStart);

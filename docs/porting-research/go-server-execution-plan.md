@@ -1,5 +1,31 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 legacy bank file locator·raw 검사 CLI 및 웹 IME Enter 경계
+
+`server/internal/world/legacy_bank_file_locator_v1*.go`는 C
+`src/bank_file_locator.c`의 `MUHAN_HOME/player/bank/<name>` 저장 레이아웃을 Go
+migration-only 수집 경계로 고정한다. 호출자는 absolute root와 canonical player name을
+명시해야 하며, descriptor-anchored `openat`/`fstatat` no-follow walk로 root/player/bank
+0700·현재 euid, 대상 파일 0600 regular·nlink=1·4MiB bound를 검증한다. fd read 전후
+stat와 fresh tree rewalk가 inode/mode/size/mtime/ctime 교체를 감지하고, 결과는 owned raw
+bytes와 SHA-256 및 제한된 filesystem metadata로만 반환한다. raw payload·object text·계정
+매핑·비밀번호·DB/runtime 쓰기는 이 단계의 계약이 아니다.
+
+`cmd/muhan -inspect-bank-raw-root <absolute-root> -inspect-bank-raw-player <name>`은
+exact `LegacyBankSnapshotRawV1ABI`를 확인한 뒤 locator→raw parser→kind-8 canonical
+evidence를 실행한다. `-inspect-bank-raw-dry-run`을 포함한 검사 모드는 PostgreSQL/listener
+전에 종료하며 stdout에는 source/canonical digest·크기·root/node·파일 metadata만 담긴다.
+기존 kind-8 검사와 seed/import/world/backup은 서로 섞을 수 없다. 운영 account/character
+대조와 `ImportBankSnapshot` 연결은 별도 승인 단계다.
+
+웹 `ClassicTerminal`은 IME 조합 중 발생할 수 있는 선행 CR/LF를 `compositionend` 다음
+task로 미뤄 한글 syllable이 조기·중복 제출되지 않도록 한다. 조합 중 일반 문자와
+Backspace, reconnect/cleanup 및 terminal focus 규칙은 유지한다. 결정론적 smoke invariant를
+추가했고 실제 브라우저 OS IME·모바일 키보드는 아직 미검증이다.
+
+검증: Go locator/CLI raw targeted race 및 `go vet`, 웹 `npm test`(58)·typecheck·build가
+통과했다. 실제 운영 raw 수집·Supabase import·브라우저/WSS/Ingress·배포는 미완료다.
+
 ## 2026-09-10 레거시 native player raw reader·inspection format
 
 `server/internal/world/legacy_player_raw_v1.go`에 `read_crt_player`가 저장한 native

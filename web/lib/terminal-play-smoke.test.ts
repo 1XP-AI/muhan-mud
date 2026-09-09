@@ -120,6 +120,7 @@ test("focus, IME, Korean deletion, and mobile submission invariants are represen
     initialFocus: true,
     selectionPreserved: true,
     compositionDefersResize: true,
+    compositionEnterDefersSubmission: true,
     compositionBlocksSubmit: true,
     committedMobileLineSubmits: true,
     koreanCodepointDeletesAsOne: true,

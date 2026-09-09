@@ -1,5 +1,40 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy bank locator·raw 검사 및 IME Enter 경계)
+
+`server/internal/world/legacy_bank_file_locator_v1*.go`에 C
+`src/bank_file_locator.c`의 `MUHAN_HOME/player/bank/<name>` 레이아웃을 따르는
+descriptor-anchored raw 파일 수집 경계를 추가했다. 명시적인 absolute root와 canonical
+player name만 받고, root/player/bank 0700·euid 소유, 파일 0600·regular·nlink=1·4MiB
+bound를 no-follow syscall로 확인한다. open/stat/read 후 재검사와 root tree rewalk로 교체를
+감지하며, 반환값은 소유한 bytes와 SHA-256·inode/mode/time metadata뿐이다. 이 단계는 raw
+object/account/password를 해석하거나 DB/runtime에 쓰지 않는다.
+
+`cmd/muhan`에는 `-inspect-bank-raw-root` + `-inspect-bank-raw-player` (+ 명시적
+`-inspect-bank-raw-dry-run`)을 연결했다. exact `LegacyBankSnapshotRawV1ABI` 검증 후
+raw→kind-8 parser evidence를 실행하고, stdout에는 source/canonical digest·크기·root/node·
+파일 metadata만 JSON으로 출력한다. canonical BankSnapshot 검사와 seed/import/world/backup
+모드는 상호 배타적이며 `DATABASE_URL`·listener 초기화 전에 종료한다. object text·balance·
+credential은 출력하지 않는다.
+
+웹 `ClassicTerminal`은 IME 조합 중 xterm이 먼저 내보내는 CR/LF를 조합 종료 다음 task로
+미루어 한글 입력을 중복 제출하지 않도록 했다. 일반 문자/Backspace·재접속/cleanup 경계는
+그대로 유지한다. `terminal-play-smoke`에 이 불변식을 추가했다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan ./internal/world -run 'LegacyBankSnapshotRaw|LegacyBankFileLocator|BankSnapshotInspectionCLI' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/world) PASS
+(cd web && npm test) PASS (58 tests)
+(cd web && npm run typecheck) PASS
+(cd web && npm run build) PASS
+```
+
+실제 운영 raw 경로 수집/계정·캐릭터 대조/`ImportBankSnapshot`, 라이브 입출금 parity,
+실제 OS IME·모바일 키보드, 운영 Supabase·WSS/Ingress·testnet 배포는 아직 남아 있다.
+`src/frp.new` 및 변경이 남은 기존 worktree는 계속 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (레거시 은행 raw 이관·검사 CLI)
 
 `server/internal/world/legacy_bank_raw_v1.go`에 C `read_obj`가 저장한 LP64

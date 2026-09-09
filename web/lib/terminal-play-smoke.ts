@@ -8,6 +8,7 @@ import {
 import {
   canRestoreTerminalFocus,
   canSubmitMobileLine,
+  shouldDeferTerminalSubmission,
   shouldDeferTerminalResize,
 } from "./terminal-focus.ts";
 import { validateGatewayUrl, type GatewayUrlValidation } from "./gateway-url.ts";
@@ -486,6 +487,7 @@ export interface TerminalPlayFocusImeInvariantReport {
   readonly initialFocus: boolean;
   readonly selectionPreserved: boolean;
   readonly compositionDefersResize: boolean;
+  readonly compositionEnterDefersSubmission: boolean;
   readonly compositionBlocksSubmit: boolean;
   readonly committedMobileLineSubmits: boolean;
   readonly koreanCodepointDeletesAsOne: boolean;
@@ -504,6 +506,16 @@ export function terminalPlayFocusImeInvariants(): TerminalPlayFocusImeInvariantR
   const firstSubmit = line.input("봐\r");
   const secondSubmit = line.input("\r");
 
+  const composingLine = new TerminalLine();
+  composingLine.prompt(false);
+  composingLine.input("한");
+  const earlyEnter = shouldDeferTerminalSubmission("\r", true)
+    ? []
+    : composingLine.input("\r");
+  const committedEnter = shouldDeferTerminalSubmission("\r", false)
+    ? []
+    : composingLine.input("\r");
+
   return {
     initialFocus: canRestoreTerminalFocus({
       disposed: false,
@@ -520,6 +532,10 @@ export function terminalPlayFocusImeInvariants(): TerminalPlayFocusImeInvariantR
       activeElementOutsideTerminal: false,
     }),
     compositionDefersResize: shouldDeferTerminalResize(true),
+    compositionEnterDefersSubmission:
+      earlyEnter.length === 0 &&
+      committedEnter.length === 1 &&
+      committedEnter[0] === "한",
     compositionBlocksSubmit: !canSubmitMobileLine({
       value: "봐",
       ready: true,

@@ -5,6 +5,7 @@ import {
   canSubmitMobileLine,
   canRestoreTerminalFocus,
   getMobileViewportHeight,
+  shouldDeferTerminalSubmission,
   shouldDeferTerminalResize,
 } from "./terminal-focus.ts";
 
@@ -64,6 +65,14 @@ test("terminal focus returns only when it will not interrupt IME or selection", 
 test("terminal resize waits for compositionend before recalculating rows", () => {
   assert.equal(shouldDeferTerminalResize(true), true);
   assert.equal(shouldDeferTerminalResize(false), false);
+});
+
+test("IME composition defers Enter without dropping ordinary composition input", () => {
+  assert.equal(shouldDeferTerminalSubmission("\r", true), true);
+  assert.equal(shouldDeferTerminalSubmission("\n", true), true);
+  assert.equal(shouldDeferTerminalSubmission("가", true), false);
+  assert.equal(shouldDeferTerminalSubmission("\x7f", true), false);
+  assert.equal(shouldDeferTerminalSubmission("\r", false), false);
 });
 
 test("mobile command submission waits for readiness and IME completion", () => {

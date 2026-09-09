@@ -57,6 +57,9 @@ func main() {
 	bankSnapshotInspectDir := flag.String("inspect-bank-snapshot-dir", "", "inspect all private BankSnapshotV1 files under a directory and emit metadata-only JSON")
 	bankSnapshotInspectFile := flag.String("inspect-bank-snapshot-file", "", "inspect one private BankSnapshotV1 file and emit metadata-only JSON")
 	bankSnapshotInspectDryRun := flag.Bool("inspect-bank-snapshot-dry-run", false, "run BankSnapshotV1 inspection without connecting to PostgreSQL (inspection is always DB-free)")
+	bankRawInspectRoot := flag.String("inspect-bank-raw-root", "", "locate and inspect one audited legacy raw bank file under an explicit MUHAN_HOME-like root")
+	bankRawInspectPlayer := flag.String("inspect-bank-raw-player", "", "canonical player name for -inspect-bank-raw-root")
+	bankRawInspectDryRun := flag.Bool("inspect-bank-raw-dry-run", false, "run legacy raw bank inspection without connecting to PostgreSQL (inspection is always DB-free)")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -97,9 +100,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	bankRawInspectOptions, err := validateBankRawInspectionFlags(*bankRawInspectRoot, *bankRawInspectPlayer, *bankRawInspectDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
-	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected {
+	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
+	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
+	}
+	if bankRawInspectionSelected && bankSnapshotInspectionSelected {
+		log.Fatal("legacy raw bank inspection and BankSnapshotV1 inspection modes are mutually exclusive")
+	}
+	if bankRawInspectionSelected && *bankSnapshotInspectDryRun {
+		log.Fatal("legacy raw bank inspection cannot use -inspect-bank-snapshot-dry-run")
 	}
 	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
 		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
@@ -130,6 +144,10 @@ func main() {
 		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("bank snapshot inspection mode cannot be combined with import, conversion, seed, backup, or world flags")
 	}
+	if bankRawInspectionSelected &&
+		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
+		log.Fatal("legacy raw bank inspection mode cannot be combined with import, conversion, seed, backup, or world flags")
+	}
 	if bankSnapshotInspectionSelected {
 		inspectionJSON, inspectErr := InspectBankSnapshotReviewJSON(bankSnapshotInspectOptions.Directory, bankSnapshotInspectOptions.File)
 		if inspectErr != nil {
@@ -140,6 +158,19 @@ func main() {
 				log.Fatalf("bank snapshot inspection output failed: %v", writeErr)
 			}
 			log.Fatal("bank snapshot inspection output was incomplete")
+		}
+		return
+	}
+	if bankRawInspectionSelected {
+		inspectionJSON, inspectErr := InspectLegacyBankRawReviewJSON(bankRawInspectOptions.Root, bankRawInspectOptions.PlayerName)
+		if inspectErr != nil {
+			log.Fatalf("legacy raw bank inspection rejected: %v", inspectErr)
+		}
+		if written, writeErr := os.Stdout.Write(inspectionJSON); writeErr != nil || written != len(inspectionJSON) {
+			if writeErr != nil {
+				log.Fatalf("legacy raw bank inspection output failed: %v", writeErr)
+			}
+			log.Fatal("legacy raw bank inspection output was incomplete")
 		}
 		return
 	}
