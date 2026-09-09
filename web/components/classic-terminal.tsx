@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { TerminalLine } from "@/lib/terminal-line";
 import {
   canRestoreTerminalFocus,
+  getMobileViewportHeight,
   shouldDeferTerminalResize,
 } from "@/lib/terminal-focus";
 import { validateGatewayUrl } from "@/lib/gateway-url";
@@ -135,8 +136,9 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       const syncMobileViewport = () => {
         const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
         if (window.matchMedia("(max-width: 640px)").matches) {
-          if (Number.isFinite(viewportHeight) && viewportHeight > 0) {
-            element.style.height = `${Math.round(viewportHeight)}px`;
+          const height = getMobileViewportHeight(viewportHeight);
+          if (height !== null) {
+            element.style.height = `${height}px`;
           }
         } else {
           element.style.removeProperty("height");

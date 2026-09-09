@@ -16,6 +16,8 @@ import {
 } from "@/lib/gateway-contract";
 import {
   canRestoreTerminalFocus,
+  canSubmitMobileLine,
+  getMobileViewportHeight,
   shouldDeferTerminalResize,
 } from "@/lib/terminal-focus";
 
@@ -91,9 +93,11 @@ export function MudTerminal({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
+  const queueFocusRef = useRef<() => void>(() => {});
   const localEchoRef = useRef(true);
   const readyRef = useRef(false);
   const composingRef = useRef(false);
+  const mobileComposingRef = useRef(false);
   const [mobileLine, setMobileLine] = useState("");
   const [ready, setReady] = useState(false);
   const [localEcho, setLocalEcho] = useState(true);
@@ -186,16 +190,19 @@ export function MudTerminal({
         focusTerminal();
       });
     };
+    queueFocusRef.current = queueFocus;
 
     const syncMobileViewport = () => {
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const layout = containerRef.current?.parentElement;
       if (!layout) return;
       if (window.matchMedia("(max-width: 640px)").matches) {
-        if (Number.isFinite(viewportHeight) && viewportHeight > 0) {
-          const top = Math.max(0, layout.getBoundingClientRect().top);
-          const height = Math.max(0, viewportHeight - top);
-          layout.style.height = `${Math.round(height)}px`;
+        const height = getMobileViewportHeight(
+          viewportHeight,
+          layout.getBoundingClientRect().top,
+        );
+        if (height !== null) {
+          layout.style.height = `${height}px`;
         }
       } else {
         layout.style.removeProperty("height");
@@ -274,6 +281,7 @@ export function MudTerminal({
         window.cancelAnimationFrame(focusFrame);
         focusFrame = undefined;
       }
+      queueFocusRef.current = () => {};
       resizeObserver.disconnect();
       terminal.textarea?.removeEventListener("compositionstart", compositionStart);
       terminal.textarea?.removeEventListener("compositionend", compositionEnd);
@@ -307,6 +315,7 @@ export function MudTerminal({
     const setNotReady = () => {
       readyRef.current = false;
       setReady(false);
+      mobileComposingRef.current = false;
       // Retry/termination must not carry command text or a password forward.
       setMobileLine("");
       updateEcho(true);
@@ -348,6 +357,7 @@ export function MudTerminal({
           attempt = 0;
           readyRef.current = true;
           setReady(true);
+          queueFocusRef.current();
           publishStatus("ready", "무한대전 세계와 연결됐습니다.");
           break;
         case "echo":
@@ -490,7 +500,14 @@ export function MudTerminal({
 
   const submitMobileLine = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!mobileLine || !sendInputRef.current(`${mobileLine}\n`)) {
+    if (
+      !canSubmitMobileLine({
+        value: mobileLine,
+        ready,
+        composing: mobileComposingRef.current,
+      }) ||
+      !sendInputRef.current(`${mobileLine}\n`)
+    ) {
       return;
     }
     setMobileLine("");
@@ -510,11 +527,29 @@ export function MudTerminal({
           {localEcho ? "명령" : "비밀번호"}
         </label>
         <input
+          aria-label={localEcho ? "명령 입력" : "게임 비밀번호 입력"}
           autoCapitalize="none"
           autoComplete="off"
+          autoCorrect="off"
           disabled={!ready}
+          enterKeyHint="send"
           id="mud-command"
+          inputMode="text"
           onChange={(event) => setMobileLine(event.target.value)}
+          onCompositionEnd={() => {
+            mobileComposingRef.current = false;
+          }}
+          onCompositionStart={() => {
+            mobileComposingRef.current = true;
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              (mobileComposingRef.current || event.nativeEvent.isComposing)
+            ) {
+              event.preventDefault();
+            }
+          }}
           placeholder={ready ? "명령을 입력하세요" : "세계 연결을 기다리는 중"}
           spellCheck={false}
           type={localEcho ? "text" : "password"}

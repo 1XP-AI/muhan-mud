@@ -7,6 +7,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { GatewayStatus } from "@/components/mud-terminal";
 import {
   canRestoreTerminalFocus,
+  getMobileViewportHeight,
   shouldDeferTerminalResize,
 } from "@/lib/terminal-focus";
 import {
@@ -56,6 +57,7 @@ export function OnboardingTerminal({
   const terminalRef = useRef<Terminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
+  const queueFocusRef = useRef<() => void>(() => {});
   const readyRef = useRef(false);
   const settledRef = useRef(false);
   const phaseRef = useRef<OnboardingLifecyclePhase>("connecting");
@@ -158,16 +160,19 @@ export function OnboardingTerminal({
         focusTerminal();
       });
     };
+    queueFocusRef.current = queueFocus;
 
     const syncMobileViewport = () => {
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const layout = containerRef.current?.parentElement;
       if (!layout) return;
       if (window.matchMedia("(max-width: 640px)").matches) {
-        if (Number.isFinite(viewportHeight) && viewportHeight > 0) {
-          const top = Math.max(0, layout.getBoundingClientRect().top);
-          const height = Math.max(0, viewportHeight - top);
-          layout.style.height = `${Math.round(height)}px`;
+        const height = getMobileViewportHeight(
+          viewportHeight,
+          layout.getBoundingClientRect().top,
+        );
+        if (height !== null) {
+          layout.style.height = `${height}px`;
         }
       } else {
         layout.style.removeProperty("height");
@@ -245,6 +250,7 @@ export function OnboardingTerminal({
         window.cancelAnimationFrame(focusFrame);
         focusFrame = undefined;
       }
+      queueFocusRef.current = () => {};
       resizeObserver.disconnect();
       terminal.textarea?.removeEventListener("compositionstart", compositionStart);
       terminal.textarea?.removeEventListener("compositionend", compositionEnd);
@@ -274,6 +280,7 @@ export function OnboardingTerminal({
     const clearInputState = () => {
       readyRef.current = false;
       setReady(false);
+      composingRef.current = false;
       setMobileLine("");
       updateEcho(true);
     };
@@ -317,6 +324,7 @@ export function OnboardingTerminal({
           phaseRef.current = "ready";
           readyRef.current = true;
           setReady(true);
+          queueFocusRef.current();
           publishStatus("ready", "온보딩 통로가 준비됐습니다.");
           break;
         case "echo": {
@@ -532,8 +540,11 @@ export function OnboardingTerminal({
           aria-label={echo ? "온보딩 입력" : "게임 비밀번호 입력"}
           autoCapitalize="none"
           autoComplete="off"
+          autoCorrect="off"
           disabled={!ready}
+          enterKeyHint="send"
           id="onboarding-command"
+          inputMode="text"
           onChange={(event) => setMobileLine(event.target.value)}
           onCompositionEnd={() => {
             composingRef.current = false;
@@ -542,7 +553,12 @@ export function OnboardingTerminal({
             composingRef.current = true;
           }}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && composingRef.current) event.preventDefault();
+            if (
+              event.key === "Enter" &&
+              (composingRef.current || event.nativeEvent.isComposing)
+            ) {
+              event.preventDefault();
+            }
           }}
           placeholder={ready ? "터미널 입력을 보내세요" : "온보딩 통로를 기다리는 중"}
           spellCheck={false}
