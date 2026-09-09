@@ -1,14 +1,32 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 세션 정리·canonical 투표 원장·xterm 모바일 경계
+
+완료된 하위 에이전트 세션은 종료했고, MUD에 등록된 Orca 하위 터미널은 0개다.
+예전 Orca 경로의 연결 워크트리는 미커밋 변경을 보존하기 위해 삭제하지 않는다.
+메인에는 `0c6f7d6` xterm 모바일 IME/focus/viewport, `3a8bb8d` canonical 투표
+`Ballots`/append-only `History`, `ccd149c` 메일·게시판 실제 PostgreSQL receipt/replay
+회귀 테스트를 보존했다. `src/frp.new`와 사용자 변경은 계속 보호한다.
+
+투표 원장은 `State.Votes`가 nil이면 legacy `player/vote/<name>_v` 이관 미완료로
+간주하고 fail-closed한다. 명시적으로 이관된 non-nil 원장은 write/rewrite/delete를
+순서 있는 history와 함께 원자적으로 검증하며 snapshot stale·중복·손상 상태를 거부한다.
+다만 session/transport의 `투표` continuation을 이 원장에 연결하고 실제 운영 DB와
+full 기능 인수를 통과하는 작업은 후속 단계다.
+
+검증: world canonical vote race/transport vet/web 51 tests/typecheck/diff check PASS;
+실제 ARM64 `postgres:17-alpine` 메일·게시판 4개 시나리오 PASS(격리 컨테이너).
+
 ## 2026-09-10 `투표` source gate·ballot authority 경계
 
 `command11.c:vote`의 나이(18+LT_HOURS/일), `INVINCIBLE` 우회, `RELECT` 투표소,
 ISSUE 안건·최대 7개 선택지 검증을 `PlanVote`와 server-owned `VoteCatalog`로 분리했다.
 `VoteContinuation`은 y/n 재투표 확인과 a..g 선택만 연결 로컬에서 진행하며 receipt나
-world snapshot을 변경하지 않는다. C의 `player/vote/<name>_v` 존재 확인·삭제·쓰기
-권위가 현재 Go State에 없으므로 `ApplyVote`는 성공 no-op을 허용하지 않고
-`ErrVoteStateUnresolved`로 fail-closed한다. parser/WorldConnector는 이 결과를 일반
-미구현 응답으로 유지하고 terminal이 catalog/ballot identity를 제공하지 못하게 한다.
+world snapshot을 변경하지 않는다. 이 초기 게이트 단계에서는 C의
+`player/vote/<name>_v` 존재 확인·삭제·쓰기 권위가 Go State에 없었으므로
+`ApplyVote`가 성공 no-op을 허용하지 않고 `ErrVoteStateUnresolved`로 fail-closed했다.
+후속 canonical 원장은 아래 최신 체크포인트에서 추가했지만, parser/WorldConnector의
+continuation을 실제 원장에 연결하는 작업은 아직 남아 있다.
 
 world/session/transport targeted race·vet 및 diff 검사가 통과했다. canonical ballot
 스키마·실제 PG 저장/replay와 full continuation/출력 parity, 운영/브라우저/배포 검증은
