@@ -16,6 +16,12 @@ ordinary `integration` check. PostgreSQL, browser, Helm, and compatibility check
 remain release gates.
 No billing/spending limit was changed.
 
+The `release` scope is additionally guarded to the repository default branch. A
+manual release request from a feature branch fails in a small self-hosted guard
+before checkout, PostgreSQL startup, dependency installation, or compatibility
+matrix fan-out. This keeps a release review available without letting an
+accidental scope selection consume the expensive lane during development.
+
 For a batch that changes durable game receipts, run the single opt-in PG batch
 `go test -race ./internal/session -run TestPostgresBoundedLanesPersistAndReplay -count=1`
 with `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL` pointed at that batch's disposable

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func npcTalkFixture(t *testing.T) State {
@@ -146,5 +147,128 @@ func TestNPCTalkRejectsUnresolvedAggressiveEnemyRelation(t *testing.T) {
 	}
 	if _, err := s.PlanNPCTalkProposal("a", "Guide", 2, ""); err == nil {
 		t.Fatal("unresolved enemy relation accepted")
+	}
+}
+
+func npcTalkTopicCatalog(t *testing.T, keyLine, response string) TalkCatalog {
+	t.Helper()
+	catalog, err := LoadTalkCatalog(fstest.MapFS{
+		"Guide-7": &fstest.MapFile{Data: []byte(keyLine + "\n" + response + "\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func npcTalkCatalogFile(t *testing.T, path, body string) TalkCatalog {
+	t.Helper()
+	catalog, err := LoadTalkCatalog(fstest.MapFS{
+		path: &fstest.MapFile{Data: []byte(body)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func TestPlanAndApplyNPCTalkWithCatalogUsesFirstExactTopicResponse(t *testing.T) {
+	s := npcTalkFixture(t)
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 7
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	catalog := npcTalkCatalogFile(t, "Guide-7", "quest\n첫 번째 주제 응답\nquest\n두 번째 주제 응답\n")
+
+	proposal, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.TopicFound || proposal.TopicEntry.Key != "quest" || proposal.TopicEntry.Response != "첫 번째 주제 응답" {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetID != "guide-one" || result.Topic != "quest" || !strings.Contains(result.Response, "첫 번째 주제 응답") || result.Event == nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Event.RoomText, "quest") || !strings.Contains(result.Event.RoomText, "첫 번째 주제 응답") {
+		t.Fatalf("topic room event=%+v", result.Event)
+	}
+	nextActor := next.Players["a"]
+	if result.Event.ActorText != result.Response || flag(nextActor.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatalf("topic actor projection=%+v next actor=%+v", result.Event, next.Players["a"])
+	}
+	projected, ok, err := next.RoomNPCTalkEvent("a", "guide-one", "quest", catalog)
+	if err != nil || !ok || !reflect.DeepEqual(projected, *result.Event) {
+		t.Fatalf("projected=%+v ok=%v err=%v want=%+v", projected, ok, err, result.Event)
+	}
+}
+
+func TestNPCTalkTopicActionsFailClosedWithoutStateMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{name: "attack", line: "quest ATTACK"},
+		{name: "action", line: "quest ACTION smile PLAYER"},
+		{name: "cast", line: "quest CAST cure PLAYER"},
+		{name: "give", line: "quest GIVE 107"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcTalkFixture(t)
+			npc := s.NPCs["guide-one"]
+			npc.Body.Level = 7
+			npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+			s.NPCs["guide-one"] = npc
+			before := s
+			catalog := npcTalkTopicCatalog(t, tc.line, "응답")
+			if _, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog); !errors.Is(err, ErrNPCTalkActionUnavailable) {
+				t.Fatalf("action=%q err=%v", tc.name, err)
+			}
+			if !reflect.DeepEqual(s, before) {
+				t.Fatal("unsupported topic action mutated state")
+			}
+		})
+	}
+}
+
+func TestNPCTalkTopicCatalogMissFailsClosedWithoutChangingNoTopicContract(t *testing.T) {
+	s := npcTalkFixture(t)
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 7
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	s.NPCs["guide-one"] = npc
+	before := s
+	catalog := npcTalkTopicCatalog(t, "other", "응답")
+	proposal, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog)
+	if err != nil || proposal.TopicFound || !proposal.TopicCatalogFound {
+		t.Fatalf("missing exact topic proposal=%+v err=%v", proposal, err)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("missing topic mutated state")
+	}
+	_, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil || result.Event == nil || !strings.Contains(result.Response, "어깨를 으쓱") {
+		t.Fatalf("missing exact topic result=%+v err=%v", result, err)
+	}
+	missingFile := npcTalkCatalogFile(t, "Other-7", "quest\n응답\n")
+	if _, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", missingFile); !errors.Is(err, ErrNPCTalkTopicsUnavailable) {
+		t.Fatalf("missing topic file err=%v", err)
+	}
+
+	// A non-MTALKS creature keeps the old no-topic path even when a catalog is
+	// available and the caller supplied a topic token.
+	npc = s.NPCs["guide-one"]
+	npc.Body.Flags[npcTalkFlag/8] &^= 1 << (npcTalkFlag % 8)
+	s.NPCs["guide-one"] = npc
+	_, result, err = s.PlanNPCTalkWithOccurrence("a", "Guide", 1, "quest", catalog)
+	if err != nil || result.Topic != "quest" || !strings.Contains(result.Response, "첫 번째 안내") {
+		t.Fatalf("no-topic fallback result=%+v err=%v", result, err)
 	}
 }

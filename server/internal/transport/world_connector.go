@@ -36,21 +36,23 @@ type WorldConnectorConfig struct {
 // retries, and drain PendingCleanup before shutdown. Bare look and direct
 // movement are dispatched; this is not a complete game command loop.
 type WorldConnector struct {
-	mu                    sync.Mutex
-	commandMu             sync.Mutex
-	tickMu                sync.Mutex
-	config                WorldConnectorConfig
-	owners                session.Ownership
-	cleanup               *session.CleanupQueue
-	connections           map[*worldConnection]struct{}
-	stopping              bool
-	lastPublicAdmissionAt int32
-	lastVitalSlot         int64
-	pendingVital          *playerVitalTick
-	lastRoomResourceSlot  int64
-	pendingRoomResource   *roomResourceTick
-	lastNPCResourceSlot   int64
-	pendingNPCResource    *npcResourceTick
+	mu                     sync.Mutex
+	commandMu              sync.Mutex
+	tickMu                 sync.Mutex
+	config                 WorldConnectorConfig
+	owners                 session.Ownership
+	cleanup                *session.CleanupQueue
+	connections            map[*worldConnection]struct{}
+	stopping               bool
+	lastPublicAdmissionAt  int32
+	lastVitalSlot          int64
+	pendingVital           *playerVitalTick
+	lastRoomResourceSlot   int64
+	pendingRoomResource    *roomResourceTick
+	lastNPCResourceSlot    int64
+	pendingNPCResource     *npcResourceTick
+	lastNPCMaintenanceSlot int64
+	pendingNPCMaintenance  *npcMaintenanceTick
 }
 
 type playerPhaseSummary struct {
@@ -70,7 +72,7 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
 	}
-	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1}
+	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1}
 	g.cleanup = session.NewWorldCleanupQueue(&g.owners, config.Store, config.WorldID)
 	return g, nil
 }

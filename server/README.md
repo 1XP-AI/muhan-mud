@@ -14,6 +14,9 @@ fan-out하고 replay는 재방송하지 않는다. 전체 C 명령 parity를 완
 재검증용). `integration`은 ARM64 build 없는 조립 gate, `main`은 기본 브랜치에서만
 ARM64 cross-build를 포함한 최종 Go gate다. 실제 PG/browser/release matrix는 기능 레인에서
 반복하지 않는다.
+`release` 수동 scope도 기본 브랜치 전용이며, feature branch에서 잘못 선택하면
+`.github/workflows/ci.yml`의 `release-scope-guard`가 DB·호환성 matrix 시작 전에
+중단한다.
 실행 기준은 `../docs/porting-research/go-server-execution-plan.md`다.
 문서 아래쪽의 Astra/Terra 표기는 과거 조사 기록이며 현재 실행 정책은 모든 하위
 작업을 Luna max로 배치하는 것이다.

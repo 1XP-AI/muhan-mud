@@ -5,6 +5,7 @@ type FakeGateway = {
   dropConnection: () => void;
   messages: string[];
   emitView: (text: string, secret?: boolean, closed?: boolean) => void;
+  setInputEcho: (enabled: boolean) => void;
 };
 
 declare global {
@@ -19,6 +20,7 @@ async function installFakeGateway(page: Page): Promise<void> {
     const messages: string[] = [];
     let socket: FakeSocket | undefined;
     let connectionCount = 0;
+    let inputEcho = true;
 
     class FakeSocket extends EventTarget {
       static readonly CONNECTING = 0;
@@ -58,7 +60,13 @@ async function installFakeGateway(page: Page): Promise<void> {
         messages.push(data);
         const frame = JSON.parse(data) as { type?: string; text?: string };
         if (frame.type === "line") {
-          queueMicrotask(() => this.emitView(`받은 입력: ${frame.text ?? ""}\r\n`));
+          queueMicrotask(() =>
+            this.emitView(
+              inputEcho
+                ? `받은 입력: ${frame.text ?? ""}\r\n`
+                : "입력이 처리되었습니다.\r\n",
+            ),
+          );
         }
       }
 
@@ -83,6 +91,9 @@ async function installFakeGateway(page: Page): Promise<void> {
       dropConnection: () => socket?.close(1006, "network drop"),
       messages,
       emitView: (text, secret = false, closed = false) => socket?.emitView(text, secret, closed),
+      setInputEcho: (enabled) => {
+        inputEcho = enabled;
+      },
     };
     Object.defineProperty(window.__muhanGateway, "connectionCount", {
       get: () => connectionCount,
@@ -139,6 +150,34 @@ test("xterm opens the original line protocol and keeps terminal focus", async ({
   });
   await expect(input).toBeFocused();
   await expect(page.locator("main input[type=email], main input[type=password], main button")).toHaveCount(0);
+});
+
+test("secret prompts suppress password echo in the terminal and DOM", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.goto("/");
+
+  const input = page.getByRole("textbox", { name: "Terminal input" });
+  const password = "terminal-secret-42";
+  await expect(page.locator(".xterm-screen")).toContainText("이름을 입력하세요:");
+
+  await page.evaluate(() => {
+    window.__muhanGateway?.setInputEcho(false);
+    window.__muhanGateway?.emitView("비밀번호를 입력하세요: ", true);
+  });
+  await expect(page.locator(".xterm-screen")).toContainText("비밀번호를 입력하세요:");
+
+  await page.keyboard.type(password);
+  await expect(page.locator(".xterm-screen")).not.toContainText(password);
+  await expect(page.locator("body")).not.toContainText(password);
+
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__muhanGateway?.messages ?? [])).toEqual([
+    JSON.stringify({ type: "line", text: password }),
+  ]);
+  await expect(page.locator(".xterm-screen")).toContainText("입력이 처리되었습니다.");
+  await expect(page.locator(".xterm-screen")).not.toContainText(password);
+  expect(await page.content()).not.toContain(password);
+  await expect(input).toBeFocused();
 });
 
 test("xterm preserves Korean composition and restores focus across mobile resize and reconnect", async ({ page }) => {

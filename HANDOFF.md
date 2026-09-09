@@ -1,5 +1,29 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 cadence guard + NPC/xterm 후속)
+
+검증 경로를 다시 대조한 결과, 기능 레인은 `fast`, 조립 batch는 `integration`, 기본
+브랜치 병합 시에만 `main`을 사용한다. `main`만 Linux ARM64 cross-build를 수행하며,
+`release`는 DB·브라우저·x64/Windows/macOS 호환 matrix를 포함하는 승인된 기본 브랜치
+검토 전용이다. 실수로 feature branch에서 `release`를 선택하면
+`release-scope-guard`가 checkout·PostgreSQL·matrix 시작 전에 중단한다. 정책 테스트와
+YAML/shell 검증으로 이 경계를 고정했다.
+
+이번 병렬 Luna max 후속은 다음을 추가했다.
+
+- `TalkCatalog` 주입형 NPC 주제 대화: canonical `<name>-<level>` exact topic 응답,
+  파일/키 누락 shrug·fail-closed, `ATTACK/ACTION/CAST/GIVE` 미지원 side effect 거부.
+- pre-combat NPC 유지보수 tick: 빈 방 정리·상태 만료·HP/MP 회복·공격 timer·MWAND
+  wander를 결정론적 slot과 idempotent receipt로 실행하며, 실패 시 동일 request를 재시도한다.
+  프로세스 scheduler wiring과 combat 순서는 다음 경계로 남겼다.
+- xterm secret prompt 회귀: 비밀번호가 화면·DOM·scrollback에 echo되지 않는 브라우저 테스트.
+
+검증: 영향 패키지 race/vet, 전체 `scripts/run-go-validation.sh integration`, xterm
+Chromium 4건, 웹 typecheck, 정책·shell·diff 검사가 통과했다. ARM64 cross-build,
+disposable PostgreSQL, release matrix, 실기기 IME/mobile, WSS/Ingress와 testnet 배포는
+중복 실행하지 않았고 해당 경계에 남아 있다. `src/frp.new`는 사용자 dirty 변경으로
+수정·stage하지 않는다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 중복 제거 + xterm/시뮬레이션 레인)
 
 검증 경로를 다시 전수 점검해 `fast`가 깨끗한 작업 트리에서 직전 커밋을 암묵적으로

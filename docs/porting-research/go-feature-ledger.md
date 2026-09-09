@@ -802,3 +802,22 @@ NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포 인수는 
 검증: world/session/transport targeted `go test -race` 및 `go vet` 통과, strict room
 corpus 63건은 기존 예외 정책으로 제외했다. 전체 C parity, actual PG receipt batch,
 Linux ARM64 build, browser IME/mobile, WSS/Ingress와 testnet 배포는 여전히 미완료다.
+
+## 2026-09-09 검증 cadence guard와 NPC/xterm bounded 후속
+
+- **검증 cadence**: `.github/workflows/ci.yml`의 `release-scope-guard`가 release DB/
+  compatibility matrix를 기본 브랜치에만 허용한다. 기능 브랜치에서는 checkout·DB·matrix
+  fan-out 전에 실패하므로 `fast`/`integration`만 사용한다. ARM64 cross-build는 `main`에서
+  한 번만 실행한다.
+- **NPC 주제 대화**: 주입형 `TalkCatalog`가 exact canonical file/key 응답과 C의 missing
+  key shrug를 receipt projection으로 제공한다. 미지원 action side effect는 상태 변경 없이
+  거부한다. parser/connector 기본 경로에는 아직 catalog를 연결하지 않았다.
+- **NPC 유지보수**: bounded pre-combat `update_active` prefix를 slot-bound,
+  idempotent receipt로 옮겼다. 실패 retry는 동일 slot/now/command ID를 사용하며 프로세스
+  scheduler start wiring과 combat 순서는 후속 경계다.
+- **xterm secret echo**: password prompt 입력이 xterm 화면·DOM·scrollback에 나타나지 않는
+  Chromium 회귀 테스트를 추가했다.
+
+검증: 영향 패키지 race/vet, 전체 Go `integration`, xterm Chromium 4건, web typecheck,
+정책·shell·diff 검사를 통과했다. ARM64 cross-build·실제 PG·release matrix·실기기
+IME/mobile은 cadence 정책에 따라 이번 기능 레인에서 반복하지 않았다.

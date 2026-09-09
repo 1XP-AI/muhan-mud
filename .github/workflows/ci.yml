@@ -84,9 +84,33 @@ jobs:
               ;;
           esac
 
+  # Release is an explicit compatibility checkpoint, not a feature-branch
+  # feedback lane. Fail before checkout/database startup/matrix fan-out when a
+  # caller accidentally selects it on a working branch.
+  release-scope-guard:
+    name: Release scope guard
+    if: inputs.validation_scope == 'release'
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 5
+
+    steps:
+      - name: Guard release scope
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$GITHUB_REF" != "$expected" ]]; then
+            echo "release compatibility gate is reserved for the default branch ($expected); use fast or integration on a feature branch." >&2
+            exit 1
+          fi
+          echo "release compatibility gate accepted on $GITHUB_REF"
+
   database-contract:
     name: Supabase ownership contract
     if: inputs.validation_scope == 'release'
+    needs: release-scope-guard
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 90
     services:
@@ -546,6 +570,7 @@ jobs:
   build-and-smoke:
     name: ${{ matrix.lane }}
     if: inputs.validation_scope == 'release'
+    needs: release-scope-guard
     runs-on: ${{ matrix.labels }}
     timeout-minutes: 90
     strategy:

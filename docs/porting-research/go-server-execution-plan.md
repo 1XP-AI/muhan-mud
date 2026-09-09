@@ -690,6 +690,16 @@ testnet 배포는 삭제하지 않고 release gate로 남겼다. 현재 적용 �
 전수 정적 검사에서 stack E2E runner가 누락했던 20261016~20261027 migration 12개도
 시간순 apply 목록에 보강했고, migration coverage 57개·shell 문법 검사를 통과했다.
 
+### 2026-09-09 release scope 재검사
+
+`release`는 DB 계약과 Linux ARM64·x64·Windows·macOS 호환 matrix를 포함하므로 기능
+브랜치 피드백에 재사용하지 않는다. 수동 입력 실수로 이 scope를 feature branch에서
+선택하는 경우를 막기 위해 `release-scope-guard`를 추가했다. 기본 브랜치가 아니면
+checkout, PostgreSQL 서비스, 의존성 설치와 matrix fan-out 전에 실패한다. 따라서
+개발 중에는 `fast` 또는 필요한 batch의 `integration`만 실행하고, ARM64 cross-build는
+실제 main 병합 시 `main`에서 한 번, release 호환성 matrix는 승인된 기본 브랜치 검토에서
+한 번만 실행한다.
+
 ## 2026-09-09 직접 관리 병렬 후속: 뇌물·물건 숨기기·도망 함정
 
 Luna max 세 레인을 서로 다른 world/session 파일 소유권으로 병렬 실행하고 메인 세션에서

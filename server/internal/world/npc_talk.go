@@ -21,10 +21,15 @@ const (
 
 var (
 	// ErrNPCTalkTopicsUnavailable is the migration boundary for command8.c's
-	// talk/<name>-<level> files. LegacyMonster has the no-topic talk string,
-	// but the canonical NPC model has no TalkTopics field or loader contract.
-	// A topic must therefore never be answered from an unproven legacy value.
+	// talk/<name>-<level> files. A topic request for an MTALKS NPC must have an
+	// injected, source-backed TalkCatalog; it must never be answered from the
+	// legacy no-topic Talk string or from an implicit filesystem lookup.
 	ErrNPCTalkTopicsUnavailable = errors.New("canonical NPC talk topics unavailable")
+	// ErrNPCTalkActionUnavailable is returned when a catalog record contains a
+	// C talk_action side effect whose world reducer has not been admitted yet.
+	// Returning an error before Apply preserves the source action boundary
+	// without pretending that ATTACK/ACTION/CAST/GIVE happened.
+	ErrNPCTalkActionUnavailable = errors.New("NPC talk action unavailable")
 	ErrNPCTalkTargetAbsent      = errors.New("NPC talk target absent")
 )
 
@@ -89,6 +94,12 @@ type NPCTalkProposal struct {
 	Response      string
 	Broadcast     bool
 	ExpectedEvent *NPCTalkEvent
+	// TopicCatalogFound records that the canonical <name>-<level> file was
+	// present for an MTALKS topic request. TopicFound is separate because C
+	// responds with a shrug when a loaded file has no exact key.
+	TopicCatalogFound bool
+	TopicFound        bool
+	TopicEntry        TalkTopic
 
 	before State
 }
@@ -254,12 +265,104 @@ func buildNPCTalkEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMon
 	}
 }
 
+// buildNPCTalkTopicEvent mirrors command8.c's topic branch for an exact
+// catalog response. The question is sent only to room observers (the C
+// broadcast uses the actor fd as its exclusion), while the NPC response is
+// projected to both observers and the actor with the actor-specific wording.
+func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMonster, topic, response string) NPCTalkEvent {
+	actorDisplay := actor.Name + "님"
+	npcSubject := legacySubjectParticle(npc.Name)
+	question := fmt.Sprintf("\n%s이 %s에게 \"%s\"에 관해 물어봅니다.\r\n", actorDisplay, npc.Name, topic)
+	roomResponse := fmt.Sprintf("\n%s%s %s에게 \"%s\"라고 이야기합니다.\r\n", npc.Name, npcSubject, actorDisplay, response)
+	actorResponse := fmt.Sprintf("\n%s%s 당신에게 \"%s\"라고 이야기합니다.\r\n", npc.Name, npcSubject, response)
+	return NPCTalkEvent{
+		RoomID:         actor.RoomID,
+		ActorID:        actorID,
+		ActorName:      actor.Name,
+		NPCID:          npcID,
+		NPCName:        npc.Name,
+		Topic:          topic,
+		ExcludeActorID: actorID,
+		RoomText:       question + roomResponse,
+		ActorText:      actorResponse,
+		RoomMessages: []NPCTalkRoomMessage{
+			{Text: question, ExcludeActorID: actorID},
+			{Text: roomResponse, ExcludeActorID: actorID},
+		},
+		ActorMessages: []string{actorResponse},
+	}
+}
+
+// buildNPCTalkTopicMissEvent is the loaded-file/no-exact-key branch from
+// command8.c. It deliberately remains a response projection rather than an
+// action: the caller may add the existing MTLKAG enemy edge atomically.
+func buildNPCTalkTopicMissEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMonster, topic string) NPCTalkEvent {
+	actorDisplay := actor.Name + "님"
+	npcSubject := legacySubjectParticle(npc.Name)
+	question := fmt.Sprintf("\n%s이 %s에게 \"%s\"에 관해 물어봅니다.\r\n", actorDisplay, npc.Name, topic)
+	shrug := fmt.Sprintf("\n%s%s 어깨를 으쓱 거립니다.\r\n", npc.Name, npcSubject)
+	return NPCTalkEvent{
+		RoomID:         actor.RoomID,
+		ActorID:        actorID,
+		ActorName:      actor.Name,
+		NPCID:          npcID,
+		NPCName:        npc.Name,
+		Topic:          topic,
+		ExcludeActorID: actorID,
+		RoomText:       question + shrug,
+		ActorText:      shrug,
+		RoomMessages: []NPCTalkRoomMessage{
+			{Text: question, ExcludeActorID: actorID},
+			{Text: shrug, ExcludeActorID: actorID},
+		},
+		ActorMessages: []string{shrug},
+	}
+}
+
+func lookupNPCTalkTopic(catalog TalkCatalog, npc LegacyMonster, key string) (TalkTopic, bool, bool, error) {
+	file, fileFound, err := catalog.Lookup(npc.Name, int(npc.Level))
+	if err != nil {
+		return TalkTopic{}, false, false, err
+	}
+	if !fileFound {
+		return TalkTopic{}, false, false, nil
+	}
+	topic, found := file.Topic(key)
+	return topic, found, true, nil
+}
+
+func unpackNPCTalkCatalog(catalogs []TalkCatalog) (*TalkCatalog, error) {
+	if len(catalogs) > 1 {
+		return nil, fmt.Errorf("NPC talk accepts at most one catalog")
+	}
+	if len(catalogs) == 0 {
+		return nil, nil
+	}
+	catalog := catalogs[0]
+	return &catalog, nil
+}
+
 // PlanNPCTalkProposal is the source-backed no-topic command8.c:talk boundary.
-// With a topic, C would load a per-NPC talk file. Since the canonical Go model
-// has no TalkTopics/loader contract, a MTALKS NPC rejects that branch before a
-// receipt or state mutation is created. A non-MTALKS NPC follows C's
-// `cmnd->num == 2 || !MTALKS` branch and gives its no-topic response.
-func (s State) PlanNPCTalkProposal(actorID, targetName string, occurrence int, topic string) (NPCTalkProposal, error) {
+// A topic branch receives its immutable TalkCatalog explicitly. A non-MTALKS
+// NPC follows C's `cmnd->num == 2 || !MTALKS` branch and gives its existing
+// no-topic response even when the caller supplied a topic token.
+//
+// The variadic form is backwards-compatible with the already connected
+// no-topic session path while allowing world callers to inject exactly one
+// catalog. PlanNPCTalkProposalWithCatalog is the explicit spelling.
+func (s State) PlanNPCTalkProposal(actorID, targetName string, occurrence int, topic string, catalogs ...TalkCatalog) (NPCTalkProposal, error) {
+	catalog, err := unpackNPCTalkCatalog(catalogs)
+	if err != nil {
+		return NPCTalkProposal{}, err
+	}
+	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, catalog)
+}
+
+func (s State) PlanNPCTalkProposalWithCatalog(actorID, targetName string, occurrence int, topic string, catalog TalkCatalog) (NPCTalkProposal, error) {
+	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, &catalog)
+}
+
+func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, topic string, catalog *TalkCatalog) (NPCTalkProposal, error) {
 	if err := s.Validate(); err != nil {
 		return NPCTalkProposal{}, err
 	}
@@ -305,15 +408,37 @@ func (s State) PlanNPCTalkProposal(actorID, targetName string, occurrence int, t
 		return NPCTalkProposal{}, fmt.Errorf("invalid canonical NPC talk response")
 	}
 	if topic != "" && flag(npc.Body.Flags[:], npcTalkFlag) {
-		return NPCTalkProposal{}, ErrNPCTalkTopicsUnavailable
+		if catalog == nil {
+			return NPCTalkProposal{}, ErrNPCTalkTopicsUnavailable
+		}
+		entry, found, fileFound, err := lookupNPCTalkTopic(*catalog, npc.Body, topic)
+		if err != nil {
+			return NPCTalkProposal{}, fmt.Errorf("%w: %v", ErrNPCTalkTopicsUnavailable, err)
+		}
+		if !fileFound {
+			return NPCTalkProposal{}, ErrNPCTalkTopicsUnavailable
+		}
+		proposal.TopicCatalogFound = true
+		proposal.TopicFound = found
+		proposal.TopicEntry = entry
+		if found && entry.Action.Kind != TalkActionNone {
+			return NPCTalkProposal{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
+		}
 	}
 	proposal.TargetName = npc.Body.Name
 	proposal.ClearHidden = true
-	proposal.AddEnemy = flag(npc.Body.Flags[:], npcTalkAggressiveFlag)
+	proposal.AddEnemy = flag(npc.Body.Flags[:], npcTalkAggressiveFlag) && (!proposal.TopicCatalogFound || !proposal.TopicFound)
 	if proposal.AddEnemy && npc.Enemies == nil {
 		return NPCTalkProposal{}, fmt.Errorf("NPC talk enemy relations unresolved")
 	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc.Body, "")
+	if proposal.TopicCatalogFound {
+		if proposal.TopicFound {
+			event = buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc.Body, topic, proposal.TopicEntry.Response)
+		} else {
+			event = buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc.Body, topic)
+		}
+	}
 	proposal.ExpectedEvent = &event
 	proposal.Response = event.ActorText
 	proposal.Broadcast = true
@@ -322,27 +447,39 @@ func (s State) PlanNPCTalkProposal(actorID, targetName string, occurrence int, t
 
 // PlanNPCTalkWithOccurrence is the reducer-shaped convenience API used by
 // pure callers that need the committed candidate and durable result together.
-func (s State) PlanNPCTalkWithOccurrence(actorID, targetName string, occurrence int, topic string) (State, NPCTalkResult, error) {
-	proposal, err := s.PlanNPCTalkProposal(actorID, targetName, occurrence, topic)
+func (s State) PlanNPCTalkWithOccurrence(actorID, targetName string, occurrence int, topic string, catalogs ...TalkCatalog) (State, NPCTalkResult, error) {
+	proposal, err := s.PlanNPCTalkProposal(actorID, targetName, occurrence, topic, catalogs...)
 	if err != nil {
 		return State{}, NPCTalkResult{}, err
 	}
-	return s.ApplyNPCTalk(proposal)
+	return s.ApplyNPCTalk(proposal, catalogs...)
+}
+
+func (s State) PlanNPCTalkWithOccurrenceAndCatalog(actorID, targetName string, occurrence int, topic string, catalog TalkCatalog) (State, NPCTalkResult, error) {
+	return s.PlanNPCTalkWithOccurrence(actorID, targetName, occurrence, topic, catalog)
 }
 
 // PlanNPCTalk uses the canonical default occurrence one. It is intentionally
 // separate from the parser so server-side callers cannot accidentally treat a
 // zero occurrence as a legacy wildcard.
-func (s State) PlanNPCTalk(actorID, targetName, topic string) (State, NPCTalkResult, error) {
-	return s.PlanNPCTalkWithOccurrence(actorID, targetName, 1, topic)
+func (s State) PlanNPCTalk(actorID, targetName, topic string, catalogs ...TalkCatalog) (State, NPCTalkResult, error) {
+	return s.PlanNPCTalkWithOccurrence(actorID, targetName, 1, topic, catalogs...)
+}
+
+func (s State) PlanNPCTalkWithCatalog(actorID, targetName, topic string, catalog TalkCatalog) (State, NPCTalkResult, error) {
+	return s.PlanNPCTalk(actorID, targetName, topic, catalog)
 }
 
 // ApplyNPCTalk atomically applies the proposal against the exact snapshot on
 // which it was planned. PHIDDN release and the optional MTALKAG enemy edge are
 // committed together; any stale identity, topic gate, or relation error
 // rejects the whole candidate without exposing a partial state.
-func (s State) ApplyNPCTalk(proposal NPCTalkProposal) (State, NPCTalkResult, error) {
+func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (State, NPCTalkResult, error) {
 	if err := s.Validate(); err != nil {
+		return State{}, NPCTalkResult{}, err
+	}
+	catalog, err := unpackNPCTalkCatalog(catalogs)
+	if err != nil {
 		return State{}, NPCTalkResult{}, err
 	}
 	if proposal.before.Version == 0 || !reflect.DeepEqual(s, proposal.before) {
@@ -382,15 +519,49 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal) (State, NPCTalkResult, err
 	if npc.Name != proposal.TargetName || !validNPCTalkText(npc.Talk) {
 		return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk target changed")
 	}
-	if proposal.Topic != "" && flag(npc.Flags[:], npcTalkFlag) {
-		return State{}, NPCTalkResult{}, ErrNPCTalkTopicsUnavailable
+	mtalksTopic := proposal.Topic != "" && flag(npc.Flags[:], npcTalkFlag)
+	if mtalksTopic {
+		if !proposal.TopicCatalogFound {
+			return State{}, NPCTalkResult{}, ErrNPCTalkTopicsUnavailable
+		}
+		if proposal.TopicFound {
+			if proposal.TopicEntry.Key != proposal.Topic || !validNPCTalkText(proposal.TopicEntry.Response) {
+				return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic proposal")
+			}
+			if proposal.TopicEntry.Action.Kind != TalkActionNone {
+				return State{}, NPCTalkResult{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, proposal.TopicEntry.Action.Kind.String())
+			}
+		} else if proposal.TopicEntry != (TalkTopic{}) {
+			return State{}, NPCTalkResult{}, fmt.Errorf("invalid missing NPC talk topic proposal")
+		}
+		if catalog != nil {
+			entry, found, fileFound, lookupErr := lookupNPCTalkTopic(*catalog, npc, proposal.Topic)
+			if lookupErr != nil || !fileFound || found != proposal.TopicFound || (found && entry != proposal.TopicEntry) {
+				if lookupErr != nil {
+					return State{}, NPCTalkResult{}, fmt.Errorf("%w: %v", ErrNPCTalkTopicsUnavailable, lookupErr)
+				}
+				return State{}, NPCTalkResult{}, fmt.Errorf("%w: topic catalog changed", ErrNPCTalkTopicsUnavailable)
+			}
+		}
+	} else if proposal.TopicCatalogFound || proposal.TopicFound || proposal.TopicEntry != (TalkTopic{}) {
+		return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic branch")
 	}
 	currentNPC := s.NPCs[targetID]
 	addEnemy := flag(npc.Flags[:], npcTalkAggressiveFlag)
+	if mtalksTopic && proposal.TopicFound {
+		addEnemy = false
+	}
 	if addEnemy != proposal.AddEnemy || (addEnemy && currentNPC.Enemies == nil) {
 		return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk enemy relation changed")
 	}
 	expected := buildNPCTalkEvent(actor.Body, proposal.ActorID, targetID, npc, "")
+	if mtalksTopic {
+		if proposal.TopicFound {
+			expected = buildNPCTalkTopicEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic, proposal.TopicEntry.Response)
+		} else {
+			expected = buildNPCTalkTopicMissEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic)
+		}
+	}
 	if proposal.ExpectedEvent == nil || !reflect.DeepEqual(*proposal.ExpectedEvent, expected) || proposal.Response != expected.ActorText || !proposal.ClearHidden || !proposal.Broadcast {
 		return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk projection changed")
 	}
@@ -430,10 +601,14 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal) (State, NPCTalkResult, err
 	return next, result, nil
 }
 
+func (s State) ApplyNPCTalkWithCatalog(proposal NPCTalkProposal, catalog TalkCatalog) (State, NPCTalkResult, error) {
+	return s.ApplyNPCTalk(proposal, catalog)
+}
+
 // ApplyNPCTalkProposal is a descriptive alias for callers that name the
 // reducer by its explicit proposal boundary.
-func (s State) ApplyNPCTalkProposal(proposal NPCTalkProposal) (State, NPCTalkResult, error) {
-	return s.ApplyNPCTalk(proposal)
+func (s State) ApplyNPCTalkProposal(proposal NPCTalkProposal, catalogs ...TalkCatalog) (State, NPCTalkResult, error) {
+	return s.ApplyNPCTalk(proposal, catalogs...)
 }
 
 func npcEnemyContains(enemies []NPCEnemy, target EntityRef) bool {
@@ -448,8 +623,12 @@ func npcEnemyContains(enemies []NPCEnemy, target EntityRef) bool {
 // RoomNPCTalkEvent derives the same event from committed canonical state. It
 // is read-only and is intended for transports that publish projections after
 // the first receipt commit; replay callers should use the receipt's result.
-func (s State) RoomNPCTalkEvent(actorID, targetID, topic string) (NPCTalkEvent, bool, error) {
+func (s State) RoomNPCTalkEvent(actorID, targetID, topic string, catalogs ...TalkCatalog) (NPCTalkEvent, bool, error) {
 	if err := s.Validate(); err != nil {
+		return NPCTalkEvent{}, false, err
+	}
+	catalog, err := unpackNPCTalkCatalog(catalogs)
+	if err != nil {
 		return NPCTalkEvent{}, false, err
 	}
 	actor, ok := s.Players[actorID]
@@ -461,7 +640,23 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string) (NPCTalkEvent, 
 		return NPCTalkEvent{}, false, err
 	}
 	if topic != "" && flag(npc.Flags[:], npcTalkFlag) {
-		return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
+		if catalog == nil {
+			return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
+		}
+		entry, found, fileFound, lookupErr := lookupNPCTalkTopic(*catalog, npc, topic)
+		if lookupErr != nil {
+			return NPCTalkEvent{}, false, fmt.Errorf("%w: %v", ErrNPCTalkTopicsUnavailable, lookupErr)
+		}
+		if !fileFound {
+			return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
+		}
+		if found {
+			if entry.Action.Kind != TalkActionNone {
+				return NPCTalkEvent{}, false, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
+			}
+			return buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc, topic, entry.Response), true, nil
+		}
+		return buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc, topic), true, nil
 	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc, "")
 	return event, true, nil
@@ -470,7 +665,7 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string) (NPCTalkEvent, 
 // NPCTalkEventForName resolves the exact positive-occurrence selector against
 // committed state and derives a recipient projection without trusting a client
 // supplied NPC ID.
-func (s State) NPCTalkEventForName(actorID, targetName string, occurrence int, topic string) (NPCTalkEvent, bool, error) {
+func (s State) NPCTalkEventForName(actorID, targetName string, occurrence int, topic string, catalogs ...TalkCatalog) (NPCTalkEvent, bool, error) {
 	if err := s.Validate(); err != nil {
 		return NPCTalkEvent{}, false, err
 	}
@@ -481,7 +676,7 @@ func (s State) NPCTalkEventForName(actorID, targetName string, occurrence int, t
 	if !found {
 		return NPCTalkEvent{}, false, ErrNPCTalkTargetAbsent
 	}
-	return s.RoomNPCTalkEvent(actorID, targetID, topic)
+	return s.RoomNPCTalkEvent(actorID, targetID, topic, catalogs...)
 }
 
 func validNPCTalkName(name string) bool {
