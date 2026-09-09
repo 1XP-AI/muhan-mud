@@ -15,8 +15,8 @@ batch당 한 번만 실행한다. `scripts/run-go-validation.sh fast`가 레인�
 최신 bounded slice는 `기공집결`/`살기충전`/`참선`이다. `PPOWER`/`PSLAYE`/`PMEDIT`
 flag와 원본 timer·cooldown·권한·성공 stat/THACO·실패 cooldown을 snapshot-bound
 proposal/apply와 durable receipt/replay로 옮겼고, parser·WorldConnector·room event까지
-연결했다. targeted session/world/transport race와 parser/live connector 회귀는 통과했고,
-통합 후 ARM64 PG17 receipt와 merge gate를 batch당 한 번 실행할 예정이다. 전체 C parity,
+연결했다. targeted session/world/transport race와 parser/live connector 회귀, 통합
+ARM64 PG17 receipt와 merge gate를 batch당 한 번 실행해 통과했다. 전체 C parity,
 strict room corpus 63건, NPC full cadence, 실기기 IME/mobile, WSS/Ingress·testnet 배포는
 여전히 남아 있다. `src/frp.new`는 사용자 소유 변경으로 계속 보존한다.
 
