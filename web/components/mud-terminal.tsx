@@ -14,6 +14,10 @@ import {
   createGatewayAuthFrame,
   shouldReconnectGatewayClose,
 } from "@/lib/gateway-contract";
+import {
+  canRestoreTerminalFocus,
+  shouldDeferTerminalResize,
+} from "@/lib/terminal-focus";
 
 export type GatewayConnectionState =
   | "idle"
@@ -89,6 +93,7 @@ export function MudTerminal({
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
   const localEchoRef = useRef(true);
   const readyRef = useRef(false);
+  const composingRef = useRef(false);
   const [mobileLine, setMobileLine] = useState("");
   const [ready, setReady] = useState(false);
   const [localEcho, setLocalEcho] = useState(true);
@@ -102,6 +107,8 @@ export function MudTerminal({
     if (!containerRef.current) {
       return;
     }
+
+    let disposed = false;
 
     const terminal = new Terminal({
       allowProposedApi: false,
@@ -145,22 +152,136 @@ export function MudTerminal({
 
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+
+    let resizeFrame: number | undefined;
+    let resizePending = false;
+    let focusFrame: number | undefined;
+
+    const hasSelection = () =>
+      terminal.hasSelection() || Boolean(window.getSelection()?.toString());
+
+    const focusTerminal = () => {
+      const activeElement = document.activeElement;
+      if (
+        !canRestoreTerminalFocus({
+          disposed,
+          composing: composingRef.current,
+          hasSelection: hasSelection(),
+          documentFocused: document.hasFocus(),
+          activeElementOutsideTerminal:
+            activeElement !== null &&
+            activeElement !== document.body &&
+            !containerRef.current?.contains(activeElement),
+        })
+      ) {
+        return;
+      }
+      terminal.focus();
+    };
+
+    const queueFocus = () => {
+      if (disposed || focusFrame !== undefined) return;
+      focusFrame = window.requestAnimationFrame(() => {
+        focusFrame = undefined;
+        focusTerminal();
+      });
+    };
+
+    const syncMobileViewport = () => {
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const layout = containerRef.current?.parentElement;
+      if (!layout) return;
+      if (window.matchMedia("(max-width: 640px)").matches) {
+        if (Number.isFinite(viewportHeight) && viewportHeight > 0) {
+          const top = Math.max(0, layout.getBoundingClientRect().top);
+          const height = Math.max(0, viewportHeight - top);
+          layout.style.height = `${Math.round(height)}px`;
+        }
+      } else {
+        layout.style.removeProperty("height");
+      }
+    };
+
+    const applyResize = () => {
+      resizeFrame = undefined;
+      if (disposed) return;
+      syncMobileViewport();
+      if (shouldDeferTerminalResize(composingRef.current)) {
+        resizePending = true;
+        return;
+      }
+      fitAddon.fit();
+      queueFocus();
+    };
+
+    const resize = () => {
+      if (disposed) return;
+      // Keep the visible area in sync with a mobile keyboard while deferring
+      // xterm's row/column recalculation until a composition has committed.
+      syncMobileViewport();
+      if (shouldDeferTerminalResize(composingRef.current)) {
+        resizePending = true;
+        return;
+      }
+      if (resizeFrame !== undefined) return;
+      resizeFrame = window.requestAnimationFrame(applyResize);
+    };
+
+    const compositionStart = () => {
+      composingRef.current = true;
+    };
+    const compositionEnd = () => {
+      composingRef.current = false;
+      if (resizePending) {
+        resizePending = false;
+        resize();
+      } else {
+        queueFocus();
+      }
+    };
+    const pointerUp = () => {
+      if (!hasSelection()) queueFocus();
+    };
+
+    terminal.textarea?.addEventListener("compositionstart", compositionStart);
+    terminal.textarea?.addEventListener("compositionend", compositionEnd);
+    containerRef.current.addEventListener("pointerup", pointerUp);
+    window.addEventListener("focus", queueFocus);
+    window.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("scroll", resize);
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(containerRef.current);
+
+    terminal.attachCustomKeyEventHandler((event) => event.key !== "Tab");
+    syncMobileViewport();
     fitAddon.fit();
-    terminal.focus();
+    queueFocus();
 
     const dataDisposable = terminal.onData((data) => {
       sendInputRef.current(data);
     });
-    const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(() => fitAddon.fit());
-    });
-    resizeObserver.observe(containerRef.current);
-
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
     return () => {
+      disposed = true;
+      if (resizeFrame !== undefined) {
+        window.cancelAnimationFrame(resizeFrame);
+        resizeFrame = undefined;
+      }
+      if (focusFrame !== undefined) {
+        window.cancelAnimationFrame(focusFrame);
+        focusFrame = undefined;
+      }
       resizeObserver.disconnect();
+      terminal.textarea?.removeEventListener("compositionstart", compositionStart);
+      terminal.textarea?.removeEventListener("compositionend", compositionEnd);
+      containerRef.current?.removeEventListener("pointerup", pointerUp);
+      window.removeEventListener("focus", queueFocus);
+      window.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("scroll", resize);
       dataDisposable.dispose();
       fitAddon.dispose();
       terminal.dispose();

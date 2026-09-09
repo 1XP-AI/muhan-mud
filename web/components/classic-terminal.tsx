@@ -3,6 +3,10 @@
 import { useEffect, useRef } from "react";
 
 import { TerminalLine } from "@/lib/terminal-line";
+import {
+  canRestoreTerminalFocus,
+  shouldDeferTerminalResize,
+} from "@/lib/terminal-focus";
 
 import styles from "./classic-terminal.module.css";
 
@@ -100,11 +104,18 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         term.hasSelection() || Boolean(window.getSelection()?.toString());
 
       const focusTerminal = () => {
+        const activeElement = document.activeElement;
         if (
-          disposed ||
-          composing ||
-          hasSelection() ||
-          !document.hasFocus()
+          !canRestoreTerminalFocus({
+            disposed,
+            composing,
+            hasSelection: hasSelection(),
+            documentFocused: document.hasFocus(),
+            activeElementOutsideTerminal:
+              activeElement !== null &&
+              activeElement !== document.body &&
+              !element.contains(activeElement),
+          })
         ) {
           return;
         }
@@ -135,7 +146,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         resizeFrame = undefined;
         if (disposed) return;
         syncMobileViewport();
-        if (composing) {
+        if (shouldDeferTerminalResize(composing)) {
           resizePending = true;
           return;
         }
@@ -149,7 +160,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         // composing; defer only xterm's row/column recalculation until the
         // composition has committed.
         syncMobileViewport();
-        if (composing) {
+        if (shouldDeferTerminalResize(composing)) {
           resizePending = true;
           return;
         }
