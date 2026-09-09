@@ -57,13 +57,18 @@ bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable
 bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable
 ```
 
-결과: **2 passed (16.2s)**. 실제 PostgreSQL 17 ARM64 컨테이너, Go `-race` 서버,
+결과: **3 passed (17.4s)**. 실제 PostgreSQL 17 ARM64 컨테이너, Go `-race` 서버,
 Next 개발 서버, Chromium을 연결해 xterm 안에서 캐릭터 생성, 한글 IME 커밋 입력
 (예/남/선/봐), 새 암호, 첫 방 입장, 페이지 재로드, 같은 이름/암호 재로그인과
 `봐`를 수행했고 암호가 화면에 나타나지 않는 것도 확인했다. 두 번째 시나리오는
 `LinkExistingWorldCharacter`로 미리 연결한 canonical 캐릭터가 로그인 후 한 번만
 입장하고 두 번째 세션은 거부되는지 확인했다. 테스트 뒤 소유한 PostgreSQL
 컨테이너가 제거됐으며 다른 Docker 자원은 건드리지 않았다.
+
+추가된 세 번째 테스트는 iPhone 크기 viewport에서 초기/resize 후 xterm helper textarea
+focus를 유지하고, 기존 캐릭터가 `봐`를 제출해 실제 Go 응답을 받는지 확인한다. 이는
+Chromium mobile emulation과 synthetic composition 이벤트를 사용한 회귀이며 실제
+모바일 OS 키보드·IME의 증거로 간주하지 않는다.
 
 초기 실행에서 Go 모듈이 `server/` 아래에 있다는 하네스 빌드 경로 오류를 발견해
 수정했고, 같은 래퍼를 다시 실행해 위 결과를 얻었다.

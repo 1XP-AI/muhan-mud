@@ -178,3 +178,42 @@ test("pre-seeded canonical character admits once and rejects a duplicate session
 
   expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
 });
+
+test.describe("mobile terminal input", () => {
+  test.use({
+    deviceScaleFactor: 3,
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+  });
+
+  test("keeps the xterm focused and usable after a mobile viewport resize", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+
+    await page.goto("/");
+    await waitForLoginPrompt(page);
+    const input = page.locator("textarea.xterm-helper-textarea");
+    const terminal = page.getByLabel("무한대전 게임 터미널");
+    await expect(terminal).toBeVisible();
+    const viewport = page.viewportSize();
+    const bounds = await terminal.boundingBox();
+    expect(viewport?.width).toBe(390);
+    expect(viewport?.height).toBe(844);
+    expect(bounds?.height ?? 0).toBeGreaterThan(0);
+    expect(bounds?.height ?? 0).toBeLessThanOrEqual(viewport?.height ?? 0);
+
+    await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+    await expect(input).toBeFocused();
+    await submitAndWait(page, existingCharacterName, "암호");
+    await submitAndWait(page, existingGamePassword, "== 브라우저 광장 ==");
+    await submitAndWait(page, "봐", "실제 Go 서버와 PostgreSQL");
+    await expect(input).toBeFocused();
+    await expect(page.locator("body")).not.toContainText(existingGamePassword);
+
+    expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
+  });
+});

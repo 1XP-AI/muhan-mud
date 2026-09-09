@@ -5,6 +5,11 @@
 동일 command ID replay 네 케이스가 모두 PASS했다. 컨테이너는 테스트 종료 후 제거했다.
 이것은 bounded receipt 경계의 증거이며 전체 PostgreSQL/Supabase 이관 완료를 뜻하지 않는다.
 
+최신 브라우저 검증은 동일한 로컬 래퍼에서 신규 가입/재로그인, 기존 캐릭터 단일 입장·
+중복 세션 거부, iPhone 크기 viewport resize 후 xterm focus/명령 제출까지 **3 passed
+(17.4s)**다. 모바일 emulation일 뿐 실제 기기 키보드·IME, WSS/Ingress·testnet 인수는
+미완료다.
+
 상태: 2026-09-08 누적 Go 수직 슬라이스 진행 중. `cmd/muhan`은 가입/로그인과
 방향/함정/NPC 이동 receipt를 포함한 로컬 실행 경로가 있지만 전체 게임 명령·전투·
 tick·브라우저/배포 인수는 아직 완료되지 않았다.

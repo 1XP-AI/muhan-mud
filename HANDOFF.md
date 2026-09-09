@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 검증 체크포인트 — 2026-09-10 (실제 PG·브라우저 모바일 viewport)
+
+실제 PostgreSQL 17 ARM64, Go `-race`, Chromium을 연결한
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`에
+모바일 viewport 회귀를 추가해 **3 passed (17.4s)**를 확인했다. 신규 terminal-only 가입·
+재로그인, 기존 `LinkExistingWorldCharacter` 캐릭터의 단일 입장·중복 세션 거부, iPhone
+크기 viewport에서 resize 후 xterm focus 유지와 `봐` 제출을 검증했다. 테스트 소유 DB
+컨테이너는 종료 후 제거했다. 이는 모바일 viewport 에뮬레이션과 synthetic IME 경계의
+증거이며 실제 모바일 OS 키보드/IME, 운영 WSS/Ingress 및 전체 기능 인수는 미완료다.
+
 ## 최신 검증 체크포인트 — 2026-09-10 (bounded PostgreSQL receipt/replay)
 
 고유 loopback 포트와 임시 데이터 디렉터리를 사용하는 ARM64 `postgres:17-alpine`
