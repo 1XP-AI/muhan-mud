@@ -2317,3 +2317,18 @@ race/vet/ARM64 build와 실제 ARM64 PostgreSQL 17 저장·재생 검증을 통�
 build와 실제 ARM64 PostgreSQL 17 저장·재생 검증을 통과했지만 전체 C 명령 parity, strict
 room corpus, NPC full cadence, 실기기 IME/mobile, WSS/Ingress 및 testnet 배포는 별도 인수
 조건으로 남아 있다.
+
+## 기공집결·살기충전·참선
+
+터미널 connector는 원작 `command9.c`의 세 self-ability bounded slice도 처리한다.
+
+- `기공집결`: 검사 계열 권한, 600초 cooldown, 성공 힘 +3/`PPOWER` 효과와 실패 cooldown
+- `살기충전`: 자객·도둑 계열 권한, canonical WIELD gate, 성공 THACO -3/`PSLAYE` 효과
+- `참선`: 무사·불제자 계열 권한, 700초 cooldown, 성공 지능 +3/`PMEDIT` 효과
+
+모두 exact bare alias만 받고, clock/RNG를 주입한 proposal/apply와 typed receipt/event를
+사용한다. 최초 commit만 room observer에 전파하며 동일 command ID replay에서는 RNG·상태
+변경·방송을 재실행하지 않는다. 이 batch는 레인별 targeted race/gofmt만 반복하고 통합
+경계에서 전체 gate와 격리 PostgreSQL을 한 번 실행하는 cadence를 따른다. 전체 C alias/
+prefix/key parity, strict room corpus 63건, NPC full cadence, 실기기 IME/mobile,
+WSS/Ingress와 testnet 배포는 아직 별도 인수 조건이다.

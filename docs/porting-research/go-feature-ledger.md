@@ -741,3 +741,24 @@ connector·room fan-out은 메인 세션에서 직렬 통합했다.
 cross-build 및 실제 ARM64 PostgreSQL 17 저장·재생을 통과했다. 전체 C alias/prefix/key/
 ANSI parity, strict room corpus 63건, NPC full cadence/broadcast, IME/mobile 실기기,
 WSS/Ingress와 testnet 배포는 여전히 별도 인수 조건이다.
+## 2026-09-09 직접 관리 병렬 후속: 기공집결·살기충전·참선
+
+두 Luna max 레인이 파일 소유권을 분리해 원작 `command9.c`의 세 self-ability를
+구현하고, 메인 세션이 parser·connector·room fan-out을 직렬 통합했다.
+
+- `기공집결`: FIGHTER/INVINCIBLE 이상 권한, `PPOWER=52`·`LT_POWER=37`, 600초
+  cooldown, DEX 확률, 성공 힘 +3·120초 효과, 실패 `now-590`을 atomic reducer로 고정했다.
+- `살기충전`: ASSASSIN/THIEF/INVINCIBLE 이상 권한, `PSLAYE=53`·`LT_SLAYE=38`,
+  canonical WIELD gate, 성공 THACO -3·150초 효과와 실패 cooldown을 고정했다.
+- `참선`: CLERIC/PALADIN/INVINCIBLE 이상 권한, `PMEDIT=54`·`LT_MEDIT=39`, 700초
+  cooldown, PIETY 확률, 성공 지능 +3·150초 효과와 실패 cooldown을 고정했다.
+
+세 명령 모두 server-owned clock/RNG, snapshot-bound proposal/apply, typed result/event,
+`ExecuteGame` receipt/replay를 사용한다. 첫 실행만 room observer에 fan-out하고 replay는
+RNG·state mutation·방송을 재실행하지 않는다. 정확한 bare alias만 허용하며 웹 계정 가입은
+추가하지 않는다.
+
+이번 batch의 검증 비용은 레인별 targeted race/gofmt로 제한하고, 통합 후에만 전체 race·
+vet·Linux ARM64 build·격리 PostgreSQL 17 receipt를 batch당 한 번 실행한다. 전체 C
+alias/prefix/key/ANSI parity, strict room corpus 63건, NPC full cadence, 실기기 IME/mobile,
+WSS/Ingress와 testnet 배포 인수는 여전히 미완료다.

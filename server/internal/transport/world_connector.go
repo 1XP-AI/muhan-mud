@@ -301,6 +301,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	rangerPrayCommand := false
 	prepareCommand := false
 	upDmgCommand := false
+	powerAccuracyCommand := false
+	meditateCommand := false
 	titleCommand := false
 	infoCommand := false
 	settingsCommand := false
@@ -440,6 +442,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandUpDmg:
 		upDmgCommand = true
 		receipt, err = c.game.owners.ExecuteUpDmgLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.UpDmgOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandPowerAccuracy:
+		if _, ok := session.ParsePowerAccuracyLine(line); !ok {
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		powerAccuracyCommand = true
+		receipt, err = c.game.owners.ExecutePowerAccuracyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.PowerAccuracyOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandMeditate:
+		meditateCommand = true
+		receipt, err = c.game.owners.ExecuteMeditateLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MeditateOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandTitle:
 		titleCommand = true
 		receipt, err = c.game.owners.ExecuteTitleLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -484,6 +495,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedRangerPrayLine) ||
 		errors.Is(err, session.ErrUnsupportedPrepareLine) ||
 		errors.Is(err, session.ErrUnsupportedUpDmgLine) ||
+		errors.Is(err, session.ErrUnsupportedPowerAccuracyLine) ||
+		errors.Is(err, session.ErrUnsupportedMeditateLine) ||
 		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
@@ -672,6 +685,22 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if powerAccuracyCommand && !receipt.Replayed {
+		var result world.PowerAccuracyResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishPowerAccuracy(after, *result.Event)
+			}
+		}
+	}
+	if meditateCommand && !receipt.Replayed {
+		var result world.MeditateResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishMeditate(after, *result.Event)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -792,6 +821,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if upDmgCommand {
 		var result world.UpDmgResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if powerAccuracyCommand {
+		var result world.PowerAccuracyResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if meditateCommand {
+		var result world.MeditateResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

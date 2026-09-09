@@ -17,6 +17,14 @@ func (g *WorldConnector) publishUpDmg(after world.State, event world.UpDmgEvent)
 	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
 }
 
+func (g *WorldConnector) publishPowerAccuracy(after world.State, event world.PowerAccuracyEvent) {
+	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
+}
+
+func (g *WorldConnector) publishMeditate(after world.State, event world.MeditateEvent) {
+	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
+}
+
 func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, text string) {
 	if actorID == "" || text == "" || excludeActorID == "" {
 		return

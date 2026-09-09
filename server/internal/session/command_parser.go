@@ -64,6 +64,8 @@ const (
 	CommandPrepare
 	CommandUpDmg
 	CommandTitle
+	CommandPowerAccuracy
+	CommandMeditate
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -107,6 +109,16 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsUpDmgLine(trimmed) {
 		parsed.Kind = CommandUpDmg
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsPowerAccuracyLine(trimmed) {
+		parsed.Kind = CommandPowerAccuracy
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsMeditateLine(trimmed) {
+		parsed.Kind = CommandMeditate
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

@@ -1,5 +1,25 @@
 # Muhan MUD 포팅 핸드오프
 
+## 현재 오케스트레이션 체크포인트 — 2026-09-09
+
+개발 속도 최적화를 전수 점검해 검증 cadence를 코드화했다. 병렬 Luna max 레인은 담당
+파일의 gofmt와 변경 패키지 targeted race만 실행하고, 전체 race·vet·Linux ARM64
+cross-build·격리 PostgreSQL·브라우저·차트는 메인 통합 또는 승인된 릴리스 경계에서
+batch당 한 번만 실행한다. `scripts/run-go-validation.sh fast`가 레인용이고,
+`scripts/run-go-validation.sh merge`가 통합용이다. 기존 `.github/workflows/ci.yml`는
+`workflow_dispatch` 전용이며 Linux ARM64, x64/Windows/macOS 호환 matrix를 유지한다.
+역사 문서에 반복된 전체 검증 명령은 실행 hook이 아니라 과거 증거이므로 매 레인마다
+재실행하지 않는다. `.githooks/pre-push`는 Go 전체 gate를 자동 호출하지 않으며 기존
+웹/정책 fast check와 명시적 `MUHAN_LOCAL_FULL_STACK=1` opt-in만 유지한다.
+
+최신 bounded slice는 `기공집결`/`살기충전`/`참선`이다. `PPOWER`/`PSLAYE`/`PMEDIT`
+flag와 원본 timer·cooldown·권한·성공 stat/THACO·실패 cooldown을 snapshot-bound
+proposal/apply와 durable receipt/replay로 옮겼고, parser·WorldConnector·room event까지
+연결했다. targeted session/world/transport race와 parser/live connector 회귀는 통과했고,
+통합 후 ARM64 PG17 receipt와 merge gate를 batch당 한 번 실행할 예정이다. 전체 C parity,
+strict room corpus 63건, NPC full cadence, 실기기 IME/mobile, WSS/Ingress·testnet 배포는
+여전히 남아 있다. `src/frp.new`는 사용자 소유 변경으로 계속 보존한다.
+
 ## 현재 로컬 체크포인트 — 2026-09-08
 
 작업이 초기화된 것이 아니라, 애플리케이션과 인프라의 로컬 브랜치가 원격보다
