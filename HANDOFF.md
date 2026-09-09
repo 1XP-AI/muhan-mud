@@ -1,5 +1,20 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (전역 잡담·환호)
+
+원작 `command4.c:broadsend/broadsend2`의 `잡담`/`잡`/`환호`를 Go world/session/
+transport로 옮겼다. 255바이트·UTF-8/control 입력 경계, PBRSND 일일 quota, PSILNC·레벨·
+HP gate, 31칸 할인표와 INVINCIBLE 보정을 durable reducer에 고정했다. Supabase receipt에는
+daily/HP 결과와 event를 저장하고 descriptor-local cooldown/global admission timestamp는
+runtime에만 둔다. PNOBRD/PNOBR2 수신 거부 fan-out은 첫 commit에만 실행하고 replay에는
+재실행하지 않는다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -skip
+'^TestRoomBodyCorpus$'` 및 parser/connector/session replay 회귀 통과. 이번 lane에서는
+실제 PostgreSQL·browser·ARM64 cross-build를 반복하지 않았고, 각각 통합 batch·main/release
+경계에서만 실행한다. `src/frp.new`는 사용자 소유 dirty 변경이라 계속 보존하며, issue #1과
+Project 항목은 전체 인수까지 In Progress다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (반복 검증 비용 재분리)
 
 저장소의 워크플로·로컬 hook·검증 스크립트·문서를 전수 대조해 같은 고비용 검증이

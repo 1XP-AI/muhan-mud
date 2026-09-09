@@ -36,20 +36,21 @@ type WorldConnectorConfig struct {
 // retries, and drain PendingCleanup before shutdown. Bare look and direct
 // movement are dispatched; this is not a complete game command loop.
 type WorldConnector struct {
-	mu                   sync.Mutex
-	commandMu            sync.Mutex
-	tickMu               sync.Mutex
-	config               WorldConnectorConfig
-	owners               session.Ownership
-	cleanup              *session.CleanupQueue
-	connections          map[*worldConnection]struct{}
-	stopping             bool
-	lastVitalSlot        int64
-	pendingVital         *playerVitalTick
-	lastRoomResourceSlot int64
-	pendingRoomResource  *roomResourceTick
-	lastNPCResourceSlot  int64
-	pendingNPCResource   *npcResourceTick
+	mu                    sync.Mutex
+	commandMu             sync.Mutex
+	tickMu                sync.Mutex
+	config                WorldConnectorConfig
+	owners                session.Ownership
+	cleanup               *session.CleanupQueue
+	connections           map[*worldConnection]struct{}
+	stopping              bool
+	lastPublicAdmissionAt int32
+	lastVitalSlot         int64
+	pendingVital          *playerVitalTick
+	lastRoomResourceSlot  int64
+	pendingRoomResource   *roomResourceTick
+	lastNPCResourceSlot   int64
+	pendingNPCResource    *npcResourceTick
 }
 
 type playerPhaseSummary struct {
@@ -202,6 +203,13 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	}
 	connection.ready = true
 	g.mu.Lock()
+	// command4.c resets the global public-broadcast cooldown when a visible
+	// non-DM player enters. Character drafts do not carry the runtime PDMINV
+	// bit, so class is the durable admission boundary available here; an
+	// operator/DM admission never delays ordinary players.
+	if c.Draft.Class < 12 {
+		g.lastPublicAdmissionAt = now
+	}
 	g.connections[connection] = struct{}{}
 	g.mu.Unlock()
 	return connection, entry.Scene, nil
@@ -216,6 +224,7 @@ type worldConnection struct {
 	// deliberately excluded from world state and durable receipts: `!` only
 	// expands the next line before the normal command reducer runs.
 	lastCommand      string
+	lastBroadcastAt  int32
 	ready, closed    bool
 	closeAfterSubmit bool
 	infoPending      bool
@@ -285,6 +294,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	directional := parsed.Kind == session.CommandDirectional
 	sayText, sayCommand := "", false
 	yellText, yellCommand := "", false
+	broadcastCommand := false
+	var broadcastOptions world.BroadcastOptions
 	emoteCommand := false
 	var emote session.EmoteCommand
 	expressText := ""
@@ -347,6 +358,13 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandYell:
 		yellText, yellCommand = session.YellLineText(line)
 		receipt, err = c.game.owners.ExecuteYellLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandBroadcast:
+		broadcastCommand = true
+		c.game.mu.Lock()
+		globalAt := c.game.lastPublicAdmissionAt
+		c.game.mu.Unlock()
+		broadcastOptions = world.BroadcastOptions{Now: now, LastAt: c.lastBroadcastAt, GlobalAt: globalAt}
+		receipt, err = c.game.owners.ExecuteBroadcastLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, broadcastOptions)
 	case session.CommandEmote:
 		emote, emoteCommand = session.ParseEmoteLine(line)
 		if !emoteCommand {
@@ -535,6 +553,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
 		errors.Is(err, session.ErrUnsupportedYellLine) ||
+		errors.Is(err, session.ErrUnsupportedBroadcastLine) ||
 		errors.Is(err, session.ErrUnsupportedEmoteLine) ||
 		errors.Is(err, session.ErrUnsupportedExpressLine) ||
 		errors.Is(err, session.ErrUnsupportedLookAtTargetLine) ||
@@ -574,6 +593,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if yellCommand && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
 			c.game.publishYell(after, c.lease.ActorID, yellText)
+		}
+	}
+	if broadcastCommand && !receipt.Replayed {
+		var result world.BroadcastResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishBroadcast(after, *result.Event)
+			}
+			// The descriptor cooldown changes only after the receipt commits. A
+			// rejected or replayed line must not consume it.
+			c.lastBroadcastAt = broadcastOptions.Now
 		}
 	}
 	if emoteCommand && !receipt.Replayed {
@@ -763,7 +793,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		c.closeAfterSubmit = true
 	}
 	var output string
-	if searchCommand {
+	if broadcastCommand {
+		var result world.BroadcastResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if searchCommand {
 		var result world.SearchResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
@@ -943,9 +978,19 @@ func (c *worldConnection) Close(ctx context.Context) {
 	if c.closed {
 		return
 	}
+	before, beforeOK := c.game.snapshot(ctx)
 	// Ownership remains reserved on every failure; background worker owns retries.
 	if err := c.game.cleanup.Enqueue(c.lease); err != nil {
 		return
+	}
+	if beforeOK {
+		if player, ok := before.Players[c.lease.ActorID]; ok && player.Online && player.Body.Class <= 11 &&
+			!world.PlayerFlagSet(player.Body, 10) && !world.PlayerFlagSet(player.Body, 62) {
+			now, _ := c.game.config.Clock()
+			c.game.mu.Lock()
+			c.game.lastPublicAdmissionAt = now
+			c.game.mu.Unlock()
+		}
 	}
 	c.game.unregister(c)
 	c.closed = true

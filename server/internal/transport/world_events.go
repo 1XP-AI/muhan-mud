@@ -159,6 +159,31 @@ func (g *WorldConnector) publishYell(after world.State, actorID, text string) {
 	}
 }
 
+// publishBroadcast delivers a committed public chat/cheer to every online
+// player, regardless of room. The event carries the legacy receiver opt-out
+// bit and the exact rendered text; the actor already receives its own receipt
+// response, so it is excluded here. This method is called only after the
+// first receipt commit, which keeps retries from duplicating global output.
+func (g *WorldConnector) publishBroadcast(after world.State, event world.BroadcastEvent) {
+	if event.ActorID == "" || event.Text == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || connection.lease.ActorID == event.ActorID || connection.events == nil || world.PlayerFlagSet(player.Body, event.ReceiverFlag) {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow global recipient cannot block the broadcaster's durable
+			// command or other connected players.
+		}
+	}
+}
+
 // publishDirectMessage delivers the committed recipient projection to the
 // exact online target. The target identity and rendered text come from the
 // receipt, so a replay or a later name collision cannot redirect the message.

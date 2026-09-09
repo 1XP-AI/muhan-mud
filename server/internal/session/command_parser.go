@@ -32,6 +32,7 @@ const (
 	CommandInfo
 	CommandHelp
 	CommandYell
+	CommandBroadcast
 	CommandWelcome
 	CommandEmote
 	CommandLookAtTarget
@@ -178,6 +179,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		if len(parsed.Tokens) > 7 {
 			return ParsedCommand{}, ErrCommandTooManyTokens
 		}
+		return parsed, nil
+	}
+	if _, ok := ParseBroadcastLine(trimmed); ok {
+		parsed.Kind = CommandBroadcast
+		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
 	tokens, err := tokenizeLegacy(trimmed)

@@ -3,6 +3,11 @@
 상태: 2026-09-08 누적 Go 수직 슬라이스 진행 중. `cmd/muhan`은 가입/로그인과
 방향/함정/NPC 이동 receipt를 포함한 로컬 실행 경로가 있지만 전체 게임 명령·전투·
 tick·브라우저/배포 인수는 아직 완료되지 않았다.
+
+최신 slice: 원작 `잡담`/`잡`/`환호` 전역 명령을 terminal parser와 durable world receipt로
+연결했다. daily/HP는 Supabase 권위 상태에 저장하고, descriptor cooldown과 global admission
+cooldown은 runtime에만 둔다. PNOBRD/PNOBR2 수신 거부를 존중하며 첫 commit만 전역 event를
+fan-out하고 replay는 재방송하지 않는다. 전체 C 명령 parity를 완료했다는 뜻은 아니다.
 실행 기준은 `../docs/porting-research/go-server-execution-plan.md`다.
 문서 아래쪽의 Astra/Terra 표기는 과거 조사 기록이며 현재 실행 정책은 모든 하위
 작업을 Luna max로 배치하는 것이다.

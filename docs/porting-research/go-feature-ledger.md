@@ -762,3 +762,19 @@ RNG·state mutation·방송을 재실행하지 않는다. 정확한 bare alias�
 vet·Linux ARM64 build·격리 PostgreSQL 17 receipt를 batch당 한 번 실행한다. 전체 C
 alias/prefix/key/ANSI parity, strict room corpus 63건, NPC full cadence, 실기기 IME/mobile,
 WSS/Ingress와 testnet 배포 인수는 여전히 미완료다.
+
+## 2026-09-09 직접 관리 후속: 전역 잡담·환호
+
+원작 `command4.c:broadsend/broadsend2`의 `잡담`/`잡`/`환호`를 Go world/session/
+transport 경계에 연결했다. UTF-8·255바이트·제어문자 입력을 먼저 제한하고, PBRSND 일일
+사용량, PSILNC·레벨·HP 게이트, C의 31칸 HP 할인표와 INVINCIBLE 보정을 snapshot-bound
+reducer로 옮겼다. daily/HP는 Supabase receipt에 저장하고 descriptor-local cooldown과
+가시 플레이어 입장 시 global cooldown은 runtime 경계에 남겼다. `PNOBRD`/`PNOBR2` 수신
+거부를 적용한 전역 fan-out은 첫 commit에만 실행하며 동일 command ID replay는 재방송하지
+않는다. actor도 수신 거부 플래그가 있으면 receipt 응답을 받지 않는다.
+
+검증: world/session/transport `go test -race` 표적 테스트, parser·global fan-out·수신
+거부·daily/HP·receipt replay 회귀가 통과했다. `TestRoomBodyCorpus`의 기존 strict 63건
+예외는 정책대로 제외했다. 실제 PostgreSQL 17 receipt와 main Linux ARM64 build는 이
+기능 lane에서 반복하지 않고 batch/main 경계에서 한 번 실행한다. 전체 C 명령/ANSI parity,
+NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포 인수는 여전히 미완료다.
