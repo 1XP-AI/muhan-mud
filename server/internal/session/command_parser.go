@@ -44,6 +44,8 @@ const (
 	CommandDoor
 	CommandDoorKey
 	CommandFlee
+	CommandShopList
+	CommandShopSell
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -168,6 +170,10 @@ func commandKind(first string) CommandKind {
 		return CommandEquipment
 	case "잔액", "보관물", "받아", "입금", "출금":
 		return CommandBank
+	case "품목":
+		return CommandShopList
+	case "팔아":
+		return CommandShopSell
 	case "끝":
 		return CommandQuit
 	case "시간":
@@ -210,7 +216,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
 		return true
 	default:
 		return false

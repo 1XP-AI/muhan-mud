@@ -278,6 +278,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	hideCommand := false
 	fleeCommand := false
 	peekCommand := false
+	shopListCommand := false
+	shopSellCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -355,6 +357,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteEquipmentLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandBank:
 		receipt, err = c.game.owners.ExecuteBankLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandShopList:
+		shopListCommand = true
+		receipt, err = c.game.owners.ExecuteShopLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandShopSell:
+		shopSellCommand = true
+		receipt, err = c.game.owners.ExecuteShopLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -378,6 +386,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedItemMutationLine) ||
 		errors.Is(err, session.ErrUnsupportedEquipmentLine) ||
 		errors.Is(err, session.ErrUnsupportedBankLine) ||
+		errors.Is(err, session.ErrUnsupportedShopLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -519,6 +528,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if peekCommand {
 		var result world.PeekResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if shopListCommand {
+		var result world.ShopListResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if shopSellCommand {
+		var result world.ShopSaleResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
