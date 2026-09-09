@@ -433,3 +433,20 @@ combat tick 연결은 남아 있다.
 exact canonical stock ID/value를 nested graph deep-copy와 durable receipt로 연결했다.
 gold/weight/capacity/duplicate/temporary flag 및 성공 구매 `PHIDDN` 해제를 검증하며,
 parser/list/sell/trade/merchant와 실제 shop PG replay는 다음 gate다.
+
+## 2026-09-09 병렬 리뷰 후속 게이트
+
+PR 리뷰와 다음 이슈를 파일 소유권이 겹치지 않는 lane으로 병렬 처리했다.
+`fe8408e`는 C `update_active`의 NPC→PLAYER 직접 공격 RNG·피해 경계를 복원했다.
+직접 공격은 hit `mrand(1,20)`와 `mdice - armor/5`만 소비하고, player→NPC
+`attack_crt` 전용 critical RNG와 NPC PHIDDN/PINVIS 해제는 섞지 않는다.
+`1e00ed8`은 lethal NPC→PLAYER를 `PlanNPCPlayerDeath`와 같은 durable candidate에 묶고
+사망 후 C `first_active` 재시작 경계에서 tick을 멈춘다.
+
+`f759f49`는 실제 ARM64 PostgreSQL 17에서 `RunShopPurchase`의 receipt 생성·재생·요청
+충돌·receipt INSERT rollback을 검증한다. `5992018`은 중앙 xterm의 포커스/IME/mobile
+resize 경계를 보강했다. 통합 검증은 Go race(legacy corpus 제외), vet, Linux ARM64
+cross-build, web 44/44, 실제 PG 전투·상점 receipt race, Chromium stack E2E 2 passed다.
+
+여전히 전체 C 명령/경제 parity, strict room corpus 63개, NPC 전체 scheduler/broadcast,
+IME/mobile 실기기, backup/restore, WSS/Ingress 및 testnet 배포는 별도 인수 조건이다.

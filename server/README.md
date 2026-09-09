@@ -2162,3 +2162,22 @@ replay는 allocator와 reducer를 재호출하지 않는다. parser/list/sell/tr
 `e0aa717`. 전체 race/vet/ARM64 build 통과. strict room corpus 63개 예외, lethal NPC
 tick 통합, 전체 C command/economy, IME/mobile 실기기, backup/restore, WSS/Ingress와
 testnet 배포 인수는 여전히 미완료다.
+
+## 2026-09-09 병렬 리뷰 후속: C 패리티·PG receipt·웹 터미널
+
+리뷰 대기 중 독립 파일 경계를 나눠 세 lane을 병렬 처리했다. `fe8408e`는 C
+`update_active`의 NPC→PLAYER 직접 공격에 맞춰 hit `mrand(1,20)` 뒤 `mdice - armor/5`
+clamp만 소비하도록 고쳤고, player→NPC 전용 critical RNG는 보존했다. NPC 직접 공격의
+PHIDDN/PINVIS도 명중·빗나감에서 보존한다. `1e00ed8`의 lethal continuation은 이제
+`PlanNPCPlayerDeath`를 같은 durable candidate에 원자적으로 연결하고, C의 사망 후
+`first_active` 재시작 경계로 tick을 중단한다.
+
+`f759f49`는 실제 ARM64 PostgreSQL 17에서 상점 구매 receipt 생성·재생·request conflict와
+receipt INSERT 실패 rollback을 검증한다. `5992018`은 중앙 xterm의 기본 포커스 정책을
+IME composition, 선택/붙여넣기, 모바일 키보드 resize/복귀 경계와 함께 보강했다.
+
+검증: `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+Linux ARM64 cross-build, web typecheck 및 **44/44** 테스트, 실제 PostgreSQL 17 전투·상점
+receipt race test, 실제 Go+PostgreSQL+Chromium 가입→월드 입장→재로그인·중복 세션
+**2 passed**. strict room corpus의 기존 unsupported body 63건, 전체 C 명령/경제 parity,
+IME/mobile 실기기, backup/restore, WSS/Ingress와 testnet 배포 인수는 여전히 남아 있다.

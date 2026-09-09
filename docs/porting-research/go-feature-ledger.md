@@ -573,16 +573,20 @@ fixture는 각 예외의 원본 SHA-256·소비 위치·이슈 순서를 비교�
 `RunNPCCombatTick`/`RunNPCCombatPhase`는 C `update_active`의 canonical active order와
 first enemy/player identity를 durable `npc-combat-<slot>` receipt로 연결한다. 여러
 non-lethal `PlanNPCCombatRound` 결과를 하나의 candidate에 순서대로 적용하고,
-lethal PLAYER는 현재 `PlanNPCPlayerDeath` 조합 전이라 fail-closed summary로 남긴다.
-실제 ARM64 PostgreSQL test는 receipt replay, request conflict, rollback과 RNG 미재실행을
-확인했다. 이는 full NPC update/tick/broadcast 완료가 아니다.
+lethal PLAYER는 `PlanNPCPlayerDeath`를 같은 candidate에 원자적으로 이어 붙인다.
+사망 후에는 C의 `first_active` 재시작 경계에 맞춰 같은 tick의 후속 공격을 중단하며,
+RNG 기록/재생으로 lethal probe가 원래 공격을 다시 실행하지 않는다. 실제 ARM64
+PostgreSQL test는 receipt replay, request conflict, rollback과 RNG 미재실행을 확인했다.
+이는 full NPC update/tick/broadcast 완료가 아니다.
 
 `PlanNPCPlayerDeath`는 NPC 공격자의 C PLAYER 사망 branch를 source-backed pure candidate로
 추가했다. NPC `MSUMMO`는 PLAYER branch에서 허용되며, room/active/enemy/follower identity,
 progression/equipment/timer, floor drop, 1008 respawn, war 결과를 atomic하게 검증한다.
-death broadcast/savegame/summon side effect와 combat tick 통합은 남아 있다.
+이 reducer는 durable combat tick의 lethal continuation에 연결됐지만, death
+broadcast/savegame/summon side effect는 남아 있다.
 
 `QuoteShopPurchase`/`BuyShopItem`과 `RunShopPurchase`는 `RSHOPP`/`RNOTEL` storage의
 exact stock/value를 canonical nested graph deep-copy와 durable receipt로 연결한다.
-구매 성공 `PHIDDN` 해제, gold/weight/capacity/allocator/temporary flag/stock ownership를
-검증하지만 parser/list/sell/trade/merchant/실제 shop PG replay는 미구현이다.
+구매 성공 `PHIDDN` 해제, gold/weight/capacity/allocator/temporary flag/stock ownership,
+receipt replay/conflict/insert rollback을 실제 PostgreSQL 17에서 검증하지만
+parser/list/sell/trade/merchant는 미구현이다.
