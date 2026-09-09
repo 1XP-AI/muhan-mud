@@ -2365,6 +2365,11 @@ Go 기능 레인은 담당 패키지의 `gofmt`와 targeted `go test -race`만 �
 session 테스트와 connector 회귀가 race 검사를 통과했다. 전체 C 약어 우선순위·다중
 command queue·출력 parity는 아직 별도 범위다.
 
+브라우저 경계도 `run-go-process-postgres-browser-e2e-local.sh --allow-disposable`로
+재검증했다. 전용 ARM64 PostgreSQL 17에서 가입→월드 입장→줄임말 등록·실행→`!` 재실행→
+재로그인과 기존 캐릭터 중복 세션 거절을 포함한 Chromium 테스트 2개가 통과했다(16.0초).
+이 증거는 전체 명령 parity·실기기 IME/mobile·운영 배포 인수를 의미하지 않는다.
+
 ## 2026-09-09 뇌물·숨기기·도망 함정
 
 세 Luna max 병렬 레인을 통합해 `뇌물`, `숨겨`/`숨어`, arrival trap이 있는 `도망`을

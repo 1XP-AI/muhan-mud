@@ -36,6 +36,11 @@ WSS/Ingress·testnet 배포와 전체 legacy data migration은 아직 남아 있
 않으며 재접속 시 초기화된다. session pure TDD와 live connector `go test -race`가
 통과했다. 전체 C 약어 우선순위·다중 alias command queue·출력 parity는 아직 남아 있다.
 
+전용 ARM64 PostgreSQL 17과 Chromium을 함께 사용하는 로컬 E2E도 재실행했다. 가입→월드
+입장→줄임말 등록·실행→`!` 재실행→재로그인 및 기존 캐릭터 중복 세션 거절의 2개 테스트가
+16.0초에 통과했다. 테스트는 기존 화면에 남은 문자열을 재사용하지 않도록 `!` 응답의
+새 발생 횟수를 기다린다. 전체 명령 parity·실기기 IME/mobile·운영 배포는 여전히 남아 있다.
+
 ## 현재 오케스트레이션 체크포인트 — 2026-09-09
 
 개발 속도 최적화를 전수 점검해 검증 cadence를 코드화했다. 병렬 Luna max 레인은 담당

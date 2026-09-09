@@ -135,7 +135,9 @@ history budget을 유지하며, 빈 확장은 기존 history를 보존한다. hi
 상태라서 `State`·Supabase 영속 데이터·receipt에는 저장하지 않는다. 따라서 재접속 시
 history가 남지 않고, 확장된 명령만 기존 parser/reducer/receipt 경계를 통과한다.
 
-session pure TDD와 live connector 회귀가 `go test -race`를 통과했다. full C parser의
+session pure TDD와 live connector 회귀가 `go test -race`를 통과했고, 전용 ARM64
+PostgreSQL 17과 Chromium 가입 시나리오에서 줄임말 등록→실행→`!` 재실행을 포함한
+2개 브라우저 테스트가 통과했다. full C parser의
 약어 우선순위, 다중 alias command queue 및 전체 출력 parity는 별도 원장 항목으로
 남아 있다.
 

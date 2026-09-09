@@ -42,6 +42,21 @@ async function submitAndWait(page: Page, value: string, expected: string): Promi
   await expect(page.locator(".xterm-screen")).toContainText(expected);
 }
 
+async function submitAndWaitForNewOccurrence(
+  page: Page,
+  value: string,
+  expected: string,
+): Promise<void> {
+  const screen = page.locator(".xterm-screen");
+  const before = (await screen.textContent()) ?? "";
+  const previousCount = before.split(expected).length - 1;
+  await submitLine(page, value);
+  await expect.poll(async () => {
+    const current = (await screen.textContent()) ?? "";
+    return current.split(expected).length - 1;
+  }).toBeGreaterThan(previousCount);
+}
+
 async function submitInfoAndWait(page: Page): Promise<void> {
   const screen = page.locator(".xterm-screen");
   const before = (await screen.textContent()) ?? "";
@@ -75,6 +90,9 @@ async function createCharacterAndEnterWorld(page: Page): Promise<void> {
   await expect(page.locator(".xterm-screen")).toContainText("== 브라우저 광장 ==");
   await expect(page.locator(".xterm-screen")).toContainText("실제 Go 서버와 PostgreSQL");
   await expect(page.locator(".xterm-screen")).not.toContainText(gamePassword);
+  await submitAndWait(page, "줄임말 테스트 시간", "줄임말이 설정되었습니다.");
+  await submitAndWait(page, "테스트", "현재 시간");
+  await submitAndWaitForNewOccurrence(page, "!", "현재 시간");
   await submitAndWait(page, "환영", "이게임은 아직도 제작중입니다.");
   await submitAndWait(page, "설정 색", "색        :  사용 ");
   await submitAndWait(page, "열어 __missing_door__", "그런 출구는 없습니다.");
