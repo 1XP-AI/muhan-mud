@@ -800,4 +800,30 @@ parser·connector를 통합했다.
   `main`에서 한 번, PostgreSQL·브라우저·호환성 matrix는 `release`에서 한 번만 실행한다.
   이번 batch에서 해당 고비용 검증을 반복하지 않았으며, strict room corpus 63건·전체
   C prefix/occurrence/ANSI parity·NPC full cadence·IME/mobile·WSS/Ingress·testnet 배포는
-  별도 인수 조건으로 남긴다.
+별도 인수 조건으로 남긴다.
+
+## 2026-09-09 직접 관리 병렬 후속: 기습·물약·주문
+
+현재 G3 기능 포팅은 파일 소유권이 겹치지 않는 세 Luna max 레인으로 분할한다.
+
+1. **기습 레인** — `command7.c:backstab`의 canonical NPC/player 선택, 권한·무기·쿨다운·
+   stealth·보호 게이트와 비치명 damage/proficiency를 world proposal/apply와 durable
+   receipt로 구현한다. lethal 결과는 `PlanPlayerDeath`/NPC death와 동일 트랜잭션으로 조합되기
+   전까지 거부한다.
+2. **물약 레인** — `magic1.c:drink`의 POTION root와 ready fallback, charge/subtree 수명,
+   self-target 상태효과 및 OSPECI 1–6을 구현한다. 정확한 상태/반환 계약이 없는 공격·대상
+   지정 주문과 restore 부분 성공은 소비 없이 fail-closed한다.
+3. **주문 전수 레인** — `magic1.c:teach`의 교사 class/주문 level, same-room online player
+   key prefix·occurrence, visibility와 spell bit mutation을 구현한다. NPC fallback과
+   미확인 spell catalog는 거부한다.
+
+메인 통합은 `command_parser.go`, `world_connector.go`, 신규 event adapter에서만 수행하며,
+각 receipt의 actor response와 observer/target event를 분리한다. 레인별 targeted race와
+`go vet` 뒤 조립 batch에서 `scripts/run-go-validation.sh fast` 및 `integration`을 한 번씩
+실행한다. ARM64는 기본 브랜치의 `main` scope에서 한 번, 실제 PostgreSQL·브라우저·호환성
+matrix는 `release` scope에서 한 번만 실행한다. strict room corpus 63건·전체 C prefix/key/
+ANSI parity·NPC full cadence·IME/mobile 실기기·WSS/Ingress·testnet 배포는 별도 승격 조건이다.
+
+코드 커밋 `c194824`에서 세 레인의 world/session 구현과 parser/connector 통합을 완료했다.
+검증은 영향 패키지 race, focused transport 회귀, `fast`, `integration`, `vet`, diff check가
+통과했다. 사용자 소유 `src/frp.new`는 계속 보존한다.

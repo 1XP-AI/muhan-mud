@@ -897,3 +897,33 @@ fast` 및 `integration` 통과. ARM64 cross-build·실제 PostgreSQL·브라우�
 matrix는 cadence 정책에 따라 이번 기능 레인에서 반복하지 않았다. strict room corpus
 63건, 전체 C command/prefix/key/ANSI parity, NPC full cadence, WSS/Ingress와 testnet
 배포는 여전히 미완료다.
+
+## 2026-09-09 직접 관리 병렬 후속: 기습·물약·주문 전수
+
+서로 겹치지 않는 신규 world/session 파일 소유권으로 Luna max 세 레인을 병렬 실행하고,
+메인 세션에서 중앙 parser와 `WorldConnector` dispatch/room fan-out만 조립했다. 결과는
+`c194824`에 기록했다.
+
+- `기습 <대상>`: canonical same-room NPC/player 선택, 도둑·자객·무적 권한, 무기/쿨다운/
+  시야/안전방/카오스·가문전쟁 게이트, hidden/invisible 해제, 명중·실패·파손·적대·
+  proficiency와 비치명 HP 전이를 `PlanBackstab`/`ApplyBackstab` receipt로 연결했다.
+  lethal 결과는 기존 사망 reducer와 원자 조합될 때까지 `ErrBackstabDeathTransitionPending`
+  으로 fail-closed하며, player 대상 private warning과 room reveal을 commit 뒤 한 번만
+  전달한다. C의 전체 prefix/occurrence와 사망 조합은 후속이다.
+- `먹어`/`마셔 <물약>`: canonical inventory/ready root에서 POTION만 선택하고, 잔량·방/
+  성향·직업 게이트, self-target 상태효과, OSPECI 1–6, charge/subtree 삭제와 map 이동을
+  snapshot-bound receipt로 연결했다. 공격·대상 지정 주문과 C `restore`의 부분 성공/비소비
+  경계는 정확한 결과 계약 전까지 소비 없이 fail-closed한다. PPOWER/PMEDIT/PPRAYD의 원본
+  플래그 비트를 재대조해 고정했다.
+- `가르쳐 <대상> [횟수] <주문>`: C `magic1.c:teach`의 cleric/mage/caretaker 및 주문
+  레벨 권한, blind/silence/visibility, canonical same-room player key prefix·occurrence,
+  교사 hidden 해제와 대상 spell bit 설정을 deterministic recipient projection으로
+  연결했다. NPC fallback과 미확인 주문/문자열은 fail-closed한다.
+
+검증: 세 레인 world/session/transport focused race, parser/connector 회귀와 `go vet`
+통과; `scripts/run-go-validation.sh fast`와 조립 후 `scripts/run-go-validation.sh integration`
+통과. ARM64 cross-build는 `main`, 실제 PostgreSQL·브라우저·호환성 matrix는 `release`에서
+각각 한 번만 실행하므로 이번 기능 레인에서는 반복하지 않았다. strict room corpus 63건,
+전체 C command/prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와
+testnet 배포는 여전히 남은 인수 조건이며, 사용자 소유 `src/frp.new`만 dirty 상태로
+보존한다.

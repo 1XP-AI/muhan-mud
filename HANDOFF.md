@@ -1539,3 +1539,34 @@ git diff --check  PASS
 반복하지 않았다. 해당 검증은 `main`/`release` 경계에서만 실행한다. strict room corpus
 63건, C 전체 prefix/occurrence/ANSI parity, NPC full cadence, WSS/Ingress와 testnet 배포는
 여전히 남은 인수 조건이다. `src/frp.new`는 사용자 dirty 변경으로 계속 보존한다.
+
+## 2026-09-09 기습·물약·주문 전수 통합 체크포인트
+
+직접 관리한 Luna max 세 레인을 병렬로 완료한 뒤 메인에서 parser와 connector를 통합했다.
+코드 커밋은 `c194824` (`기능: 기습·물약·주문 전수 Go 경계 연결`)이다.
+
+- world: `backstab.go`, `drink.go`, `teach.go`와 각 TDD가 canonical State의 proposal/apply
+  경계를 사용한다. 세션: `*_command.go`가 표시 이름/주문/물약 선택자만 받고 `ExecuteGame`
+  receipt·command-ID replay를 보장한다.
+- transport: `CommandBackstab`·`CommandDrink`·`CommandTeach`를 중앙 parser에 등록하고,
+  committed result의 room/target projection을 최초 실행에서만 전달한다. actor는 typed
+  receipt 응답을 받고 replay에서는 RNG·mutation·event가 반복되지 않는다.
+- 범위: backstab은 사망 reducer 조합 전까지 lethal fail-closed, drink은 self-target으로
+  표현 가능한 효과와 OSPECI만 허용하며 C restore의 부분 성공은 보류, teach는 online
+  same-room player와 원본 권한/visibility를 적용한다. 전체 C prefix/ANSI parity와 NPC 전투
+  full cadence는 미완료다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Backstab|Drink|Teach|WorldConnectorSubmitDispatches(Teach|Backstab|Drink)' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+scripts/run-go-validation.sh fast PASS
+scripts/run-go-validation.sh integration PASS
+git diff --check PASS
+```
+
+ARM64 cross-build·실제 PostgreSQL·브라우저/IME·release matrix는 cadence 정책대로 이번
+기능 레인에서 반복하지 않았다. strict room corpus 63건, 전체 C command/prefix/key/ANSI
+parity, NPC full cadence, WSS/Ingress와 testnet 배포는 남은 조건이다. `src/frp.new`는
+사용자 소유 dirty binary로 stage/수정하지 않았다.
