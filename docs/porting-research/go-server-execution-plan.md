@@ -719,3 +719,25 @@ debit·MTRADE 상태·follower/enemy 정리를 atomic receipt로 저장한다. `
 `TestPostgresBribeCommandPersistsAndReplays` 저장·동일 command replay도 통과했으며,
 컨테이너는 테스트 직후 제거하고 공유 `sws26-db`는 건드리지 않았다. 전체 C parity, strict
 room corpus, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 아직 남아 있다.
+
+## 2026-09-09 직접 관리 병렬 후속: NPC 순서·저장·대화 자산 provenance
+
+세 Luna max 레인을 파일 소유권으로 분리해 다음 경계를 추가했다.
+
+1. `NPCWorldScheduler`가 maintenance → resource → combat phase를 하나의 worker에서
+   순서대로 실행한다. phase별 cadence(각각 1초/20초/1초 기본값)는 유지하고, 최소 cadence로
+   wake한 뒤 각 durable tick의 slot suppression을 사용한다. 중간 phase가 실패하면 후속
+   phase를 실행하지 않으며 다음 cadence에서 동일 pending request를 재시도한다.
+2. 원작 `저장` cmdno 52를 Go canonical state의 no-state durable receipt로 연결했다. 모든
+   mutation은 이미 자체 receipt로 저장되므로 별도 player-file write를 만들지 않는다. xterm
+   `저장`과 명시적 호환 `save`만 허용하고 offline/인자/제어문자는 fail-closed한다.
+3. `아파트_수위_아저씨-127`는 manifest와 Git blob이 byte-for-byte 같지만 CP949 offset
+   216의 standalone `0xBA` 때문에 strict decode가 불가능하다. 정확한 원본을 찾지 못한
+   상태에서 임의 수정하지 않고 provenance 문서와 resource regression으로 admission을 계속
+   fail-closed한다.
+
+검증은 scheduler/session/live connector targeted race와 `cmd/muhan` 프로세스 테스트를
+새 변경에 대해 실행한다. 전체 integration, Linux ARM64 cross-build, 실제 PostgreSQL,
+브라우저·release matrix는 이전 batch 증거를 재사용하며 이번 기능 레인에서 반복하지 않는다.
+전체 C command parity, strict room corpus, NPC full combat/broadcast, 실기기 IME/mobile,
+WSS/Ingress와 testnet 배포 인수는 여전히 남아 있다.

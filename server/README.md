@@ -2403,3 +2403,27 @@ parser→world reducer→receipt/replay→WebSocket room event 경계에 연결�
 fast/merge gate와 ARM64 PostgreSQL 17 `TestPostgresBribeCommandPersistsAndReplays`를
 통과했다. 전체 C parity, strict room corpus, NPC cadence, IME/mobile, WSS/Ingress와 testnet
 배포는 남아 있다.
+
+## 2026-09-09 NPC phase ordering·저장 명령·대화 자산 provenance
+
+`NPCWorldScheduler`를 프로세스 경계에 연결했다. 기존 maintenance/resource/combat
+worker를 따로 실행하지 않고 하나의 worker가 매 wake-up마다 maintenance → resource →
+combat 순서를 지킨다. 기본 phase cadence는 각각 1초/20초/1초로 유지하며 최소 cadence로
+깨운 뒤 각 tick의 durable slot suppression을 적용한다. maintenance 또는 resource가
+오류를 반환하면 후속 phase를 실행하지 않고 다음 cadence에 같은 pending request를 재시도한다.
+시작 로그에는 wake/phase cadence와 `ordered`가 표시되고, 종료는 이 worker를 먼저 drain한다.
+
+원작 `src/global.c` cmdno 52의 `저장`/`src/command8.c:savegame`도 연결했다. Go에서는
+mutation 자체가 canonical state receipt로 저장되므로 별도 파일 저장을 중복하지 않는
+no-state receipt로 응답한다. xterm 입력 `저장`과 명시적 호환 alias `save`만 허용하며,
+offline actor·추가 인자·제어문자·잘못된 UTF-8은 receipt 전에 거절한다. 동일 command ID
+재생은 state/응답을 그대로 돌려주고 commit/RNG를 반복하지 않는다.
+
+`resources_utf8/objmon/talk/아파트_수위_아저씨-127`는 manifest와 Git blob이 동일하지만
+CP949 offset 216의 standalone `0xBA`로 strict decode에 실패한다. 복구 원본을 확인하지
+못한 상태에서 임의 보정하지 않고 provenance 문서와 regression으로 전체 talk catalog의
+fail-closed 동작을 고정했다.
+
+새 변경 검증: scheduler/session/live connector targeted race, cmd 프로세스 테스트(격리 DB
+환경이 없으면 의도적 skip). 전체 race/vet/integration, ARM64 cross-build, 실제 DB·browser·
+release matrix는 기능 레인마다 반복하지 않고 승인된 cadence에서만 실행한다.

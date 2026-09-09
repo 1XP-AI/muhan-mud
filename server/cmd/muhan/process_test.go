@@ -107,21 +107,19 @@ func testProcessRestart(t *testing.T, crash bool) {
 						default:
 						}
 					}
-					if strings.Contains(line, "NPC combat scheduler started") {
+					if strings.Contains(line, "NPC world scheduler started") {
 						select {
 						case <-schedulerStarted:
 						default:
 							close(schedulerStarted)
 						}
-					}
-					if strings.Contains(line, "NPC maintenance scheduler started") {
 						select {
 						case <-maintenanceStarted:
 						default:
 							close(maintenanceStarted)
 						}
 					}
-					if strings.Contains(line, "NPC maintenance scheduler stopped") {
+					if strings.Contains(line, "NPC world scheduler stopped") {
 						select {
 						case <-maintenanceStopped:
 						default:
@@ -142,12 +140,12 @@ func testProcessRestart(t *testing.T, crash bool) {
 			select {
 			case <-schedulerStarted:
 			case <-ctx.Done():
-				t.Fatal("NPC combat scheduler did not start")
+				t.Fatal("NPC world scheduler did not start")
 			}
 			select {
 			case <-maintenanceStarted:
 			case <-ctx.Done():
-				t.Fatal("NPC maintenance scheduler did not start")
+				t.Fatal("NPC world scheduler did not start")
 			}
 			conn, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://mud.test"}}})
 			if err != nil {
@@ -223,7 +221,7 @@ func testProcessRestart(t *testing.T, crash bool) {
 				select {
 				case <-maintenanceStopped:
 				case <-ctx.Done():
-					t.Fatal("NPC maintenance scheduler did not stop before process exit")
+					t.Fatal("NPC world scheduler did not stop before process exit")
 				}
 			}
 			identity, err := pg.Authenticate(ctx, name, []byte("pw1234"))

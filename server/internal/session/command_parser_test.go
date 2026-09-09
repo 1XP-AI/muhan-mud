@@ -24,6 +24,8 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"입금 100냥", CommandBank},
 		{"끝", CommandQuit},
 		{"시간", CommandRead},
+		{"저장", CommandSave},
+		{"save", CommandSave},
 		{"정보", CommandInfo},
 		{"도움말", CommandHelp},
 		{"? 정보", CommandHelp},

@@ -346,6 +346,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	aliasCommand := false
 	burnCommand := false
 	studyCommand := false
+	saveCommand := false
 	titleCommand := false
 	infoCommand := false
 	settingsCommand := false
@@ -513,6 +514,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandStudy:
 		studyCommand = true
 		receipt, err = c.game.owners.ExecuteStudyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandSave:
+		saveCommand = true
+		receipt, err = c.game.owners.ExecuteSaveLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandTitle:
 		titleCommand = true
 		receipt, err = c.game.owners.ExecuteTitleLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -562,6 +566,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedAliasLine) ||
 		errors.Is(err, session.ErrUnsupportedBurnLine) ||
 		errors.Is(err, session.ErrUnsupportedStudyLine) ||
+		errors.Is(err, session.ErrUnsupportedSaveLine) ||
 		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
@@ -960,6 +965,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		var result world.StudyResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
+		}
+	} else if saveCommand {
+		var result session.SaveResponse
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = string(result)
 		}
 	} else if titleCommand {
 		var result world.TitleResult

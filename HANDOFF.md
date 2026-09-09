@@ -1,5 +1,27 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (NPC phase ordering + 저장 명령)
+
+이번 병렬 Luna max 후속은 세 레인을 파일 소유권으로 분리해 통합했다.
+
+- NPC maintenance/resource/combat scheduler를 하나의 `NPCWorldScheduler`로 묶었다.
+  매 wake-up은 maintenance → resource → combat 순서이며 각 phase의 원래 cadence는
+  유지한다(최소 cadence로 wake한 뒤 durable slot suppression 적용). 중간 phase 오류는
+  뒤 phase를 실행하지 않고 다음 cadence에 같은 pending request를 재시도한다. 프로세스
+  시작/종료 로그와 drain도 이 단일 worker를 기준으로 바꿨다.
+- 원작 `저장`(`src/global.c` cmdno 52 / `command8.c:savegame`)을 Go의 canonical
+  state가 이미 receipt로 저장된다는 권위 모델에 맞춘 no-state durable receipt로 연결했다.
+  xterm에서 `저장`과 명시적 호환 alias `save`를 dispatch하며 offline·인자 추가·제어문자는
+  fail-closed하고 동일 command ID replay는 commit 1회/응답 불변을 보장한다.
+- `아파트_수위_아저씨-127` talk 자산은 manifest와 Git blob이 byte-for-byte 동일하지만
+  CP949 offset 216의 standalone `0xBA`로 strict decode가 실패한다. 정확한 원본을 찾지
+  못했으므로 임의 보정하지 않고 provenance와 fail-closed 회귀를 추가했다.
+
+이 batch의 새 검증은 scheduler/session/connector targeted race와 `cmd/muhan` 프로세스
+테스트(격리 DB 미설정 시 의도적 skip)다. 전체 integration/ARM64/release/browser는
+앞선 batch의 증거를 재사용하고 이번 기능 레인에서 반복하지 않는다. `src/frp.new`는
+사용자 소유 dirty 변경으로 계속 보존한다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 중복 감사 + NPC 실행 연결)
 
 개발 속도 전수 점검 결과, 기능 레인은 `fast`, 조립 batch는 `integration`, 기본 브랜치
@@ -18,8 +40,8 @@ skip되지 않도록 해당 job만 depth 2와 `GO_FAST_COMMIT=1`을 사용한다
   `resources_utf8/objmon/talk`는 CP949 손상 파일 1개가 있어 그 자산을 정정하기 전에는
   전체 카탈로그를 시작 시 로드하지 않는다.
 - C `update_active`의 bounded NPC 유지보수 prefix를 프로세스 scheduler에 연결했다.
-  시작/종료 drain은 검증하지만 maintenance와 combat worker 사이의 strict 선행 순서는
-  아직 보장하지 않으며 로그에 명시돼 있다.
+  (이후 최신 체크포인트에서 maintenance→resource→combat strict ordering을 단일 worker로
+  보강했다.)
 - 격리 PostgreSQL 유지보수 receipt/replay 테스트는
   `MUHAN_NPC_MAINTENANCE_TEST_DATABASE_URL`이 있을 때만 실행하고, 기본 로컬 실행은
   환경변수 부재로 skip한다. 공유 DB를 사용하거나 정리하지 않는다.

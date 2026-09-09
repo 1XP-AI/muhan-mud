@@ -29,6 +29,7 @@ const (
 	CommandBank
 	CommandQuit
 	CommandRead
+	CommandSave
 	CommandInfo
 	CommandHelp
 	CommandYell
@@ -338,6 +339,8 @@ func commandKind(first string) CommandKind {
 		return CommandQuit
 	case "시간":
 		return CommandRead
+	case "저장", "save":
+		return CommandSave
 	case "정보":
 		return CommandInfo
 	case "도움말", "?":
@@ -376,7 +379,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
 		return true
 	default:
 		return false
