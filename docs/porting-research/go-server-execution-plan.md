@@ -159,6 +159,28 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
 
 모듈 생성 이후 기본 로컬 검증은 `cd server && go test ./...`와 `go test -race ./...`다. 현재 존재하거나 통과한 명령으로 보고하지 않는다. 통합 테스트는 기존 Docker 구성을 조사해 고유 Compose 프로젝트 이름·임시 볼륨·충돌 없는 포트를 적용한다. 공유 컨테이너/캐시 일괄 삭제는 금지한다.
 
+### 검증 비용 cadence — 2026-09-09
+
+동일한 전체 검증을 병렬 레인마다 반복하지 않는다. 실행 경계는 다음처럼 고정한다.
+
+- **레인 단위**: 담당 파일의 `gofmt`, 변경 패키지 targeted `go test -race`만 실행한다.
+  필요하면 `GO_FAST_RUN`/`GO_FAST_PACKAGES`를 주어 `scripts/run-go-validation.sh fast`를
+  사용한다. 전체 저장소 race, `go vet ./...`, Linux ARM64 cross-build, disposable PG,
+  브라우저·Helm 검증은 레인 완료 조건이 아니다.
+- **메인 통합**: 여러 레인을 parser/transport/docs에 합친 뒤 `scripts/run-go-validation.sh
+  merge`를 한 번만 실행한다. 이 명령이 전체 race(엄격 corpus 예외 제외), vet, Linux
+  ARM64 build, diff check를 담당한다.
+- **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서
+  한 번만 묶어 실행한다. 레인별로 같은 이미지/DB를 재생성하지 않으며, 테스트가 만든
+  컨테이너·볼륨·포트만 정리한다.
+- **release/merge gate**: ARM64 이미지·차트, x64/Windows 호환, macOS 전용, 브라우저
+  IME/mobile, 장애복구·백업은 각각 승인된 통합/릴리스 시점에만 실행한다. x64/Windows와
+  macOS 검증을 삭제하지 않지만 Go 기능 레인에서 재실행하지 않는다.
+
+이 정책은 검증을 생략하는 것이 아니라 같은 증거를 가장 가까운 통합 경계에서 한 번
+확보하는 것이다. 실패 시 해당 경계를 고정해 원인을 수정하고, 통과한 이전 경계는
+변경 파일이 영향을 줄 때만 다시 실행한다.
+
 기존 C 테스트는 oracle 유지를 위해 실행하되 새 C DB 기능 구현으로 범위를 확장하지 않는다. 알려진 C 버그까지 그대로 복제하지 않고 차이를 명시하고 기대 동작을 결정한다. 운영 자격 정보나 실제 사용자 데이터를 테스트 fixture로 복사하지 않는다.
 
 ## 재개 시 병렬 배치

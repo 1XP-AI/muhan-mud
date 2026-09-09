@@ -25,12 +25,18 @@ ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 �
 이 디렉터리에서 실행한다. Go 1.27.1 툴체인이 필요하며 `go.mod`에 고정했다.
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
-go test ./internal/terminal -fuzz=FuzzChunkBoundaries -fuzztime=3s -parallel=2
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+# 병렬 레인: 담당 패키지만 빠르게 검증
+GO_FAST_RUN='Title|RangerPray' scripts/run-go-validation.sh fast
+
+# 메인 통합: batch당 한 번만 전체 로컬 gate
+scripts/run-go-validation.sh merge
 ```
+
+레인마다 전체 race·vet·ARM64 build·PostgreSQL를 반복하지 않는다. 영속성 변경이 포함된
+batch의 PG receipt 테스트는 하나의 격리 PostgreSQL에서 한 번만 묶어 실행하고, ARM64
+이미지/Helm·x64/Windows/macOS 호환·브라우저 IME/mobile·복구 검증은 승인된 통합 또는
+릴리스 gate에서만 실행한다. 직접 명령이 필요하면 `go test ./...`와 `go test -race ./...`를
+메인 통합 경계에서 사용하되, 엄격 corpus 예외 63건의 상태를 숨기지 않는다.
 
 첫 TDD 기록: `NewInput` 미정의로 테스트 실패를 확인한 뒤 구현했다.
 한글 테스트의 입력 한도를 문자 수가 아닌 바이트 수로 바로잡았다.
