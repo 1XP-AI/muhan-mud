@@ -67,6 +67,20 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   PRIMARY KEY(world_id,world_player_id),
   UNIQUE(world_id,source_sha256)
  );
+ CREATE TABLE IF NOT EXISTS mud_go.player_snapshot_import_ledger (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  source_path text NOT NULL CHECK(length(source_path) BETWEEN 1 AND 1024),
+  source_sha256 bytea NOT NULL CHECK(octet_length(source_sha256)=32),
+  source_octets bigint NOT NULL CHECK(source_octets BETWEEN 0 AND 67108864),
+  parser_version text NOT NULL CHECK(length(parser_version) BETWEEN 1 AND 64),
+  abi text NOT NULL CHECK(length(abi) BETWEEN 1 AND 128),
+  result text NOT NULL CHECK(result IN ('validated','quarantined')),
+  quarantine_reason text NOT NULL CHECK(length(quarantine_reason)<=512),
+  inventory_nodes integer NOT NULL CHECK(inventory_nodes BETWEEN 0 AND 8192),
+  observed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(world_id,source_path,source_sha256),
+  CHECK((result='validated' AND source_octets>0 AND length(quarantine_reason)=0) OR result='quarantined')
+ );
  ALTER TABLE mud_go.worlds ADD COLUMN IF NOT EXISTS writer_epoch bigint NOT NULL DEFAULT 0 CHECK(writer_epoch>=0);
  ALTER TABLE mud_go.characters DROP CONSTRAINT IF EXISTS characters_stage_check;
  ALTER TABLE mud_go.characters ADD CONSTRAINT characters_stage_check CHECK(stage IN ('draft','linked'));

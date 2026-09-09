@@ -9,6 +9,12 @@ record 순서대로 호출한다. 평문 비밀번호와 raw snapshot은 로그�
 [`docs/porting-research/go-player-snapshot-manifest.md`](../docs/porting-research/go-player-snapshot-manifest.md)를
 참조한다. 이 도구는 운영 대량 이관·전체 parity·배포 인수를 완료한 것이 아니다.
 
+read-only 수집은 `-inspect-player-snapshot-dir`와 `-inspect-player-snapshot-world`로
+실행한다. private `0700` tree를 lexical 순서로 스캔해 source path/SHA-256/크기/parser·ABI/
+결과/quarantine reason/graph node 수만 `mud_go.player_snapshot_import_ledger`에 기록하고,
+`-inspect-player-snapshot-dry-run`은 DB 없이 같은 검증을 한다. malformed/public/symlink는
+자동 이관하지 않고 quarantine evidence로만 남긴다.
+
 최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
 caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
 state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.

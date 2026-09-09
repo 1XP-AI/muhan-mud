@@ -51,6 +51,28 @@ bash scripts/run-go-player-snapshot-import-local.sh --allow-disposable PASS
 플레이·전체 command parity·WSS/Ingress·testnet 전환은 미완료다. `src/frp.new`와 예전
 dirty worktree는 계속 보호한다.
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (PlayerSnapshotV1 read-only inspection ledger)
+
+`-inspect-player-snapshot-dir`/`-inspect-player-snapshot-world`와 dry-run을 추가했다.
+정확한 `0700` root 및 deterministic lexical walk를 사용해 private 파일은 CDTO canonical
+검증·source SHA-256·octets·inventory node 수를, malformed/public/symlink 파일은 raw 없이
+quarantine reason을 만든다. DB에는 `mud_go.player_snapshot_import_ledger`의 metadata만
+idempotent하게 기록하며, 동일 path+digest의 다른 metadata는 conflict, 같은 path의 변경
+digest는 새 evidence revision으로 남긴다. payload·비밀번호·자동 identity claim은 없다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -run 'PlayerSnapshot(Inspection|Manifest)' -count=1) PASS
+(cd server && go test -race ./internal/storage -run 'PlayerSnapshotInspection' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/storage) PASS
+bash scripts/run-go-player-snapshot-import-local.sh --allow-disposable PASS (PG17 ledger idempotency 포함)
+```
+
+이 수집기는 C raw player 파일을 자동 해석하거나 계정을 claim하지 않는다. 운영 raw 수집·
+대량 대조·복구·Supabase 승인과 전체 게임 인수는 미완료이며, `src/frp.new`와 dirty
+worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (Go PlayerSnapshotV1 이관 경계)
 
 `server/internal/world/player_snapshot_v1.go`에 C/Rust와 동일한 pointer-free CDTO

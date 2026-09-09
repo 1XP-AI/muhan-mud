@@ -5,6 +5,13 @@
 일반 서버를 시작하지 않으며, `-import-player-snapshot-manifest-dry-run`을 함께 쓰면
 PostgreSQL에 연결하거나 쓰지 않고 모든 입력을 먼저 검증한다.
 
+`-inspect-player-snapshot-dir <dir> -inspect-player-snapshot-world <world>`는 별도의
+read-only 수집 모드다. private `0700` 디렉터리의 파일을 lexical 순서로 한 번 스캔하고,
+각 파일의 source path/SHA-256/크기/parser·ABI/result/quarantine reason/graph node 수만
+`mud_go.player_snapshot_import_ledger`에 기록한다. CDTO payload는 DB에 저장하지 않는다.
+`-inspect-player-snapshot-dry-run`은 같은 스캔을 DB 없이 실행한다. malformed·symlink·public
+파일은 quarantine evidence가 되며 자동 이관이나 identity claim으로 승격되지 않는다.
+
 ## 파일 보안·구성
 
 - manifest와 각 `snapshot_file`은 심볼릭 링크가 아닌 정규 파일이고 권한이 정확히 `0600`이어야 한다.
@@ -54,6 +61,10 @@ go run ./cmd/muhan \
 DATABASE_URL='postgresql://...' go run ./cmd/muhan \
   -import-player-snapshot-manifest /private/muhan-players.json
 ```
+
+`mud_go` schema는 이 모드에서 자동 생성하지 않는다. 처음 한 번만 별도 승인된
+`-migrate` 실행으로 schema를 준비한 뒤 import/inspection을 실행하며, 두 모드는
+`-migrate`, seed, world listener와 함께 사용할 수 없다.
 
 모든 record와 snapshot은 DB에 접근하기 전에 읽고 검증한다. 이후 record 배열 순서대로
 `Postgres.ImportPlayerSnapshot`을 호출하며 각 record는 account·linked character·world snapshot·

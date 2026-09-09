@@ -16,6 +16,12 @@ manifest/source SHA-256/bcrypt hash를 요구한다. 모든 파일·CDTO·canoni
 운영 Supabase 대량 이관 실행·전체 record 대조·중간 실패 후 배치 복구 자동화는 아직 남아
 있으며, 이 CLI가 전체 이관 완료를 뜻하지 않는다.
 
+같은 CLI의 `-inspect-player-snapshot-dir` 모드는 private `0700` tree를 lexical 순서로
+읽어 valid/quarantined 파일의 source path·SHA-256·octets·parser/ABI·graph node 수만
+`mud_go.player_snapshot_import_ledger`에 idempotent하게 기록한다. malformed/public/symlink
+파일도 payload 없이 quarantine reason을 남기며, DB 없는 dry-run을 지원한다. 실제 운영
+raw player 수집·대조와 identity binding은 여전히 operator 승인 후 단계다.
+
 ## 2026-09-10 PlayerSnapshotV1 PostgreSQL import·evidence receipt
 
 `Postgres.ImportPlayerSnapshot`가 검토된 CDTO bytes, account credential hash, caller-owned

@@ -29,6 +29,81 @@ func TestValidatePlayerSnapshotImportFlags(t *testing.T) {
 	}
 }
 
+func TestValidatePlayerSnapshotInspectionFlags(t *testing.T) {
+	if options, err := validatePlayerSnapshotInspectionFlags("", "", false); err != nil || options.Directory != "" {
+		t.Fatalf("normal mode options=%+v err=%v", options, err)
+	}
+	if _, err := validatePlayerSnapshotInspectionFlags("", "world", false); !errors.Is(err, errPlayerSnapshotInspectionDirRequired) {
+		t.Fatalf("world without directory err=%v", err)
+	}
+	if _, err := validatePlayerSnapshotInspectionFlags("snapshots", "", false); !errors.Is(err, errPlayerSnapshotInspectionWorldRequired) {
+		t.Fatalf("directory without world err=%v", err)
+	}
+	options, err := validatePlayerSnapshotInspectionFlags("snapshots", "muhan-01", true)
+	if err != nil || options.Directory != "snapshots" || options.WorldID != "muhan-01" || !options.DryRun {
+		t.Fatalf("options=%+v err=%v", options, err)
+	}
+}
+
+func TestInspectPlayerSnapshotDirectoryProducesDeterministicQuarantineEvidence(t *testing.T) {
+	dir := t.TempDir()
+	_, _, raw, _ := writePlayerSnapshotManifestFixture(t, dir, "Alice", "Alice")
+	snapshotDir := filepath.Join(dir, "snapshots")
+	if err := os.Mkdir(snapshotDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, "a-valid.cdto"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, "b-malformed.cdto"), []byte("bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, "c-public.cdto"), raw, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a-valid.cdto", filepath.Join(snapshotDir, "d-link.cdto")); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := inspectPlayerSnapshotDirectory(snapshotDir, "muhan-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.WorldID != "muhan-01" || len(batch.Reports) != 4 {
+		t.Fatalf("batch=%+v", batch)
+	}
+	wantPaths := []string{"a-valid.cdto", "b-malformed.cdto", "c-public.cdto", "d-link.cdto"}
+	for index, report := range batch.Reports {
+		if report.SourcePath != wantPaths[index] {
+			t.Fatalf("report[%d]=%+v, want path %q", index, report, wantPaths[index])
+		}
+		if report.ParserVersion != playerSnapshotInspectionParser || report.ABI != playerSnapshotInspectionABI {
+			t.Fatalf("report[%d] parser metadata=%+v", index, report)
+		}
+	}
+	if batch.Reports[0].Result != "validated" || batch.Reports[0].SourceOctets != int64(len(raw)) || batch.Reports[0].SourceSHA256 != sha256.Sum256(raw) {
+		t.Fatalf("valid report=%+v", batch.Reports[0])
+	}
+	if batch.Reports[1].Result != "quarantined" || batch.Reports[1].SourceOctets != 3 || batch.Reports[1].SourceSHA256 == ([32]byte{}) {
+		t.Fatalf("malformed report=%+v", batch.Reports[1])
+	}
+	if batch.Reports[2].Result != "quarantined" || batch.Reports[2].SourceSHA256 != ([32]byte{}) {
+		t.Fatalf("public report=%+v", batch.Reports[2])
+	}
+	if batch.Reports[3].Result != "quarantined" || batch.Reports[3].SourceSHA256 != ([32]byte{}) {
+		t.Fatalf("symlink report=%+v", batch.Reports[3])
+	}
+}
+
+func TestInspectPlayerSnapshotDirectoryRequiresPrivateRootAndNoPartialBatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectPlayerSnapshotDirectory(dir, "muhan-01"); !errors.Is(err, errPlayerSnapshotInspectionDirInvalid) {
+		t.Fatalf("public root err=%v", err)
+	}
+}
+
 func TestReadPlayerSnapshotImportManifestValidatesPrivateReviewedInputs(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath, snapshotPath, raw, itemCount := writePlayerSnapshotManifestFixture(t, dir, "Alice", "ALICE")
@@ -151,6 +226,41 @@ func TestPlayerSnapshotManifestDryRunDoesNotRequireDatabase(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "manifest validated") || strings.Contains(string(output), "DATABASE_URL") {
 		t.Fatalf("unexpected dry-run output: %s", output)
+	}
+}
+
+func TestPlayerSnapshotInspectionDryRunDoesNotRequireDatabase(t *testing.T) {
+	dir := t.TempDir()
+	_, _, raw, _ := writePlayerSnapshotManifestFixture(t, dir, "Alice", "Alice")
+	snapshotDir := filepath.Join(dir, "snapshots")
+	if err := os.Mkdir(snapshotDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, "alice.cdto"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, "muhan")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	command := exec.Command(binary,
+		"-inspect-player-snapshot-dir", snapshotDir,
+		"-inspect-player-snapshot-world", "muhan-01",
+		"-inspect-player-snapshot-dry-run",
+	)
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "DATABASE_URL=") || strings.HasPrefix(value, "ALLOWED_ORIGINS=") {
+			continue
+		}
+		command.Env = append(command.Env, value)
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspection dry-run failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "inspection validated") || strings.Contains(string(output), "DATABASE_URL") {
+		t.Fatalf("unexpected inspection dry-run output: %s", output)
 	}
 }
 

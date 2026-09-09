@@ -41,6 +41,9 @@ func main() {
 	restoreForce := flag.Bool("restore-force", false, "explicitly remove receipts and fence the target writer generation")
 	playerSnapshotManifest := flag.String("import-player-snapshot-manifest", "", "explicitly import reviewed PlayerSnapshotV1 records from a private manifest and exit")
 	playerSnapshotDryRun := flag.Bool("import-player-snapshot-manifest-dry-run", false, "validate a PlayerSnapshotV1 manifest and its private files without connecting to PostgreSQL")
+	playerSnapshotInspectDir := flag.String("inspect-player-snapshot-dir", "", "explicitly inspect a private PlayerSnapshotV1 directory and record metadata")
+	playerSnapshotInspectWorld := flag.String("inspect-player-snapshot-world", "", "world ID to bind to -inspect-player-snapshot-dir")
+	playerSnapshotInspectDryRun := flag.Bool("inspect-player-snapshot-dry-run", false, "inspect PlayerSnapshotV1 files without connecting to PostgreSQL")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -65,13 +68,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	playerSnapshotInspectOptions, err := validatePlayerSnapshotInspectionFlags(*playerSnapshotInspectDir, *playerSnapshotInspectWorld, *playerSnapshotInspectDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
+		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
+	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
 	}
-	if playerSnapshotOptions.ManifestPath != "" &&
+	if (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") &&
 		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
-		log.Fatal("player snapshot import mode cannot be combined with migrate, seed, or world flags")
+		log.Fatal("player snapshot import/inspection mode cannot be combined with migrate, seed, or world flags")
 	}
 	if *voteIssueFile != "" && *worldID == "" {
 		log.Fatal("-vote-issue-file requires -world")
@@ -84,6 +94,23 @@ func main() {
 		}
 		if playerSnapshotOptions.DryRun {
 			log.Printf("player snapshot manifest validated: world=%s records=%d; no database connection or write performed", playerSnapshotBatch.WorldID, len(playerSnapshotBatch.Requests))
+			return
+		}
+	}
+	var playerSnapshotInspectionBatch playerSnapshotInspectionBatch
+	if playerSnapshotInspectOptions.Directory != "" {
+		playerSnapshotInspectionBatch, err = inspectPlayerSnapshotDirectory(playerSnapshotInspectOptions.Directory, playerSnapshotInspectOptions.WorldID)
+		if err != nil {
+			log.Fatalf("player snapshot inspection rejected: %v", err)
+		}
+		if playerSnapshotInspectOptions.DryRun {
+			quarantined := 0
+			for _, report := range playerSnapshotInspectionBatch.Reports {
+				if report.Result == "quarantined" {
+					quarantined++
+				}
+			}
+			log.Printf("player snapshot inspection validated: world=%s files=%d quarantined=%d; no database connection or write performed", playerSnapshotInspectionBatch.WorldID, len(playerSnapshotInspectionBatch.Reports), quarantined)
 			return
 		}
 	}
@@ -138,6 +165,15 @@ func main() {
 			log.Fatalf("player snapshot import failed: %v", err)
 		}
 		log.Printf("player snapshot manifest import completed: world=%s records=%d", playerSnapshotBatch.WorldID, len(playerSnapshotBatch.Requests))
+		return
+	}
+	if playerSnapshotInspectOptions.Directory != "" {
+		inspectCtx, inspectCancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := runPlayerSnapshotInspection(inspectCtx, repo, playerSnapshotInspectionBatch)
+		inspectCancel()
+		if err != nil {
+			log.Fatalf("player snapshot inspection failed: %v", err)
+		}
 		return
 	}
 	if *seedWorld != "" || *seedRooms != "" || *seedCanonical {

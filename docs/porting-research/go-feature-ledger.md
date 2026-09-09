@@ -1,10 +1,20 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `PlayerSnapshotV1` operator manifest·read-only inspection
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| 검토된 CDTO batch 전달 | `cmd/muhan -import-player-snapshot-manifest`가 private 0600 JSON v1, source SHA-256, canonical round-trip, bcrypt hash, exact player/item ID를 DB 전에 검증하고 `ImportPlayerSnapshot`을 record 순서대로 호출 | `go test -race ./cmd/muhan`, vet, fast/integration PASS. 운영 대량 이관·전체 계정 대조는 미완료 |
+| raw-free snapshot inspection ledger | `-inspect-player-snapshot-dir`가 private 0700 tree를 lexical walk하고 valid/quarantined metadata만 `mud_go.player_snapshot_import_ledger`에 idempotent 저장. payload/password/identity claim 없음 | PG17 ARM64 import harness에서 ledger replay·changed digest·quarantine PASS. C raw player decoder, 운영 보관/복구/승인은 미완료 |
+
+manifest schema와 실행/원자성 규칙은 `docs/porting-research/go-player-snapshot-manifest.md`를
+기준으로 한다. 이 경계는 레거시 파일의 gameplay authority를 바꾸지 않는다.
+
 ## 2026-09-10 `PlayerSnapshotV1` PostgreSQL import·evidence
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |
-| 검토된 CDTO → account/character/world | `Postgres.ImportPlayerSnapshot`가 caller-owned exact player ID와 item-ID manifest를 사용해 decode/canonicalize·offline admission·계정/linked character·world snapshot을 한 transaction으로 저장하고, command receipt를 재생 | ARM64 `postgres:17-alpine` import/replay/conflict/rollback PASS. 운영 Supabase schema·대량 수집/manifest와 account recovery는 미완료 |
+| 검토된 CDTO → account/character/world | `Postgres.ImportPlayerSnapshot`가 caller-owned exact player ID와 item-ID manifest를 사용해 decode/canonicalize·offline admission·계정/linked character·world snapshot을 한 transaction으로 저장하고, command receipt를 재생 | ARM64 `postgres:17-alpine` import/replay/conflict/rollback PASS. 운영 Supabase schema·대량 raw 수집/대조와 account recovery는 미완료 |
 | 이관 evidence | `mud_go.character_imports`에 source/canonical SHA-256, source octets, inventory node count, imported revision만 저장. raw CDTO/password는 저장하지 않음 | 운영 보관·암호화·retention·전체 duplicate/loss 대조는 미완료 |
 
 재시도 request hash에는 canonical account name, explicit player ID, raw snapshot digest,
@@ -16,7 +26,7 @@ manifest를 주면 receipt replay가 아니라 `ErrCommandConflict`로 닫힌다
 | 원작/이관 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |
 | C/Rust pointer-free `PlayerSnapshotV1` artifact | `DecodePlayerSnapshotV1`/`EncodePlayerSnapshotV1`가 CDTO v1 envelope·SHA-256·40개 field 계약과 ObjectGraphV1 preorder topology를 검증. `InspectPlayerSnapshotV1`은 raw/SHA evidence를 복사 보존 | C fixture 6종 byte-for-byte round-trip, world race/vet PASS. raw legacy 파일 수집·운영 승인과 Supabase evidence 보관은 미완료 |
-| 검증 snapshot → Go world | `ToLegacyMonster`/`ToItemCollection`/`ToPlayerState` 및 `State.AdmitPlayerSnapshot`이 i64 overflow·text/ID 충돌·allocator/room 실패를 fail-closed하고 explicit player ID로 offline clone만 생성 | pure admission TDD PASS. PostgreSQL import/receipt/account-link/재시도·item ID manifest는 미완료 |
+| 검증 snapshot → Go world | `ToLegacyMonster`/`ToItemCollection`/`ToPlayerState` 및 `State.AdmitPlayerSnapshot`이 i64 overflow·text/ID 충돌·allocator/room 실패를 fail-closed하고 explicit player ID로 offline clone만 생성 | pure admission TDD PASS. (초기 기록) 이후 PostgreSQL import/receipt/account-link/item-ID manifest 경계는 최신 상단 기록으로 추가됐으며, 운영 대량 이관은 미완료 |
 
 이 경계는 C/Rust runtime 또는 하위 프로세스를 사용하지 않는다. 이름 정규화는 원작
 terminal registration과 같은 `CanonicalName`을 사용하지만, source bytes/SHA evidence가
