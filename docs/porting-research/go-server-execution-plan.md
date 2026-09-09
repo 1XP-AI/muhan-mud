@@ -543,7 +543,8 @@ credential은 DB evidence/receipt에 넣지 않는다.
 
 `cmd/muhan`의 `InspectBankSnapshotReview(JSON)`은 private `0700` source tree와 `0600`
 artifact만 DB 없이 검사하고 source/canonical SHA-256·size·root/node count만 출력한다.
-실제 command flag wiring은 후속 단계다. 웹 `TerminalPlaySmokeHarness`는 같은 terminal
+`-inspect-bank-snapshot-dir`/`-inspect-bank-snapshot-file` 실행 플래그도 연결되어
+DATABASE_URL/listener 전에 metadata-only JSON을 출력한다. 웹 `TerminalPlaySmokeHarness`는 같은 terminal
 wire contract를 이용해 xterm signup→world command→reconnect→relogin 흐름과 secret,
 malformed/mixed gateway, focus/IME/mobile 입력 invariant를 deterministic하게 검사한다.
 
@@ -557,8 +558,14 @@ bash scripts/run-go-bank-snapshot-import-local.sh --allow-disposable PASS
 (cd web && npm test) PASS (57 tests); (cd web && npm run typecheck) PASS
 ```
 
-실제 legacy bank 파일 parser/계정 대조, 라이브 bank transaction parity, CLI wiring,
-브라우저·IME/mobile·WSS/Ingress·운영 Supabase import/복구는 G4/G5 후속이며 이번 기능
+`server/internal/world/legacy_bank_raw_v1.go`는 C `read_obj`의 감사된 LP64
+`object=376` raw bank stream을 bounded parse해 kind-8으로 변환하는 DB-free 경계를
+추가했다. 포인터·padding은 무시하고 fixed-string tail, shots clamp, child/depth/node/
+octet 한계를 재현하며 C zeroed fixture와 교차 검증한다. 이 코드는 실제 파일을 열거나
+계정을 추측하지 않는다.
+
+실제 legacy bank 파일 수집/file-locator, 계정 대조, 라이브 bank transaction parity,
+운영 Supabase import/복구는 G4/G5 후속이며 이번 기능
 레인에서 ARM64·release matrix를 반복 실행하지 않는다.
 
 - **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서

@@ -44,8 +44,8 @@ var (
 	errBankSnapshotInspectionInvalidReport    = errors.New("invalid bank snapshot review report")
 )
 
-// bankSnapshotInspectionOptions is the DB-free input contract that main.go
-// can wire later. An empty value means normal server mode; callers selecting
+// bankSnapshotInspectionOptions is the DB-free input contract wired by
+// main.go. An empty value means normal server mode; callers selecting
 // this mode must provide exactly one of Directory and File.
 type bankSnapshotInspectionOptions struct {
 	Directory string
@@ -82,9 +82,9 @@ type bankSnapshotReviewRecord struct {
 type bankSnapshotInspectionReport = bankSnapshotReviewReport
 type bankSnapshotInspectionRecord = bankSnapshotReviewRecord
 
-// validateBankSnapshotInspectionFlags validates the future CLI flag pair.
-// Unlike import/inspection modes that write a ledger, this mode is always
-// DB-free, so there is no dry-run flag and no database-dependent branch.
+// validateBankSnapshotInspectionFlags validates the CLI source pair. The
+// inspection mode is always DB-free; main accepts an additional dry-run marker
+// as an explicit operator acknowledgement but never opens a database here.
 func validateBankSnapshotInspectionFlags(directory, file string) (bankSnapshotInspectionOptions, error) {
 	if directory == "" && file == "" {
 		return bankSnapshotInspectionOptions{}, nil
@@ -112,8 +112,8 @@ func InspectBankSnapshotReview(directory, file string) (bankSnapshotReviewReport
 	return inspectBankSnapshot(options)
 }
 
-// inspectBankSnapshot is the pure orchestration boundary used by the future
-// CLI wiring. It builds the complete report before returning it, so malformed
+// inspectBankSnapshot is the pure orchestration boundary used by the CLI. It
+// builds the complete report before returning it, so malformed
 // input never yields a partial report that could be mistaken for evidence.
 func inspectBankSnapshot(options bankSnapshotInspectionOptions) (bankSnapshotReviewReport, error) {
 	if options.Directory == "" && options.File == "" {

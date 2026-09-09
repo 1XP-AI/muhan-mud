@@ -55,8 +55,13 @@ identity·writer/revision 충돌은 fail-closed한다. `bash scripts/run-go-play
 원자적으로 붙이고 `mud_go.bank_imports` evidence 및 replayable command receipt를
 남긴다. raw graph·password·credential은 receipt에 저장하지 않으며, 중복 bank 계정·
 revision/writer/manifest 충돌은 fail-closed한다. `cmd/muhan`의
-`InspectBankSnapshotReview(JSON)`은 DB/runtime 없이 private artifact metadata만 만든다
-(CLI flag wiring은 후속). 라이브 bank 명령 parity와 운영 이관/복구는 별도 승인 단계다.
+`InspectBankSnapshotReview(JSON)`과 `-inspect-bank-snapshot-dir`/
+`-inspect-bank-snapshot-file`은 DB/runtime 없이 private artifact metadata만 만들고
+검사 후 즉시 종료한다. 감사된 LP64 `read_obj` raw bank stream은
+`world.DecodeLegacyBankSnapshotRawV1`/`ConvertLegacyBankSnapshotRawV1`로 pointer-free
+kind-8 artifact로 변환할 수 있으며, ABI·graph·fixed-string·size 경계를 먼저 통과해야
+한다. 실제 file-locator 수집, 계정 대조, 라이브 bank 명령 parity와 운영 이관/복구는
+별도 승인 단계다.
 
 최신 이관 경계: `internal/world/player_snapshot_v1.go`가 C/Rust pointer-free
 `PlayerSnapshotV1` CDTO를 Go에서 직접 검증·재인코딩한다. envelope SHA-256, 40개 field

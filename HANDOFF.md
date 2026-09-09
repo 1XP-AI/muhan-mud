@@ -1,5 +1,33 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (레거시 은행 raw 이관·검사 CLI)
+
+`server/internal/world/legacy_bank_raw_v1.go`에 C `read_obj`가 저장한 LP64
+`object=376` + little-endian `int` child-count 재귀 스트림을 읽어 pointer-free
+`BankSnapshotV1`로 바꾸는 migration-only 경계를 추가했다. ABI 문자열을 명시적으로
+고정하고 포인터·padding은 해석하지 않으며, fixed-string NUL tail·shots current clamp,
+negative/trailing/truncated 입력, 4MiB·4096 list·64 depth·8192 node 한계를 fail-closed로
+검사한다. canonical kind-8 CDTO와 source SHA-256 evidence를 별도로 소유하고, 계정 매핑
+및 DB/runtime 쓰기는 수행하지 않는다. C `bank_evidence_test.c`의 zeroed object fixture와
+교차 테스트를 유지한다.
+
+`cmd/muhan`에는 `-inspect-bank-snapshot-dir`/`-inspect-bank-snapshot-file`을 연결했다.
+검사 모드는 다른 seed/import/world/backup 모드와 섞을 수 없고 `DATABASE_URL`·listener
+초기화 전에 종료하며, stdout에는 digest/size/root/node 등 metadata-only JSON만 출력한다.
+`-inspect-bank-snapshot-dry-run`은 소스 지정 여부를 다시 확인하는 명시적 안전 표식이다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan ./internal/world -run '^(TestBankSnapshotInspectionCLI|TestLegacyBankSnapshotRawV1|TestBankSnapshotV1)' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/world) PASS
+make -C src bank-store-test bank-evidence-test PASS
+```
+
+남은 조건은 raw 은행 파일을 운영 경로에서 안전하게 수집하는 file-locator/대량 batch,
+실제 account/character 대조와 `ImportBankSnapshot` 연결, 라이브 입출금 parity·복구 및
+전체 G3/G4/G5 인수다. `src/frp.new`와 기존 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (Go BankSnapshotV1 codec)
 
 `server/internal/world/bank_snapshot_v1.go`에 C/Rust kind-8 `BankSnapshotV1`과 동일한
@@ -30,9 +58,10 @@ credential은 receipt/evidence에 저장하지 않는다. `scripts/run-go-bank-s
 --allow-disposable`는 ARM64 `postgres:17-alpine`에서 성공·replay·rollback을 검증하며,
 자신이 만든 컨테이너만 종료한다.
 
-`cmd/muhan`에는 DB/runtime을 열지 않는 `InspectBankSnapshotReview(JSON)` 경계를 추가해
+`cmd/muhan`에는 DB/runtime을 열지 않는 `InspectBankSnapshotReview(JSON)` 경계와
+`-inspect-bank-snapshot-dir`/`-inspect-bank-snapshot-file` 실행 플래그를 추가해
 private `0700` 디렉터리의 `0600` `.bin` 파일을 lexical 순서로 읽고 digest/size/root/node
-metadata만 생성한다. 아직 CLI flag/main wiring은 별도 작업이다. 웹에는
+metadata만 생성한다. 웹에는
 `web/lib/terminal-play-smoke.ts` 계약 harness를 추가해 terminal signup→world command→
 reconnect→same-character relogin, secret frame, malformed/mixed gateway, focus/IME 규칙을
 브라우저·DB 없이 결정론적으로 검증한다.
@@ -48,7 +77,7 @@ bash scripts/run-go-bank-snapshot-import-local.sh --allow-disposable PASS
 (cd web && npm run typecheck) PASS
 ```
 
-실제 legacy bank 파일 수집/계정 대조, 라이브 bank 명령 parity, CLI wiring, 실제
+실제 legacy bank 파일 수집/계정 대조, 라이브 bank 명령 parity, 실제
 브라우저·IME/mobile·WSS/Ingress·Supabase 운영 이관/복구는 아직 남아 있다. `src/frp.new`
 와 기존 dirty worktree는 계속 보호한다.
 

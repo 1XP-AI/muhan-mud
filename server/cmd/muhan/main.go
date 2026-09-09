@@ -54,6 +54,9 @@ func main() {
 	playerSnapshotManifestMapping := flag.String("build-player-snapshot-manifest-mapping", "", "private operator identity/item mapping JSON for reviewed player snapshots")
 	playerSnapshotManifestOutput := flag.String("build-player-snapshot-manifest-output", "", "private destination manifest for reviewed player snapshot import")
 	playerSnapshotManifestDryRun := flag.Bool("build-player-snapshot-manifest-dry-run", false, "validate review, mapping, and CDTO files without writing an import manifest or connecting to PostgreSQL")
+	bankSnapshotInspectDir := flag.String("inspect-bank-snapshot-dir", "", "inspect all private BankSnapshotV1 files under a directory and emit metadata-only JSON")
+	bankSnapshotInspectFile := flag.String("inspect-bank-snapshot-file", "", "inspect one private BankSnapshotV1 file and emit metadata-only JSON")
+	bankSnapshotInspectDryRun := flag.Bool("inspect-bank-snapshot-dry-run", false, "run BankSnapshotV1 inspection without connecting to PostgreSQL (inspection is always DB-free)")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -90,6 +93,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	bankSnapshotInspectOptions, err := validateBankSnapshotInspectionFlags(*bankSnapshotInspectDir, *bankSnapshotInspectFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
+	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected {
+		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
+	}
 	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
 		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
 	}
@@ -114,6 +125,23 @@ func main() {
 	if playerSnapshotManifestBuildOptions.ReviewPath != "" &&
 		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
 		log.Fatal("player snapshot manifest build mode cannot be combined with migrate, seed, or world flags")
+	}
+	if bankSnapshotInspectionSelected &&
+		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
+		log.Fatal("bank snapshot inspection mode cannot be combined with import, conversion, seed, backup, or world flags")
+	}
+	if bankSnapshotInspectionSelected {
+		inspectionJSON, inspectErr := InspectBankSnapshotReviewJSON(bankSnapshotInspectOptions.Directory, bankSnapshotInspectOptions.File)
+		if inspectErr != nil {
+			log.Fatalf("bank snapshot inspection rejected: %v", inspectErr)
+		}
+		if written, writeErr := os.Stdout.Write(inspectionJSON); writeErr != nil || written != len(inspectionJSON) {
+			if writeErr != nil {
+				log.Fatalf("bank snapshot inspection output failed: %v", writeErr)
+			}
+			log.Fatal("bank snapshot inspection output was incomplete")
+		}
+		return
 	}
 	if playerSnapshotManifestBuildOptions.ReviewPath != "" {
 		builtBatch, manifestRaw, buildErr := buildPlayerSnapshotImportManifest(playerSnapshotManifestBuildOptions.ReviewPath, playerSnapshotManifestBuildOptions.MappingPath)
