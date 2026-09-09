@@ -16,6 +16,7 @@ ballot ID를 주입할 수 없고, 이미 저장된 command ID replay는 reducer
 ```text
 (cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Vote|Reply|DirectMessage|ParseCommand' -count=1) PASS
 (cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+(cd server && scripts/run-go-validation.sh integration) PASS
 git diff --check PASS
 ```
 
