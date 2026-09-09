@@ -33,6 +33,8 @@ workflow = (root / '.github/workflows/ci.yml').read_text()
 assert re.search(r'^\s+- main\s*$', workflow, re.M)
 assert 'scripts/run-go-validation.sh integration' in workflow
 assert 'scripts/run-go-validation.sh main' in workflow
+assert 'Guard main merge gate scope' in workflow
+assert 'DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}' in workflow
 local_hook = (root / 'scripts/check-local-before-push.sh').read_text()
 assert 'MUHAN_DIFF_BASE' in local_hook
 assert 'run_migration_contract=0' in local_hook

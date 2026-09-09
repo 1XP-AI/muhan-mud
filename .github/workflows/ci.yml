@@ -33,6 +33,19 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Guard main merge gate scope
+        if: inputs.validation_scope == 'main'
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$GITHUB_REF" != "$expected" ]]; then
+            echo "main ARM64 gate is reserved for the default branch ($expected); use integration on a feature branch." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
