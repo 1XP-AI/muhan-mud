@@ -12,10 +12,15 @@ Usage:
   GO_FAST_RUN='TestNameRegex' scripts/run-go-validation.sh fast
   GO_FAST_PACKAGES='./internal/world ./internal/session' scripts/run-go-validation.sh fast
   GO_FAST_INCLUDE_STRICT=1 scripts/run-go-validation.sh fast
-  scripts/run-go-validation.sh merge
+  scripts/run-go-validation.sh integration
+  scripts/run-go-validation.sh main
 
 fast  : affected-package/race checks only; no ARM64 build or full repository scan
-merge : one full local gate after integration (race, vet, Linux ARM64 build, diff check)
+integration : full Go race/vet/diff gate; no cross-architecture build
+main  : the one main-merge gate (integration plus Linux ARM64 cross-build)
+
+The old 'merge' name is intentionally rejected so an ordinary integration check
+cannot accidentally spend the main-merge ARM64 budget.
 
 The known 63-room strict corpus exceptions are skipped by default. Set
 GO_FAST_INCLUDE_STRICT=1 only when explicitly auditing that corpus.
@@ -108,22 +113,40 @@ run_fast() {
 	)
 }
 
-run_merge() {
+run_integration() {
 	(
 		cd "$server_dir"
 		go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1
 		go vet ./...
-		CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
 	)
 	git -C "$root" diff --check
+}
+
+run_main() {
+	run_integration
+	(
+		cd "$server_dir"
+		CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+	)
 }
 
 case "$mode" in
 	fast)
 		run_fast
 		;;
+	integration)
+		run_integration
+		;;
+	main)
+		run_main
+		;;
 	merge)
-		run_merge
+		cat >&2 <<'EOF'
+'merge' is intentionally disabled because it mixed ordinary integration checks
+with the main-merge ARM64 budget. Use 'integration' for full Go race/vet, or
+'main' exactly once when the assembled main branch needs the ARM64 cross-build.
+EOF
+		exit 2
 		;;
 	help|-h|--help)
 		usage

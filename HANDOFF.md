@@ -1,5 +1,20 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (반복 검증 비용 재분리)
+
+저장소의 워크플로·로컬 hook·검증 스크립트·문서를 전수 대조해 같은 고비용 검증이
+기능 레인마다 반복될 수 있는 경로를 제거했다. `fast`는 변경 패키지 targeted race,
+`integration`은 필요할 때 전체 Go race/vet/diff만 실행하며 Linux ARM64 cross-build는
+실행하지 않는다. 실제 main 병합 경계에서만 `scripts/run-go-validation.sh main`을 한 번
+실행해 ARM64 cross-build를 추가한다. 모호한 예전 `merge` 명령은 실수로 ARM64 비용을
+소비하지 않도록 거부한다.
+
+수동 CI도 `fast`/`integration`/`main`/`release`로 분리했다. `release`만 DB·브라우저·
+x64/Windows/macOS 호환 matrix를 실행하며 자동 push/PR trigger는 추가하지 않았다.
+pre-push는 기존처럼 Go 전체 gate를 호출하지 않고 경로 영향이 있는 migration/stack
+검사만 수행한다. 정적 정책·shell 검증과 `integration` 전체 Go gate를 변경 후 실행했고,
+main ARM64 cross-build와 release matrix는 이 비용 분리 변경 자체로 재실행하지 않았다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 비용 최적화 + bounded lanes)
 
 반복 검증 전수 점검을 반영했다. `scripts/run-go-validation.sh fast`는 변경 경로를
@@ -8,7 +23,7 @@ transport-only 변경은 transport만 race 검사한다. 문서·명령만 바�
 건너뛰고 `GO_FAST_PACKAGES=all`로만 명시적 전체 표적 검사를 요청한다. `.githooks/pre-push`는
 다중 커밋 push의 remote tip을 한 번만 기준으로 삼고, migration/stack-runner 또는
 gateway/web/stack contract 변경에 해당하는 검사만 실행한다. 전체 race/vet/Linux ARM64
-cross-build는 `scripts/run-go-validation.sh merge`에서 통합 batch당 한 번만, DB receipt는
+cross-build는 조립 batch의 `integration`과 실제 main 병합의 `main`으로 분리하고, DB receipt는
 `TestPostgresBoundedLanesPersistAndReplay`를 하나의 disposable PostgreSQL에서 한 번만
 실행한다. CI는 계속 수동 `workflow_dispatch`이며 ARM64 build와 release matrix를 기능
 레인마다 재실행하지 않는다.
@@ -19,7 +34,7 @@ cross-build는 `scripts/run-go-validation.sh merge`에서 통합 batch당 한 �
 (scroll level/alignment/class gate, spell bit, room 이동)를 Go world/session receipt와
 WorldConnector parser/dispatch/room event까지 연결했다. `go test -race` targeted 및
 connector 회귀, `scripts/run-go-validation.sh fast`, 통합 `scripts/run-go-validation.sh
-merge`, 정적 정책·migration coverage, ARM64 PostgreSQL 17의 3-lane 저장/replay batch를
+integration` 및 정책 검사를 통과했다. ARM64 PostgreSQL 17의 3-lane 저장/replay batch를
 통과했다. 새 검증 harness는 환경변수 없이는 skip되며, 운영 DB를 사용하지 않는다.
 
 커밋 전 보존 조건: `src/frp.new`는 사용자 소유 변경으로 수정·stage·되돌리지 않는다.
@@ -47,9 +62,10 @@ WSS/Ingress·testnet 배포와 전체 legacy data migration은 아직 남아 있
 파일의 gofmt와 변경 패키지 targeted race만 실행하고, 전체 race·vet·Linux ARM64
 cross-build·격리 PostgreSQL·브라우저·차트는 메인 통합 또는 승인된 릴리스 경계에서
 batch당 한 번만 실행한다. `scripts/run-go-validation.sh fast`가 레인용이고,
-`scripts/run-go-validation.sh merge`가 통합용이다. 기존 `.github/workflows/ci.yml`는
-`workflow_dispatch` 전용이며 `fast`(기본 Go 표적 검사), `integration`(전체 Go race/vet와
-Linux ARM64 build 1회), `release`(기존 DB·브라우저·x64/Windows/macOS matrix) 선택으로
+`integration`은 ARM64 build 없는 조립 batch gate, `main`은 실제 main 병합 때의 ARM64
+포함 gate다. 기존 `.github/workflows/ci.yml`는 `workflow_dispatch` 전용이며
+`fast`(기본 Go 표적 검사), `integration`(전체 Go race/vet), `main`(Linux ARM64 build 포함),
+`release`(기존 DB·브라우저·x64/Windows/macOS matrix) 선택으로
 비용 경계를 명시한다. Linux ARM64, x64/Windows/macOS 호환 검증 자체는 보존하되 release
 게이트에서만 실행한다.
 역사 문서에 반복된 전체 검증 명령은 실행 hook이 아니라 과거 증거이므로 매 레인마다

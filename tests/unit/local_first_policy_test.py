@@ -20,7 +20,17 @@ for workflow in (root / '.github/workflows').iterdir():
 go_validation = (root / 'scripts/run-go-validation.sh').read_text()
 assert 'affected_packages()' in go_validation
 assert 'GO_FAST_PACKAGES=all' in go_validation
-assert 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...' in go_validation
+assert "scripts/run-go-validation.sh integration" in go_validation
+assert "scripts/run-go-validation.sh main" in go_validation
+integration_start = go_validation.index('run_integration()')
+main_start = go_validation.index('run_main()')
+assert 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...' not in go_validation[integration_start:main_start]
+assert 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...' in go_validation[main_start:]
+assert "'merge' is intentionally disabled" in go_validation
+workflow = (root / '.github/workflows/ci.yml').read_text()
+assert re.search(r'^\s+- main\s*$', workflow, re.M)
+assert 'scripts/run-go-validation.sh integration' in workflow
+assert 'scripts/run-go-validation.sh main' in workflow
 local_hook = (root / 'scripts/check-local-before-push.sh').read_text()
 assert 'MUHAN_DIFF_BASE' in local_hook
 assert 'run_migration_contract=0' in local_hook

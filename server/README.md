@@ -31,8 +31,11 @@ GO_FAST_RUN='Title|RangerPray' scripts/run-go-validation.sh fast
 # 필요할 때만 전체 런타임 표적을 명시한다.
 GO_FAST_PACKAGES=all scripts/run-go-validation.sh fast
 
-# 메인 통합: batch당 한 번만 전체 로컬 gate
-scripts/run-go-validation.sh merge
+# 조립된 batch: 전체 Go race/vet만 필요할 때 한 번 (ARM64 cross-build 없음)
+scripts/run-go-validation.sh integration
+
+# 실제 main 병합 시에만 한 번: 위 gate + Linux ARM64 cross-build
+scripts/run-go-validation.sh main
 
 # 영속성 명령 batch: disposable PG에서 한 번만 receipt/replay 확인
 MUHAN_BOUNDED_LANES_TEST_DATABASE_URL='postgresql://...' \
@@ -44,8 +47,9 @@ session/transport 소비자까지, session 변경 시 transport까지 포함하�
 transport만 검사한다. 영속성 변경이 포함된
 batch의 PG receipt 테스트는 하나의 격리 PostgreSQL에서 한 번만 묶어 실행하고, ARM64
 이미지/Helm·x64/Windows/macOS 호환·브라우저 IME/mobile·복구 검증은 승인된 통합 또는
-릴리스 gate에서만 실행한다. 직접 명령이 필요하면 `go test ./...`와 `go test -race ./...`를
-메인 통합 경계에서 사용하되, 엄격 corpus 예외 63건의 상태를 숨기지 않는다.
+릴리스 gate에서만 실행한다. 전체 Go 검증은 `integration`에서만 필요할 때 실행하고,
+Linux ARM64 cross-build는 `main`에서만 실행한다. 예전 `merge` 이름은 모호한 고비용
+실행을 막기 위해 스크립트가 거부한다. 엄격 corpus 예외 63건의 상태를 숨기지 않는다.
 
 첫 TDD 기록: `NewInput` 미정의로 테스트 실패를 확인한 뒤 구현했다.
 한글 테스트의 입력 한도를 문자 수가 아닌 바이트 수로 바로잡았다.
@@ -2345,13 +2349,15 @@ WSS/Ingress와 testnet 배포는 아직 별도 인수 조건이다.
 ## 검증 scope와 중복 실행 방지
 
 Go 기능 레인은 담당 패키지의 `gofmt`와 targeted `go test -race`만 실행한다. 전체 race·
-`go vet`·Linux ARM64 cross-build는 `scripts/run-go-validation.sh merge`를 메인 통합 시
-한 번만 실행하고, 영속성 변경 batch의 PostgreSQL receipt/replay도 고유 격리 DB에서 한 번만
+`go vet`·diff는 필요할 때 `scripts/run-go-validation.sh integration`에서 실행하고,
+Linux ARM64 cross-build는 실제 main 병합 시 `scripts/run-go-validation.sh main`에서 한
+번만 실행한다. 영속성 변경 batch의 PostgreSQL receipt/replay도 고유 격리 DB에서 한 번만
 실행한다. `scripts/run-go-validation.sh fast`는 world/session/transport 표적 회귀를 위한
 기본 경로다.
 
 수동 GitHub CI는 `.github/workflows/ci.yml`의 `validation_scope`로 같은 경계를 따른다.
-`fast`는 Go 표적 race, `integration`은 전체 Go merge gate, `release`만 기존 Supabase/DB,
+`fast`는 Go 표적 race, `integration`은 전체 Go gate, `main`은 ARM64 cross-build를 포함한
+main 병합 gate, `release`만 기존 Supabase/DB,
 브라우저/stack 및 x64·Windows·macOS 호환 matrix를 실행한다. 자동 push/PR workflow는 없으며,
 호환성·차트·실기기 검증을 삭제하지 않고 release 시점으로 이동했다.
 

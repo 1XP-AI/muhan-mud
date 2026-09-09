@@ -5,13 +5,15 @@ on:
     inputs:
       validation_scope:
         description: >-
-          Choose the smallest gate that matches this change. Release runs the
-          legacy DB/browser/compatibility matrix and is not a per-lane check.
+          Choose the smallest gate that matches this change. Main is the only
+          scope that runs the Linux ARM64 cross-build; release adds legacy
+          DB/browser/compatibility checks and is not a per-lane check.
         required: true
         type: choice
         options:
           - fast
           - integration
+          - main
           - release
         default: fast
 
@@ -58,7 +60,10 @@ jobs:
               scripts/run-go-validation.sh fast
               ;;
             integration)
-              scripts/run-go-validation.sh merge
+              scripts/run-go-validation.sh integration
+              ;;
+            main)
+              scripts/run-go-validation.sh main
               ;;
             *)
               echo "unsupported validation scope: $VALIDATION_SCOPE" >&2

@@ -119,10 +119,11 @@ replay 억제 room event까지 이어졌으며, legacy `Body.Inventory`가 남�
 spell/item은 fail-closed다. unit/session/transport TDD와 connector 회귀가 통과했다.
 
 반복 검증 감사 결과, `fast`는 변경 경로에 영향받는 Go 패키지만 race 검사하고, pre-push는
-push diff에 해당하는 migration/stack contract만 실행한다. 전체 race·vet·Linux ARM64
-cross-build는 `merge`에서 batch당 한 번, durable receipt PG 검사는
+push diff에 해당하는 migration/stack contract만 실행한다. 전체 race·vet·diff는 필요할 때
+`integration`에서, Linux ARM64 cross-build는 실제 main 병합의 `main`에서 batch당 한 번,
+durable receipt PG 검사는
 `TestPostgresBoundedLanesPersistAndReplay`를 disposable PostgreSQL에서 한 번 실행한다.
-정책·self-hosted routing·migration coverage 및 `scripts/run-go-validation.sh merge`가
+정책·self-hosted routing·migration coverage 및 `scripts/run-go-validation.sh integration`이
 통과했다. ARM64 이미지/Helm, browser/IME/mobile, strict room corpus, full parity와
 testnet 배포는 여전히 release/후속 G3~G5 조건이다.
 
@@ -192,7 +193,7 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
 4. 인코딩·숫자 범위·잘린 파일·참조 무결성·중복 캐릭터·다중 로그인·자동 저장·종료 저장·응답 유실을 검증한다. 기존 캐릭터는 기존 비밀번호 검증과 이관을 거쳐 접속하며 이름만으로 소유권을 부여하지 않는다. 웹 계정 연동을 추가 가입 단계로 요구하지 않는다.
 5. 순수 테스트, race 검사, 제한된 fuzz 실행, 실제 PG/게임 인증 통합, 브라우저 xterm 흐름, 재시작·복원 검증을 구분해 기록한다.
 
-모듈 생성 이후 표적 로컬 검증은 `scripts/run-go-validation.sh fast`다. 전체 저장소 gate는 메인 통합 경계의 `scripts/run-go-validation.sh merge`에서만 실행한다. 현재 존재하거나 통과한 명령으로 보고하지 않는다. 통합 테스트는 기존 Docker 구성을 조사해 고유 Compose 프로젝트 이름·임시 볼륨·충돌 없는 포트를 적용한다. 공유 컨테이너/캐시 일괄 삭제는 금지한다.
+모듈 생성 이후 표적 로컬 검증은 `scripts/run-go-validation.sh fast`다. 조립된 batch의 전체 Go gate가 필요하면 `scripts/run-go-validation.sh integration`을 실행하며, 이 명령은 ARM64 cross-build 없이 race/vet/diff만 수행한다. 메인 브랜치 병합 시에만 `scripts/run-go-validation.sh main`을 한 번 실행해 ARM64 cross-build를 추가한다. 현재 존재하거나 통과한 명령으로 보고하지 않는다. 통합 테스트는 기존 Docker 구성을 조사해 고유 Compose 프로젝트 이름·임시 볼륨·충돌 없는 포트를 적용한다. 공유 컨테이너/캐시 일괄 삭제는 금지한다.
 
 ### 검증 비용 cadence — 2026-09-09
 
@@ -203,14 +204,18 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
   session→transport, transport-only→transport). 문서·명령 외 변경은 Go 표적 검사를
   건너뛰며, 필요하면 `GO_FAST_RUN`/`GO_FAST_PACKAGES`(`all` 포함)를 주어 덮어쓴다. 전체 저장소 race, `go vet ./...`, Linux ARM64 cross-build, disposable PG,
   브라우저·Helm 검증은 레인 완료 조건이 아니다.
-- **메인 통합**: 여러 레인을 parser/transport/docs에 합친 뒤 `scripts/run-go-validation.sh
-  merge`를 한 번만 실행한다. 이 명령이 전체 race(엄격 corpus 예외 제외), vet, Linux
-  ARM64 build, diff check를 담당한다.
+- **조립 batch**: 여러 레인을 parser/transport/docs에 합친 뒤 필요할 때
+  `scripts/run-go-validation.sh integration`을 한 번 실행한다. 이 명령은 전체 race(엄격
+  corpus 예외 제외), vet, diff check만 담당하며 ARM64 cross-build를 실행하지 않는다.
+- **메인 병합**: 실제 main 브랜치에 병합하는 시점에만
+  `scripts/run-go-validation.sh main`을 한 번 실행한다. 조립 batch gate에 더해 Linux
+  ARM64 cross-build를 수행하는 유일한 Go 로컬 경계다. 예전 `merge` 이름은 실수로 이
+  비용을 소비하지 않도록 거부한다.
 - **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서
   한 번만 묶어 실행한다. 현재 bounded receipt batch는
   `TestPostgresBoundedLanesPersistAndReplay`이며, `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`
   로 연결한다. 레인별로 같은 이미지/DB를 재생성하지 않으며, 테스트가 만든 컨테이너·볼륨·포트만 정리한다.
-- **release/merge gate**: ARM64 이미지·차트, x64/Windows 호환, macOS 전용, 브라우저
+- **main/release gate**: ARM64 이미지·차트, x64/Windows 호환, macOS 전용, 브라우저
   IME/mobile, 장애복구·백업은 각각 승인된 통합/릴리스 시점에만 실행한다. x64/Windows와
   macOS 검증을 삭제하지 않지만 Go 기능 레인에서 재실행하지 않는다.
 
@@ -658,18 +663,20 @@ ARM64 PostgreSQL 17 receipt 테스트다. 이 레인은 G3 일부 기능의 boun
 ## 2026-09-09 검증 비용 전수 점검과 수동 CI scope
 
 반복 실행 경로를 저장소 전체에서 점검한 결과, Go 개발 레인은
-`scripts/run-go-validation.sh fast`로 제한하고, 메인 통합에서만
-`scripts/run-go-validation.sh merge`를 실행하는 것이 안전한 최소 경계다. 레인마다
-반복하던 전체 race·`go vet`·Linux ARM64 cross-build·실제 PostgreSQL·브라우저·차트
-검증은 레인 완료 조건에서 제외했다. 변경 batch에 영속성 경계가 있을 때만 고유 ARM64
-PostgreSQL 컨테이너에서 receipt/replay를 한 번 실행한다.
+`scripts/run-go-validation.sh fast`로 제한하고, 조립된 batch의 전체 확인이 필요할 때만
+`scripts/run-go-validation.sh integration`을 실행한다. 이 명령에는 ARM64 cross-build가
+없으며, 실제 main 브랜치 병합 시에만 `scripts/run-go-validation.sh main`을 한 번 실행해
+그 비용을 추가한다. 레인마다 반복하던 전체 race·`go vet`·Linux ARM64 cross-build·실제
+PostgreSQL·브라우저·차트 검증은 레인 완료 조건에서 제외했다. 변경 batch에 영속성 경계가
+있을 때만 고유 ARM64 PostgreSQL 컨테이너에서 receipt/replay를 한 번 실행한다.
 
 `.github/workflows/ci.yml`는 자동 push/PR 트리거를 추가하지 않고 수동
 `validation_scope` 입력을 제공한다.
 
 - `fast`(기본): self-hosted Linux ARM64에서 Go world/session/transport 표적 race만 실행
-- `integration`: 전체 Go race(기존 strict room corpus 예외), vet, Linux ARM64 build와 diff
-  check를 메인 merge 경계에서 한 번 실행
+- `integration`: 전체 Go race(기존 strict room corpus 예외), vet, diff check만 실행하며
+  cross-architecture build는 건너뜀
+- `main`: `integration`에 더해 Linux ARM64 cross-build를 실제 main 병합 시 한 번 실행
 - `release`: 기존 Supabase/PostgreSQL 계약, 브라우저/stack, x64·Windows·macOS 호환 matrix를
   승인된 release 검토 시에만 실행
 
@@ -690,7 +697,8 @@ debit·MTRADE 상태·follower/enemy 정리를 atomic receipt로 저장한다. `
 연결하며 성공 이동과 실패 사망·경보를 모두 replay-safe receipt에 기록한다.
 
 검증은 레인 targeted race, parser/live connector 회귀, `scripts/run-go-validation.sh fast`,
-통합 `scripts/run-go-validation.sh merge`를 통과했다. 별도 ARM64 `postgres:17`에서
+이전 통합 증거에서는 기존 `merge` gate를 통과했다. 현재 cadence에서는 조립 batch의
+`integration`과 main 병합의 `main`으로 분리한다. 별도 ARM64 `postgres:17`에서
 `TestPostgresBribeCommandPersistsAndReplays` 저장·동일 command replay도 통과했으며,
 컨테이너는 테스트 직후 제거하고 공유 `sws26-db`는 건드리지 않았다. 전체 C parity, strict
 room corpus, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 아직 남아 있다.

@@ -7,11 +7,13 @@ trigger. When a manual run is explicitly approved, choose the smallest scope:
 | scope | purpose | expensive checks |
 | --- | --- | --- |
 | `fast` (default) | Go feature-lane feedback | affected Go package race tests only |
-| `integration` | main-branch/merge checkpoint after parallel lanes are integrated | full Go race, `go vet`, Linux ARM64 build, diff check once |
+| `integration` | assembled-batch feedback before the main merge checkpoint | full Go race, `go vet`, diff check; no cross-architecture build |
+| `main` | the one main-branch merge checkpoint | `integration` plus the Linux ARM64 cross-build once |
 | `release` | approved release or compatibility review | legacy DB contracts, browser/stack, x64/Windows/macOS matrix |
 
-The ARM64 build is therefore a merge checkpoint, not a per-agent or per-commit
-check. PostgreSQL, browser, Helm, and compatibility checks remain release gates.
+The ARM64 build is therefore a `main` checkpoint, not a per-agent, per-commit, or
+ordinary `integration` check. PostgreSQL, browser, Helm, and compatibility checks
+remain release gates.
 No billing/spending limit was changed.
 
 For a batch that changes durable game receipts, run the single opt-in PG batch
@@ -28,6 +30,11 @@ same principle to stack checks: migration coverage runs only for migration or
 stack-runner changes, and gateway/TypeScript tests run only for gateway, web,
 stack-contract, or package-lock changes. A multi-commit push uses its remote tip
 as one diff base so the same contract is not rerun once per commit.
+
+The old `merge` validation name is deliberately rejected by the script. This
+prevents an ambiguous command from silently consuming the main-merge ARM64
+budget; choose `integration` during development or `main` exactly at the
+assembled main-branch checkpoint.
 
 Install the tracked hook in each clone:
 
