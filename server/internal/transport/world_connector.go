@@ -21,6 +21,10 @@ type WorldConnectorConfig struct {
 	Clock     func() (int32, int)
 	WallClock func() time.Time
 	Catalog   world.SpawnCatalog
+	// TalkCatalog is the immutable, server-owned command8.c topic catalog.
+	// It is optional so no-topic NPC speech keeps its original behavior; an
+	// MTALKS topic request fails closed when this dependency is absent.
+	TalkCatalog *world.TalkCatalog
 	// MerchantOffers is the server-owned MPURIT stock catalog. Legacy NPC
 	// Carry values are never interpreted from a terminal request; an absent
 	// catalog makes merchant purchase fail closed at the session boundary.
@@ -68,6 +72,14 @@ type playerPhaseSummary struct {
 func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.Store == nil || config.WorldID == "" || config.Clock == nil || config.MaxSessions < 1 {
 		return nil, errors.New("invalid world connector configuration")
+	}
+	// Treat the injected catalog as immutable configuration. Copy the value at
+	// connector construction so replacing the caller's pointer cannot change a
+	// live connector's command dependency. TalkCatalog's public lookups return
+	// owned copies of topic slices and expose no mutation path for its map.
+	if config.TalkCatalog != nil {
+		catalog := *config.TalkCatalog
+		config.TalkCatalog = &catalog
 	}
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
@@ -452,7 +464,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteMerchantPurchaseLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MerchantPurchaseOptions{Offers: c.game.config.MerchantOffers})
 	case session.CommandNPCTalk:
 		npcTalkCommand = true
-		receipt, err = c.game.owners.ExecuteNPCTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+		receipt, err = c.game.owners.ExecuteNPCTalkLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.NPCTalkOptions{Catalog: c.game.config.TalkCatalog})
 	case session.CommandGroupTalk:
 		groupTalkCommand = true
 		receipt, err = c.game.owners.ExecuteGroupTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)

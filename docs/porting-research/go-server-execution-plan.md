@@ -203,7 +203,11 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
   `scripts/run-go-validation.sh fast`가 변경 경로를 자동 분류한다(world→session/transport,
   session→transport, transport-only→transport). 문서·명령 외 변경은 Go 표적 검사를
   건너뛰며, 필요하면 `GO_FAST_RUN`/`GO_FAST_PACKAGES`(`all` 포함)를 주어 덮어쓴다.
+  `server/cmd/muhan/` 변경은 `./cmd/muhan`을 추가해 flag·scheduler·listener wiring을
+  확인하고, `server/cmd/muhan-browser-e2e/` 변경은 해당 helper 패키지를 추가한다.
   기본적으로 현재 작업 트리만 읽고 깨끗한 트리의 직전 커밋을 반복하지 않는다.
+  단, 수동 CI의 clean checkout fast job은 depth 2와 `GO_FAST_COMMIT=1`을 사용해
+  마지막 checkout commit의 표적 검사를 실제로 수행한다.
   커밋 자체를 다시 검사할 때만 `GO_FAST_COMMIT=1` 또는 명시적 `GO_FAST_BASE`를 사용한다.
   전체 저장소 race, `go vet ./...`, Linux ARM64 cross-build, disposable PG,
   브라우저·Helm 검증은 레인 완료 조건이 아니다.

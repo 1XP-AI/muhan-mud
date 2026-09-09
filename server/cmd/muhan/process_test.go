@@ -67,7 +67,7 @@ func testProcessRestart(t *testing.T, crash bool) {
 	var characterID string
 	for round := 0; round < 2; round++ {
 		func() {
-			cmd := exec.CommandContext(ctx, binary, "-world", worldID, "-templates", templates, "-game-hour", "12", "-npc-combat-tick", "1s")
+			cmd := exec.CommandContext(ctx, binary, "-world", worldID, "-templates", templates, "-game-hour", "12", "-npc-combat-tick", "1s", "-npc-maintenance-tick", "1s")
 			for _, value := range os.Environ() {
 				if !strings.HasPrefix(value, "DATABASE_URL=") && !strings.HasPrefix(value, "ALLOWED_ORIGINS=") && !strings.HasPrefix(value, "LISTEN_ADDR=") {
 					cmd.Env = append(cmd.Env, value)
@@ -92,6 +92,8 @@ func testProcessRestart(t *testing.T, crash bool) {
 			}()
 			address := make(chan string, 1)
 			schedulerStarted := make(chan struct{})
+			maintenanceStarted := make(chan struct{})
+			maintenanceStopped := make(chan struct{})
 			scanned := make(chan struct{})
 			go func() {
 				defer close(scanned)
@@ -112,6 +114,20 @@ func testProcessRestart(t *testing.T, crash bool) {
 							close(schedulerStarted)
 						}
 					}
+					if strings.Contains(line, "NPC maintenance scheduler started") {
+						select {
+						case <-maintenanceStarted:
+						default:
+							close(maintenanceStarted)
+						}
+					}
+					if strings.Contains(line, "NPC maintenance scheduler stopped") {
+						select {
+						case <-maintenanceStopped:
+						default:
+							close(maintenanceStopped)
+						}
+					}
 				}
 			}()
 			var addr string
@@ -127,6 +143,11 @@ func testProcessRestart(t *testing.T, crash bool) {
 			case <-schedulerStarted:
 			case <-ctx.Done():
 				t.Fatal("NPC combat scheduler did not start")
+			}
+			select {
+			case <-maintenanceStarted:
+			case <-ctx.Done():
+				t.Fatal("NPC maintenance scheduler did not start")
 			}
 			conn, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://mud.test"}}})
 			if err != nil {
@@ -198,6 +219,13 @@ func testProcessRestart(t *testing.T, crash bool) {
 				t.Fatal("shutdown timeout")
 			}
 			<-scanned
+			if !(crash && round == 0) {
+				select {
+				case <-maintenanceStopped:
+				case <-ctx.Done():
+					t.Fatal("NPC maintenance scheduler did not stop before process exit")
+				}
+			}
 			identity, err := pg.Authenticate(ctx, name, []byte("pw1234"))
 			if err != nil {
 				t.Fatal(err)

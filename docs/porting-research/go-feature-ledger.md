@@ -821,3 +821,22 @@ Linux ARM64 build, browser IME/mobile, WSS/Ingress와 testnet 배포는 여전�
 검증: 영향 패키지 race/vet, 전체 Go `integration`, xterm Chromium 4건, web typecheck,
 정책·shell·diff 검사를 통과했다. ARM64 cross-build·실제 PG·release matrix·실기기
 IME/mobile은 cadence 정책에 따라 이번 기능 레인에서 반복하지 않았다.
+
+## 2026-09-09 검증 중복 감사와 NPC 실행 연결
+
+저장소의 workflow, validation script, pre-push hook, matrix 및 정책 테스트를 전수 대조했다.
+자동 push/PR workflow는 없고, 수동 CI의 `fast`/`integration`/`main`/`release` scope가
+각각의 비용 경계를 지킨다. `main`만 Linux ARM64 cross-build를 수행하며, `release`는
+기본 브랜치의 승인된 호환성·DB·브라우저 검토로 제한한다. `fast` 분류기가 놓치던
+`cmd/muhan` 진입점 변경은 `./cmd/muhan`을 추가해 scheduler/flag/listener 변경을 표적
+검사하도록 보강했다. GitHub Actions의 clean checkout에서도 fast가 조용히 skip되지 않도록
+manual `fast`는 shallow depth 2와 `GO_FAST_COMMIT=1`을 사용한다. 전체 race·vet·ARM64·
+실제 PG·브라우저·차트 검증을 각 병렬 레인에서 반복하지 않는 정책은 유지한다.
+
+`TalkCatalog` 주제 대화 주입을 session/transport와 `cmd/muhan`의 선택적
+`-npc-talk-dir`/`MUD_NPC_TALK_DIR` 경계까지 연결했다. 경로가 없으면 MTALKS 주제 요청은
+fail-closed하고, 지정 경로는 canonical 파일을 시작 시 한 번 읽어 server-owned catalog로
+복사한다. 현재 체크인 자산의 CP949 손상 파일 1개는 정정 전까지 전체 로드를 막는 남은
+조건이다. NPC 유지보수 bounded prefix는 프로세스 scheduler에 연결했지만 maintenance→
+combat strict ordering은 다음 scheduler 통합 범위다. 실제 PG 검증은 opt-in 고유 DB에서만
+실행한다.

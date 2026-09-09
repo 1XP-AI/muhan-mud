@@ -1,5 +1,35 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 중복 감사 + NPC 실행 연결)
+
+개발 속도 전수 점검 결과, 기능 레인은 `fast`, 조립 batch는 `integration`, 기본 브랜치
+병합 시에만 `main`, 호환성·DB·브라우저·차트는 승인된 `release`로 고정했다. `fast`는
+현재 작업 트리의 영향 패키지만 검사하고, `server/cmd/muhan/` 변경은 `./cmd/muhan`을
+추가한다. 따라서 main flag/scheduler wiring을 놓치지 않으면서도 ARM64 cross-build와
+전체 저장소 gate를 매 레인에 반복하지 않는다. 수동 CI의 `release-scope-guard`와
+`workflow_dispatch` 전용 정책은 그대로 유지한다. CI의 clean checkout에서 fast가 조용히
+skip되지 않도록 해당 job만 depth 2와 `GO_FAST_COMMIT=1`을 사용한다.
+
+이번 bounded 후속의 구현 상태:
+
+- `TalkCatalog`를 session→transport→`cmd/muhan`까지 연결했다. 운영 실행 시
+  `-npc-talk-dir` 또는 `MUD_NPC_TALK_DIR`로 canonical `<name>-<level>` 디렉터리를
+  명시해야 하며, 미지정이면 주제 대화는 fail-closed한다. 현재 체크인된 전체
+  `resources_utf8/objmon/talk`는 CP949 손상 파일 1개가 있어 그 자산을 정정하기 전에는
+  전체 카탈로그를 시작 시 로드하지 않는다.
+- C `update_active`의 bounded NPC 유지보수 prefix를 프로세스 scheduler에 연결했다.
+  시작/종료 drain은 검증하지만 maintenance와 combat worker 사이의 strict 선행 순서는
+  아직 보장하지 않으며 로그에 명시돼 있다.
+- 격리 PostgreSQL 유지보수 receipt/replay 테스트는
+  `MUHAN_NPC_MAINTENANCE_TEST_DATABASE_URL`이 있을 때만 실행하고, 기본 로컬 실행은
+  환경변수 부재로 skip한다. 공유 DB를 사용하거나 정리하지 않는다.
+
+검증: 영향 패키지 race/vet, cmd 프로세스 테스트(격리 DB 미설정으로 의도적 skip),
+`scripts/run-go-validation.sh fast`, 조립 batch의 `scripts/run-go-validation.sh integration`
+1회, 정책·shell·diff 검사를 실행했다. 이 batch에서는 ARM64 cross-build, 실제 PostgreSQL,
+브라우저/차트·release matrix를 반복하지 않는다. `src/frp.new`는 사용자 소유 dirty
+변경으로 계속 보존한다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 cadence guard + NPC/xterm 후속)
 
 검증 경로를 다시 대조한 결과, 기능 레인은 `fast`, 조립 batch는 `integration`, 기본

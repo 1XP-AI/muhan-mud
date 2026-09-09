@@ -37,6 +37,18 @@ type npcTalkLineRequest struct {
 	Topic         string `json:"topic,omitempty"`
 }
 
+// NPCTalkOptions binds the server-owned, immutable talk catalog to one
+// command execution. The pointer is optional so the original no-topic API can
+// continue to run without a catalog; when a topic targets an MTALKS NPC, the
+// world reducer fails closed if this dependency is absent.
+//
+// TalkCatalog exposes only read-only lookup methods. ExecuteNPCTalkLineWithOptions
+// copies the catalog value before entering the reducer so a caller cannot swap
+// the pointed-to value while a command is being planned/applied.
+type NPCTalkOptions struct {
+	Catalog *world.TalkCatalog
+}
+
 // ParseNPCTalkLine accepts only the exact global alias 대화. The parser keeps
 // target occurrence separate from topic so numeric command parser tokens do
 // not accidentally become a topic. Quoted tokens are handled by the existing
@@ -117,13 +129,46 @@ func IsNPCTalkLine(line string) bool {
 }
 
 // ExecuteNPCTalkLine connects the pure NPC talk proposal/apply boundary to a
-// durable ExecuteGame receipt. The reducer stores the deterministic event in
-// the response envelope; a replay therefore never re-selects an NPC or
-// repeats the PHIDDN/enemy transition.
-func (o *Ownership) ExecuteNPCTalkLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
+// durable ExecuteGame receipt. The variadic value form keeps existing callers
+// source-compatible while allowing the migration boundary to pass one
+// server-owned catalog. A second catalog is rejected rather than silently
+// selecting one.
+func (o *Ownership) ExecuteNPCTalkLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalogs ...world.TalkCatalog) (storage.WorldReceipt, error) {
+	if len(catalogs) > 1 {
+		return storage.WorldReceipt{}, errors.New("multiple NPC talk catalogs")
+	}
+	var options NPCTalkOptions
+	if len(catalogs) == 1 {
+		catalog := catalogs[0]
+		options.Catalog = &catalog
+	}
+	return o.ExecuteNPCTalkLineWithOptions(ctx, store, worldID, commandID, lease, line, options)
+}
+
+// ExecuteNPCTalkLineWithCatalog is the explicit value-copy spelling for
+// callers that already own a loaded catalog but do not need pointer lifetime
+// semantics at their call site.
+func (o *Ownership) ExecuteNPCTalkLineWithCatalog(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalog world.TalkCatalog) (storage.WorldReceipt, error) {
+	return o.ExecuteNPCTalkLineWithOptions(ctx, store, worldID, commandID, lease, line, NPCTalkOptions{Catalog: &catalog})
+}
+
+// ExecuteNPCTalkLineWithOptions is the host-injection form used by
+// WorldConnector. The reducer stores the deterministic event in the response
+// envelope; a replay therefore never re-selects an NPC or repeats the
+// PHIDDN/enemy transition.
+func (o *Ownership) ExecuteNPCTalkLineWithOptions(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, options NPCTalkOptions) (storage.WorldReceipt, error) {
 	command, ok := ParseNPCTalkLine(line)
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedNPCTalkLine
+	}
+	// TalkCatalog is immutable by contract, but copying the value here makes
+	// the command independent of a caller replacing the pointed-to struct after
+	// this method starts. The internal map is never exposed for mutation and
+	// all public file lookups return owned topic slices.
+	var catalog *world.TalkCatalog
+	if options.Catalog != nil {
+		catalogValue := *options.Catalog
+		catalog = &catalogValue
 	}
 	payload, err := json.Marshal(npcTalkLineRequest{
 		Kind:          "npc-talk",
@@ -140,11 +185,22 @@ func (o *Ownership) ExecuteNPCTalkLine(ctx context.Context, store engine.Command
 		if err != nil {
 			return nil, nil, err
 		}
-		proposal, err := s.PlanNPCTalkProposal(actorID, command.NPCName, command.NPCOccurrence, command.Topic)
+		var proposal world.NPCTalkProposal
+		if catalog == nil {
+			proposal, err = s.PlanNPCTalkProposal(actorID, command.NPCName, command.NPCOccurrence, command.Topic)
+		} else {
+			proposal, err = s.PlanNPCTalkProposal(actorID, command.NPCName, command.NPCOccurrence, command.Topic, *catalog)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
-		next, result, err := s.ApplyNPCTalk(proposal)
+		var next world.State
+		var result world.NPCTalkResult
+		if catalog == nil {
+			next, result, err = s.ApplyNPCTalk(proposal)
+		} else {
+			next, result, err = s.ApplyNPCTalk(proposal, *catalog)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -159,6 +215,12 @@ func (o *Ownership) ExecuteNPCTalkLine(ctx context.Context, store engine.Command
 
 // ExecuteTalkLine is a short compatibility alias for callers that use the
 // legacy command name rather than the canonical NPCTalk spelling.
-func (o *Ownership) ExecuteTalkLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
-	return o.ExecuteNPCTalkLine(ctx, store, worldID, commandID, lease, line)
+func (o *Ownership) ExecuteTalkLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalogs ...world.TalkCatalog) (storage.WorldReceipt, error) {
+	return o.ExecuteNPCTalkLine(ctx, store, worldID, commandID, lease, line, catalogs...)
+}
+
+// ExecuteTalkLineWithOptions preserves the same explicit dependency boundary
+// for callers that use the legacy alias.
+func (o *Ownership) ExecuteTalkLineWithOptions(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, options NPCTalkOptions) (storage.WorldReceipt, error) {
+	return o.ExecuteNPCTalkLineWithOptions(ctx, store, worldID, commandID, lease, line, options)
 }

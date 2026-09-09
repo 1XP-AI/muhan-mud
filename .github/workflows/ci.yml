@@ -48,6 +48,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Verify Linux ARM64 runner
         shell: bash
@@ -70,7 +72,9 @@ jobs:
           set -euo pipefail
           case "$VALIDATION_SCOPE" in
             fast)
-              scripts/run-go-validation.sh fast
+              # Actions checkout is clean; opt into the checked-out commit's
+              # diff so the manual fast gate does not silently skip.
+              GO_FAST_COMMIT=1 scripts/run-go-validation.sh fast
               ;;
             integration)
               scripts/run-go-validation.sh integration

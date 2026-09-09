@@ -3,7 +3,9 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"testing/fstest"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
@@ -64,13 +66,46 @@ func npcTalkConnectorStore(t *testing.T) *npcTalkReplayStore {
 	return &npcTalkReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
 }
 
+func npcTalkTopicConnectorStore(t *testing.T) *npcTalkReplayStore {
+	t.Helper()
+	store := npcTalkConnectorStore(t)
+	state, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := state.NPCs["guide"]
+	npc.Body.Flags[23/8] |= 1 << (23 % 8) // MTALKS
+	state.NPCs["guide"] = npc
+	store.state, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func npcTalkTransportCatalog(t *testing.T, body string) world.TalkCatalog {
+	t.Helper()
+	catalog, err := world.LoadTalkCatalog(fstest.MapFS{
+		"Guide-0": &fstest.MapFile{Data: []byte(body)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
 func npcTalkConnectorConnections(t *testing.T, store *npcTalkReplayStore) (*WorldConnector, *worldConnection, *worldConnection) {
+	return npcTalkConnectorConnectionsWithCatalog(t, store, nil)
+}
+
+func npcTalkConnectorConnectionsWithCatalog(t *testing.T, store *npcTalkReplayStore, catalog *world.TalkCatalog) (*WorldConnector, *worldConnection, *worldConnection) {
 	t.Helper()
 	connector, err := NewWorldConnector(WorldConnectorConfig{
 		Store:       store,
 		WorldID:     "npc-talk-world",
 		Clock:       func() (int32, int) { return 100, 12 },
 		MaxSessions: 2,
+		TalkCatalog: catalog,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -162,5 +197,54 @@ func TestWorldConnectorSubmitDispatchesNPCTalkAndDoesNotFanOutReplay(t *testing.
 	case got := <-actor.events:
 		t.Fatalf("replay fanned out actor event=%q", got)
 	default:
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesNPCTalkTopicFromInjectedCatalog(t *testing.T) {
+	store := npcTalkTopicConnectorStore(t)
+	catalog := npcTalkTransportCatalog(t, "quest\ncanonical answer\n")
+	connector, actor, observer := npcTalkConnectorConnectionsWithCatalog(t, store, &catalog)
+
+	// NewWorldConnector takes an immutable value copy. Replacing the caller's
+	// variable after construction must not change the live command dependency.
+	catalog = npcTalkTransportCatalog(t, "quest\nreplacement answer\n")
+	file, ok, err := connector.config.TalkCatalog.Lookup("Guide", 0)
+	if err != nil || !ok || len(file.Topics) != 1 || file.Topics[0].Response != "canonical answer" {
+		t.Fatalf("connector catalog changed through caller replacement: file=%+v ok=%v err=%v", file, ok, err)
+	}
+
+	output, err := actor.Submit(context.Background(), "대화 Guide quest")
+	if err != nil || output != "\nGuide가 당신에게 \"canonical answer\"라고 이야기합니다.\r\n" {
+		t.Fatalf("actor output=%q err=%v", output, err)
+	}
+	if store.commits != 1 {
+		t.Fatalf("commits after topic submit=%d", store.commits)
+	}
+	roomEvents := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"canonical answer\"라고 이야기합니다.\r\n",
+	}
+	for i, want := range roomEvents {
+		select {
+		case got := <-observer.events:
+			if got != want {
+				t.Fatalf("observer topic event[%d]=%q want=%q", i, got, want)
+			}
+		default:
+			t.Fatalf("observer topic event[%d] missing", i)
+		}
+	}
+}
+
+func TestWorldConnectorSubmitNPCTalkTopicFailsClosedWithoutCatalog(t *testing.T) {
+	store := npcTalkTopicConnectorStore(t)
+	_, actor, _ := npcTalkConnectorConnections(t, store)
+	if _, err := actor.Submit(context.Background(), "대화 Guide quest"); err == nil {
+		t.Fatal("topic without injected catalog unexpectedly succeeded")
+	} else if !errors.Is(err, world.ErrNPCTalkTopicsUnavailable) {
+		t.Fatalf("topic without injected catalog err=%v", err)
+	}
+	if store.commits != 0 {
+		t.Fatalf("topic without catalog committed=%d", store.commits)
 	}
 }

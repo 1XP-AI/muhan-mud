@@ -59,7 +59,18 @@ affected_packages() {
 	while IFS= read -r file; do
 		[[ -n "$file" ]] || continue
 		case "$file" in
-			server/go.mod|server/go.sum|server/internal/engine/*|server/internal/game/*|server/internal/identity/*|server/internal/storage/*|server/internal/terminal/*|server/cmd/*)
+			server/go.mod|server/go.sum|server/internal/engine/*|server/internal/game/*|server/internal/identity/*|server/internal/storage/*|server/internal/terminal/*)
+				saw_server=1
+				;;
+			server/cmd/muhan/*)
+				saw_server=1
+				append_unique ./cmd/muhan
+				;;
+			server/cmd/muhan-browser-e2e/*)
+				saw_server=1
+				append_unique ./cmd/muhan-browser-e2e
+				;;
+			server/cmd/*)
 				saw_server=1
 				;;
 			server/internal/world/*)
@@ -77,7 +88,11 @@ affected_packages() {
 			esac
 	done < <(collect_changed_files | sort -u)
 	if [[ "$saw_server" == 1 ]]; then
-		packages=(./internal/world ./internal/session ./internal/transport)
+		# Shared server contracts affect the three world consumers; preserve any
+		# narrower package (for example ./cmd/muhan) already added above.
+		append_unique ./internal/world
+		append_unique ./internal/session
+		append_unique ./internal/transport
 	fi
 }
 

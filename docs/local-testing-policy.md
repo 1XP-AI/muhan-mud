@@ -16,6 +16,10 @@ ordinary `integration` check. PostgreSQL, browser, Helm, and compatibility check
 remain release gates.
 No billing/spending limit was changed.
 
+The manual CI `fast` job explicitly opts into `GO_FAST_COMMIT=1` and fetches the
+previous commit, because an Actions checkout is clean; local invocations keep
+the current-worktree default described below.
+
 The `release` scope is additionally guarded to the repository default branch. A
 manual release request from a feature branch fails in a small self-hosted guard
 before checkout, PostgreSQL startup, dependency installation, or compatibility
@@ -30,6 +34,10 @@ PostgreSQL. It is not part of every feature-lane run.
 The fast script derives the smallest safe Go package set from the changed
 `server/internal` path: world changes include session/transport consumers,
 session changes include transport, and transport-only changes stay in transport.
+Changes under `server/cmd/muhan/` additionally include `./cmd/muhan`, so a
+flag, scheduler, or listener wiring change is compiled and tested without
+promoting every command-line edit to the full repository gate. Changes under
+`server/cmd/muhan-browser-e2e/` similarly include that helper package.
 Changes outside those runtime packages skip the Go lane; use
 `GO_FAST_PACKAGES=all` for an explicit override. The pre-push hook applies the
 same principle to stack checks: migration coverage runs only for migration or
@@ -42,6 +50,11 @@ when the tree is clean, so running it twice after a commit does not repeat the
 same lane accidentally. To audit a committed revision explicitly, set
 `GO_FAST_COMMIT=1` for `HEAD^..HEAD` or set `GO_FAST_BASE=<commit>` for a wider
 range.
+
+The manual GitHub `fast` job checks out depth 2 and sets `GO_FAST_COMMIT=1`; this
+is intentional because a CI checkout is clean and would otherwise skip the Go
+lane. It still inspects only the checked-out commit rather than launching the
+integration or release matrix.
 
 The old `merge` validation name is deliberately rejected by the script. This
 prevents an ambiguous command from silently consuming the main-merge ARM64

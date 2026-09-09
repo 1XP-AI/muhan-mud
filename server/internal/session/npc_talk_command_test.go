@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
@@ -33,6 +34,17 @@ func npcTalkCommandFixture(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func npcTalkSessionCatalog(t *testing.T, body string) world.TalkCatalog {
+	t.Helper()
+	catalog, err := world.LoadTalkCatalog(fstest.MapFS{
+		"Guide-0": &fstest.MapFile{Data: []byte(body)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
 }
 
 func TestParseNPCTalkLineAdmitsTargetTopicAndPositiveOccurrence(t *testing.T) {
@@ -115,5 +127,76 @@ func TestExecuteNPCTalkLineFailsClosedForTopicWithoutCanonicalLoader(t *testing.
 	}
 	if _, err := owners.ExecuteNPCTalkLine(context.Background(), store, "w", "npc-talk-topic", lease, "대화 Guide quest"); !errors.Is(err, world.ErrNPCTalkTopicsUnavailable) || store.commits != 0 {
 		t.Fatalf("topic unexpectedly committed: err=%v commits=%d", err, store.commits)
+	}
+}
+
+func TestExecuteNPCTalkLineWithOptionsUsesInjectedCatalogAndReplays(t *testing.T) {
+	raw := npcTalkCommandFixture(t)
+	s, err := world.DecodeState(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := s.NPCs["guide-one"]
+	npc.Body.Flags[23/8] |= 1 << (23 % 8) // MTALKS
+	s.NPCs["guide-one"] = npc
+	raw, err = json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	catalog := npcTalkSessionCatalog(t, "quest\ncanonical answer\n")
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-catalog", lease, "대화 Guide quest", NPCTalkOptions{Catalog: &catalog})
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.NPCTalkResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Topic != "quest" || result.Event == nil || !strings.Contains(result.Response, "canonical answer") {
+		t.Fatalf("catalog result=%+v", result)
+	}
+	replay, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-catalog", lease, "대화 Guide quest", NPCTalkOptions{Catalog: &catalog})
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteNPCTalkLineRejectsUnsupportedTopicActionAtomically(t *testing.T) {
+	raw := npcTalkCommandFixture(t)
+	s, err := world.DecodeState(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := s.NPCs["guide-one"]
+	npc.Body.Flags[23/8] |= 1 << (23 % 8) // MTALKS
+	s.NPCs["guide-one"] = npc
+	raw, err = json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	catalog := npcTalkSessionCatalog(t, "quest ATTACK\ncanonical answer\n")
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-action", lease, "대화 Guide quest", NPCTalkOptions{Catalog: &catalog}); !errors.Is(err, world.ErrNPCTalkActionUnavailable) {
+		t.Fatalf("unsupported action err=%v", err)
+	}
+	if store.commits != 0 || string(store.state) != string(raw) {
+		t.Fatalf("unsupported action mutated durable state: commits=%d", store.commits)
 	}
 }

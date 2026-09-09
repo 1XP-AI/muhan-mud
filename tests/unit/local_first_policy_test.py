@@ -21,6 +21,8 @@ go_validation = (root / 'scripts/run-go-validation.sh').read_text()
 assert 'affected_packages()' in go_validation
 assert 'GO_FAST_PACKAGES=all' in go_validation
 assert 'GO_FAST_COMMIT=1' in go_validation
+assert 'append_unique ./cmd/muhan' in go_validation
+assert 'append_unique ./cmd/muhan-browser-e2e' in go_validation
 assert 'git -C "$root" diff --name-only HEAD^ HEAD' in go_validation
 assert "scripts/run-go-validation.sh integration" in go_validation
 assert "scripts/run-go-validation.sh main" in go_validation
@@ -31,6 +33,8 @@ assert 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...' in go_validation[m
 assert "'merge' is intentionally disabled" in go_validation
 workflow = (root / '.github/workflows/ci.yml').read_text()
 assert re.search(r'^\s+- main\s*$', workflow, re.M)
+assert 'GO_FAST_COMMIT=1 scripts/run-go-validation.sh fast' in workflow
+assert re.search(r'(?ms)^      - name: Checkout\n        uses: actions/checkout@v4\n        with:\n          fetch-depth: 2\n', workflow)
 assert 'scripts/run-go-validation.sh integration' in workflow
 assert 'scripts/run-go-validation.sh main' in workflow
 assert 'Guard main merge gate scope' in workflow

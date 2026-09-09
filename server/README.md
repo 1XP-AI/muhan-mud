@@ -14,6 +14,8 @@ fan-out하고 replay는 재방송하지 않는다. 전체 C 명령 parity를 완
 재검증용). `integration`은 ARM64 build 없는 조립 gate, `main`은 기본 브랜치에서만
 ARM64 cross-build를 포함한 최종 Go gate다. 실제 PG/browser/release matrix는 기능 레인에서
 반복하지 않는다.
+수동 GitHub `fast` job은 clean checkout에서 실수로 skip되지 않도록 depth 2와
+`GO_FAST_COMMIT=1`을 사용하며, 여전히 마지막 커밋의 표적 패키지만 검사한다.
 `release` 수동 scope도 기본 브랜치 전용이며, feature branch에서 잘못 선택하면
 `.github/workflows/ci.yml`의 `release-scope-guard`가 DB·호환성 matrix 시작 전에
 중단한다.
@@ -60,7 +62,9 @@ MUHAN_BOUNDED_LANES_TEST_DATABASE_URL='postgresql://...' \
 
 레인마다 전체 race·vet·ARM64 build·PostgreSQL를 반복하지 않는다. `fast`는 world 변경 시
 session/transport 소비자까지, session 변경 시 transport까지 포함하고 transport-only 변경은
-transport만 검사한다. 영속성 변경이 포함된
+transport만 검사한다. `server/cmd/muhan/` 변경은 `./cmd/muhan`도 포함해 flag·scheduler·
+listener wiring을 확인하고, browser E2E helper 변경은 해당 helper 패키지만 추가한다.
+영속성 변경이 포함된
 batch의 PG receipt 테스트는 하나의 격리 PostgreSQL에서 한 번만 묶어 실행하고, ARM64
 이미지/Helm·x64/Windows/macOS 호환·브라우저 IME/mobile·복구 검증은 승인된 통합 또는
 릴리스 gate에서만 실행한다. 전체 Go 검증은 `integration`에서만 필요할 때 실행하고,

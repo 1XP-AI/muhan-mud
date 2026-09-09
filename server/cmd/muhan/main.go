@@ -43,10 +43,12 @@ func main() {
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
 	helpDir := flag.String("help-dir", os.Getenv("MUD_HELP_DIR"), "directory containing UTF-8 help, spell and policy documents")
+	npcTalkDir := flag.String("npc-talk-dir", os.Getenv("MUD_NPC_TALK_DIR"), "directory containing canonical <name>-<level> NPC talk files (optional)")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
 	npcCombatTickInterval := flag.Duration("npc-combat-tick", time.Second, "NPC combat scheduler cadence; C update_active cadence; whole seconds")
+	npcMaintenanceTickInterval := flag.Duration("npc-maintenance-tick", time.Second, "bounded pre-combat NPC maintenance scheduler cadence; whole seconds")
 	flag.Parse()
 	backupRestore, err := validateBackupRestoreFlags(
 		*backupWorld, *backupFile, *backupOverwrite,
@@ -57,7 +59,7 @@ func main() {
 		log.Fatal(err)
 	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0) {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
 	}
 	dsn := os.Getenv("DATABASE_URL")
@@ -175,6 +177,9 @@ func main() {
 		if *npcCombatTickInterval <= 0 || *npcCombatTickInterval%time.Second != 0 {
 			log.Fatal("npc-combat-tick must be a positive whole number of seconds")
 		}
+		if *npcMaintenanceTickInterval <= 0 || *npcMaintenanceTickInterval%time.Second != 0 {
+			log.Fatal("npc-maintenance-tick must be a positive whole number of seconds")
+		}
 		info, err := os.Stat(*templates)
 		if err != nil || !info.IsDir() {
 			log.Fatal("template directory unavailable")
@@ -182,6 +187,19 @@ func main() {
 		helpInfo, err := os.Stat(*helpDir)
 		if err != nil || !helpInfo.IsDir() {
 			log.Fatal("help document directory unavailable")
+		}
+		var talkCatalog *world.TalkCatalog
+		if *npcTalkDir != "" {
+			talkInfo, err := os.Stat(*npcTalkDir)
+			if err != nil || !talkInfo.IsDir() {
+				log.Fatal("NPC talk directory unavailable")
+			}
+			loaded, err := world.LoadTalkCatalog(os.DirFS(*npcTalkDir))
+			if err != nil {
+				log.Fatalf("NPC talk catalog admission failed: %v", err)
+			}
+			talkCatalog = &loaded
+			log.Printf("loaded NPC talk catalog: %d files (%d ignored)", loaded.Len(), len(loaded.IgnoredPaths()))
 		}
 		startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
 		writer, _, err := engine.StartWorld(startupCtx, repo, *worldID, "boot-"+rand.Text())
@@ -191,11 +209,12 @@ func main() {
 		}
 		connector, err = transport.NewWorldConnector(transport.WorldConnectorConfig{
 			Store: writer, WorldID: *worldID, MaxSessions: 32,
-			Clock:    func() (int32, int) { return int32(time.Now().Unix()), *gameHour },
-			Catalog:  world.TemplateCatalog{FS: os.DirFS(*templates)},
-			HelpFS:   os.DirFS(*helpDir),
-			Roll:     func(low, high int) int { return low + mathrand.IntN(high-low+1) },
-			Allocate: func() (string, error) { return "item-" + rand.Text(), nil },
+			Clock:       func() (int32, int) { return int32(time.Now().Unix()), *gameHour },
+			Catalog:     world.TemplateCatalog{FS: os.DirFS(*templates)},
+			TalkCatalog: talkCatalog,
+			HelpFS:      os.DirFS(*helpDir),
+			Roll:        func(low, high int) int { return low + mathrand.IntN(high-low+1) },
+			Allocate:    func() (string, error) { return "item-" + rand.Text(), nil },
 		})
 		if err != nil {
 			log.Fatal("world connector configuration failed")
@@ -211,7 +230,7 @@ func main() {
 		go func() {
 			defer close(workerDone)
 			var workers sync.WaitGroup
-			workers.Add(5)
+			workers.Add(6)
 			go func() {
 				defer workers.Done()
 				if err := connector.RunCleanup(workerCtx); err != nil && workerCtx.Err() == nil {
@@ -235,6 +254,16 @@ func main() {
 				if err := connector.RunNPCResourceScheduler(workerCtx, *npcResourceTickInterval); err != nil {
 					log.Printf("NPC resource scheduler stopped: %v", err)
 				}
+			}()
+			go func() {
+				defer workers.Done()
+				log.Printf("NPC maintenance scheduler started (cadence=%s; combat ordering not guaranteed)", *npcMaintenanceTickInterval)
+				err := connector.RunNPCMaintenanceScheduler(workerCtx, *npcMaintenanceTickInterval)
+				if err != nil && workerCtx.Err() == nil {
+					log.Printf("NPC maintenance scheduler stopped: %v", err)
+					return
+				}
+				log.Printf("NPC maintenance scheduler stopped")
 			}()
 			go func() {
 				defer workers.Done()
