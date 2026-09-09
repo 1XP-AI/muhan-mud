@@ -1,5 +1,14 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `정보` 후속 페이지 durable receipt
+
+`command4.c:info_2`로 이어지는 `[엔터]` 입력을 `ExecuteInfoContinuation` 영수증으로
+연결했다. 주문·현주문·임무 결과는 canonical snapshot에서 한 번 계산해 저장하며,
+connection-local command ID를 커밋 성공까지 유지해 응답 손실/재시도 시 동일 response를
+재생한다. `.` 취소는 world receipt 없이 유지한다. 이 수직 경계는 실제 ARM64
+PostgreSQL 17 저장·replay와 transient commit 재시도 TDD를 통과했지만, 전체 C info 출력
+parity·spell effect·운영 Supabase와 전체 기능 인수를 의미하지 않는다.
+
 ## 2026-09-10 bounded PostgreSQL receipt/replay 검증
 
 고유 임시 PostgreSQL 17 ARM64 인스턴스에서

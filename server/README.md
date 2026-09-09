@@ -1,5 +1,12 @@
 # Go MUD 서버 작업 영역
 
+최신 구현: `정보` 후속 `[엔터]` 페이지를 `ExecuteInfoContinuation` durable receipt로
+연결했다. 주문·현주문·임무 projection은 한 번 읽은 canonical snapshot과 response를
+고정하고, 불확실한 커밋 뒤에는 connection-local command ID를 재사용해 동일 receipt를
+재생한다. `.` 취소는 영수증 없이 유지된다. 커밋 `251b500`과 영향 패키지 race/vet 및
+격리 ARM64 PostgreSQL 17 통합 테스트가 통과했다. 전체 info/C 출력 parity와 전체 게임
+인수는 아직 미완료다.
+
 최신 영속성 검증: 고유 ARM64 `postgres:17-alpine`에서
 `TestPostgresBoundedLanesPersistAndReplay`의 alias·burn·study·family-mutation 저장 및
 동일 command ID replay 네 케이스가 모두 PASS했다. 컨테이너는 테스트 종료 후 제거했다.

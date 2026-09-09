@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `정보` 후속 페이지 durable receipt 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command4.c:info_2` / `정보` 뒤 `[엔터]` | `ExecuteInfoContinuation`이 주문·현주문·임무 projection을 canonical snapshot에서 읽어 `ExecuteGame` receipt로 저장. `WorldConnector`는 connection-local command ID를 커밋 성공까지 유지해 재시도 시 같은 response를 replay하고 `.` 취소는 local 처리 | 영향 패키지 race/vet 및 격리 ARM64 PostgreSQL 17 저장·replay PASS. 전체 C 출력/ANSI parity·spell effect·전체 info 인수와 운영 DB는 미완료 |
+
+후속 receipt는 read-only projection이므로 loaded state bytes를 그대로 반환하지만, 현재
+`world_commands` revision 규칙에 따라 receipt commit 자체는 world revision을 증가시킨다.
+이는 기존 `ExecuteGame` 계약이며 전체 read/write revision 정책을 확정한 것은 아니다.
+
 ## 2026-09-10 bounded PostgreSQL receipt/replay 검증
 
 고유 loopback 포트의 ARM64 `postgres:17-alpine`에서

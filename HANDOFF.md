@@ -1,5 +1,30 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (`정보` 후속 페이지 영수증)
+
+`command4.c:info_2`의 `[엔터]` 후속 페이지를 연결 로컬 snapshot 조회에서
+`ExecuteInfoContinuation` 영수증 경계로 올렸다. 주문·현주문·임무 projection은 현재
+canonical snapshot을 한 번 읽어 response에 고정하고, world state bytes는 그대로
+보존한다. 커밋/응답이 불확실하면 connection-local command ID를 유지해 같은 입력의
+재시도에서 receipt replay만 수행하며 reducer나 projection을 다시 실행하지 않는다.
+`.` 취소는 기존처럼 영수증 없이 처리하고, 실패한 커밋 뒤 pending 상태와 command ID도
+검증한다. 구현 커밋은 `251b500`이다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/session ./internal/transport -run 'Info(Continuation|Line)|WorldConnectorInfo' -count=1) PASS
+(cd server && go test -race ./internal/session ./internal/transport -count=1) PASS
+(cd server && go vet ./internal/session ./internal/transport) PASS
+isolated postgres:17-alpine ARM64 + TestPostgresInfoCommandPersistsAndReplaysWithoutNewStateVersion PASS
+git diff --check PASS
+```
+
+실제 PostgreSQL 테스트는 이 실행에서 만든 컨테이너만 종료·삭제했다. 전체 info
+페이지의 C 출력/ANSI parity, 전체 spell effect, 실제 브라우저·IME/mobile, WSS/Ingress,
+strict room corpus 63건과 testnet 배포는 여전히 미완료다. `src/frp.new`와 예전 dirty
+worktree는 보존한다.
+
 ## 최신 검증 체크포인트 — 2026-09-10 (실제 PG·브라우저 모바일 viewport)
 
 실제 PostgreSQL 17 ARM64, Go `-race`, Chromium을 연결한
