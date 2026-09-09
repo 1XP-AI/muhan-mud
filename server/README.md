@@ -2123,4 +2123,6 @@ slot·timestamp·request를 재사용한다. canonical NPC/item graph가 아닌 
 allocator/RNG 호출 순서, cancellation·invalid interval을 race 테스트로 검증했다.
 
 이 단계는 NPC 전투 AI·room broadcast·전체 update scheduler를 완료했다는 뜻이 아니며,
-실제 PostgreSQL scheduler replay와 전체 NPC 행동 parity는 다음 인수 조건으로 남아 있다.
+실제 격리 PostgreSQL 17에서 `TestWorldConnectorNPCResourceTickPostgresPersistsAndReplays`
+를 실행해 spawn receipt·revision·재시작 replay를 확인했다. 전체 NPC 전투 AI·room
+broadcast·update scheduler parity는 다음 인수 조건으로 남아 있다.
