@@ -2359,10 +2359,11 @@ Go 기능 레인은 담당 패키지의 `gofmt`와 targeted `go test -race`만 �
 
 `WorldConnector`는 C `command()`의 연결별 `lastcommand`를 순수 입력 경계로 유지한다.
 `!`은 직전 명령을 재실행하고 `!suffix`는 직전 명령에 suffix를 붙여 기존 parser로
-보낸다. history는 79바이트 UTF-8 안전 예산을 사용하며 `State`, 계정, PostgreSQL
-receipt에는 저장하지 않는다. 따라서 재접속하면 비워지고, 실제 실행·저장은 확장된
-명령의 기존 receipt/replay 규칙을 그대로 따른다. pure session 테스트와 connector
-회귀가 race 검사를 통과했다. 전체 C 약어/alias 치환 parity는 아직 별도 범위다.
+보낸다. 저장된 줄임말은 `$1..$16`/`$*`의 단일 명령 치환까지 확장하며 `;` queue와
+잘못된 문법은 fail-closed한다. history/확장 결과는 `State`, 계정, PostgreSQL receipt에
+별도 필드로 저장하지 않고 실제 실행 명령의 기존 receipt/replay 규칙을 따른다. pure
+session 테스트와 connector 회귀가 race 검사를 통과했다. 전체 C 약어 우선순위·다중
+command queue·출력 parity는 아직 별도 범위다.
 
 ## 2026-09-09 뇌물·숨기기·도망 함정
 

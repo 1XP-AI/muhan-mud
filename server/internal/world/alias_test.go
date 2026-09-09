@@ -24,7 +24,7 @@ func aliasStateFixture(aliases []PlayerAlias) State {
 	}
 }
 
-func TestValidatePlayerAliasUsesByteLimitsAndFailsClosedSubstitution(t *testing.T) {
+func TestValidatePlayerAliasUsesByteLimitsAndBoundsSubstitution(t *testing.T) {
 	if err := ValidatePlayerAliasName("가가가가"); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,11 @@ func TestValidatePlayerAliasUsesByteLimitsAndFailsClosedSubstitution(t *testing.
 		" leading",
 		"trailing ",
 		"bad\nprocess",
-		"검 $1",
+		"검 $0",
+		"검 $17",
+		"검 $x",
+		"검 $",
+		"검 a;b",
 		"~!",
 		string([]byte{0xff}),
 	} {
@@ -58,8 +62,28 @@ func TestValidatePlayerAliasUsesByteLimitsAndFailsClosedSubstitution(t *testing.
 			t.Fatalf("invalid process accepted: %q", process)
 		}
 	}
-	if !errors.Is(ValidatePlayerAliasProcess("검 $1"), ErrAliasCommandSubstitution) {
-		t.Fatal("substitution did not fail closed")
+	if err := ValidatePlayerAliasProcess("검 $1"); err != nil {
+		t.Fatalf("valid positional substitution rejected: %v", err)
+	}
+	if err := ValidatePlayerAliasProcess("말 $*"); err != nil {
+		t.Fatalf("valid full-line substitution rejected: %v", err)
+	}
+	if !errors.Is(ValidatePlayerAliasProcess("검 $17"), ErrAliasCommandSubstitution) {
+		t.Fatal("out-of-range substitution did not fail closed")
+	}
+	if !errors.Is(ValidatePlayerAliasProcess("검 a;b"), ErrAliasCommandSequence) {
+		t.Fatal("command sequence did not fail closed")
+	}
+}
+
+func TestExpandAliasProcessUsesBoundedPositionalAndFullLineArguments(t *testing.T) {
+	args := []string{"별칭", "첫", "둘"}
+	got, err := ExpandAliasProcess("말 $1 $2 $16 $*", "별칭 첫 둘", args)
+	if err != nil || got != "말 별칭 첫  별칭 첫 둘" {
+		t.Fatalf("expanded=%q err=%v", got, err)
+	}
+	if _, err := ExpandAliasProcess("말 $*", strings.Repeat("가", MaxAliasExpandedBytes), nil); !errors.Is(err, ErrAliasExpansionTooLong) {
+		t.Fatalf("long expansion err=%v", err)
 	}
 }
 

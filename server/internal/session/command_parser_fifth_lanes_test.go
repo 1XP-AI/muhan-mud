@@ -46,7 +46,7 @@ func TestParseCommandClassifiesAliasBurnAndStudyLanes(t *testing.T) {
 
 func TestParseCommandDoesNotBroadenAliasBurnOrStudyLanes(t *testing.T) {
 	for _, line := range []string{
-		"줄임말 북 $1",
+		"줄임말 북 $0",
 		"태워",
 		"배워",
 		"배워 두루마리 nope",

@@ -13,7 +13,8 @@ cross-build는 `scripts/run-go-validation.sh merge`에서 통합 batch당 한 �
 실행한다. CI는 계속 수동 `workflow_dispatch`이며 ARM64 build와 release matrix를 기능
 레인마다 재실행하지 않는다.
 
-이번 bounded batch는 C 원본과 대조한 `줄임말`(목록/추가/삭제, substitution fail-closed),
+이번 bounded batch는 C 원본과 대조한 `줄임말`(목록/추가/삭제, 단일 명령 `$1..$16`/`$*`
+치환, 다중 queue fail-closed),
 `태워`/`소각`(직접 inventory root, 보호 규칙, cooldown/reward/jackpot), `배워`/`연마`
 (scroll level/alignment/class gate, spell bit, room 이동)를 Go world/session receipt와
 WorldConnector parser/dispatch/room event까지 연결했다. `go test -race` targeted 및
@@ -33,7 +34,7 @@ WSS/Ingress·testnet 배포와 전체 legacy data migration은 아직 남아 있
 선행 공백과 79바이트 UTF-8 history 예산을 처리하고 빈 확장에서는 이전 history를
 보존한다. history는 연결 로컬 상태이므로 `State`·계정·PostgreSQL receipt에 저장하지
 않으며 재접속 시 초기화된다. session pure TDD와 live connector `go test -race`가
-통과했다. 전체 C 약어 우선순위와 alias `$N/$*` 치환은 아직 남아 있다.
+통과했다. 전체 C 약어 우선순위·다중 alias command queue·출력 parity는 아직 남아 있다.
 
 ## 현재 오케스트레이션 체크포인트 — 2026-09-09
 

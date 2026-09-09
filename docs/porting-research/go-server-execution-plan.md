@@ -109,7 +109,8 @@
 ### 2026-09-09 bounded batch 및 검증 비용 감사
 
 `줄임말`은 목록/추가/삭제와 C suffix 문법을 canonical ordered alias state에 연결했고,
-`$N`/`$*` substitution은 command-queue 계약이 확정될 때까지 fail-closed로 둔다.
+단일 명령 범위의 `$1..$16`/`$*` substitution도 안전하게 확장한다. `;` 다중 명령 queue와
+잘못된 치환 문법은 저장·실행 모두 fail-closed로 둔다.
 `태워`/`소각`은 direct inventory root occurrence, ONOBUN·quest·event 보호,
 관리자 예외, PHIDDN·cooldown·reward/jackpot을 receipt에 기록한다. `배워`/`연마`는
 scroll type/level/alignment/class gate, spell catalog 1..56, spell bit·scroll 삭제 및
@@ -135,7 +136,7 @@ history budget을 유지하며, 빈 확장은 기존 history를 보존한다. hi
 history가 남지 않고, 확장된 명령만 기존 parser/reducer/receipt 경계를 통과한다.
 
 session pure TDD와 live connector 회귀가 `go test -race`를 통과했다. full C parser의
-약어 우선순위, alias `$N/$*` 치환 및 `!`와 alias의 상호작용은 별도 원장 항목으로
+약어 우선순위, 다중 alias command queue 및 전체 출력 parity는 별도 원장 항목으로
 남아 있다.
 
 ## 확인된 출발점 (역사적 준비 기록)

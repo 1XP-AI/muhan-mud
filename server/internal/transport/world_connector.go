@@ -265,6 +265,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	line, c.lastCommand = session.ExpandHistoryLine(c.lastCommand, line)
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
+	if beforeOK {
+		expanded, matched, expandErr := session.ExpandAliasLine(before, c.lease.ActorID, line)
+		if matched {
+			if expandErr != nil {
+				return "줄임말을 실행할 수 없습니다.\r\n", nil
+			}
+			line = expanded
+		}
+	}
 	commandID := "command-" + rand.Text()
 	parsed, parseErr := session.ParseCommand(line)
 	if errors.Is(parseErr, session.ErrCommandTooManyTokens) {

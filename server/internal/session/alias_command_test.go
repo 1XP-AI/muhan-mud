@@ -33,7 +33,10 @@ func TestParseAliasLineAdmitsListAddDeleteAndCSourceSuffix(t *testing.T) {
 		"줄임말 foo  process",
 		"줄임말 foo bad\nprocess",
 		"줄임말 가가가가가 process",
-		"줄임말 foo $1",
+		"줄임말 foo $0",
+		"줄임말 foo $17",
+		"줄임말 foo $x",
+		"줄임말 foo ; 시간",
 		"줄임말 foo ~!",
 		"줄임말 foo " + strings.Repeat("a", world.MaxAliasProcessBytes+1),
 		"줄임말 foo\tprocess",
@@ -44,6 +47,24 @@ func TestParseAliasLineAdmitsListAddDeleteAndCSourceSuffix(t *testing.T) {
 	}
 	if command, ok := ParseAliasLine("줄임말 foo"); !ok || command.Action != world.AliasDelete || command.Alias != "foo" {
 		t.Fatalf("delete command=%+v ok=%v", command, ok)
+	}
+}
+
+func TestExpandAliasLineMatchesOnceAndSubstitutesArguments(t *testing.T) {
+	state := world.State{
+		Version: 1,
+		Rooms:   map[int16]world.RoomState{1: {Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1}}}},
+		Players: map[string]world.PlayerState{
+			"a": {Body: world.LegacyMonster{Name: "Alice", Type: 0, RoomID: 1}, Aliases: []world.PlayerAlias{{Alias: "t", Process: "말 $2"}}},
+		},
+	}
+	expanded, matched, err := ExpandAliasLine(state, "a", "t 안녕")
+	if err != nil || !matched || expanded != "말 안녕" {
+		t.Fatalf("expanded=%q matched=%v err=%v", expanded, matched, err)
+	}
+	ordinary, matched, err := ExpandAliasLine(state, "a", "시간")
+	if err != nil || matched || ordinary != "시간" {
+		t.Fatalf("ordinary=%q matched=%v err=%v", ordinary, matched, err)
 	}
 }
 

@@ -18,6 +18,10 @@ const (
 	MaxAliasBytes         = MaxAliasNameBytes
 	MaxAliasProcessBytes  = 70
 	MaxAliasProcessLength = MaxAliasProcessBytes
+	// C's command_separate writes into a 256-byte buffer and leaves one byte
+	// for the terminator. Go rejects a larger expansion instead of truncating
+	// an executable command at an arbitrary UTF-8 boundary.
+	MaxAliasExpandedBytes = 255
 )
 
 var (
@@ -27,8 +31,10 @@ var (
 	ErrAliasProcessRequired         = errors.New("alias process is required")
 	ErrAliasProcessTooLong          = errors.New("alias process exceeds the byte limit")
 	ErrAliasForbidden               = errors.New("alias contains a forbidden sentinel")
-	ErrAliasCommandSubstitution     = errors.New("alias command substitution is unsupported")
+	ErrAliasCommandSubstitution     = errors.New("invalid alias command substitution")
 	ErrAliasSubstitutionUnsupported = ErrAliasCommandSubstitution
+	ErrAliasCommandSequence         = errors.New("alias command sequence is unsupported")
+	ErrAliasExpansionTooLong        = errors.New("expanded alias command exceeds the byte limit")
 	ErrAliasDuplicate               = errors.New("alias is already configured")
 	ErrAliasLimit                   = errors.New("alias limit reached")
 	ErrAliasMissing                 = errors.New("alias is not configured")
@@ -114,9 +120,9 @@ func ValidatePlayerAliasName(name string) error {
 func ValidateAliasName(name string) error { return ValidatePlayerAliasName(name) }
 
 // ValidatePlayerAliasProcess keeps ordinary ASCII spaces meaningful while
-// rejecting terminal/control injection, the on-disk ~! sentinel, and all
-// legacy $N/$* command substitution. Substitution is a deliberate
-// fail-closed boundary until a command queue contract is implemented.
+// rejecting terminal/control injection and the on-disk ~! sentinel. Positional
+// $N (1..16) and full-line $* substitutions are admitted as data; semicolon
+// command queues remain outside this one-line connector contract.
 func ValidatePlayerAliasProcess(process string) error {
 	if process == "" {
 		return ErrAliasProcessRequired
@@ -133,8 +139,11 @@ func ValidatePlayerAliasProcess(process string) error {
 	if strings.Contains(process, "~!") {
 		return ErrAliasForbidden
 	}
-	if strings.ContainsRune(process, '$') {
-		return ErrAliasCommandSubstitution
+	if strings.ContainsRune(process, ';') {
+		return ErrAliasCommandSequence
+	}
+	if err := validateAliasSubstitutions(process); err != nil {
+		return err
 	}
 	for _, r := range process {
 		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
@@ -145,6 +154,72 @@ func ValidatePlayerAliasProcess(process string) error {
 		}
 	}
 	return nil
+}
+
+func validateAliasSubstitutions(process string) error {
+	for i := 0; i < len(process); i++ {
+		if process[i] != '$' {
+			continue
+		}
+		i++
+		if i >= len(process) {
+			return ErrAliasCommandSubstitution
+		}
+		if process[i] == '*' {
+			continue
+		}
+		if process[i] < '0' || process[i] > '9' || process[i] == '0' {
+			return ErrAliasCommandSubstitution
+		}
+		n := 0
+		for i < len(process) && process[i] >= '0' && process[i] <= '9' {
+			n = n*10 + int(process[i]-'0')
+			i++
+		}
+		i--
+		if n < 1 || n > 16 {
+			return ErrAliasCommandSubstitution
+		}
+	}
+	return nil
+}
+
+// ExpandAliasProcess expands the bounded substitution syntax without parsing
+// or executing the resulting command. Missing positional arguments expand to
+// an empty string, matching the legacy separator array's empty slot; malformed
+// syntax, semicolon queues, or an over-sized result fail closed.
+func ExpandAliasProcess(process, full string, args []string) (string, error) {
+	if err := ValidatePlayerAliasProcess(process); err != nil {
+		return "", err
+	}
+	var expanded strings.Builder
+	for i := 0; i < len(process); i++ {
+		if process[i] != '$' {
+			expanded.WriteByte(process[i])
+			continue
+		}
+		i++
+		if process[i] == '*' {
+			expanded.WriteString(full)
+			continue
+		}
+		n := 0
+		for i < len(process) && process[i] >= '0' && process[i] <= '9' {
+			n = n*10 + int(process[i]-'0')
+			i++
+		}
+		i--
+		if n >= 1 && n <= len(args) {
+			expanded.WriteString(args[n-1])
+		}
+		if expanded.Len() > MaxAliasExpandedBytes {
+			return "", ErrAliasExpansionTooLong
+		}
+	}
+	if expanded.Len() > MaxAliasExpandedBytes {
+		return "", ErrAliasExpansionTooLong
+	}
+	return expanded.String(), nil
 }
 
 // ValidateAliasProcess is the concise spelling used by command adapters.

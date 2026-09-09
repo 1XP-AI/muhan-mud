@@ -15,6 +15,12 @@ import (
 
 var ErrUnsupportedAliasLine = errors.New("line is not an implemented alias command")
 
+// ErrAliasExpansion is returned when a stored alias matches the input but its
+// bounded substitution cannot produce one safe command line. The connector
+// treats this as a user-visible fail-closed result; it never falls through to
+// executing the unexpanded alias token.
+var ErrAliasExpansion = errors.New("alias expansion failed")
+
 // AliasCommand is the bounded parser result for alias.c:ply_aliases. The
 // command is accepted in the Go terminal's prefix form and in C's suffix form
 // (`<alias> <process> 줄임말`) so dispatch integration can choose either
@@ -112,6 +118,36 @@ func ParseAliasesLine(line string) (AliasCommand, bool) { return ParseAliasLine(
 // IsAliasesLine is a plural compatibility spelling for callers naming the C
 // handler rather than the individual command line.
 func IsAliasesLine(line string) bool { return IsAliasLine(line) }
+
+// ExpandAliasLine resolves at most one exact alias from the authenticated
+// actor. Recursive expansion and semicolon command queues are intentionally
+// outside this one-line transport contract. The returned bool distinguishes a
+// matched alias from an ordinary command, while the original line is returned
+// unchanged when no alias is configured.
+func ExpandAliasLine(state world.State, actorID, line string) (expanded string, matched bool, err error) {
+	tokens, tokenizeErr := tokenizeLegacy(strings.TrimSpace(line))
+	if tokenizeErr != nil || len(tokens) == 0 {
+		return line, false, nil
+	}
+	player, ok := state.Players[actorID]
+	if !ok || player.Aliases == nil {
+		return line, false, nil
+	}
+	for _, alias := range player.Aliases {
+		if alias.Alias != tokens[0] {
+			continue
+		}
+		expanded, expandErr := world.ExpandAliasProcess(alias.Process, strings.TrimSpace(line), tokens)
+		if expandErr != nil {
+			return "", true, errors.Join(ErrAliasExpansion, expandErr)
+		}
+		if strings.TrimSpace(expanded) == "" {
+			return "", true, ErrAliasExpansion
+		}
+		return expanded, true, nil
+	}
+	return line, false, nil
+}
 
 // ExecuteAliasLine binds the pure alias proposal/apply reducer to the
 // authenticated durable ExecuteGame receipt. A replay returns the original
