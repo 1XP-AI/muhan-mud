@@ -45,6 +45,11 @@ func main() {
 	playerSnapshotInspectWorld := flag.String("inspect-player-snapshot-world", "", "world ID to bind to -inspect-player-snapshot-dir")
 	playerSnapshotInspectFormat := flag.String("inspect-player-snapshot-format", "cdto-v1", "snapshot format for inspection: cdto-v1 or legacy-player-raw-v1")
 	playerSnapshotInspectDryRun := flag.Bool("inspect-player-snapshot-dry-run", false, "inspect PlayerSnapshotV1 files without connecting to PostgreSQL")
+	playerSnapshotRawDir := flag.String("convert-player-snapshot-raw-dir", "", "explicitly convert audited legacy raw player files to reviewed CDTO files")
+	playerSnapshotRawWorld := flag.String("convert-player-snapshot-raw-world", "", "world ID to bind to -convert-player-snapshot-raw-dir")
+	playerSnapshotRawOutput := flag.String("convert-player-snapshot-cdto-dir", "", "private destination directory for converted CDTO files and review metadata")
+	playerSnapshotRawABI := flag.String("convert-player-snapshot-raw-abi", "", "exact LegacyPlayerSnapshotRawV1ABI contract required for raw conversion")
+	playerSnapshotRawDryRun := flag.Bool("convert-player-snapshot-raw-dry-run", false, "validate raw player files without writing CDTO output")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -73,16 +78,42 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	playerSnapshotRawOptions, err := validatePlayerSnapshotRawConversionFlags(*playerSnapshotRawDir, *playerSnapshotRawWorld, *playerSnapshotRawOutput, *playerSnapshotRawABI, *playerSnapshotRawDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
 		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
 	}
+	if (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") && playerSnapshotRawOptions.SourceDir != "" {
+		log.Fatal("player snapshot import/inspection and raw conversion modes are mutually exclusive")
+	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
 	}
 	if (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotRawOptions.SourceDir != "") {
 		log.Fatal("player snapshot import/inspection mode cannot be combined with migrate, seed, or world flags")
+	}
+	if playerSnapshotRawOptions.SourceDir != "" &&
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		log.Fatal("raw player conversion mode cannot be combined with migrate, seed, or world flags")
+	}
+	if playerSnapshotRawOptions.SourceDir != "" {
+		playerSnapshotRawBatch, convertErr := convertPlayerSnapshotRawDirectory(playerSnapshotRawOptions)
+		if convertErr != nil {
+			log.Fatalf("legacy raw player conversion rejected: %v", convertErr)
+		}
+		if playerSnapshotRawOptions.DryRun {
+			log.Printf("legacy raw player conversion validated: world=%s files=%d; no CDTO output or database write performed", playerSnapshotRawBatch.WorldID, len(playerSnapshotRawBatch.Records))
+			return
+		}
+		if err := writePlayerSnapshotRawConversion(playerSnapshotRawBatch, playerSnapshotRawOptions.OutputDir); err != nil {
+			log.Fatalf("legacy raw player conversion failed: %v", err)
+		}
+		log.Printf("legacy raw player conversion completed: world=%s files=%d output=%s; identity and credential review still required", playerSnapshotRawBatch.WorldID, len(playerSnapshotRawBatch.Records), playerSnapshotRawOptions.OutputDir)
+		return
 	}
 	if *voteIssueFile != "" && *worldID == "" {
 		log.Fatal("-vote-issue-file requires -world")

@@ -32,6 +32,27 @@ clamp와 NUL 문자열 정규화를 재현하고, descriptor·native pointer·pa
 직접 `-import-player-snapshot-manifest`에 넣지 말고 operator가 검토한 CDTO와 hash/item
 manifest를 만든 뒤 import한다.
 
+검토용 CDTO 산출물은 다음의 별도 변환 모드로 만들 수 있다. 이 모드는 DB에 연결하지
+않고 raw source와 output tree를 모두 미리 검증한 뒤 canonical CDTO 파일과
+`player-snapshot-review.json`만 기록한다.
+
+```sh
+go run ./cmd/muhan \
+  -convert-player-snapshot-raw-dir /private/muhan-players/raw \
+  -convert-player-snapshot-raw-world muhan-01 \
+  -convert-player-snapshot-raw-abi '<LegacyPlayerSnapshotRawV1ABI 전체 문자열>' \
+  -convert-player-snapshot-cdto-dir /private/muhan-players/cdto
+```
+
+`-convert-player-snapshot-raw-dry-run`을 추가하면 output을 쓰지 않고 같은 검증만
+수행한다. source는 private `0700` tree와 `0600` regular file이어야 하며, output은
+별도의 private `0700` tree여야 한다. 같은 output bytes의 재실행은 허용하지만 다른
+bytes로 덮어쓰지는 않는다. review JSON의 `suggested_account_name`은 snapshot에서
+계산한 검토용 제안일 뿐 소유권 증명이 아니며, player ID·command ID·item ID·bcrypt
+credential hash는 의도적으로 없다. 운영자는 source와 사람 확인을 거쳐 기존 manifest에
+정확한 identity/item mapping과 별도 bcrypt hash를 채운 뒤에만 import해야 한다. raw의
+password field는 변환 결과·review·로그에 복사되지 않는다.
+
 ## 파일 보안·구성
 
 - manifest와 각 `snapshot_file`은 심볼릭 링크가 아닌 정규 파일이고 권한이 정확히 `0600`이어야 한다.

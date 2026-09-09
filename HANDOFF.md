@@ -1,5 +1,27 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (native raw→CDTO review conversion)
+
+`cmd/muhan -convert-player-snapshot-raw-dir`를 추가했다. 명시된
+`LegacyPlayerSnapshotRawV1ABI`와 private `0700` source/`0600` files를 먼저 전부 검증하고,
+DB·게임 런타임·identity claim 없이 별도 private output에 canonical CDTO와
+`player-snapshot-review.json`을 만든다. output은 nested shard directory를 `0700`으로
+만들고 CDTO/review를 atomic immutable write하며 동일 bytes replay만 허용한다. duplicate
+name, source/output overlap, malformed raw, permission, changed output은 fail-closed한다.
+
+review에는 source/canonical SHA-256, 크기, graph node 수와 suggested account name만 있고
+password/native pointer/player ID/item ID/bcrypt hash는 없다. 사람 검토 후 기존
+`-import-player-snapshot-manifest`에 exact mapping과 별도 credential hash를 추가해야 한다.
+
+검증:
+
+```text
+(cd server && go test ./cmd/muhan -run 'PlayerSnapshotRawConversion' -count=1) PASS
+```
+
+전체 이관·identity binding·운영 Supabase·복구/배포·전체 기능 parity는 미완료이며,
+`src/frp.new`와 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy native player raw reader)
 
 `server/internal/world/legacy_player_raw_v1.go`에 C `read_crt_player`의 native player

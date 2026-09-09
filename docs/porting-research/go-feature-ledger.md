@@ -11,6 +11,16 @@ raw format은 self-describing하지 않으므로 `LegacyPlayerSnapshotRawV1ABI` 
 한다. raw bytes를 바로 import하지 않고, 검토된 canonical CDTO와 명시적 account/player/item
 manifest를 거친다.
 
+## 2026-09-10 raw→CDTO operator conversion
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| raw source에서 검토 산출물 만들기 | `-convert-player-snapshot-raw-dir`가 명시된 raw-v1 ABI와 private `0700/0600` tree를 전체 검증하고, 별도 private output에 canonical CDTO와 `player-snapshot-review.json`을 atomic immutable write | `cmd/muhan` raw conversion unit test PASS; 같은 bytes replay·changed output conflict·duplicate name·source/output overlap을 확인. exact identity/player/item/credential review와 운영 import는 미완료 |
+
+변환 review는 `suggested_account_name`과 source/canonical SHA-256·크기·graph count만
+제공하며 password/native pointer·player ID·item ID·bcrypt hash는 포함하지 않는다. 따라서
+자동 claim을 하지 않고, 사람이 대조한 뒤 기존 v1 import manifest를 별도로 작성해야 한다.
+
 ## 2026-09-10 `PlayerSnapshotV1` operator manifest·read-only inspection
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

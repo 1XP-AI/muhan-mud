@@ -18,6 +18,15 @@ read-only 검사할 수 있다. ledger에는 parser/ABI·path·digest·크기·g
 byte-for-byte 비교한다. 이 경계는 운영 raw 수집 승인, 전체 계정/캐릭터 대조, 대량 import와
 복구를 아직 완료하지 않는다.
 
+`cmd/muhan`의 `-convert-player-snapshot-raw-dir`는 이 경계를 다음 operator 단계로
+연결한다. audited ABI를 명시하고 private raw tree 전체를 먼저 검증한 뒤, password·native
+pointer를 제외한 canonical CDTO output tree와 identity 검토용 hash/graph report를 만든다.
+output은 별도 private tree에 atomic immutable write하며 같은 bytes 재실행만 허용한다.
+review에는 exact player ID·item ID·credential hash가 없으므로 이 산출물만으로 account
+claim/import가 일어나지 않는다. 실제 manifest import 전에는 사람이 source/name/world를
+대조해 bcrypt hash와 explicit IDs를 추가해야 한다. invalid/duplicate name 또는 output
+conflict는 부분 output 없이 fail-closed한다.
+
 ## 2026-09-10 PlayerSnapshotV1 operator manifest CLI
 
 `cmd/muhan -import-player-snapshot-manifest`가 검토된 CDTO snapshot 묶음을 명시적으로

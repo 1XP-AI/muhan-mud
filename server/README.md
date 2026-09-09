@@ -22,6 +22,14 @@ raw의 descriptor/pointer/password는 저장하지 않으며, 운영 import에�
 account/player/item manifest가 필요하다. 실제 C raw fixture와 Go/C projection 비교는
 `bash scripts/run-legacy-player-snapshot-v1-differential.sh`에서 실행한다.
 
+검토된 CDTO를 만들 때는 `-convert-player-snapshot-raw-dir`·`-convert-player-snapshot-raw-world`·
+`-convert-player-snapshot-raw-abi`·`-convert-player-snapshot-cdto-dir`를 함께 사용한다.
+이 모드는 private raw tree를 먼저 전부 검증한 뒤 별도 private output에 CDTO와
+`player-snapshot-review.json`을 생성하며, `-convert-player-snapshot-raw-dry-run`은 파일을
+쓰지 않는다. review는 suggested name과 hash/크기/graph metadata만 담고 exact identity,
+item IDs, bcrypt hash를 담지 않으므로 자동 claim/import가 아니다. 같은 output bytes의
+재실행만 허용하고 변경 bytes 덮어쓰기는 거부한다.
+
 최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
 caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
 state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.
