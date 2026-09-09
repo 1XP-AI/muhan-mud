@@ -1,5 +1,30 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy bank raw 변환 산출물)
+
+`cmd/muhan`에 `-convert-bank-raw-root`, `-convert-bank-raw-player`,
+`-convert-bank-raw-abi`, `-convert-bank-cdto-output` 및 명시적 dry-run을 추가했다.
+locator가 읽은 raw LP64 bank stream을 exact ABI로 다시 검증하고 canonical kind-8
+`BankSnapshotV1` 파일과 `.review.json`을 만든다. review에는 source/canonical SHA-256·크기·
+root/node count·원본 player path만 있고 world/player ID·item ID·계정 claim·credential은
+없다. 출력 parent는 private 0700, 산출물은 immutable 0600이며 source root 내부 출력,
+symlink/권한 오류, 변경된 재실행은 fail-closed한다. dry-run은 canonical bytes를 검증하지만
+파일·DB·listener를 만들지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan ./internal/world -run 'BankRawConversion|LegacyBankSnapshotRaw|LegacyBankFileLocator|BankSnapshotInspectionCLI' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/world) PASS
+GOOS=linux GOARCH=amd64/arm64 go build ./cmd/muhan PASS
+GOOS=darwin GOARCH=arm64 go test -c ./cmd/muhan PASS
+git diff --check PASS
+```
+
+이 산출물은 사람의 source/name 대조와 별도 `ImportBankSnapshot` manifest 없이는 운영
+계정이나 gameplay authority를 만들지 않는다. 대량 raw 수집·account/character 대조·live
+bank/gold parity·실제 Supabase import/복구·브라우저/모바일·WSS/Ingress·testnet은 남아 있다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy bank locator·raw 검사 및 IME Enter 경계)
 
 `server/internal/world/legacy_bank_file_locator_v1*.go`에 C

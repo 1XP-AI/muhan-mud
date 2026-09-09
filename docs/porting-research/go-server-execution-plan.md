@@ -1,5 +1,23 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 legacy bank raw→kind-8 operator conversion
+
+`cmd/muhan`의 `-convert-bank-raw-root`/`-convert-bank-raw-player`는 locator의 명시적
+absolute root와 canonical name을 사용하고, `-convert-bank-raw-abi`에 exact
+`LegacyBankSnapshotRawV1ABI`를 요구한다. 변환 전후 source digest/size를 다시 대조한 뒤
+canonical `BankSnapshotV1` kind-8 bytes를 private 0600 파일로 쓰고, 같은 경로 옆
+`.review.json`에는 source/canonical SHA-256·크기·root/node count·원본 player path만
+기록한다. review는 world/player ID·item ID·account/credential claim이 없는 operator
+evidence라서 별도 manifest와 `ImportBankSnapshot` 없이 DB authority를 만들지 않는다.
+
+출력 parent는 private 0700이어야 하고 source root와 겹칠 수 없다. 모든 destination을
+먼저 preflight하며 symlink·권한·변경된 bytes·재실행 충돌은 fail-closed한다.
+`-convert-bank-raw-dry-run`은 동일 parser/codec 검증 후 파일·DB/listener 없이 종료한다.
+
+검증은 cmd/world raw conversion·locator·inspection race, vet, Linux amd64/arm64 main build,
+Darwin arm64 cmd compile, diff check PASS다. 운영 대량 수집·계정 대조·live bank/gold parity와
+실제 Supabase import/복구는 후속 G4/G5 조건이다.
+
 ## 2026-09-10 legacy bank file locator·raw 검사 CLI 및 웹 IME Enter 경계
 
 `server/internal/world/legacy_bank_file_locator_v1*.go`는 C

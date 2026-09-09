@@ -60,6 +60,11 @@ func main() {
 	bankRawInspectRoot := flag.String("inspect-bank-raw-root", "", "locate and inspect one audited legacy raw bank file under an explicit MUHAN_HOME-like root")
 	bankRawInspectPlayer := flag.String("inspect-bank-raw-player", "", "canonical player name for -inspect-bank-raw-root")
 	bankRawInspectDryRun := flag.Bool("inspect-bank-raw-dry-run", false, "run legacy raw bank inspection without connecting to PostgreSQL (inspection is always DB-free)")
+	bankRawConvertRoot := flag.String("convert-bank-raw-root", "", "locate one audited legacy raw bank file under an explicit MUHAN_HOME-like root and convert it to canonical kind-8")
+	bankRawConvertPlayer := flag.String("convert-bank-raw-player", "", "canonical player name for -convert-bank-raw-root")
+	bankRawConvertOutput := flag.String("convert-bank-cdto-output", "", "private destination file for the converted canonical BankSnapshotV1 artifact")
+	bankRawConvertABI := flag.String("convert-bank-raw-abi", "", "exact LegacyBankSnapshotRawV1ABI contract required for raw bank conversion")
+	bankRawConvertDryRun := flag.Bool("convert-bank-raw-dry-run", false, "validate legacy raw bank conversion without writing CDTO output or connecting to PostgreSQL")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -104,16 +109,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	bankRawConvertOptions, err := validateBankRawConversionFlags(*bankRawConvertRoot, *bankRawConvertPlayer, *bankRawConvertOutput, *bankRawConvertABI, *bankRawConvertDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
 	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
-	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected {
+	bankRawConversionSelected := bankRawConvertOptions.Root != ""
+	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}
-	if bankRawInspectionSelected && bankSnapshotInspectionSelected {
+	if bankRawInspectionSelected && (bankSnapshotInspectionSelected || bankRawConversionSelected) {
 		log.Fatal("legacy raw bank inspection and BankSnapshotV1 inspection modes are mutually exclusive")
 	}
-	if bankRawInspectionSelected && *bankSnapshotInspectDryRun {
-		log.Fatal("legacy raw bank inspection cannot use -inspect-bank-snapshot-dry-run")
+	if bankRawConversionSelected && bankSnapshotInspectionSelected {
+		log.Fatal("legacy raw bank conversion and BankSnapshotV1 inspection modes are mutually exclusive")
+	}
+	if (bankRawInspectionSelected || bankRawConversionSelected) && *bankSnapshotInspectDryRun {
+		log.Fatal("legacy raw bank inspection/conversion cannot use -inspect-bank-snapshot-dry-run")
 	}
 	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
 		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
@@ -148,6 +161,10 @@ func main() {
 		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("legacy raw bank inspection mode cannot be combined with import, conversion, seed, backup, or world flags")
 	}
+	if bankRawConversionSelected &&
+		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
+		log.Fatal("legacy raw bank conversion mode cannot be combined with import, inspection, seed, backup, or world flags")
+	}
 	if bankSnapshotInspectionSelected {
 		inspectionJSON, inspectErr := InspectBankSnapshotReviewJSON(bankSnapshotInspectOptions.Directory, bankSnapshotInspectOptions.File)
 		if inspectErr != nil {
@@ -172,6 +189,22 @@ func main() {
 			}
 			log.Fatal("legacy raw bank inspection output was incomplete")
 		}
+		return
+	}
+	if bankRawConversionSelected {
+		conversion, convertErr := convertLegacyBankRawSource(bankRawConvertOptions)
+		if convertErr != nil {
+			log.Fatalf("legacy raw bank conversion rejected: %v", convertErr)
+		}
+		if bankRawConvertOptions.DryRun {
+			log.Printf("legacy raw bank conversion validated: source=%s player=%s source_octets=%d canonical_octets=%d nodes=%d; no CDTO output or database write performed", conversion.SourceRelative, conversion.PlayerName, conversion.SourceOctets, conversion.CanonicalOctets, conversion.NodeCount)
+			return
+		}
+		reviewPath, writeErr := writeBankRawConversion(conversion, bankRawConvertOptions.OutputPath)
+		if writeErr != nil {
+			log.Fatalf("legacy raw bank conversion failed: %v", writeErr)
+		}
+		log.Printf("legacy raw bank conversion completed: source=%s player=%s output=%s review=%s; identity mapping and database import still require a separate explicit command", conversion.SourceRelative, conversion.PlayerName, bankRawConvertOptions.OutputPath, reviewPath)
 		return
 	}
 	if playerSnapshotManifestBuildOptions.ReviewPath != "" {
