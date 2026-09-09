@@ -1,5 +1,15 @@
 # Go MUD 서버 작업 영역
 
+최신 이관 경계: `internal/world/player_snapshot_v1.go`가 C/Rust pointer-free
+`PlayerSnapshotV1` CDTO를 Go에서 직접 검증·재인코딩한다. envelope SHA-256, 40개 field
+계약, fixed-string/vital/daily bound, preorder object graph를 fail-closed로 확인하고
+`InspectPlayerSnapshotV1`에서 raw/SHA evidence를 보존한다. `ToLegacyMonster`·`ToPlayerState`와
+`State.AdmitPlayerSnapshot`은 명시적인 world player ID와 item allocator가 있을 때만 offline
+clone을 만들며, i64 overflow·ID/이름 충돌·방 부재·allocator 실패는 원본 상태를 바꾸지
+않는다. C/Rust 실행 의존성은 없다. 이는 순수 artifact/admission 기반이며 PostgreSQL
+import receipt/evidence, 운영 Supabase·account link, 전체 legacy player 수집/승인과 전체
+게임 parity는 아직 미완료다.
+
 최신 `투표` slice (`28938b5`, `3a05962`, `4fd7a8b`): `command11.c:vote`의 나이·투표소·ISSUE catalog gate,
 `vote_cmnd`의 y/n·a..g 연결 로컬 continuation, canonical `State.Votes` 원장 연결을
 완료했다. 명시적 `player/vote/<name>_v` 이관기는 경로·raw byte·이름→ID resolver·ISSUE

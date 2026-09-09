@@ -1,5 +1,25 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 Go PlayerSnapshotV1 CDTO decoder·순수 admission
+
+Go 월드에 C/Rust `PlayerSnapshotV1`과 byte-compatible한 pointer-free CDTO decoder/encoder를
+추가했다. envelope digest, schema field order/type/length, canonical fixed-string, player
+type/vital/daily bound, preorder object graph의 parent/sibling/depth/node bound를 모두
+검증하고 malformed·truncated·trailing·digest mismatch·non-canonical wire는 거부한다.
+`InspectPlayerSnapshotV1`은 raw bytes/SHA-256만 migration evidence로 보존한다.
+
+`ToLegacyMonster`·`ToItemCollection`·`ToPlayerState`는 운영 상태와 분리된 명시적 변환이며,
+i64→legacy int32 overflow·text 변환·allocator 실패를 fail-closed한다. `State.AdmitPlayerSnapshot`
+은 caller가 제공한 exact world player ID만 사용해 offline player를 clone에 삽입하고, 이름은
+원작식 canonical normalization을 적용한다. 이 단계는 artifact 검증/순수 admission 기반이며
+운영 DB import/receipt, legacy raw-file 수집·승인과 account-link orchestration을 아직 수행하지
+않는다.
+
+검증 fixture 6종 Go byte-for-byte round-trip, targeted world race, 영향 패키지 race/vet가
+통과했다. 전체 `go test ./...`는 기존 strict room corpus의 알려진 invalid 63건 때문에
+world에서 실패하며 이를 숨기지 않는다. 실제 Supabase·browser/IME/mobile·WSS/Ingress·
+testnet 승격은 후속 cadence gate다.
+
 ## 2026-09-10 ISSUE 카탈로그 파서·서버 주입 및 worktree 정리
 
 `3a05962`에서 legacy `post/ISSUE` raw 파일을 server-owned `VoteCatalog`로 파싱하고

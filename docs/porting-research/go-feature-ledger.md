@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `PlayerSnapshotV1` CDTO decoder·offline admission
+
+| 원작/이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| C/Rust pointer-free `PlayerSnapshotV1` artifact | `DecodePlayerSnapshotV1`/`EncodePlayerSnapshotV1`가 CDTO v1 envelope·SHA-256·40개 field 계약과 ObjectGraphV1 preorder topology를 검증. `InspectPlayerSnapshotV1`은 raw/SHA evidence를 복사 보존 | C fixture 6종 byte-for-byte round-trip, world race/vet PASS. raw legacy 파일 수집·운영 승인과 Supabase evidence 보관은 미완료 |
+| 검증 snapshot → Go world | `ToLegacyMonster`/`ToItemCollection`/`ToPlayerState` 및 `State.AdmitPlayerSnapshot`이 i64 overflow·text/ID 충돌·allocator/room 실패를 fail-closed하고 explicit player ID로 offline clone만 생성 | pure admission TDD PASS. PostgreSQL import/receipt/account-link/재시도·item ID manifest는 미완료 |
+
+이 경계는 C/Rust runtime 또는 하위 프로세스를 사용하지 않는다. 이름 정규화는 원작
+terminal registration과 같은 `CanonicalName`을 사용하지만, source bytes/SHA evidence가
+없는 이름 기반 자동 이관은 허용하지 않는다.
+
 ## 2026-09-10 `post/ISSUE` raw 카탈로그 파서·서버 주입
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

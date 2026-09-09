@@ -1,5 +1,37 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (Go PlayerSnapshotV1 이관 경계)
+
+`server/internal/world/player_snapshot_v1.go`에 C/Rust와 동일한 pointer-free CDTO
+`PlayerSnapshotV1` decoder/encoder를 추가했다. magic·wire version·kind·payload 한도,
+필드 순서/타입/길이·SHA-256·trailing/truncation을 검증하고, player type·HP/MP·daily
+상한과 preorder object graph의 parent/sibling/depth/node·fixed-string·shots 규칙을
+fail-closed로 적용한다. `InspectPlayerSnapshotV1`은 원본 바이트와 SHA-256 evidence를
+복사 보존하며, C/Rust/하위 프로세스를 호출하지 않는다.
+
+`ToLegacyMonster`/`ToItemCollection`/`ToPlayerState`는 명시적 변환 단계로 분리했다.
+legacy int32 범위를 벗어난 i64 값, 잘못된 text, 중복/누락 item ID는 거부하며, 빈
+inventory도 nonnil canonical `ItemCollection` marker로 변환한다. `State.AdmitPlayerSnapshot`
+은 operator가 제공한 명시적 world player ID만 사용하고 이름에서 ID를 추측하지 않으며,
+오프라인 상태로만 clone에 삽입한다. 이름은 원작과 같은 `CanonicalName` 정규화를 적용하고
+기존 ID/이름 충돌·방 부재·allocator 실패 시 원본 State를 변경하지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run 'PlayerSnapshotV1|AdmitPlayerSnapshot' -count=1) PASS
+(cd server && go test ./... -count=1) 실행: world strict room corpus의 기존 invalid 63건으로 전체 명령 FAIL; 나머지 패키지는 PASS
+(cd server && go test -race ./internal/session ./internal/transport -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+```
+
+정상 C fixture 6종은 Go 재인코딩 결과가 원본과 byte-for-byte 일치하며, rich/minimal/
+persisted graph와 one-item/tree inventory를 포함한다. 이 경계는 이관 artifact 검증과
+순수 State admission까지만 완료한 것이다. 아직 raw legacy player 파일 수집/운영 승인,
+PostgreSQL import receipt/evidence table, account link orchestration, full C output parity,
+실제 Supabase·browser/IME/mobile·WSS/Ingress·testnet 배포는 남아 있다. `src/frp.new`와
+예전 dirty worktree는 수정·stage하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (ISSUE 카탈로그 파서·작업공간 정리)
 
 `3a05962`에서 원작 `post/ISSUE` raw 바이트를 서버 소유 `VoteCatalog`로 파싱하는
