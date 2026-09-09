@@ -1,5 +1,36 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (이혼 후속 영수증·전송 경계)
+
+`command11.c:divorce`의 온라인 canonical 경계를 Go parser→session→WorldConnector에
+연결했다. `이혼`은 결혼 신청 취소·미혼 no-op·이혼 신청 취소·온라인 배우자 신청·상호
+수락의 source 순서를 유지하고, `PMARRI`/`PRDMAR`/`PRDDIV`와 `key[2]`를 한
+`ExecuteGame` receipt로 원자 저장한다. 배우자 알림과 수락 전역 공지는 첫 commit 뒤에만
+fan-out하며, 전역 공지는 원작 `broadcast()`의 `PNOBRD`를 존중한다. 동일 command ID
+재시도는 저장된 응답만 재생한다. 구현 파일은 `marriage_followup.go`,
+`marriage_followup_command.go`와 대응 session/transport TDD다.
+
+`command11.c:m_send`의 기혼·배우자·UTF-8/255바이트 입력 검증과 parser 경계도 추가했지만,
+원작 `%C/%M/%j` descriptor와 `PLECHO` exact echo formatter가 아직 Go canonical 상태에
+없어 성공 전이는 명시적으로 fail-closed한다. 추측한 출력이나 알림은 저장하지 않는다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Divorce|MarriageSend|MarriageFollowup|Marriage|ParseCommand' -count=1) PASS
+(cd server && go test -race ./internal/session ./internal/transport -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+(cd server && MUHAN_DIVORCE_TEST_DATABASE_URL='postgresql://...' go test -race ./internal/session -run '^TestPostgresDivorceRequestAcceptPersistsAndReplays$' -count=1 -v) PASS (ARM64 postgres:17-alpine)
+git diff --check PASS
+```
+
+직접 world 전체 race는 기존 strict room corpus의 63개 invalid EUC-KR/trailing-data
+예외로 실패한다(`TestRoomBodyCorpus`); 이번 결혼 후속 회귀와 무관한 승격 조건이다.
+배우자 offline/missing의 legacy `load_ply` 구분, 실제 Supabase 운영 연결, m_send 출력
+formatter, 전체 social parity, 브라우저/IME/mobile, WSS/Ingress와 testnet 승격은 남아 있다.
+테스트 컨테이너는 이번 실행에서 만든 것만 종료·삭제했으며 `src/frp.new`와 예전 dirty
+worktree는 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (결혼 신청·수락 영수증)
 
 `command11.c:marriage`의 canonical하게 증명 가능한 경계를 Go에 연결했다.

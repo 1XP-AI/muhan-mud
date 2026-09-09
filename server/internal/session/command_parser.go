@@ -105,6 +105,8 @@ const (
 	CommandFamilyTalk
 	CommandFamilyMutation
 	CommandMarriage
+	CommandMarriageSend
+	CommandDivorce
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -557,6 +559,10 @@ func commandKind(first string) CommandKind {
 		return CommandBoard
 	case "결혼":
 		return CommandMarriage
+	case "사랑말":
+		return CommandMarriageSend
+	case "이혼":
+		return CommandDivorce
 	case "써":
 		return CommandBoardWrite
 	case IgnoreCommandName:

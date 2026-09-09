@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 이혼·배우자 대화 후속 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:divorce` / `이혼` | 신청 취소·미혼 no-op·이혼 신청 취소·온라인 배우자 신청·상호 수락을 `PlanDivorce`/`ApplyDivorce`로 원자화. `PMARRI`/`PRDMAR`/`PRDDIV`와 `key[2]`를 receipt에 저장하고 parser/session/WorldConnector에서 첫 commit 후 배우자 event·PNOBRD 전역 공지를 fan-out | world/session/transport 후속 race/vet, ARM64 PostgreSQL 17 request/accept/replay PASS. offline/missing legacy `load_ply`, 전체 social parity, 운영 Supabase·브라우저/배포는 미완료 |
+| `command11.c:m_send` / `사랑말` | alias와 메시지 UTF-8/255바이트, 기혼·상호 배우자·온라인 canonical identity를 검증하는 경계 추가 | `%C/%M/%j` descriptor와 PLECHO exact echo formatter가 없어 성공 receipt/전송은 명시적 fail-closed; 출력 parity 미완료 |
+
+이혼 수락은 C `broadcast()`와 동일하게 `PNOBRD`를 가진 연결에는 공지를 보내지 않는다.
+배우자 대상 event는 receipt에 고정된 durable ID/name이 post-commit snapshot과 일치할 때만
+전달하며, replay에서는 재전송하지 않는다.
+
 ## 2026-09-10 결혼 신청·수락 receipt 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

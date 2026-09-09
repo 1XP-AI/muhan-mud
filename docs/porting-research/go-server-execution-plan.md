@@ -1,5 +1,22 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 이혼 후속 receipt·전송 경계
+
+`command11.c:divorce`의 순수 상태 전이를 `PlanDivorce`/`ApplyDivorce`로 만들고
+`이혼`을 parser→session `ExecuteGame`→PostgreSQL receipt→WebSocket 응답에 연결했다.
+신청 취소·미혼 no-op·이혼 신청 취소·배우자 신청·상호 수락을 source 순서대로 원자화하며,
+배우자 `key[2]`와 `PMARRI`/`PRDMAR`/`PRDDIV`를 보존·해제한다. 수락 전역 이벤트는
+`PNOBRD`를 적용하고, 모든 event는 첫 commit 뒤에만 전송한다. offline/missing 배우자는
+현재 Go State에 legacy `load_ply` authority가 없어 안전하게 fail-closed한다.
+
+`사랑말` parser와 canonical 기혼/배우자/메시지 검증도 추가했지만, C `%C/%M/%j` descriptor
+및 `PLECHO` exact echo formatter가 구현되지 않아 성공 receipt는 아직 발행하지 않는다.
+출력 parity가 증명되기 전까지는 명시적 unsupported 응답으로 닫는다.
+
+영향 패키지 race/vet, session/transport 전체 race, 실제 ARM64 PostgreSQL 17 request→accept→
+replay가 통과했다. world 전체 race는 기존 strict room corpus 63개 예외로 실패하며,
+운영 Supabase·전체 사회 출력/메시지 parity·브라우저/배포 승격은 별도 조건이다.
+
 ## 2026-09-10 결혼 신청·수락 vertical slice
 
 `command11.c:marriage`를 Go parser→session→WorldConnector로 연결했다. 원작 snapshot의

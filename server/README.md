@@ -1,5 +1,13 @@
 # Go MUD 서버 작업 영역
 
+최신 후속 slice: `command11.c:divorce`의 `이혼` 신청·취소·수락을
+`PlanDivorce`/`ApplyDivorce`와 parser→session→WorldConnector durable receipt로
+연결했다. `PMARRI`/`PRDMAR`/`PRDDIV`·배우자 `key[2]`를 원자 저장하고, 배우자 알림과
+수락 전역 공지는 첫 commit 뒤에만 보낸다. 전역 공지는 PNOBRD를 존중하며 receipt replay는
+재전송하지 않는다. 실제 ARM64 PostgreSQL 17 저장·재생과 영향 패키지 race/vet가 통과했다.
+`사랑말`은 canonical 배우자/메시지 검증까지 추가했지만 C descriptor/PLECHO formatter가
+없어 현재 성공 경로를 fail-closed한다. 전체 social parity·운영 Supabase/WSS는 미완료다.
+
 최신 기능 slice: `command11.c:marriage`의 결혼식장/나이/시야/성별/온라인 canonical
 identity 게이트와 `PRDMAR`·`PMARRI`·`key[2]` 상태를 `PlanMarriage`/`ApplyMarriage`로
 원자화했다. `결혼 <이름>`과 suffix 형태의 신청·pending 취소·상호 수락을 parser→session→

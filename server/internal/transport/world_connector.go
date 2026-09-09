@@ -647,6 +647,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	familyTalkCommand := false
 	familyMutationCommand := false
 	marriageCommand := false
+	marriageSendCommand := false
+	divorceCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -750,6 +752,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandMarriage:
 		marriageCommand = true
 		receipt, err = c.game.owners.ExecuteMarriageLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandMarriageSend:
+		marriageSendCommand = true
+		receipt, err = c.game.owners.ExecuteMarriageSendLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandDivorce:
+		divorceCommand = true
+		receipt, err = c.game.owners.ExecuteDivorceLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -1163,7 +1171,28 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrMarriageStateInvalid) ||
 		errors.Is(err, world.ErrMarriageStaleProposal) ||
 		errors.Is(err, world.ErrMarriageInvalidProposal) ||
-		errors.Is(err, session.ErrUnsupportedMarriageLine) {
+		errors.Is(err, session.ErrUnsupportedMarriageLine) ||
+		errors.Is(err, session.ErrUnsupportedMarriageSendLine) ||
+		errors.Is(err, session.ErrUnsupportedDivorceLine) ||
+		errors.Is(err, world.ErrDivorceActorAbsent) ||
+		errors.Is(err, world.ErrDivorceStateInvalid) ||
+		errors.Is(err, world.ErrDivorceSpouseKeyInvalid) ||
+		errors.Is(err, world.ErrDivorceSpouseUnavailable) ||
+		errors.Is(err, world.ErrDivorceSpouseAmbiguous) ||
+		errors.Is(err, world.ErrDivorcePlayerStoreUnavailable) ||
+		errors.Is(err, world.ErrDivorceStaleProposal) ||
+		errors.Is(err, world.ErrDivorceInvalidProposal) ||
+		errors.Is(err, world.ErrMarriageSendActorAbsent) ||
+		errors.Is(err, world.ErrMarriageSendNotMarried) ||
+		errors.Is(err, world.ErrMarriageSendStateInvalid) ||
+		errors.Is(err, world.ErrMarriageSendSpouseUnavailable) ||
+		errors.Is(err, world.ErrMarriageSendSpouseAmbiguous) ||
+		errors.Is(err, world.ErrMarriageSendMessageEmpty) ||
+		errors.Is(err, world.ErrMarriageSendMessageInvalid) ||
+		errors.Is(err, world.ErrMarriageSendPLECHOUnsupported) ||
+		errors.Is(err, world.ErrMarriageSendDescriptorFormat) ||
+		errors.Is(err, world.ErrMarriageSendStaleProposal) ||
+		errors.Is(err, world.ErrMarriageSendInvalidProposal) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1443,6 +1472,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if divorceCommand && !receipt.Replayed {
+		var result world.DivorceResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishDivorce(after, result)
+			}
+		}
+	}
 	if returnSquareCommand && !receipt.Replayed {
 		var result world.ReturnSquareResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Moved && result.Event != nil {
@@ -1718,6 +1755,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if marriageCommand {
 		var result world.MarriageResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if marriageSendCommand {
+		var result world.MarriageSendResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if divorceCommand {
+		var result world.DivorceResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
