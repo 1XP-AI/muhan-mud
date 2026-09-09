@@ -1,5 +1,46 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (터미널 암호·Go 게이트웨이 좌표·검증 비용 감사)
+
+이번 배치는 파일 소유권이 겹치지 않는 두 Luna max 레인을 병렬 처리한 뒤 메인 세션에서
+전송 경계만 한 번 조립했다.
+
+- **터미널 `암호`**: 게임 연결 안에서 현재 암호→새 암호→확인 순서를 소비하는
+  connection-local continuation을 연결했다. 계정 credential store는 `PasswordStore`로
+  별도 주입하고, expected/replacement bcrypt hash 조건부 UPDATE와 idempotent retry를
+  사용한다. 암호 입력은 history·alias·world receipt·이벤트·로그에 들어가지 않으며,
+  WebSocket `secret` 플래그가 다음 한 줄에만 전달된다. 연결 종료·취소 시 보류 hash를
+  지운다. 저장소 계정 이름은 world/player ID와 분리해 인증 결과에 보존한다.
+- **xterm 게이트웨이 좌표**: 웹 루트가 런타임의 `MUD_GO_GATEWAY_URL`을 우선하고
+  `MUD_GATEWAY_URL`을 명시적 fallback으로 사용한다. ws/wss·HTTPS mixed-content·누락/
+  malformed 주소 검증을 순수 helper로 분리했으며, 기존 Supabase 웹 가입 화면을 루트
+  경로의 필수 단계로 되살리지 않았다.
+- **중복 검증 전수 감사**: workflow/pre-push/validation script/matrix를 다시 대조했다.
+  CI는 `workflow_dispatch`만 사용하고, 기능 레인은 영향 패키지 race, 조립 batch는
+  `integration` 전체 Go race/vet/diff 1회, 기본 브랜치 `main`에서만 Linux ARM64
+  cross-build 1회, 승인된 `release`에서만 PostgreSQL·브라우저·x64/Windows/macOS
+  호환성 matrix를 실행한다. release의 migration 2회 적용과 command replay는 재실행
+  안전성 증거인 의도된 반복이라 유지하며, 기능 레인마다 ARM64/DB/browser를 반복하는
+  호출은 발견되지 않았다.
+
+검증 결과:
+
+```text
+(cd server && go test -race -count=1 ./internal/session ./internal/storage ./internal/transport) PASS
+scripts/run-go-validation.sh integration PASS
+(cd web && npm test) PASS (49 tests)
+(cd web && npm run typecheck) PASS
+python3 tests/unit/local_first_policy_test.py PASS
+python3 tests/unit/self_hosted_ci_policy_test.py PASS
+bash -n scripts/run-go-validation.sh scripts/check-local-before-push.sh .githooks/pre-push PASS
+git diff --check PASS
+```
+
+실제 PostgreSQL·ARM64 main cross-build·browser/IME 실기기·release matrix·WSS/Ingress와
+testnet 배포는 이 기능 배치에서 반복하지 않았다. 실제 PG 암호 저장 경로와 운영 도메인은
+해당 승격 경계에서 별도 증거를 추가해야 한다. `src/frp.new`는 사용자 소유 dirty 변경으로
+계속 보존하며 수정·stage하지 않는다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 cadence 전수 감사 + 시간·수련·선택)
 
 검증 호출 그래프를 다시 전수 대조했다. `.github/workflows/ci.yml`는

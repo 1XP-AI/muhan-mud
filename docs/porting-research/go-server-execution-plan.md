@@ -948,3 +948,31 @@ migration 2회 적용과 command replay는 재실행 안전성의 의도된 증�
 batch에서는 strict room corpus 63건·실제 PG·브라우저/IME·ARM64 main·release matrix를
 반복하지 않는다. 전체 C prefix/key/ANSI parity, NPC full tick, WSS/Ingress와 testnet
 배포는 승격 후속이다.
+
+## 2026-09-09 터미널 암호·게이트웨이 좌표 후속과 검증 비용 감사
+
+`암호`의 account-only continuation을 `WorldConnector`에 연결할 때도 게임 상태와
+credential 상태의 경계를 분리한다. `storage.Character.Name`은 계정의 canonical name을
+담지만 world/player ID를 대체하지 않으며, `PasswordStore`만 credential hash를 조회·조건부
+갱신한다. WebSocket은 다음 입력의 `secret` 여부만 xterm에 전달하고, 암호 line은
+history/alias/receipt/event/log에 저장하지 않는다. hash 생성은 한 번, 응답 유실 시 같은
+replacement hash 재시도만 허용한다. 실제 PG 계정 변경은 별도 opt-in 통합 증거 없이는
+완료로 승격하지 않는다.
+
+웹 루트의 연결 좌표는 `MUD_GO_GATEWAY_URL` 우선, `MUD_GATEWAY_URL` fallback으로 고정한다.
+주소 검증은 ws/wss scheme, HTTPS mixed-content와 malformed/missing 입력을 순수 helper로
+판정해 빌드 시점 환경값을 굽지 않는다. 이 경로에는 웹 가입이나 Supabase Auth가 필수
+단계로 들어오지 않는다.
+
+검증 호출 그래프 감사 결과는 다음으로 고정한다.
+
+- 병렬 Luna max 레인: 담당 파일 gofmt와 영향 패키지 targeted race만 실행한다.
+- 조립 batch: `scripts/run-go-validation.sh integration`을 한 번 실행해 전체 Go
+  race/vet/diff를 확인한다. 이미 이 gate를 통과한 batch에서 fast를 다시 호출하지 않는다.
+- 기본 브랜치 병합: `scripts/run-go-validation.sh main`에서만 Linux ARM64 cross-build를
+  한 번 실행한다. `integration`과 기능 레인에는 ARM64 build가 없다.
+- 승인된 기본 브랜치 release: PostgreSQL·browser·x64/Windows/macOS 호환성 matrix를
+  한 번 실행한다. migration 2회 적용과 command replay는 재실행 안전성 증거이므로
+  중복으로 분류해 제거하지 않는다.
+
+이번 후속에서는 위 경계를 벗어난 ARM64/PG/browser/release 검사를 반복하지 않는다.

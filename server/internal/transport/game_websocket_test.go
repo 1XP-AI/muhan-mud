@@ -21,6 +21,10 @@ type eventGameStub struct {
 	events chan string
 }
 
+type secretGameStub struct {
+	secret bool
+}
+
 func (g *eventGameStub) Open(_ context.Context, _ storage.Character) (GameConnection, string, error) {
 	return g, "광장", nil
 }
@@ -29,6 +33,22 @@ func (g *eventGameStub) Submit(_ context.Context, line string) (string, error) {
 }
 func (g *eventGameStub) Close(context.Context) {}
 func (g *eventGameStub) Events() <-chan string { return g.events }
+
+func (g *secretGameStub) Open(_ context.Context, _ storage.Character) (GameConnection, string, error) {
+	return g, "광장", nil
+}
+func (g *secretGameStub) Submit(_ context.Context, line string) (string, error) {
+	if line == "암호" {
+		g.secret = true
+		return "현재 암호를 입력하십시오: ", nil
+	}
+	if g.secret {
+		g.secret = false
+	}
+	return "처리됨", nil
+}
+func (g *secretGameStub) Close(context.Context) {}
+func (g *secretGameStub) InputIsSecret() bool   { return g.secret }
 
 func (g *gameStub) Open(_ context.Context, c storage.Character) (GameConnection, string, error) {
 	g.actor <- c.ID
@@ -111,5 +131,48 @@ func TestWebSocketForwardsAsynchronousRoomEvent(t *testing.T) {
 	}
 	if output.Type != "event" || !strings.Contains(output.Text, "다른 모험가") || output.Secret || output.Closed {
 		t.Fatalf("unexpected async event=%+v", output)
+	}
+}
+
+func TestWebSocketCarriesConnectionLocalSecretPrompt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	game := &secretGameStub{}
+	server := httptest.NewServer(NewGameHandler(ctx, accountStub{}, []string{"https://mud.test"}, game))
+	defer server.Close()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://mud.test"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var view Output
+	if err := wsjson.Read(ctx, conn, &view); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"Alice", "pw1234"} {
+		if err := wsjson.Write(ctx, conn, Input{Type: "line", Text: line}); err != nil {
+			t.Fatal(err)
+		}
+		if err := wsjson.Read(ctx, conn, &view); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wsjson.Write(ctx, conn, Input{Type: "line", Text: "암호"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Read(ctx, conn, &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.Secret || view.Closed || !strings.Contains(view.Text, "현재 암호") {
+		t.Fatalf("password prompt did not suppress echo: %+v", view)
+	}
+	if err := wsjson.Write(ctx, conn, Input{Type: "line", Text: "not-echoed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Read(ctx, conn, &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Secret || view.Closed || view.Text != "처리됨" {
+		t.Fatalf("secret prompt did not clear after one line: %+v", view)
 	}
 }

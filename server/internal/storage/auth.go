@@ -51,11 +51,11 @@ func (p *Postgres) Authenticate(ctx context.Context, name string, password []byt
 		return Character{}, ErrCredentials
 	}
 	var result Character
-	var databaseID, worldID, worldPlayerID, stage string
+	var databaseID, accountName, worldID, worldPlayerID, stage string
 	var hash, raw []byte
-	err = p.db.QueryRowContext(ctx, `SELECT c.id,c.draft,a.credential_hash,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'')
+	err = p.db.QueryRowContext(ctx, `SELECT c.id,a.name,c.draft,a.credential_hash,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'')
  FROM mud_go.accounts a JOIN mud_go.characters c ON c.account_id=a.id
- WHERE a.name=$1`, canonical).Scan(&databaseID, &raw, &hash, &stage, &worldID, &worldPlayerID)
+	 WHERE a.name=$1`, canonical).Scan(&databaseID, &accountName, &raw, &hash, &stage, &worldID, &worldPlayerID)
 	defer clear(hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Character{}, ErrCredentials
@@ -73,6 +73,7 @@ func (p *Postgres) Authenticate(ctx context.Context, name string, password []byt
 		return Character{}, err
 	}
 	result.ID = databaseID
+	result.Name = accountName
 	if stage == "linked" && worldID != "" && worldPlayerID != "" {
 		result.ID = worldPlayerID
 		result.Linked = true

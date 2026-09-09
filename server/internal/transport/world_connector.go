@@ -23,6 +23,11 @@ type WorldConnectorConfig struct {
 	Clock     func() (int32, int)
 	WallClock func() time.Time
 	Catalog   world.SpawnCatalog
+	// PasswordStore is the account-only credential boundary for the
+	// connection-local `암호` flow. It is intentionally optional so tests and
+	// non-account world adapters can keep the command fail-closed without
+	// changing the world receipt contract.
+	PasswordStore session.PasswordChangeStore
 	// TalkCatalog is the immutable, server-owned command8.c topic catalog.
 	// It is optional so no-topic NPC speech keeps its original behavior; an
 	// MTALKS topic request fails closed when this dependency is absent.
@@ -207,7 +212,7 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	if err != nil {
 		return nil, "", err
 	}
-	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32)}
+	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32), accountName: c.Name}
 	now, hour := g.config.Clock()
 	receipt, err := g.owners.EnterWorld(ctx, g.config.Store, g.config.WorldID, "enter-"+rand.Text(), lease, now, world.SceneOptions{ViewOptions: world.ViewOptions{Hour: hour}}, g.config.Catalog, g.config.Roll, g.config.Allocate)
 	if err != nil {
@@ -216,6 +221,16 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	var entry world.RoomEntry
 	if err = json.Unmarshal(receipt.Response, &entry); err != nil {
 		return connection, "", err
+	}
+	// New characters are registered before a canonical account name is
+	// attached to storage.Character. Resolve that name from the admitted
+	// player once, without making it part of world state or a command receipt.
+	if connection.accountName == "" {
+		if admitted, ok := g.snapshot(ctx); ok {
+			if player, exists := admitted.Players[lease.ActorID]; exists {
+				connection.accountName = player.Body.Name
+			}
+		}
 	}
 	connection.ready = true
 	g.mu.Lock()
@@ -236,6 +251,9 @@ type worldConnection struct {
 	game   *WorldConnector
 	lease  session.SessionLease
 	events chan string
+	// accountName is the canonical account identity used only by the
+	// connection-local password flow. It is never copied into world receipts.
+	accountName string
 	// lastCommand mirrors C's connection-local extr->lastcommand. It is
 	// deliberately excluded from world state and durable receipts: `!` only
 	// expands the next line before the normal command reducer runs.
@@ -245,6 +263,8 @@ type worldConnection struct {
 	closeAfterSubmit bool
 	infoPending      bool
 	compose          *composeDraft
+	passwordChange   session.PasswordChanger
+	passwordSecret   bool
 	// ignore is command9.c's connection-local first_ignore list. It is never
 	// serialized with the world snapshot or a command receipt.
 	ignore IgnoreList
@@ -490,6 +510,13 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return text, nil
 	}
+	// An active password change owns every following line until it reaches a
+	// terminal state. Handle it before compose/history so credentials can
+	// never be expanded into command history or interpreted as world input.
+	if c.passwordChange != nil {
+		output, _, err := c.submitPasswordLine(ctx, line)
+		return output, err
+	}
 	if output, handled, err := c.submitComposeLine(ctx, line); handled {
 		if err != nil {
 			if !c.game.owners.Owns(c.lease) {
@@ -498,6 +525,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			return "", err
 		}
 		return output, nil
+	}
+	// Start `암호` before history expansion. The command is connection-local,
+	// so its line and all subsequent credential lines must not become the `!`
+	// history entry.
+	if output, handled, err := c.submitPasswordLine(ctx, line); handled {
+		return output, err
 	}
 	line, c.lastCommand = session.ExpandHistoryLine(c.lastCommand, line)
 	// History expansion can recreate an interactive command. Route that
@@ -1635,6 +1668,13 @@ func (c *worldConnection) Close(ctx context.Context) {
 	// connection boundary so a closed descriptor cannot retain names while a
 	// cleanup retry is pending.
 	c.ignore.Clear()
+	if c.passwordChange != nil {
+		// Cancel clears the state machine's expected/replacement hashes before
+		// this connection can become a pending cleanup retry.
+		c.passwordChange.Cancel()
+		c.passwordChange = nil
+	}
+	c.passwordSecret = false
 	before, beforeOK := c.game.snapshot(ctx)
 	// Ownership remains reserved on every failure; background worker owns retries.
 	if err := c.game.cleanup.Enqueue(c.lease); err != nil {

@@ -180,6 +180,10 @@ func (s *PasswordChange) submitCurrent(ctx context.Context, line string) Passwor
 	candidate := []byte(line)
 	defer clear(candidate)
 	accountID, storedHash, err := s.store.LookupCredential(ctx, s.name)
+	// LookupCredential returns an operation-owned copy. Clear it after the
+	// verification path so the connection retains only the expected hash that
+	// is deliberately needed for the compare-and-swap retry contract.
+	defer clear(storedHash)
 	if err != nil || accountID == "" || !identity.CheckPassword(storedHash, candidate) {
 		// Do not distinguish a missing account, malformed hash, and wrong
 		// password to the terminal. None of these paths mutates storage.
@@ -226,7 +230,11 @@ func (s *PasswordChange) submitConfirm(ctx context.Context, line string) Passwor
 	}
 	// Pass copies so a store cannot retain aliases into this state. The
 	// original and replacement hash remain unchanged for an uncertain retry.
-	err := s.store.UpdateCredential(ctx, s.accountID, cloneSecret(s.expectedHash), cloneSecret(s.newHash))
+	expectedHash := cloneSecret(s.expectedHash)
+	replacementHash := cloneSecret(s.newHash)
+	err := s.store.UpdateCredential(ctx, s.accountID, expectedHash, replacementHash)
+	clear(expectedHash)
+	clear(replacementHash)
 	if err != nil {
 		s.view = PasswordChangeView{Text: "암호 저장 완료를 확인할 수 없습니다. 다시 입력하십시오: ", Secret: true}
 		return s.view

@@ -110,7 +110,11 @@ func (p *Postgres) Create(ctx context.Context, name string, hash []byte, draft g
 }
 
 type Character struct {
-	ID            string
+	ID string
+	// Name is the canonical game account name. It is carried separately from
+	// the world/player ID so account-only commands cannot infer credential
+	// ownership from a mutable or database-local character identifier.
+	Name          string
 	Draft         game.Creation
 	Linked        bool
 	WorldID       string
@@ -124,10 +128,10 @@ func (p *Postgres) Load(ctx context.Context, name string) (Character, error) {
 	}
 	name = canonical
 	var result Character
-	var databaseID, worldID, worldPlayerID, stage string
+	var databaseID, accountName, worldID, worldPlayerID, stage string
 	var raw []byte
-	err := p.db.QueryRowContext(ctx, `SELECT c.id,c.draft,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'') FROM mud_go.characters c
-	JOIN mud_go.accounts a ON a.id=c.account_id WHERE a.name=$1`, name).Scan(&databaseID, &raw, &stage, &worldID, &worldPlayerID)
+	err := p.db.QueryRowContext(ctx, `SELECT c.id,a.name,c.draft,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'') FROM mud_go.characters c
+	JOIN mud_go.accounts a ON a.id=c.account_id WHERE a.name=$1`, name).Scan(&databaseID, &accountName, &raw, &stage, &worldID, &worldPlayerID)
 	if err != nil {
 		return Character{}, err
 	}
@@ -135,6 +139,7 @@ func (p *Postgres) Load(ctx context.Context, name string) (Character, error) {
 		return Character{}, err
 	}
 	result.ID = databaseID
+	result.Name = accountName
 	if stage == "linked" && worldID != "" && worldPlayerID != "" {
 		result.ID = worldPlayerID
 		result.Linked = true

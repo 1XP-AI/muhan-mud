@@ -7,6 +7,7 @@ import {
   canRestoreTerminalFocus,
   shouldDeferTerminalResize,
 } from "@/lib/terminal-focus";
+import { validateGatewayUrl } from "@/lib/gateway-url";
 
 import styles from "./classic-terminal.module.css";
 
@@ -237,21 +238,13 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       queueFocus();
 
       let address: URL | undefined;
-      if (!url) {
+      const gateway = validateGatewayUrl(url, location.protocol);
+      if (gateway.kind === "missing") {
         term.writeln("게임 서버 주소가 설정되지 않았습니다.");
+      } else if (gateway.kind === "valid") {
+        address = gateway.url;
       } else {
-        try {
-          const candidate = new URL(url);
-          if (
-            !["ws:", "wss:"].includes(candidate.protocol) ||
-            (location.protocol === "https:" && candidate.protocol !== "wss:")
-          ) {
-            throw new Error("invalid transport");
-          }
-          address = candidate;
-        } catch {
-          term.writeln("게임 서버 주소를 확인하십시오.");
-        }
+        term.writeln("게임 서버 주소를 확인하십시오.");
       }
 
       const scheduleReconnect = () => {

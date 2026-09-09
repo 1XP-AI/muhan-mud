@@ -1046,3 +1046,28 @@ macOS 호환성 matrix를 실행한다. migration을 두 번 적용하는 단계
 이번 batch의 focused race와 integration은 통과했다. strict room corpus 63건, 전체 C
 prefix/key/ANSI parity, NPC full tick, 실기기 IME/mobile, WSS/Ingress·testnet 배포는
 여전히 전체 인수 전제다.
+
+## 2026-09-09 터미널 암호·Go 게이트웨이 좌표 및 중복 검증 감사
+
+이번 bounded batch는 게임 연결의 account-only `암호` continuation과 중앙 xterm의 Go
+WebSocket 좌표를 연결했다.
+
+- `암호`는 `WorldConnectorConfig.PasswordStore`로 주입된 account credential 경계에서
+  current→new→confirm을 수행한다. 새 bcrypt hash는 한 번만 만들고, expected hash를
+  조건으로 저장하며, 응답 유실 재시도는 같은 replacement hash를 idempotently 인정한다.
+  상태기는 connection-local이고 `history`·alias·world snapshot/receipt/event에는
+  자격 증명을 넣지 않는다. WebSocket은 다음 입력의 `secret` boolean만 전달하며 close/
+  cancel에서 보류 hash를 지운다. 실제 PostgreSQL 실행은 별도 opt-in 승격 조건이다.
+- 웹 루트는 `MUD_GO_GATEWAY_URL`을 우선하고 `MUD_GATEWAY_URL`을 fallback으로 사용한다.
+  ws/wss scheme, HTTPS mixed-content, malformed/missing 주소를 순수 helper가 판정한다.
+  별도 웹 가입·Supabase Auth 단계는 루트 xterm 경로에 다시 추가하지 않는다.
+- workflow/pre-push/matrix 호출 그래프를 재검사한 결과, 기능 레인은 영향 패키지 race,
+  조립 후 `integration` 전체 race/vet/diff 1회, 기본 브랜치 `main`에서 ARM64 cross-build
+  1회, 승인된 `release`에서 DB/browser/호환성 matrix만 실행한다. migration 2회 적용과
+  command replay는 재실행 안전성 증거라 유지하며, 기능 레인마다 같은 고비용 검사를
+  반복하는 경로는 확인되지 않았다.
+
+검증: session/storage/transport race, Go `integration`, 웹 테스트 49개와 typecheck,
+local-first/self-hosted policy, shell syntax 및 diff check 통과. ARM64 main build, 실제
+PostgreSQL, browser/IME 실기기, release matrix와 testnet은 이번 기능 레인에서 반복하지
+않았다.

@@ -34,6 +34,7 @@ const (
 	CommandBoard
 	CommandInfo
 	CommandHelp
+	CommandPassword
 	CommandYell
 	CommandBroadcast
 	CommandWelcome
@@ -177,6 +178,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsStudyLine(trimmed) {
 		parsed.Kind = CommandStudy
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsPasswordLine(line) {
+		parsed.Kind = CommandPassword
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -384,6 +390,12 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		return parsed, nil
 	}
 	parsed.Kind = commandKind(tokens[0])
+	// `암호` is a continuation start, not a generic single-token command.
+	// Keep malformed variants containing controls (for example a newline)
+	// from becoming a password operation merely because TrimSpace hid them.
+	if parsed.Kind == CommandPassword && !IsPasswordLine(line) {
+		parsed.Kind = CommandUnknown
+	}
 	if isSingleTokenKind(parsed.Kind) && len(tokens) != 1 {
 		parsed.Kind = CommandUnknown
 	}
@@ -510,6 +522,8 @@ func commandKind(first string) CommandKind {
 		return CommandDrink
 	case "정보":
 		return CommandInfo
+	case "암호":
+		return CommandPassword
 	case "도움말", "?":
 		return CommandHelp
 	case "외쳐":
@@ -546,7 +560,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandPassword, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore:
 		return true
 	default:
 		return false

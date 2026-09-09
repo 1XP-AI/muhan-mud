@@ -209,12 +209,13 @@ func main() {
 		}
 		connector, err = transport.NewWorldConnector(transport.WorldConnectorConfig{
 			Store: writer, WorldID: *worldID, MaxSessions: 32,
-			Clock:       func() (int32, int) { return int32(time.Now().Unix()), *gameHour },
-			Catalog:     world.TemplateCatalog{FS: os.DirFS(*templates)},
-			TalkCatalog: talkCatalog,
-			HelpFS:      os.DirFS(*helpDir),
-			Roll:        func(low, high int) int { return low + mathrand.IntN(high-low+1) },
-			Allocate:    func() (string, error) { return "item-" + rand.Text(), nil },
+			Clock:         func() (int32, int) { return int32(time.Now().Unix()), *gameHour },
+			PasswordStore: repo,
+			Catalog:       world.TemplateCatalog{FS: os.DirFS(*templates)},
+			TalkCatalog:   talkCatalog,
+			HelpFS:        os.DirFS(*helpDir),
+			Roll:          func(low, high int) int { return low + mathrand.IntN(high-low+1) },
+			Allocate:      func() (string, error) { return "item-" + rand.Text(), nil },
 		})
 		if err != nil {
 			log.Fatal("world connector configuration failed")

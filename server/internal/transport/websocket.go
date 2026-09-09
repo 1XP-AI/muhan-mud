@@ -184,7 +184,11 @@ func NewGameHandler(lifetime context.Context, accounts session.Accounts, origins
 				if callErr != nil {
 					view = session.View{Text: "명령 처리를 확인하지 못했습니다. 다시 접속해 주세요.\r\n", Closed: true}
 				} else {
-					view = session.View{Text: text}
+					secret := false
+					if source, ok := game.(SecretPromptSource); ok {
+						secret = source.InputIsSecret()
+					}
+					view = session.View{Text: text, Secret: secret}
 					if closeAfter, ok := game.(CloseAfterSubmit); ok && closeAfter.ShouldClose() {
 						view.Closed = true
 					}
