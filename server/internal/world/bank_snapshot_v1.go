@@ -137,6 +137,68 @@ func VerifyBankSnapshotV1(raw []byte, expectedDigest [sha256.Size]byte) (BankSna
 	return snapshot, nil
 }
 
+// ToBankAccount converts the detached root into the canonical Go bank shape.
+// The root's i64 Value is the legacy bank balance; only its direct children
+// become bank item roots.  The container root itself is never exposed as a
+// player item.  Item IDs are supplied explicitly by the caller so this
+// conversion cannot claim an account or mint identities from display names.
+func (s BankSnapshotV1) ToBankAccount(allocate func() (string, error)) (BankAccount, error) {
+	if err := validatePlayerSnapshotObjectGraph(s.Root, true); err != nil {
+		return BankAccount{}, fmt.Errorf("%w: %v", ErrBankSnapshotGraphInvalid, err)
+	}
+	if !bankSnapshotOneRoot(s.Root) {
+		return BankAccount{}, ErrBankSnapshotGraphInvalid
+	}
+	balance := s.Root.Nodes[0].Object.Value
+	if balance < 0 || balance > MaxBankBalance {
+		return BankAccount{}, fmt.Errorf("%w: bank balance %d", ErrBankSnapshotGraphInvalid, balance)
+	}
+	children := make([][]int, len(s.Root.Nodes))
+	for index, node := range s.Root.Nodes {
+		if node.ParentIndex != nil {
+			parent := *node.ParentIndex
+			if parent >= uint32(len(children)) {
+				return BankAccount{}, ErrBankSnapshotGraphInvalid
+			}
+			children[parent] = append(children[parent], index)
+		}
+	}
+	var build func(int) (LegacyObject, error)
+	build = func(index int) (LegacyObject, error) {
+		object, err := s.Root.Nodes[index].Object.toLegacyObject()
+		if err != nil {
+			return LegacyObject{}, fmt.Errorf("%w: item %d: %v", ErrBankSnapshotGraphInvalid, index, err)
+		}
+		for _, child := range children[index] {
+			value, err := build(child)
+			if err != nil {
+				return LegacyObject{}, err
+			}
+			object.Contents = append(object.Contents, value)
+		}
+		return object, nil
+	}
+	objects := make([]LegacyObject, 0, len(children[0]))
+	for _, child := range children[0] {
+		object, err := build(child)
+		if err != nil {
+			return BankAccount{}, err
+		}
+		objects = append(objects, object)
+	}
+	var items ItemCollection
+	if len(objects) == 0 {
+		items = ItemCollection{Items: map[string]Item{}}
+	} else {
+		var err error
+		items, err = ImportItems(objects, allocate)
+		if err != nil {
+			return BankAccount{}, fmt.Errorf("%w: item conversion: %v", ErrBankSnapshotGraphInvalid, err)
+		}
+	}
+	return BankAccount{Balance: balance, Items: &items}, nil
+}
+
 func bankSnapshotOneRoot(graph PlayerSnapshotObjectGraphV1) bool {
 	if len(graph.Nodes) == 0 || graph.Nodes[0].ParentIndex != nil {
 		return false

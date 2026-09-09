@@ -50,8 +50,13 @@ identity·writer/revision 충돌은 fail-closed한다. `bash scripts/run-go-play
 은행 raw 이관을 시작하기 전에는 `world.EncodeBankSnapshotV1`·
 `world.DecodeBankSnapshotV1`·`world.VerifyBankSnapshotV1`로 kind-8 아티팩트를 먼저
 검증한다. 이 API는 C/Rust ObjectGraphV1과 byte-stable한 단일 detached root만 허용하는
-오프라인 경계이며 PostgreSQL이나 게임 세션을 변경하지 않는다. 계정/캐릭터 매핑과
-실제 bank receipt import는 별도 operator 승인 단계다.
+오프라인 경계다. `Postgres.ImportBankSnapshot`은 이미 linked 된 account/character와
+명시적인 item ID manifest가 있을 때만 balance·nested item graph를 world state에
+원자적으로 붙이고 `mud_go.bank_imports` evidence 및 replayable command receipt를
+남긴다. raw graph·password·credential은 receipt에 저장하지 않으며, 중복 bank 계정·
+revision/writer/manifest 충돌은 fail-closed한다. `cmd/muhan`의
+`InspectBankSnapshotReview(JSON)`은 DB/runtime 없이 private artifact metadata만 만든다
+(CLI flag wiring은 후속). 라이브 bank 명령 parity와 운영 이관/복구는 별도 승인 단계다.
 
 최신 이관 경계: `internal/world/player_snapshot_v1.go`가 C/Rust pointer-free
 `PlayerSnapshotV1` CDTO를 Go에서 직접 검증·재인코딩한다. envelope SHA-256, 40개 field

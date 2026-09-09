@@ -19,6 +19,39 @@ bash scripts/run-cdto-differential.sh PASS
 남은 조건은 legacy bank 파일 parser/계정 매핑, gold·nested graph 실제 import receipt,
 복구 연습과 전체 G3 기능 인수다. `src/frp.new` 및 예전 dirty worktree는 계속 보호한다.
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (은행 import receipt·터미널 플레이 smoke)
+
+`server/internal/storage/Postgres.ImportBankSnapshot`가 검토된 kind-8 은행 CDTO를
+이미 연결된 account/character에만 붙인다. canonical graph와 caller-owned item ID
+manifest를 먼저 확인하고, world state·`mud_go.bank_imports` evidence·`world_commands`
+receipt를 한 transaction으로 갱신한다. 같은 command ID는 metadata-only 결과를 재생하고,
+중복 계정/캐릭터·revision/writer·manifest 충돌은 fail-closed한다. raw graph·비밀번호·
+credential은 receipt/evidence에 저장하지 않는다. `scripts/run-go-bank-snapshot-import-local.sh
+--allow-disposable`는 ARM64 `postgres:17-alpine`에서 성공·replay·rollback을 검증하며,
+자신이 만든 컨테이너만 종료한다.
+
+`cmd/muhan`에는 DB/runtime을 열지 않는 `InspectBankSnapshotReview(JSON)` 경계를 추가해
+private `0700` 디렉터리의 `0600` `.bin` 파일을 lexical 순서로 읽고 digest/size/root/node
+metadata만 생성한다. 아직 CLI flag/main wiring은 별도 작업이다. 웹에는
+`web/lib/terminal-play-smoke.ts` 계약 harness를 추가해 terminal signup→world command→
+reconnect→same-character relogin, secret frame, malformed/mixed gateway, focus/IME 규칙을
+브라우저·DB 없이 결정론적으로 검증한다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/storage -count=1) PASS
+(cd server && go test -race ./cmd/muhan -run '^Test(ValidateBankSnapshot|InspectBankSnapshot|PlayerSnapshot)' -count=1) PASS
+(cd server && go vet ./internal/storage ./cmd/muhan ./internal/world) PASS
+bash scripts/run-go-bank-snapshot-import-local.sh --allow-disposable PASS
+(cd web && npm test) PASS (57 tests)
+(cd web && npm run typecheck) PASS
+```
+
+실제 legacy bank 파일 수집/계정 대조, 라이브 bank 명령 parity, CLI wiring, 실제
+브라우저·IME/mobile·WSS/Ingress·Supabase 운영 이관/복구는 아직 남아 있다. `src/frp.new`
+와 기존 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (review→import manifest builder)
 
 `cmd/muhan`에 `-build-player-snapshot-manifest-review`와

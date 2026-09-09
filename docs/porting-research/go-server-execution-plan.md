@@ -528,6 +528,39 @@ bash scripts/run-cdto-differential.sh PASS (C/Rust baseline incl. BankSnapshotV1
 이번 배치에서 실행한 것은 `fast`, 조립 `integration`, 정책·shell·migration coverage,
 diff 검사다. ARM64 cross-build·실제 DB/browser·release matrix는 각각 `main`/`release`
 경계에서만 실행한다.
+
+### 2026-09-10 kind-8 은행 import receipt 및 터미널 계약 smoke
+
+은행 CDTO codec 다음 경계로 `Postgres.ImportBankSnapshot`과 `mud_go.bank_imports`를
+추가했다. importer는 canonical kind-8 graph와 operator가 검토한 item ID manifest를
+먼저 확인하고, 이미 `linked` 된 account/character와 world player만 대상으로 한다.
+world row 잠금·writer epoch·expected revision·command hash를 검사한 뒤 bank balance와
+item tree를 `State.BankAccounts`에 붙이고 evidence/receipt를 같은 transaction에
+기록한다. 동일 request 재시도는 저장된 metadata-only receipt를 반환하며, 다른
+manifest·중복 bank account·권한/상태 충돌은 변경 없이 거부한다. rollback 테스트는
+world revision/state, evidence, receipt가 모두 남지 않는지 확인한다. raw graph·password·
+credential은 DB evidence/receipt에 넣지 않는다.
+
+`cmd/muhan`의 `InspectBankSnapshotReview(JSON)`은 private `0700` source tree와 `0600`
+artifact만 DB 없이 검사하고 source/canonical SHA-256·size·root/node count만 출력한다.
+실제 command flag wiring은 후속 단계다. 웹 `TerminalPlaySmokeHarness`는 같은 terminal
+wire contract를 이용해 xterm signup→world command→reconnect→relogin 흐름과 secret,
+malformed/mixed gateway, focus/IME/mobile 입력 invariant를 deterministic하게 검사한다.
+
+검증 경계:
+
+```text
+(cd server && go test -race ./internal/storage -count=1) PASS
+(cd server && go test -race ./cmd/muhan -run '^Test(ValidateBankSnapshot|InspectBankSnapshot|PlayerSnapshot)' -count=1) PASS
+(cd server && go vet ./internal/storage ./cmd/muhan ./internal/world) PASS
+bash scripts/run-go-bank-snapshot-import-local.sh --allow-disposable PASS
+(cd web && npm test) PASS (57 tests); (cd web && npm run typecheck) PASS
+```
+
+실제 legacy bank 파일 parser/계정 대조, 라이브 bank transaction parity, CLI wiring,
+브라우저·IME/mobile·WSS/Ingress·운영 Supabase import/복구는 G4/G5 후속이며 이번 기능
+레인에서 ARM64·release matrix를 반복 실행하지 않는다.
+
 - **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서
   한 번만 묶어 실행한다. 현재 bounded receipt batch는
   `TestPostgresBoundedLanesPersistAndReplay`이며, `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`

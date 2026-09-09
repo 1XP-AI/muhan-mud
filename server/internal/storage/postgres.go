@@ -67,6 +67,19 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   PRIMARY KEY(world_id,world_player_id),
   UNIQUE(world_id,source_sha256)
  );
+ CREATE TABLE IF NOT EXISTS mud_go.bank_imports (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  world_player_id text NOT NULL,
+  command_id text NOT NULL,
+  source_sha256 bytea NOT NULL CHECK(octet_length(source_sha256)=32),
+  canonical_sha256 bytea NOT NULL CHECK(octet_length(canonical_sha256)=32),
+  source_octets bigint NOT NULL CHECK(source_octets>0),
+  item_count integer NOT NULL CHECK(item_count BETWEEN 0 AND 8191),
+  balance bigint NOT NULL CHECK(balance BETWEEN 0 AND 300000000),
+  imported_revision bigint NOT NULL CHECK(imported_revision>0),
+  PRIMARY KEY(world_id,world_player_id),
+  UNIQUE(world_id,source_sha256)
+ );
  CREATE TABLE IF NOT EXISTS mud_go.player_snapshot_import_ledger (
   world_id text NOT NULL REFERENCES mud_go.worlds(id),
   source_path text NOT NULL CHECK(length(source_path) BETWEEN 1 AND 1024),

@@ -24,8 +24,24 @@ func bankSnapshotFixture() BankSnapshotV1 {
 		root.Keys[1][i] = 0
 		root.Keys[2][i] = 0
 	}
-	return BankSnapshotV1{Root: PlayerSnapshotObjectGraphV1{Nodes: []PlayerSnapshotObjectNodeV1{{Object: root, ChildIndex: 0}}}}
+	root.Value = 99
+	var item PlayerSnapshotObjectV1
+	item.Name[0] = 's'
+	item.Name[1] = 'w'
+	item.Name[2] = 'o'
+	item.Name[3] = 'r'
+	item.Name[4] = 'd'
+	item.Description[0] = 0
+	item.UseOutput[0] = 0
+	item.Keys[0][0] = 's'
+	item.Keys[0][1] = 0
+	return BankSnapshotV1{Root: PlayerSnapshotObjectGraphV1{Nodes: []PlayerSnapshotObjectNodeV1{
+		{Object: root, ChildIndex: 0},
+		{Object: item, ParentIndex: uint32Ptr(0), ChildIndex: 0},
+	}}}
 }
+
+func uint32Ptr(value uint32) *uint32 { return &value }
 
 func TestBankSnapshotV1RoundTripAndDigest(t *testing.T) {
 	wire, err := EncodeBankSnapshotV1(bankSnapshotFixture())
@@ -52,6 +68,58 @@ func TestBankSnapshotV1RoundTripAndDigest(t *testing.T) {
 	inspection.Source[0] ^= 0xff
 	if bytes.Equal(inspection.Source, wire) {
 		t.Fatal("inspection source aliases input")
+	}
+}
+
+func TestBankSnapshotV1ConvertsRootBalanceAndChildItems(t *testing.T) {
+	snapshot := bankSnapshotFixture()
+	nextID := 0
+	account, err := snapshot.ToBankAccount(func() (string, error) {
+		nextID++
+		return "bank-item-" + string(rune('0'+nextID)), nil
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if account.Balance != 99 || account.Items == nil || len(account.Items.Inventory) != 1 || len(account.Items.Items) != 1 {
+		t.Fatalf("account=%+v", account)
+	}
+	if err := account.Items.Validate(); err != nil {
+		t.Fatalf("items invalid: %v", err)
+	}
+	rootID := account.Items.Inventory[0]
+	if account.Items.Items[rootID].Object.Name != "sword" {
+		t.Fatalf("item=%+v", account.Items.Items[rootID])
+	}
+}
+
+func TestBankSnapshotV1ConversionRejectsBalanceAndItemOverflow(t *testing.T) {
+	overBalance := bankSnapshotFixture()
+	overBalance.Root.Nodes[0].Object.Value = MaxBankBalance + 1
+	if _, err := overBalance.ToBankAccount(func() (string, error) { return "unused", nil }); !errors.Is(err, ErrBankSnapshotGraphInvalid) {
+		t.Fatalf("balance overflow accepted: %v", err)
+	}
+	overItem := bankSnapshotFixture()
+	overItem.Root.Nodes[1].Object.Value = int64(^uint32(0)) + 1
+	if _, err := overItem.ToBankAccount(func() (string, error) { return "unused", nil }); !errors.Is(err, ErrBankSnapshotGraphInvalid) {
+		t.Fatalf("item overflow accepted: %v", err)
+	}
+	invalidGraph := bankSnapshotFixture()
+	invalidGraph.Root.Nodes[1].ParentIndex = uint32Ptr(1)
+	if _, err := invalidGraph.ToBankAccount(func() (string, error) { return "unused", nil }); !errors.Is(err, ErrBankSnapshotGraphInvalid) {
+		t.Fatalf("invalid parent graph accepted: %v", err)
+	}
+}
+
+func TestBankSnapshotV1EmptyBankDoesNotNeedItemAllocator(t *testing.T) {
+	empty := bankSnapshotFixture()
+	empty.Root.Nodes = empty.Root.Nodes[:1]
+	account, err := empty.ToBankAccount(nil)
+	if err != nil {
+		t.Fatalf("empty bank conversion: %v", err)
+	}
+	if account.Items == nil || account.Items.Items == nil || len(account.Items.Items) != 0 {
+		t.Fatalf("empty items marker lost: %+v", account.Items)
 	}
 }
 
