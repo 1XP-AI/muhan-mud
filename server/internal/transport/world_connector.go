@@ -23,6 +23,10 @@ type WorldConnectorConfig struct {
 	Clock     func() (int32, int)
 	WallClock func() time.Time
 	Catalog   world.SpawnCatalog
+	// FamilyCatalog is the immutable server-owned family directory used by
+	// read-only 패거리 status commands. A missing catalog intentionally makes
+	// those commands fail closed rather than guessing names from numeric IDs.
+	FamilyCatalog world.FamilyCatalog
 	// PasswordStore is the account-only credential boundary for the
 	// connection-local `암호` flow. It is intentionally optional so tests and
 	// non-account world adapters can keep the command fail-closed without
@@ -87,6 +91,13 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.TalkCatalog != nil {
 		catalog := *config.TalkCatalog
 		config.TalkCatalog = &catalog
+	}
+	if config.FamilyCatalog.Families != nil {
+		families := make(map[int16]world.FamilyDefinition, len(config.FamilyCatalog.Families))
+		for id, family := range config.FamilyCatalog.Families {
+			families[id] = family
+		}
+		config.FamilyCatalog.Families = families
 	}
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
@@ -618,6 +629,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	kickCommand := false
 	useCommand := false
 	changeClassCommand := false
+	readScrollCommand := false
+	propertyInviteCommand := false
+	familyCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -703,6 +717,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandChangeClass:
 		changeClassCommand = true
 		receipt, err = c.game.owners.ExecuteChangeClassLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ChangeClassOptions{})
+	case session.CommandReadScroll:
+		readScrollCommand = true
+		receipt, err = c.game.owners.ExecuteReadScrollLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadScrollOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandPropertyInvite:
+		propertyInviteCommand = true
+		receipt, err = c.game.owners.ExecutePropertyInviteLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandFamilyWho, session.CommandFamilyMember, session.CommandFamilyList:
+		familyCommand = true
+		receipt, err = c.game.owners.ExecuteFamilyLineWithCatalog(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -920,6 +943,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedKickLine) ||
 		errors.Is(err, session.ErrUnsupportedUseLine) ||
 		errors.Is(err, session.ErrUnsupportedChangeClassLine) ||
+		errors.Is(err, session.ErrUnsupportedReadScrollLine) ||
+		errors.Is(err, session.ErrUnsupportedPropertyInviteLine) ||
+		errors.Is(err, session.ErrUnsupportedFamilyLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -1043,7 +1069,39 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrChangeClassFamilyPending) ||
 		errors.Is(err, world.ErrChangeClassStaleProposal) ||
 		errors.Is(err, world.ErrChangeClassNumeric) ||
-		errors.Is(err, world.ErrChangeClassConfirmation) {
+		errors.Is(err, world.ErrChangeClassConfirmation) ||
+		errors.Is(err, world.ErrReadScrollBlind) ||
+		errors.Is(err, world.ErrReadScrollMissingItem) ||
+		errors.Is(err, world.ErrReadScrollNotScroll) ||
+		errors.Is(err, world.ErrReadScrollEmpty) ||
+		errors.Is(err, world.ErrReadScrollLevel) ||
+		errors.Is(err, world.ErrReadScrollAlignment) ||
+		errors.Is(err, world.ErrReadScrollClass) ||
+		errors.Is(err, world.ErrReadScrollNoMagicRoom) ||
+		errors.Is(err, world.ErrReadScrollCooldown) ||
+		errors.Is(err, world.ErrReadScrollUnsupported) ||
+		errors.Is(err, world.ErrReadScrollSpellUnavailable) ||
+		errors.Is(err, world.ErrReadScrollRandom) ||
+		errors.Is(err, world.ErrPropertyInvitationsUnmigrated) ||
+		errors.Is(err, world.ErrPropertyInviteActorAbsent) ||
+		errors.Is(err, world.ErrPropertyInviteNotHome) ||
+		errors.Is(err, world.ErrPropertyInviteNoProperty) ||
+		errors.Is(err, world.ErrPropertyInviteNameRequired) ||
+		errors.Is(err, world.ErrPropertyInviteNameInvalid) ||
+		errors.Is(err, world.ErrPropertyInviteNameTooLong) ||
+		errors.Is(err, world.ErrPropertyInviteTargetMissing) ||
+		errors.Is(err, world.ErrPropertyInviteTargetAmbiguous) ||
+		errors.Is(err, world.ErrPropertyInviteTargetInvisible) ||
+		errors.Is(err, world.ErrPropertyInviteSelf) ||
+		errors.Is(err, world.ErrPropertyInviteLimit) ||
+		errors.Is(err, world.ErrPropertyInviteInvalidProposal) ||
+		errors.Is(err, world.ErrPropertyInviteStaleProposal) ||
+		errors.Is(err, world.ErrFamilyCatalogUnavailable) ||
+		errors.Is(err, world.ErrFamilyCatalogInvalid) ||
+		errors.Is(err, world.ErrFamilyActorAbsent) ||
+		errors.Is(err, world.ErrFamilyTargetRequired) ||
+		errors.Is(err, world.ErrFamilyTargetUnavailable) ||
+		errors.Is(err, world.ErrFamilyIdentityUnresolved) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1270,6 +1328,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishUse(after, *result.Event)
+			}
+		}
+	}
+	if readScrollCommand && !receipt.Replayed {
+		var result world.ScrollResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
 			}
 		}
 	}
@@ -1507,6 +1573,20 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		var result world.ChangeClassResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
+		}
+	} else if readScrollCommand {
+		var result world.ScrollResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if propertyInviteCommand {
+		var result world.PropertyInviteResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if familyCommand {
+		if err = json.Unmarshal(receipt.Response, &output); err != nil {
+			// Keep the original receipt error for a malformed response.
 		}
 	} else if giveCommand {
 		var result world.GiveResult

@@ -1,5 +1,24 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 정리 후속: 스크롤·초대·패거리 상태
+
+이전 Orca 정리 요청으로 clean worktree 108개를 제거하고 dirty worktree 30개는
+보존했다. 현재 구현은 주 worktree에서만 조립하며, 사용자 소유 `src/frp.new`는
+건드리지 않는다. 두 기능 레인은 Luna max로 병렬 처리하고 parser·transport는 메인에서
+한 번만 통합했다.
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `magic1.c:readscroll` / `읽어 <두루마리>` | `PlanReadScroll`/`ApplyReadScroll`, canonical root/ready 선택, spell-fail·self-effect RNG replay, 소비·PHIDDN·LT_READS·alignment room 이동, parser/session/transport room event | world/session/transport targeted race 및 `fast`/`integration` PASS; offensive/targeted/map spell, full spell catalog와 legacy item migration은 fail-closed/미완료 |
+| `command12.c:invite` / `초대 [이름]` | `PlanPropertyInvite`/`ApplyPropertyInvite`/`ListPropertyInvitations`, RONMAR·DL_MARRI, exact canonical online identity, ordered 10-slot toggle/list, stale atomic apply | world·transport targeted race 및 `fast`/`integration` PASS; family/marriage DB 이관과 전체 social mutation은 미완료 |
+| `command11.c:family_who/family_member/list_family` / `패거리누구`·`패거리원`·`모든패거리` | `FamilyCatalog`, deterministic online roster/status projection, PFAMIL/PRDFML/PFMBOS·visibility/blindness gate, parser/session/receipt 연결 | world·session·transport targeted race 및 `fast`/`integration` PASS; family catalog 이관, 가입/탈퇴/승인/공지/전쟁·보상 mutation은 미완료 |
+
+전체 world package 직접 실행은 기존 strict room corpus의 알려진 63개 예외로 실패했다.
+이번 batch는 ARM64 main, 실제 PostgreSQL/browser·IME/mobile, release matrix, WSS/Ingress
+및 testnet을 반복하지 않았으며, 해당 검사는 각각 `main`/`release` 승격 경계에서 한 번만
+수행한다. 전체 C prefix/key/ANSI parity와 full item/spell/social migration은 여전히
+승격 조건이다.
+
 작성일: 2026-09-08 (KST) · 상태: **전체 인수 전의 보수적 G0 원장**
 
 이 문서는 `docs/porting-research/go-server-execution-plan.md`의 G0 인벤토리다.

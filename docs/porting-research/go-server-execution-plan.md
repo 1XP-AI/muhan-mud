@@ -1,5 +1,22 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 정리 후속 실행 기록
+
+완료된 Orca 작업의 clean worktree 108개는 제거하고, uncommitted 변경이 있는 30개는
+보존했다. 현재 Go 기능 통합은 주 worktree에서만 진행하며, 직접 관리한 Luna max
+레인은 종료 상태로 정리했다. 이번 배치는 `읽어 <두루마리>`, `초대`,
+`패거리누구`·`패거리원`·`모든패거리`의 world plan/apply receipt와
+parser→session→WebSocket transport 경계를 추가했다. 스크롤은 RNG·소비·숨김 해제·
+읽기 로그·방 이벤트를 원자 적용하고, 초대와 패거리 조회는 canonical identity·
+visibility·ordered projection을 보수적으로 적용한다.
+
+검증은 영향 패키지 race, 로컬 `fast`, 조립 `integration`, 대상 `go vet` 및 diff
+검사까지 통과했다. 직접 world 전체 실행은 기존 strict room corpus의 알려진 63개
+예외로 계속 실패하므로 승격 조건으로 기록한다. ARM64 main build, 실제 PostgreSQL,
+브라우저/IME·모바일, release matrix, WSS/Ingress 및 testnet 배포는 기능 레인마다
+반복하지 않고 해당 승격 경계에서 한 번만 실행한다. `src/frp.new` 사용자 변경은
+이번 기록에서도 수정·stage하지 않는다.
+
 결정일: 2026-09-08 · 상태: 새 목표 활성화, Go G1/G2 수직 명령·저장 경계를 확장하는 중
 
 이 문서가 기존 C→Supabase 확장/Rust 포팅 실행 계획을 대체한다. 기존 코드를 삭제하거나 현재 배포의 저장 권위를 변경하는 결정은 아니다.

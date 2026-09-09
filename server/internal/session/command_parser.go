@@ -95,6 +95,13 @@ const (
 	CommandKick
 	CommandUse
 	CommandChangeClass
+	// The legacy CommandRead value is retained for `시간`; readscroll has a
+	// distinct kind so `읽어 게시판 <n>` can remain on the board route.
+	CommandReadScroll
+	CommandPropertyInvite
+	CommandFamilyWho
+	CommandFamilyMember
+	CommandFamilyList
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -189,6 +196,28 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	if IsBoardLine(trimmed) {
 		parsed.Kind = CommandBoard
 		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsReadScrollLine(trimmed) {
+		parsed.Kind = CommandReadScroll
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsPropertyInviteLine(trimmed) {
+		parsed.Kind = CommandPropertyInvite
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if family, ok := ParseFamilyLine(trimmed); ok {
+		parsed.Tokens = legacyTokens(trimmed)
+		switch family.Action {
+		case FamilyWhoAction:
+			parsed.Kind = CommandFamilyWho
+		case FamilyMemberAction:
+			parsed.Kind = CommandFamilyMember
+		case FamilyListAction:
+			parsed.Kind = CommandFamilyList
+		}
 		return parsed, nil
 	}
 	if IsMailSendLine(trimmed) {

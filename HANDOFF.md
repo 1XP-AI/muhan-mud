@@ -1,5 +1,56 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-10 (정리·스크롤·초대·패거리 상태)
+
+이전 Orca 정리 요청에 따라 무변경(clean) worktree 108개를 일반 worktree 제거로
+정리하고, 변경이 남은 30개는 보존했다. 현재 Orca MUD 저장소에는 주 작업 worktree만
+남아 있으며, 제거된 Luna 레인의 브랜치 참조는 보존을 위해 다시 생성했다. 현재 직접
+관리 중인 하위 레인은 종료되었고, `src/frp.new` 사용자 변경은 계속 수정·stage하지
+않는다.
+
+이번 Go 기능 batch는 파일 소유권이 겹치지 않는 두 Luna max 레인을 병렬 처리한 뒤
+메인 세션에서 parser·WorldConnector를 조립했다.
+
+- `읽어 <두루마리>`: `magic1.c:readscroll`의 canonical inventory root→ready 슬롯
+  선택, blindness/type/charge/level/alignment/class/no-magic/cooldown 게이트와
+  `drinkSpells` 기반 self-target 효과를 `PlanReadScroll`/`ApplyReadScroll` receipt로
+  연결했다. spell-fail/effect RNG를 proposal에 고정하고, 성공·실패 소비, PHIDDN 해제,
+  LT_READS 기록, alignment 거부 시 방 이동을 원자 적용한다. targeted/offensive/map/
+  미확인 효과와 legacy inventory는 영수증 전에 fail-closed한다. `읽어 게시판 <번호>`는
+  기존 게시판 parser로 유지한다.
+- `초대`: `command12.c:invite`의 RONMAR·DL_MARRI 권한, exact canonical online
+  identity, self/ambiguous/missing/invisible 차단, 10명 ordered toggle/list와 nil
+  invitation migration 경계를 `PlanPropertyInvite`/`ApplyPropertyInvite`로 연결했다.
+  저장된 초대는 ID 순서를 보존하고 이름은 canonical player에서만 렌더링하며, 마지막
+  제거는 key를 삭제한다.
+- `패거리누구`/`패거리원`/`모든패거리`: `PFAMIL`/`PRDFML`/`PFMBOS`, DL_EXPND family
+  ID, visibility·blindness와 server-owned `FamilyCatalog`를 사용한 deterministic
+  read-only projection을 추가했다. catalog가 없거나 canonical identity가 해소되지
+  않으면 추측하지 않고 닫는다. roster는 room order 후 sorted residual online ID이며,
+  pending 신청은 `(-)`로 표시한다.
+- 세 명령군 모두 central parser→session `ExecuteGame`→PostgreSQL receipt/replay→
+  WebSocket 응답 경계를 통과하고, 스크롤 성공의 room event는 최초 commit에서만
+  fan-out한다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world -run 'FamilyStatus|PropertyInvite|ReadScroll' -count=1) PASS
+(cd server && go test -race ./internal/session -run 'ParseCommandClassifies|ReadScroll|PropertyInvite|Family' -count=1) PASS
+(cd server && go test -race ./internal/transport -run 'ReadScroll|PropertyInvite|FamilyStatus' -count=1) PASS
+scripts/run-go-validation.sh fast PASS
+scripts/run-go-validation.sh integration PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+전체 world package를 직접 실행한 명령은 원본 strict room corpus의 알려진 63개 예외로
+실패했으며, 이는 이번 기능 회귀가 아니라 기존 `TestRoomBodyCorpus` 승격 조건이다.
+ARM64 main build, 실제 PostgreSQL/browser·IME/mobile, release matrix, WSS/Ingress와
+testnet 배포는 cadence 정책에 따라 이번 기능 레인에서 반복하지 않았다. 전체 C
+prefix/key/ANSI parity, strict corpus 63건, family mutation/chat/war와 scroll의
+offensive spell·full item migration은 여전히 전체 인수 조건이다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (터미널 암호·Go 게이트웨이 좌표·검증 비용 감사)
 
 이번 배치는 파일 소유권이 겹치지 않는 두 Luna max 레인을 병렬 처리한 뒤 메인 세션에서
