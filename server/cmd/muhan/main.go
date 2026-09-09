@@ -38,6 +38,7 @@ func main() {
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
+	npcCombatTickInterval := flag.Duration("npc-combat-tick", time.Second, "NPC combat scheduler cadence; C update_active cadence; whole seconds")
 	flag.Parse()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -117,6 +118,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	var connector *transport.WorldConnector
+	var npcCombatScheduler *transport.NPCCombatScheduler
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	workerDone := make(chan struct{})
@@ -135,6 +137,9 @@ func main() {
 		}
 		if *npcResourceTickInterval <= 0 || *npcResourceTickInterval%time.Second != 0 {
 			log.Fatal("npc-resource-tick must be a positive whole number of seconds")
+		}
+		if *npcCombatTickInterval <= 0 || *npcCombatTickInterval%time.Second != 0 {
+			log.Fatal("npc-combat-tick must be a positive whole number of seconds")
 		}
 		info, err := os.Stat(*templates)
 		if err != nil || !info.IsDir() {
@@ -161,10 +166,18 @@ func main() {
 		if err != nil {
 			log.Fatal("world connector configuration failed")
 		}
+		npcCombatScheduler, err = transport.NewNPCCombatScheduler(connector, *npcCombatTickInterval)
+		if err != nil {
+			log.Fatal("NPC combat scheduler configuration failed")
+		}
+		if err := npcCombatScheduler.Start(workerCtx); err != nil {
+			log.Fatal("NPC combat scheduler start failed")
+		}
+		log.Printf("NPC combat scheduler started (cadence=%s)", npcCombatScheduler.Interval())
 		go func() {
 			defer close(workerDone)
 			var workers sync.WaitGroup
-			workers.Add(4)
+			workers.Add(5)
 			go func() {
 				defer workers.Done()
 				if err := connector.RunCleanup(workerCtx); err != nil && workerCtx.Err() == nil {
@@ -187,6 +200,12 @@ func main() {
 				defer workers.Done()
 				if err := connector.RunNPCResourceScheduler(workerCtx, *npcResourceTickInterval); err != nil {
 					log.Printf("NPC resource scheduler stopped: %v", err)
+				}
+			}()
+			go func() {
+				defer workers.Done()
+				if err := npcCombatScheduler.Wait(context.Background()); err != nil {
+					log.Printf("NPC combat scheduler stopped: %v", err)
 				}
 			}()
 			workers.Wait()
@@ -215,6 +234,11 @@ func main() {
 		// Stop all new durable background writes before fencing and draining
 		// connected sessions. Shutdown itself performs the final cleanup retry.
 		workerCancel()
+		if npcCombatScheduler != nil {
+			if err := npcCombatScheduler.Shutdown(shutdownCtx); err != nil {
+				log.Printf("NPC combat scheduler shutdown incomplete: %v", err)
+			}
+		}
 		<-workerDone
 		if connector != nil {
 			if err := connector.Shutdown(shutdownCtx); err != nil {

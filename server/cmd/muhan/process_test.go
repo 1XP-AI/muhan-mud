@@ -67,7 +67,7 @@ func testProcessRestart(t *testing.T, crash bool) {
 	var characterID string
 	for round := 0; round < 2; round++ {
 		func() {
-			cmd := exec.CommandContext(ctx, binary, "-world", worldID, "-templates", templates, "-game-hour", "12")
+			cmd := exec.CommandContext(ctx, binary, "-world", worldID, "-templates", templates, "-game-hour", "12", "-npc-combat-tick", "1s")
 			for _, value := range os.Environ() {
 				if !strings.HasPrefix(value, "DATABASE_URL=") && !strings.HasPrefix(value, "ALLOWED_ORIGINS=") && !strings.HasPrefix(value, "LISTEN_ADDR=") {
 					cmd.Env = append(cmd.Env, value)
@@ -91,6 +91,7 @@ func testProcessRestart(t *testing.T, crash bool) {
 				}
 			}()
 			address := make(chan string, 1)
+			schedulerStarted := make(chan struct{})
 			scanned := make(chan struct{})
 			go func() {
 				defer close(scanned)
@@ -104,6 +105,13 @@ func testProcessRestart(t *testing.T, crash bool) {
 						default:
 						}
 					}
+					if strings.Contains(line, "NPC combat scheduler started") {
+						select {
+						case <-schedulerStarted:
+						default:
+							close(schedulerStarted)
+						}
+					}
 				}
 			}()
 			var addr string
@@ -114,6 +122,11 @@ func testProcessRestart(t *testing.T, crash bool) {
 				t.Fatalf("server failed before listening: %v", err)
 			case <-ctx.Done():
 				t.Fatal("startup timeout")
+			}
+			select {
+			case <-schedulerStarted:
+			case <-ctx.Done():
+				t.Fatal("NPC combat scheduler did not start")
 			}
 			conn, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://mud.test"}}})
 			if err != nil {
