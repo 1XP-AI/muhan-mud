@@ -2194,14 +2194,17 @@ fail-closed한다. 실제 PG17 receipt replay/conflict를 통과했다.
 `451bec4`는 기존 `RunNPCCombatTick`을 바꾸지 않고 `NPCCombatScheduler` lifecycle을
 추가했다. `RunOnce`/`Start`/`Run`/`Wait`/`Stop`/`Shutdown`을 제공하며 고정 slot·now·
 command ID, pending retry, receipt replay, 중복 worker와 cancellation을 보장한다.
-프로세스 main wiring과 전체 update cadence는 아직 별도 gate다.
+`07f63cb`에서 `-npc-combat-tick`과 기존 worker WaitGroup/shutdown에 실제 연결했지만,
+전체 update cadence와 room broadcast는 아직 별도 gate다.
 
 `9d8d95c`/`f73b5b1`은 checksum·format version·world revision을 포함한 deterministic
 backup envelope와 fail-closed restore를 추가했다. 기본 복구는 expected revision 및
 receipt 없는 대상만 허용하고, `Force`는 기존 receipt를 제거하고 writer epoch을 올려
-구 writer를 fencing한다. 실제 PG17 복구 테스트를 통과했다.
+구 writer를 fencing한다. `b9b1abf`는 0600·64 MiB·atomic file export/restore CLI를
+추가했고, `c2a0fa5`는 JSONB compacting에 따른 checksum mismatch를 canonical JSON으로
+고쳤다. 실제 PG17 API/CLI 복구 테스트를 통과했다.
 
 통합 검증은 race/vet/ARM64 build, web 44/44, PG17 combat/shop/backup receipt를
-통과했다. 전체 command/economy parity, NPC main wiring/broadcast, strict room corpus
+통과했다. 전체 command/economy parity, NPC full cadence/broadcast, strict room corpus
 63개, IME/mobile 실기기, 백업 파일 운영 보관·복원 연습, WSS/Ingress/testnet 배포는
 여전히 미완료다.

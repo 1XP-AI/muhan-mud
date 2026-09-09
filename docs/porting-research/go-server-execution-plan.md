@@ -457,13 +457,16 @@ IME/mobile 실기기, backup/restore, WSS/Ingress 및 testnet 배포는 별도 �
 정확한 root occurrence, source flag·visibility·quality·weight·gold 검증 및 원자 소유권
 전환을 통과시키고 prefix/key·이중지급 RNG·merchant/repair는 fixture가 없어
 fail-closed한다. `451bec4`는 `RunNPCCombatTick` 위에 scheduler lifecycle을 추가해
-cadence·pending retry·replay·shutdown을 검증하지만 main process wiring과 전체
-`update.c` cadence는 남아 있다.
+cadence·pending retry·replay·shutdown을 검증하고, `07f63cb`에서 `-npc-combat-tick`과
+main worker WaitGroup/shutdown에 연결했다. 전체 `update.c` cadence와 room broadcast는
+남아 있다.
 
 `9d8d95c`/`f73b5b1`은 state SHA-256과 format/version/revision을 갖는 `WorldBackup`
 envelope와 PostgreSQL restore 경계를 추가했다. 기본 복구는 expected revision 및
 receipt 없는 target만 허용하며 Force는 receipt 삭제와 writer fencing을 수행한다.
 실제 ARM64 PostgreSQL 17에서 marketplace·combat·backup receipt 통합 테스트와 전체
 Go race/vet/ARM64 build, web 44/44를 확인했다. 백업 파일 운영 보관·암호화·복원 연습,
+`b9b1abf`의 explicit CLI export/restore와 `c2a0fa5`의 canonical JSON checksum 수정도
+실제 PostgreSQL 17에서 확인했다. 백업 파일 운영 보관·암호화·복원 연습,
 전체 명령/경제/NPC broadcast, strict corpus 63개, 실기기 IME/mobile, WSS/Ingress와
 testnet 배포는 계속 미완료다.

@@ -603,11 +603,13 @@ visibility, 품질·내용물·event flag, weight/gold overflow, `value/2` payou
 
 `NPCCombatScheduler`는 기존 durable combat reducer의 외부 lifecycle 경계다.
 `RunOnce`/`Start`/`Run`/`Wait`/`Stop`/`Shutdown`이 고정 cadence와 pending retry/replay,
-중복 worker 방지·cancellation을 검증한다. main process wiring, 전체 update cadence,
-room broadcast는 아직 남아 있다.
+중복 worker 방지·cancellation을 검증한다. `07f63cb`에서 `-npc-combat-tick`과 main
+worker WaitGroup/shutdown에 연결했지만 전체 update cadence와 room broadcast는 남아 있다.
 
 `WorldBackup` envelope는 format/version/world ID/revision/state SHA-256을 포함하고,
 unknown field·trailing JSON·checksum·`world.DecodeState` 실패를 거부한다. restore는
 expected revision과 receipt 없는 대상만 기본 허용하며 `Force` 시 receipt를 삭제하고
-writer epoch을 증가시켜 이전 writer를 fencing한다. 실제 ARM64 PG17 복구 테스트를
-통과했지만 백업 파일 보관·암호화·운영 복원 연습은 G4 인수 조건으로 남긴다.
+writer epoch을 증가시켜 이전 writer를 fencing한다. `b9b1abf`는 0600·64 MiB·atomic
+file export/restore CLI를 추가했고 `c2a0fa5`는 JSONB compacting checksum mismatch를
+canonical JSON으로 수정했다. 실제 ARM64 PG17 API/CLI 복구 테스트를 통과했지만 백업
+파일 보관·암호화·운영 복원 연습은 G4 인수 조건으로 남긴다.
