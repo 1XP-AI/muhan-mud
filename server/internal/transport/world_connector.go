@@ -568,6 +568,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	repairCommand := false
 	directMessageCommand := false
 	stealCommand := false
+	teachCommand := false
+	backstabCommand := false
+	drinkCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -605,6 +608,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandSteal:
 		stealCommand = true
 		receipt, err = c.game.owners.ExecuteStealLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.StealOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandTeach:
+		teachCommand = true
+		receipt, err = c.game.owners.ExecuteTeachLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandBackstab:
+		backstabCommand = true
+		receipt, err = c.game.owners.ExecuteBackstabLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.BackstabOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandDrink:
+		drinkCommand = true
+		receipt, err = c.game.owners.ExecuteDrinkLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.DrinkOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -800,6 +812,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedRepairLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectMessageLine) ||
 		errors.Is(err, session.ErrUnsupportedStealLine) ||
+		errors.Is(err, session.ErrUnsupportedTeachLine) ||
+		errors.Is(err, session.ErrUnsupportedBackstabLine) ||
+		errors.Is(err, session.ErrUnsupportedDrinkLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -981,6 +996,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if teachCommand && !receipt.Replayed {
+		var result world.TeachResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishTeach(after, *result.Event)
+			}
+		}
+	}
+	if backstabCommand && !receipt.Replayed {
+		var result world.BackstabResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishBackstab(after, *result.Event)
+			}
+		}
+	}
+	if drinkCommand && !receipt.Replayed {
+		var result world.DrinkResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishDrink(after, *result.Event)
+			}
+		}
+	}
 	if npcTalkCommand && !receipt.Replayed {
 		var result world.NPCTalkResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
@@ -1145,6 +1184,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if stealCommand {
 		var result world.StealResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if teachCommand {
+		var result world.TeachResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if backstabCommand {
+		var result world.BackstabResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if drinkCommand {
+		var result world.DrinkResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

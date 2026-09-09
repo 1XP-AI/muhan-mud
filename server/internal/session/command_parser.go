@@ -78,6 +78,9 @@ const (
 	CommandBoardWrite
 	CommandIgnore
 	CommandSteal
+	CommandTeach
+	CommandBackstab
+	CommandDrink
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -180,6 +183,21 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsStealLine(trimmed) {
 		parsed.Kind = CommandSteal
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsTeachLine(trimmed) {
+		parsed.Kind = CommandTeach
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsBackstabLine(trimmed) {
+		parsed.Kind = CommandBackstab
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsDrinkLine(trimmed) {
+		parsed.Kind = CommandDrink
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -387,6 +405,12 @@ func commandKind(first string) CommandKind {
 		return CommandIgnore
 	case "훔쳐":
 		return CommandSteal
+	case "가르쳐":
+		return CommandTeach
+	case "기습":
+		return CommandBackstab
+	case "먹어", "마셔":
+		return CommandDrink
 	case "정보":
 		return CommandInfo
 	case "도움말", "?":
