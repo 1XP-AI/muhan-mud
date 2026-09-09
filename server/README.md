@@ -2251,3 +2251,20 @@ online player를 선택해 receipt의 deterministic recipient event를 대상 �
 live connector 회귀와 ARM64 PostgreSQL 17 세 명령 receipt/replay 통합 테스트를 통과했다.
 전체 C prefix/key/ANSI parity, merchant full behavior, strict corpus 63건, 실기기
 IME/mobile, WSS/Ingress 및 testnet 배포는 아직 인수하지 않았다.
+
+## NPC 대화·그룹말·상인 구입
+
+현재 Go connector는 원작 터미널 흐름을 유지한 세 bounded command를 추가로 받는다.
+
+- `대화 <NPC> [topic]`: same-room exact NPC 선택, MTALKS topic 계약 부재 시 fail-closed,
+  receipt 기반 actor/observer projection
+- `그룹말 <메시지>` 또는 `<메시지> 그룹말`(`무리말`, `=` 별칭 포함): mixed follower
+  순서와 canonical flag 경계, exact recipient event
+- `<NPC> <item> 구입`: `MerchantOffers` server-owned catalog, nested reward copy,
+  gold/weight/capacity 검증
+
+모든 command는 `ExecuteGame` receipt/replay 경계를 사용하며, replay에서는 reducer·ID
+allocator·fan-out을 다시 실행하지 않는다. merchant catalog가 없거나 legacy `Carry`가
+명시적으로 이관되지 않은 경우 실행을 거부한다. 이 기능들은 전체 C 명령/경제 parity,
+strict room corpus 63건, NPC full tick/broadcast, 실제 IME/mobile 및 testnet 배포의
+완료를 의미하지 않는다.

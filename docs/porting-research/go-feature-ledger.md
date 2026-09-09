@@ -648,3 +648,27 @@ prefix/key `find_obj`, merchant NPC, repair/value, 전체 C 경제/ANSI parity�
 world/session/transport race·vet, live connector, Linux ARM64 build 및 실제 ARM64
 PostgreSQL 17 receipt 저장·replay 검증을 통과했다. 세 행은 전체 C prefix/key/ANSI
 동등성이나 merchant/전체 경제 인수를 뜻하지 않으며, ledger 전체 상태는 `partial`이다.
+
+## 2026-09-09 NPC 대화·그룹말·상인 구입 bounded slices
+
+다음 세 서비스 lane을 파일 소유권을 분리해 Luna max 에이전트로 병렬 구현한 뒤
+중앙 parser와 live connector에 직렬 통합했다.
+
+- `대화`: same-room canonical NPC exact name/positive occurrence를 선택한다. `MTALKS`
+  topic loader 계약이 없는 경우 topic 응답은 fail-closed하고, no-topic 응답은 receipt에
+  고정한다. 성공 시 `PHIDDN` 해제와 `MTLKAG` enemy 관계를 atomic apply하며, actor 응답과
+  room observer event를 replay에서 다시 방송하지 않는다.
+- `그룹말`/`무리말`/`=`: C suffix와 terminal prefix 양쪽을 지원하고, authoritative
+  mixed `FollowerRefs` 순서로 follower→leader event를 만든다. `PIGNOR`/`PDMINV`/
+  `PSILNC`/caretaker 경계는 canonical flag만 사용하며 모델에 없는 eavesdrop/ignore
+  영속 필드는 추가하지 않는다.
+- `상인 구입`: `<NPC> <item> 구입` suffix와 양수 occurrence를 받는다. MPURIT NPC의
+  `MerchantOffers`를 server-owned migration catalog로 분리하고 unresolved `Carry`는
+  fail-closed한다. 가격·gold·weight·capacity를 모두 통과한 뒤 nested reward graph를
+  deterministic ID로 복제하며, connector는 catalog를 주입받는다.
+
+world/session/transport race·vet와 live connector dispatch/replay 회귀가 통과했다. 실제
+ARM64 PostgreSQL 17 receipt 저장·replay와 Linux ARM64 cross-build도 이 lane 통합 후
+통과했다. 전체 C command/economy parity, strict room corpus 63건,
+NPC full cadence/broadcast, IME/mobile 실기기, WSS/Ingress 및 testnet 배포 인수는 여전히
+미완료다.

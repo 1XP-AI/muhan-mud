@@ -51,6 +51,9 @@ const (
 	CommandValue
 	CommandRepair
 	CommandDirectMessage
+	CommandMerchantPurchase
+	CommandNPCTalk
+	CommandGroupTalk
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -97,6 +100,14 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if _, ok := ParseTradeLine(trimmed); ok {
 		parsed.Kind = CommandTrade
+		return parsed, nil
+	}
+	if _, ok := ParseMerchantPurchaseLine(trimmed); ok {
+		parsed.Kind = CommandMerchantPurchase
+		return parsed, nil
+	}
+	if _, ok := ParseGroupTalkLine(trimmed); ok {
+		parsed.Kind = CommandGroupTalk
 		return parsed, nil
 	}
 	parsed.Kind = commandKind(tokens[0])
@@ -196,6 +207,10 @@ func commandKind(first string) CommandKind {
 		return CommandRepair
 	case "얘기", "이야기":
 		return CommandDirectMessage
+	case "대화":
+		return CommandNPCTalk
+	case "그룹말", "무리말", "=":
+		return CommandGroupTalk
 	case "끝":
 		return CommandQuit
 	case "시간":

@@ -16,15 +16,19 @@ import (
 )
 
 type WorldConnectorConfig struct {
-	Store       engine.CommandStore
-	WorldID     string
-	Clock       func() (int32, int)
-	WallClock   func() time.Time
-	Catalog     world.SpawnCatalog
-	Roll        func(int, int) int
-	Allocate    func() (string, error)
-	HelpFS      fs.FS
-	MaxSessions int
+	Store     engine.CommandStore
+	WorldID   string
+	Clock     func() (int32, int)
+	WallClock func() time.Time
+	Catalog   world.SpawnCatalog
+	// MerchantOffers is the server-owned MPURIT stock catalog. Legacy NPC
+	// Carry values are never interpreted from a terminal request; an absent
+	// catalog makes merchant purchase fail closed at the session boundary.
+	MerchantOffers world.MerchantOffers
+	Roll           func(int, int) int
+	Allocate       func() (string, error)
+	HelpFS         fs.FS
+	MaxSessions    int
 }
 
 // WorldConnector implements the real world connection boundary. The host must
@@ -285,6 +289,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	valueCommand := false
 	repairCommand := false
 	directMessageCommand := false
+	merchantPurchaseCommand := false
+	npcTalkCommand := false
+	groupTalkCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -387,6 +394,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDirectMessage:
 		directMessageCommand = true
 		receipt, err = c.game.owners.ExecuteDirectMessageLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandMerchantPurchase:
+		merchantPurchaseCommand = true
+		receipt, err = c.game.owners.ExecuteMerchantPurchaseLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MerchantPurchaseOptions{Offers: c.game.config.MerchantOffers})
+	case session.CommandNPCTalk:
+		npcTalkCommand = true
+		receipt, err = c.game.owners.ExecuteNPCTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandGroupTalk:
+		groupTalkCommand = true
+		receipt, err = c.game.owners.ExecuteGroupTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -416,6 +432,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedValueLine) ||
 		errors.Is(err, session.ErrUnsupportedRepairLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectMessageLine) ||
+		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
+		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
+		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -547,6 +566,22 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if npcTalkCommand && !receipt.Replayed {
+		var result world.NPCTalkResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishNPCTalk(after, *result.Event)
+			}
+		}
+	}
+	if groupTalkCommand && !receipt.Replayed {
+		var result world.GroupTalkResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishGroupTalk(after, result.Events)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -608,6 +643,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if directMessageCommand {
 		var result world.DirectMessageResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if merchantPurchaseCommand {
+		var result world.MerchantPurchaseResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if npcTalkCommand {
+		var result world.NPCTalkResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if groupTalkCommand {
+		var result world.GroupTalkResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

@@ -530,3 +530,22 @@ testnet 배포 인수는 완료로 승격하지 않는다.
 cross-build, 실제 ARM64 PostgreSQL 17에서 세 명령의 저장·replay receipt 테스트가
 통과했다. 전체 C alias/prefix/key parity, merchant full behavior, strict corpus 63건,
 실기기 IME/mobile, WSS/Ingress와 testnet 배포는 여전히 미완료다.
+
+## 2026-09-09 병렬 서비스 lane 통합 계획 결과
+
+다음 병렬 작업은 서로 다른 신규 `world`/`session`/transport test 파일만 소유하고, 메인
+세션에서 parser·receipt·recipient fan-out을 통합한다.
+
+1. `상인 구입`은 `WorldConnectorConfig.MerchantOffers`에 server-owned catalog를 주입한다.
+   terminal은 NPC/item display name과 positive occurrence만 제출하고, canonical identity와
+   reward allocation은 world reducer가 결정한다.
+2. `대화`는 receipt의 `NPCTalkEvent`를 commit 이후 observer 연결에만 전달한다. actor는
+   receipt response를 받고 replay에서는 event를 재방송하지 않는다.
+3. `그룹말`은 receipt의 exact player recipient event만 websocket에 전달하며 NPC follower
+   event는 audit 데이터로 보존한다.
+
+각 lane은 malformed input, unresolved migration data, stale/replay 요청을 먼저 테스트하고,
+통합 후 `go test -race ./... -skip '^TestRoomBodyCorpus$'`, `go vet ./...`, Linux ARM64
+cross-build, disposable ARM64 PostgreSQL 17을 순서대로 실행한다. 이 결과가 통과해도
+strict room corpus 63건, 전체 C parity, NPC 전체 cadence, 실기기 IME/mobile, WSS/Ingress와
+testnet 배포 인수는 별도 게이트다.

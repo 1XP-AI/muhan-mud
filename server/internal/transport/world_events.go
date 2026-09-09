@@ -184,6 +184,67 @@ func (g *WorldConnector) publishDirectMessage(after world.State, event world.Dir
 	}
 }
 
+// publishNPCTalk delivers the committed room projection to current occupants
+// other than the actor. The actor receives the NPC response through the
+// command receipt; replayed receipts never fan out the room projection again.
+func (g *WorldConnector) publishNPCTalk(after world.State, event world.NPCTalkEvent) {
+	if event.ActorID == "" || len(event.RoomMessages) == 0 {
+		return
+	}
+	actor, ok := after.Players[event.ActorID]
+	if !ok || !actor.Online || actor.Body.RoomID != event.RoomID {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.events == nil {
+			continue
+		}
+		for _, message := range event.RoomMessages {
+			if message.Text == "" || message.ExcludeActorID == connection.lease.ActorID {
+				continue
+			}
+			select {
+			case connection.events <- message.Text:
+			default:
+				// A slow observer cannot block the talking actor's durable command.
+			}
+		}
+	}
+}
+
+// publishGroupTalk sends each committed event to its exact player recipient.
+// NPC follower events remain in the receipt for deterministic audit but have
+// no websocket connection to receive a live projection.
+func (g *WorldConnector) publishGroupTalk(after world.State, events []world.GroupTalkEvent) {
+	if len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, event := range events {
+		if event.RecipientKind != "player" || event.RecipientID == "" || event.Text == "" {
+			continue
+		}
+		recipient, ok := after.Players[event.RecipientID]
+		if !ok || !recipient.Online || recipient.Body.Name != event.RecipientName {
+			continue
+		}
+		for connection := range g.connections {
+			if connection.lease.ActorID != event.RecipientID || connection.events == nil {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+				// A slow group member cannot block the sender's durable command.
+			}
+		}
+	}
+}
+
 // publishEmote fans out the committed action projection. The actor already
 // received the durable receipt response; a targeted recipient gets its
 // target-specific projection and everyone else in the room gets the room
