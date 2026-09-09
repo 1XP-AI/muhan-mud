@@ -45,10 +45,14 @@ func TestPostgresRunShopPurchaseByNamePersistsReplaysAndRejectsConflict(t *testi
 	connector, err := NewWorldConnector(WorldConnectorConfig{
 		Store: store, WorldID: worldID, Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 1,
 		Allocate: func() (string, error) {
-			if allocations.Add(1) == 1 {
+			switch allocations.Add(1) {
+			case 1:
 				return "pg-name-owned", nil
+			case 2:
+				return "pg-name-owned-child", nil
+			default:
+				return "", errors.New("unexpected extra allocation")
 			}
-			return "", errors.New("unexpected extra allocation")
 		},
 	})
 	if err != nil {
@@ -59,7 +63,7 @@ func TestPostgresRunShopPurchaseByNamePersistsReplaysAndRejectsConflict(t *testi
 	if err != nil || first.Replayed {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
-	if allocations.Load() != 1 {
+	if allocations.Load() != 2 {
 		t.Fatalf("allocations=%d", allocations.Load())
 	}
 
