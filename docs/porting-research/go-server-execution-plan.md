@@ -893,3 +893,25 @@ x64/Windows/macOS 호환 matrix는 승인된 `release`에서 한 번만 실행�
 기능 레인에서 해당 고비용 검증을 반복하지 않는다. 전체 C prefix/key/ANSI parity,
 strict room corpus 63건, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet
 배포는 여전히 별도 승격 조건이다.
+
+## 2026-09-09 다음 병렬 bounded batch: 방혼술·흡성대법·차기
+
+G3 전투의 독립적인 세 경계를 Luna max 에이전트가 각각 world/session 파일에 구현하고,
+메인 세션이 parser·`WorldConnector`·room/target projection만 조립한다.
+
+1. `방혼술`은 cleric/paladin/invincible 권한, canonical same-room NPC occurrence, undead·
+   visibility·`MUNKIL`, `LT_TURNS`/`LT_ATTCK`, chance·소멸/반 HP damage와 enemy relation을
+   snapshot-bound proposal/apply로 고정한다. death/drop graph가 완전히 조합되기 전 lethal은
+   `ErrTurnDeathTransitionPending`으로 거부한다.
+2. `흡성대법`은 mage/invincible gate, exact NPC, reveal·cooldown·`MUNKIL`, source chance/
+   damage 및 undead MP 소진/HP 흡수·enemy damage를 receipt로 고정한다. unresolved combat,
+   death, overflow는 RNG·commit 전에 fail-closed한다.
+3. `차기`는 barbarian/invincible 및 NPC/player PVP 안전·war·charm 경계, 무기·명중/damage
+   dice·stealth·`LT_KICK`, 비치명 HP/enemy projection을 연결한다. lethal `die` 조합 전에는
+   `ErrKickDeathTransitionPending`으로 영수증을 만들지 않는다.
+
+검증 cadence는 레인별 focused race 후 조립 batch에서 `integration` 한 번으로 고정한다.
+ARM64 cross-build는 기본 브랜치 `main`에서만, PostgreSQL·브라우저·x64/Windows/macOS는
+승인된 `release`에서만 실행한다. 기능 레인에서 고비용 검사를 반복하지 않으며 strict room
+corpus 63건, NPC full tick, 전체 C prefix/key/ANSI parity, IME/mobile·WSS/Ingress와 testnet
+배포는 이후 승격 조건으로 남긴다.

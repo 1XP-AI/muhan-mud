@@ -580,6 +580,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	timeCommand := false
 	selectionCommand := false
 	trainingCommand := false
+	turnCommand := false
+	absorbCommand := false
+	kickCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -650,6 +653,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandSelection:
 		selectionCommand = true
 		receipt, err = c.game.owners.ExecuteSelectionLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.SelectionOptions{Offers: c.game.config.MerchantOffers})
+	case session.CommandTurn:
+		turnCommand = true
+		receipt, err = c.game.owners.ExecuteTurnLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.TurnOptions{Now: now, Roll: c.game.config.Roll, Allocate: c.game.config.Allocate})
+	case session.CommandAbsorb:
+		absorbCommand = true
+		receipt, err = c.game.owners.ExecuteAbsorbLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.AbsorbOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandKick:
+		kickCommand = true
+		receipt, err = c.game.owners.ExecuteKickLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.KickOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -862,6 +874,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedTimeLine) ||
 		errors.Is(err, session.ErrUnsupportedSelectionLine) ||
 		errors.Is(err, session.ErrUnsupportedTrainingLine) ||
+		errors.Is(err, session.ErrUnsupportedTurnLine) ||
+		errors.Is(err, session.ErrUnsupportedAbsorbLine) ||
+		errors.Is(err, session.ErrUnsupportedKickLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -954,7 +969,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrTrainingNumeric) ||
 		errors.Is(err, world.ErrTrainingStaleProposal) ||
 		errors.Is(err, world.ErrTrainingUnsupportedClass) ||
-		errors.Is(err, world.ErrTrainingUnsupportedLevel) {
+		errors.Is(err, world.ErrTrainingUnsupportedLevel) ||
+		errors.Is(err, world.ErrTurnCombatSideEffectPending) ||
+		errors.Is(err, world.ErrTurnDeathTransitionPending) ||
+		errors.Is(err, world.ErrTurnNPCStateUnresolved) ||
+		errors.Is(err, world.ErrAbsorbNPCStateUnresolved) ||
+		errors.Is(err, world.ErrAbsorbCombatSideEffectPending) ||
+		errors.Is(err, world.ErrAbsorbDeathTransitionPending) ||
+		errors.Is(err, world.ErrAbsorbHPOverflow) ||
+		errors.Is(err, world.ErrKickDeathTransitionPending) ||
+		errors.Is(err, world.ErrKickCharmStateUnresolved) ||
+		errors.Is(err, world.ErrKickWarStateUnresolved) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1149,6 +1174,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishPoison(after, *result.Event)
+			}
+		}
+	}
+	if turnCommand && !receipt.Replayed {
+		var result world.TurnResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishTurn(after, *result.Event)
+			}
+		}
+	}
+	if absorbCommand && !receipt.Replayed {
+		var result world.AbsorbResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishAbsorb(after, *result.Event)
+			}
+		}
+	}
+	if kickCommand && !receipt.Replayed {
+		var result world.KickResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishKick(after, *result.Event)
 			}
 		}
 	}
@@ -1359,6 +1408,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if poisonCommand {
 		var result world.PoisonResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if turnCommand {
+		var result world.TurnResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if absorbCommand {
+		var result world.AbsorbResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if kickCommand {
+		var result world.KickResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

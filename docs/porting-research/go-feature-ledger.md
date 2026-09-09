@@ -1008,3 +1008,17 @@ x64/Windows/macOS 호환 matrix는 승인된 `release` 경계에서 batch당 한
 이번 기능 레인에서는 반복하지 않았다. 전체 C prefix/key/ANSI parity, strict room corpus
 63건, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 여전히 남은
 인수 조건이다.
+
+## 2026-09-09 G3 전투 bounded 후속: 방혼술·흡성대법·차기
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `magic3.c:turn` / `방혼술` | cleric·paladin·invincible gate, canonical same-room NPC/occurrence, undead·visibility·`MUNKIL`, `LT_TURNS`/`LT_ATTCK`, chance·disintegrate/반 HP damage와 enemy 관계를 `PlanTurn`/`ApplyTurn` 및 durable receipt로 연결 | world/session/transport race·replay와 room fan-out 통과; canonical death/drop graph가 완전히 조합되지 않으면 lethal fail-closed |
+| `magic3.c:absorb` / `흡성대법` | mage·invincible gate, canonical NPC, stealth reveal·cooldown·`MUNKIL`, source chance/damage, undead MP 소진 또는 HP 흡수·enemy damage를 `PlanAbsorb`/`ApplyAbsorb`로 연결 | focused race·replay·overflow/unresolved side-effect fail-closed 검증; 전체 전투·도주/사망 조합은 미완료 |
+| `command8.c:kick` / `차기` | barbarian·invincible 권한, NPC/player canonical target, PVP 안전·전쟁·charm 경계, 무기·명중/damage dice·stealth·`LT_KICK`와 비치명 HP/enemy 전이를 `PlanKick`/`ApplyKick`으로 연결 | focused race·connector event/replay 통과; lethal `die` 전이와 전체 prefix/key/ANSI parity는 별도 승격 |
+
+세 레인은 파일 소유권을 분리한 Luna max 병렬 작업 후 메인 parser·connector를 한 번
+조립했다. 기능 레인에서는 `fast`/focused race만 사용하고 조립 후 `integration`을 한 번
+실행한다. Linux ARM64 build는 기본 브랜치 `main`, 실제 PostgreSQL·브라우저·x64/Windows/
+macOS matrix는 승인된 `release`에서만 실행해 반복 비용을 막는다. strict room corpus
+63건, NPC full tick, IME/mobile·WSS/Ingress·testnet 배포는 아직 미검증이다.

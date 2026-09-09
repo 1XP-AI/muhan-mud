@@ -1648,3 +1648,26 @@ parity, NPC full cadence, WSS/Ingress와 testnet 배포는 남은 조건이다. 
 실제 PostgreSQL·브라우저·호환성 matrix는 `release`에서 한 번만 실행한다. strict room corpus,
 전체 C prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet
 배포는 아직 남은 승격 조건이다. `src/frp.new`는 사용자 소유 dirty 변경으로 보존한다.
+
+## 2026-09-09 직접 관리 병렬 후속: 방혼술·흡성대법·차기 및 검증 비용 경계
+
+세 Luna max 레인을 서로 겹치지 않는 world/session 파일로 병렬 처리한 뒤, 메인에서
+공용 parser·`WorldConnector`·room/target fan-out만 한 번 조립했다.
+
+- `방혼술`: cleric/paladin/invincible 권한, canonical same-room NPC와 occurrence, undead/
+  visibility·`MUNKIL`, `LT_TURNS`/`LT_ATTCK`, 확률·소멸/반 HP damage 및 비치명 enemy 관계를
+  snapshot-bound receipt로 연결했다. NPC death graph가 allocator와 함께 완전히 조합되지
+  않으면 `ErrTurnDeathTransitionPending`으로 fail-closed한다.
+- `흡성대법`: mage/invincible gate, exact canonical NPC, stealth reveal·cooldown·`MUNKIL`,
+  source chance/damage, undead MP 소진 또는 HP 흡수·enemy damage를 deterministic receipt로
+  고정했다. unresolved combat/death/overflow는 RNG와 commit 전에 거부한다.
+- `차기`: barbarian/invincible 권한, NPC 우선 및 player PVP 안전/war/charm 경계, 무기·명중/
+  damage dice·stealth·`LT_KICK`와 비치명 HP/enemy projection을 연결했다. lethal 전이는
+  `ErrKickDeathTransitionPending`으로 보류하며 target private event는 room 관찰자와 분리한다.
+
+각 레인은 world/session focused race를 수행했고, 메인 통합 후 connector 회귀와 Go 통합
+gate를 한 번만 실행한다. `fast`는 변경 패키지 표적 검사, `integration`은 전체 Go
+race/vet/diff, ARM64 cross-build는 기본 브랜치 `main`, 실제 PostgreSQL·브라우저·x64/
+Windows/macOS는 승인된 `release`에서만 실행한다. 이번 batch에서는 ARM64·DB·browser·strict
+room corpus를 반복하지 않았다. 전체 C prefix/key/ANSI parity, NPC full tick, IME/mobile,
+WSS/Ingress와 testnet 배포는 계속 남은 승격 조건이며 `src/frp.new`는 수정·stage하지 않는다.

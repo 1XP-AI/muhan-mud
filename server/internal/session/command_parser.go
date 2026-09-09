@@ -89,6 +89,9 @@ const (
 	CommandEnemyStatus
 	CommandTrain
 	CommandSelection
+	CommandTurn
+	CommandAbsorb
+	CommandKick
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -262,6 +265,24 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsSelectionLine(trimmed) {
 		parsed.Kind = CommandSelection
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// These bounded combat/spell commands have target-aware parsers. Keep
+	// their exact argument contracts in the owning session files instead of
+	// allowing the generic tokenizer to broaden prefixes or occurrences.
+	if IsTurnLine(trimmed) {
+		parsed.Kind = CommandTurn
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsAbsorbLine(trimmed) {
+		parsed.Kind = CommandAbsorb
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsKickLine(trimmed) {
+		parsed.Kind = CommandKick
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
