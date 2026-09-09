@@ -84,6 +84,9 @@ const (
 	CommandCircle
 	CommandBash
 	CommandMagicStop
+	CommandGive
+	CommandPoison
+	CommandEnemyStatus
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -219,6 +222,25 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMagicStopLine(trimmed) {
 		parsed.Kind = CommandMagicStop
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// These bounded legacy suffix/target commands are recognized before the
+	// generic first-token table. Their exact argument order is owned by the
+	// command-specific session adapters, so unsupported prefix/occurrence
+	// forms remain unknown instead of being routed to a partial reducer.
+	if IsGiveLine(trimmed) {
+		parsed.Kind = CommandGive
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsPoisonLine(trimmed) {
+		parsed.Kind = CommandPoison
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsEnemyStatusLine(trimmed) {
+		parsed.Kind = CommandEnemyStatus
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

@@ -574,6 +574,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	circleCommand := false
 	bashCommand := false
 	magicStopCommand := false
+	poisonCommand := false
+	giveCommand := false
+	enemyStatusCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -629,6 +632,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandMagicStop:
 		magicStopCommand = true
 		receipt, err = c.game.owners.ExecuteMagicStopLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MagicStopOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandPoison:
+		poisonCommand = true
+		receipt, err = c.game.owners.ExecutePoisonLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.PoisonOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandGive:
+		giveCommand = true
+		receipt, err = c.game.owners.ExecuteGiveLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandEnemyStatus:
+		enemyStatusCommand = true
+		receipt, err = c.game.owners.ExecuteEnemyStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -830,6 +842,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedCircleLine) ||
 		errors.Is(err, session.ErrUnsupportedBashLine) ||
 		errors.Is(err, session.ErrUnsupportedMagicStopLine) ||
+		errors.Is(err, session.ErrUnsupportedPoisonLine) ||
+		errors.Is(err, session.ErrUnsupportedGiveLine) ||
+		errors.Is(err, session.ErrUnsupportedEnemyStatusLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -881,7 +896,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrBashCharmStateUnresolved) ||
 		errors.Is(err, world.ErrBashWarStateUnresolved) ||
 		errors.Is(err, world.ErrMagicStopCombatSideEffectPending) ||
-		errors.Is(err, world.ErrMagicStopNPCStateUnresolved) {
+		errors.Is(err, world.ErrMagicStopNPCStateUnresolved) ||
+		errors.Is(err, world.ErrPoisonCombatSideEffectPending) ||
+		errors.Is(err, world.ErrPoisonDeathTransitionPending) ||
+		errors.Is(err, world.ErrPoisonNPCStateUnresolved) ||
+		errors.Is(err, world.ErrGiveActorAbsent) ||
+		errors.Is(err, world.ErrGiveRoomMembership) ||
+		errors.Is(err, world.ErrGiveInventoryPending) ||
+		errors.Is(err, world.ErrGiveItemAbsent) ||
+		errors.Is(err, world.ErrGiveTargetAbsent) ||
+		errors.Is(err, world.ErrGiveSelf) ||
+		errors.Is(err, world.ErrGiveNPCPending) ||
+		errors.Is(err, world.ErrGiveNPCIdentityPending) ||
+		errors.Is(err, world.ErrGiveAmountInvalid) ||
+		errors.Is(err, world.ErrGiveInsufficientGold) ||
+		errors.Is(err, world.ErrGiveGoldOverflow) ||
+		errors.Is(err, world.ErrGiveCapacity) ||
+		errors.Is(err, world.ErrGiveProtectedPending) ||
+		errors.Is(err, world.ErrGiveQuestPending) ||
+		errors.Is(err, world.ErrGiveEventPending) ||
+		errors.Is(err, world.ErrGiveNestedProtectedPending) ||
+		errors.Is(err, world.ErrEnemyStatusCanonicalOnly) ||
+		errors.Is(err, world.ErrEnemyStatusTargetRequired) ||
+		errors.Is(err, world.ErrEnemyStatusTargetAbsent) ||
+		errors.Is(err, world.ErrEnemyStatusVitalsUnavailable) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1068,6 +1106,22 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishMagicStop(after, *result.Event)
+			}
+		}
+	}
+	if poisonCommand && !receipt.Replayed {
+		var result world.PoisonResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishPoison(after, *result.Event)
+			}
+		}
+	}
+	if giveCommand && !receipt.Replayed {
+		var result world.GiveResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishGive(after, *result.Event)
 			}
 		}
 	}
@@ -1267,6 +1321,20 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		var result world.MagicStopResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
+		}
+	} else if poisonCommand {
+		var result world.PoisonResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if giveCommand {
+		var result world.GiveResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if enemyStatusCommand {
+		if err = json.Unmarshal(receipt.Response, &output); err != nil {
+			// Keep the original receipt error for a malformed response.
 		}
 	} else if merchantPurchaseCommand {
 		var result world.MerchantPurchaseResult
