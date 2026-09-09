@@ -99,4 +99,26 @@ func TestPostgresInfoCommandPersistsAndReplaysWithoutNewStateVersion(t *testing.
 	if receipts != 1 {
 		t.Fatalf("receipt count after replay=%d", receipts)
 	}
+
+	continuation, err := owners.ExecuteInfoContinuation(ctx, store, worldID, "info-continuation-1", lease)
+	if err != nil || continuation.Replayed || continuation.Revision != first.Revision+1 {
+		t.Fatalf("continuation=%+v err=%v", continuation, err)
+	}
+	var continuationText string
+	if err := json.Unmarshal(continuation.Response, &continuationText); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(continuationText, "주문:") {
+		t.Fatalf("continuation response=%q", continuationText)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM mud_go.world_commands WHERE world_id=$1`, worldID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 2 {
+		t.Fatalf("receipt count after continuation=%d", receipts)
+	}
+	continuationReplay, err := owners.ExecuteInfoContinuation(ctx, store, worldID, "info-continuation-1", lease)
+	if err != nil || !continuationReplay.Replayed || continuationReplay.Revision != continuation.Revision || string(continuationReplay.Response) != string(continuation.Response) {
+		t.Fatalf("continuation replay=%+v err=%v", continuationReplay, err)
+	}
 }

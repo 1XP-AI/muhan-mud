@@ -3,12 +3,37 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/session"
+	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
+
+type infoContinuationRetryStore struct {
+	base     *connectorCommandStore
+	failOnce bool
+	commands []string
+}
+
+func (s *infoContinuationRetryStore) ReadWorldReceipt(ctx context.Context, worldID, commandID string, request json.RawMessage) (storage.WorldReceipt, error) {
+	return s.base.ReadWorldReceipt(ctx, worldID, commandID, request)
+}
+
+func (s *infoContinuationRetryStore) LoadWorld(ctx context.Context, worldID string) (storage.WorldSnapshot, error) {
+	return s.base.LoadWorld(ctx, worldID)
+}
+
+func (s *infoContinuationRetryStore) CommitWorldCommand(ctx context.Context, worldID, commandID string, request json.RawMessage, revision int64, state, response json.RawMessage) (storage.WorldReceipt, error) {
+	s.commands = append(s.commands, commandID)
+	if s.failOnce {
+		s.failOnce = false
+		return storage.WorldReceipt{}, errors.New("transient continuation commit failure")
+	}
+	return s.base.CommitWorldCommand(ctx, worldID, commandID, request, revision, state, response)
+}
 
 func TestWorldConnectorSubmitDispatchesInfoWithoutMutatingWorld(t *testing.T) {
 	initial := world.State{
@@ -120,7 +145,7 @@ func TestWorldConnectorInfoDotCancelsPendingContinuationWithoutWorldMutation(t *
 	}
 }
 
-func TestWorldConnectorInfoEmptyContinuationRendersFreshSnapshotWithoutReceipt(t *testing.T) {
+func TestWorldConnectorInfoContinuationBindsSnapshotAndCreatesReceipt(t *testing.T) {
 	initial := world.State{
 		Version: 1,
 		Rooms: map[int16]world.RoomState{1: {
@@ -177,13 +202,76 @@ func TestWorldConnectorInfoEmptyContinuationRendersFreshSnapshotWithoutReceipt(t
 	if err != nil {
 		t.Fatalf("empty continuation err=%v", err)
 	}
+	// The continuation reads the current canonical snapshot once and binds its
+	// response to a durable receipt. A later retry can therefore replay this
+	// exact page without observing another snapshot.
 	want := "\n주문: 삭풍, 회복.\n당신의 현주문: 성현진, 발광.\n당신은 현재 임무 2까지 달성하였습니다."
 	if text != want {
 		t.Fatalf("empty continuation text=%q want=%q", text, want)
 	}
 	_, commits := store.snapshot()
-	if commits != 1 {
-		t.Fatalf("continuation created receipt commits=%d", commits)
+	if commits != 2 {
+		t.Fatalf("continuation receipt count=%d want=2", commits)
+	}
+}
+
+func TestWorldConnectorInfoContinuationRetriesWithStableReceiptID(t *testing.T) {
+	initial := world.State{
+		Version: 1,
+		Rooms: map[int16]world.RoomState{1: {
+			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "광장"}},
+			PlayerIDs: []string{"a"},
+			Items:     &world.ItemCollection{Items: map[string]world.Item{}},
+		}},
+		Players: map[string]world.PlayerState{
+			"a": {
+				Body:   world.LegacyMonster{Name: "Alice", RoomID: 1, Level: 3, Class: 4, Race: 5},
+				Online: true,
+				Items:  &world.ItemCollection{Items: map[string]world.Item{}},
+			},
+		},
+	}
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &connectorCommandStore{state: raw}
+	store := &infoContinuationRetryStore{base: base}
+	connector, err := NewWorldConnector(WorldConnectorConfig{Store: store, WorldID: "info-retry-world", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := connector.owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	connection := &worldConnection{game: connector, lease: lease, ready: true}
+	if _, err := connection.Submit(context.Background(), "정보"); err != nil {
+		t.Fatal(err)
+	}
+	store.failOnce = true
+	if output, err := connection.Submit(context.Background(), ""); err == nil || output != "" {
+		t.Fatalf("transient continuation output=%q err=%v", output, err)
+	}
+	if !connection.infoPending || connection.infoContinuationCommandID == "" {
+		t.Fatal("failed continuation did not retain pending receipt identity")
+	}
+	wantID := connection.infoContinuationCommandID
+	output, err := connection.Submit(context.Background(), "")
+	if err != nil || !strings.Contains(output, "주문:") {
+		t.Fatalf("retried continuation output=%q err=%v", output, err)
+	}
+	if connection.infoPending || connection.infoContinuationCommandID != "" {
+		t.Fatal("successful continuation remained pending")
+	}
+	if len(store.commands) != 3 || store.commands[1] != wantID || store.commands[2] != wantID {
+		t.Fatalf("continuation command IDs=%v want repeated %q", store.commands, wantID)
+	}
+	if _, commits := base.snapshot(); commits != 2 {
+		t.Fatalf("commits=%d want first info plus one continuation", commits)
 	}
 }
 

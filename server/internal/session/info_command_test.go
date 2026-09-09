@@ -96,6 +96,54 @@ func TestExecuteInfoLinePersistsCanonicalProjectionAndReplays(t *testing.T) {
 	}
 }
 
+func TestExecuteInfoContinuationPersistsCanonicalProjectionAndReplays(t *testing.T) {
+	state, err := decodeInfoFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := state.Players["a"]
+	p.Body.Spells[0] |= 1<<0 | 1<<1 // 회복, 삭풍
+	p.Body.Flags[0] |= 1 << 0       // 성현진
+	p.Body.Flags[2] |= 1 << 1       // 발광
+	p.Body.Quests[0] = 1 | 1<<1
+	state.Players["a"] = p
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := owners.ExecuteInfoContinuation(context.Background(), store, "w", "info-continuation-1", lease)
+	if err != nil || first.Replayed || first.Revision != 1 || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var text string
+	if err := json.Unmarshal(first.Response, &text); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"주문: 삭풍, 회복.", "당신의 현주문: 성현진, 발광.", "당신은 현재 임무 2까지 달성하였습니다."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("continuation response missing %q: %q", want, text)
+		}
+	}
+	if string(store.state) != string(raw) {
+		t.Fatal("info continuation mutated world state")
+	}
+
+	replay, err := owners.ExecuteInfoContinuation(context.Background(), store, "w", "info-continuation-1", lease)
+	if err != nil || !replay.Replayed || replay.Revision != first.Revision || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func TestInfoContinuationCancellationTextMatchesCommand4(t *testing.T) {
 	if InfoContinuationCancelResponse != "중단되었습니다.\n" {
 		t.Fatalf("cancellation text=%q", InfoContinuationCancelResponse)

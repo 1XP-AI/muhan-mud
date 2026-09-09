@@ -273,9 +273,13 @@ type worldConnection struct {
 	ready, closed    bool
 	closeAfterSubmit bool
 	infoPending      bool
-	compose          *composeDraft
-	passwordChange   session.PasswordChanger
-	passwordSecret   bool
+	// infoContinuationCommandID binds the one [엔터] page to a durable
+	// receipt. It remains stable across an uncertain commit/response so a
+	// retry cannot render a newer snapshot or create a second page.
+	infoContinuationCommandID string
+	compose                   *composeDraft
+	passwordChange            session.PasswordChanger
+	passwordSecret            bool
 	// ignore is command9.c's connection-local first_ignore list. It is never
 	// serialized with the world snapshot or a command receipt.
 	ignore IgnoreList
@@ -503,22 +507,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	defer c.game.commandMu.Unlock()
 	if c.infoPending {
 		// command4.c routes exactly one following line to info_2. Consume the
-		// connection-local continuation before either branch; no continuation
-		// input creates a durable command receipt.
-		c.infoPending = false
+		// connection-local continuation before either branch. Cancellation is
+		// local, while the selected page is a read-only durable receipt whose
+		// command ID stays stable until the commit succeeds.
 		if line == "." {
+			c.infoPending = false
+			c.infoContinuationCommandID = ""
 			return session.InfoContinuationCancelResponse, nil
 		}
-		state, ok := c.game.snapshot(ctx)
-		if !ok {
-			c.ready = false
-			return "", errors.New("info continuation snapshot unavailable")
+		if c.infoContinuationCommandID == "" {
+			c.infoContinuationCommandID = "info-continuation-" + rand.Text()
 		}
-		text, err := state.PlayerInfoContinuation(c.lease.ActorID)
+		receipt, err := c.game.owners.ExecuteInfoContinuation(ctx, c.game.config.Store, c.game.config.WorldID, c.infoContinuationCommandID, c.lease)
 		if err != nil {
-			c.ready = false
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
 			return "", err
 		}
+		var text string
+		if err := json.Unmarshal(receipt.Response, &text); err != nil {
+			return "", err
+		}
+		c.infoPending = false
+		c.infoContinuationCommandID = ""
 		return text, nil
 	}
 	// An active password change owns every following line until it reaches a
@@ -1141,8 +1153,10 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if infoCommand {
 		// Establish this only after the durable first-page receipt succeeds;
 		// receipt replay also restores the prompt/continuation contract after a
-		// lost response.
+		// lost response. The second page gets its own stable receipt ID when
+		// the next line is submitted.
 		c.infoPending = true
+		c.infoContinuationCommandID = ""
 	}
 	if directional && !receipt.Replayed && beforeOK {
 		if after, ok := c.game.snapshot(ctx); ok {
