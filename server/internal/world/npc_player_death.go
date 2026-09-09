@@ -30,9 +30,9 @@ type NPCPlayerDeathResult struct {
 //
 // The NPC attacker never receives a player kill timer.  The C else branch
 // calls del_enm_crt, so this plan removes only the exact canonical enemy edge.
-// Summoner behavior, unresolved war state, unresolved active/enemy/follower
-// identity, legacy item ownership, and non-canonical respawn state fail closed
-// before a candidate is returned.  Death-description, output formatting,
+// Unresolved war state, unresolved active/enemy/follower identity, legacy item
+// ownership, and non-canonical respawn state fail closed before a candidate is
+// returned.  Death-description, output formatting,
 // savegame, summon, and transport side effects remain outside this boundary.
 func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneOptions, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, NPCPlayerDeathResult, error) {
 	zero := NPCPlayerDeathResult{}
@@ -67,9 +67,6 @@ func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneO
 	// prove that this NPC was the attacker selected by update_active.
 	if s.ActiveNPCIDs == nil || !containsString(s.ActiveNPCIDs, npcID) {
 		return State{}, zero, fmt.Errorf("NPC active membership unresolved")
-	}
-	if flag(npc.Body.Flags[:], npcSummonFlag) {
-		return State{}, zero, fmt.Errorf("NPC summoner death continuation pending")
 	}
 	if npc.Enemies == nil {
 		return State{}, zero, fmt.Errorf("NPC enemy relations unresolved")

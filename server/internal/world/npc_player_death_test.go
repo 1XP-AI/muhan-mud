@@ -138,11 +138,6 @@ func TestPlanNPCPlayerDeathRejectsUnresolvedNPCContext(t *testing.T) {
 	}{
 		{name: "enemy list unresolved", mutate: func(s *State) { n := s.NPCs["wolf"]; n.Enemies = nil; s.NPCs["wolf"] = n }},
 		{name: "not active", mutate: func(s *State) { s.ActiveNPCIDs = []string{} }},
-		{name: "summoner pending", mutate: func(s *State) {
-			n := s.NPCs["wolf"]
-			n.Body.Flags[npcSummonFlag/8] |= 1 << (npcSummonFlag % 8)
-			s.NPCs["wolf"] = n
-		}},
 		{name: "war state not imported", mutate: func(s *State) { s.War = nil }},
 		{name: "respawn floor not canonical", mutate: func(s *State) { r := s.Rooms[1008]; r.Items = nil; s.Rooms[1008] = r }},
 	} {
@@ -155,6 +150,28 @@ func TestPlanNPCPlayerDeathRejectsUnresolvedNPCContext(t *testing.T) {
 				t.Fatalf("accepted unresolved context next=%+v result=%+v err=%v", next, result, err)
 			}
 		})
+	}
+}
+
+func TestPlanNPCPlayerDeathAllowsSummonerAttacker(t *testing.T) {
+	s := npcPlayerDeathFixture()
+	n := s.NPCs["wolf"]
+	n.Body.Flags[npcSummonFlag/8] |= 1 << (npcSummonFlag % 8)
+	s.NPCs["wolf"] = n
+	before := s.clone()
+
+	next, result, err := s.PlanNPCPlayerDeath("wolf", "a", 100, SceneOptions{}, nil, noDeathRNG(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NPCID != "wolf" || result.VictimID != "a" || !result.BroadcastDeath {
+		t.Fatalf("result=%+v", result)
+	}
+	if next.Players["a"].Body.RoomID != 1008 || len(next.NPCs["wolf"].Enemies) != 0 {
+		t.Fatalf("summoner death candidate=%+v npc=%+v", next.Players["a"].Body, next.NPCs["wolf"])
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("planner mutated input snapshot")
 	}
 }
 
