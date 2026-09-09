@@ -90,7 +90,7 @@ func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, in
 	}
 	// update.c subtracts the victim's armor contribution and clamps the
 	// ordinary attack to one. Armor is a signed legacy byte; widen first.
-	damage -= (70 - int(player.Armor)) / 5
+	damage -= (70 - int(int8(player.Armor))) / 5
 	if damage < 1 {
 		damage = 1
 	}
@@ -145,6 +145,9 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	enemy := false
 	for _, relation := range npc.Enemies {
 		if relation.Target == (EntityRef{Kind: "player", ID: playerID}) {
+			if relation.Damage < 0 {
+				return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat enemy relation unresolved")
+			}
 			enemy = true
 			break
 		}
@@ -169,7 +172,7 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	}
 	// update_active treats mrand(1,20) >= n as a hit. The NPC's stored THAC0
 	// is authoritative; an absent/legacy zero still has the source MAX(1, n).
-	threshold := int(npc.Body.Thaco) - int(player.Body.Armor)/8
+	threshold := int(int8(npc.Body.Thaco)) - int(int8(player.Body.Armor))/8
 	if threshold < 1 {
 		threshold = 1
 	}
