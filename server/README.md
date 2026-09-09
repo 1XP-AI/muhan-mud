@@ -2238,3 +2238,16 @@ NPC를 거부한다. 교환한 root subtree는 제거하고 보상 subtree는 co
 실제 ARM64 PostgreSQL 17의 저장·동일 command replay·request conflict, Linux ARM64
 cross-build를 통과했다. 원본 prefix/key `find_obj`와 merchant/repair/전체 경제 parity,
 full NPC tick/broadcast는 별도 인수 조건으로 남아 있다.
+
+## 2026-09-09 가치·수리·개인 메시지 명령 연결
+
+직접 관리한 Luna max 병렬 레인 세 개를 통합해 `가치`/`가격`, `수리`, `얘기`/`이야기`를
+중앙 parser와 WebSocket connector에 연결했다. 가치 조회는 전당포/수리점의 canonical
+직접 소지 root를 읽기 전용 receipt로 저장하고, 수리는 주입 RNG·piety를 포함한 원자
+repair candidate로 파손/환불/삭제 또는 shots 복구를 수행한다. 개인 메시지는 정확한
+online player를 선택해 receipt의 deterministic recipient event를 대상 연결에만 보낸다.
+
+`go test -race ./... -skip '^TestRoomBodyCorpus$'`, `go vet ./...`, Linux ARM64 build,
+live connector 회귀와 ARM64 PostgreSQL 17 세 명령 receipt/replay 통합 테스트를 통과했다.
+전체 C prefix/key/ANSI parity, merchant full behavior, strict corpus 63건, 실기기
+IME/mobile, WSS/Ingress 및 testnet 배포는 아직 인수하지 않았다.

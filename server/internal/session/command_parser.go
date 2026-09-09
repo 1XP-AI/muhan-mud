@@ -48,6 +48,9 @@ const (
 	CommandShopSell
 	CommandShopPurchase
 	CommandTrade
+	CommandValue
+	CommandRepair
+	CommandDirectMessage
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -187,6 +190,12 @@ func commandKind(first string) CommandKind {
 		// so trade lines are recognized by ParseTradeLine above rather than
 		// by this first-token table.
 		return CommandTrade
+	case "가치", "가격":
+		return CommandValue
+	case "수리":
+		return CommandRepair
+	case "얘기", "이야기":
+		return CommandDirectMessage
 	case "끝":
 		return CommandQuit
 	case "시간":

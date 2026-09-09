@@ -626,3 +626,25 @@ ledger 76 `trade`는 전체 parity가 아니라 다음 범위의 Go 수직 slice
 
 prefix/key `find_obj`, merchant NPC, repair/value, 전체 C 경제/ANSI parity는 여전히 미구현이며
 이 항목의 전체 인수 상태는 `partial`이다.
+
+## 2026-09-09 가치·수리·개인 메시지 bounded slices
+
+원작 등록표의 서비스/통신 명령을 서로 다른 파일 소유권의 Luna max 레인으로 병렬
+구현한 뒤 중앙 parser와 live connector에 통합했다.
+
+- `value` (`가치`/`가격`): RPAWNS 또는 RREPAI에서 exact direct inventory
+  name/positive occurrence를 선택해 pawn `value/2`(100,000 cap) 또는 repair
+  `value/4`를 read-only typed receipt로 기록한다. migrated canonical item graph,
+  visibility와 malformed/nested object fail-closed를 포함한다.
+- `repair` (`수리`): source check order를 따라 room/item/type/condition/gold를
+  확인하고 injected RNG, piety adjustment, break/refund/remove, successful shots
+  restore를 snapshot-bound atomic proposal/apply로 처리한다. replay는 RNG를 재호출하지
+  않는다.
+- `sendman` (`얘기`/`이야기`): online player exact 우선·prefix fallback과
+  PINVIS/PDMINV/PDINVI/PIGNOR/PSILNC를 적용하고, receipt에 저장한 recipient event를
+  target 연결에만 보낸다. 모델에 없는 legacy last-message/ignore-list 필드는 만들지
+  않는다.
+
+world/session/transport race·vet, live connector, Linux ARM64 build 및 실제 ARM64
+PostgreSQL 17 receipt 저장·replay 검증을 통과했다. 세 행은 전체 C prefix/key/ANSI
+동등성이나 merchant/전체 경제 인수를 뜻하지 않으며, ledger 전체 상태는 `partial`이다.

@@ -508,3 +508,25 @@ receipt의 저장 응답을 그대로 반환하며 RNG/allocator/reducer와 room
 이 레인은 bounded economy progress이며 merchant/repair/value, 전체 C prefix/key matcher,
 NPC 전체 cadence/broadcast, strict room corpus 63건, 실기기 IME/mobile, WSS/Ingress와
 testnet 배포 인수는 완료로 승격하지 않는다.
+
+## 2026-09-09 직접 관리 병렬 레인: 가치·수리·개인 메시지
+
+파일 소유권을 새 `world`/`session` 파일로 분리해 Luna max 세 레인을 병렬 실행한 뒤,
+메인 세션이 공용 parser·connector·recipient event 경계를 통합했다. 원작 등록표의
+`가치`/`가격`, `수리`, `얘기`/`이야기`를 터미널 명령으로 분류하며 웹 계정이나 별도
+로그인 단계를 추가하지 않는다.
+
+- `가치`/`가격`: RPAWNS·RREPAI 방에서 direct inventory exact name/occurrence를
+  읽고 pawn `value/2`(100,000 상한) 또는 repair `value/4`를 read-only receipt로 저장한다.
+- `수리`: RREPAI·ONOFIX·무기/방호구·손상도·gold를 확인한 뒤 주입 RNG와 piety 보정으로
+  파손/환불/삭제 또는 adjustment 제거·shots 복구를 하나의 atomic candidate로 저장한다.
+- `얘기`/`이야기`: online player exact 우선·prefix fallback, PINVIS/PDMINV/PDINVI,
+  PIGNOR·PSILNC·빈 메시지 경계를 검증하고 receipt의 deterministic event를 정확한
+  수신 연결에만 전달한다. 현재 모델에 없는 last-message/ignore-list 영속 필드는
+  추측해 추가하지 않았다.
+
+검증: 대상 world/session race 테스트, transport live connector 테스트, 전체
+`go test -race ./... -skip '^TestRoomBodyCorpus$'`, `go vet ./...`, Linux ARM64
+cross-build, 실제 ARM64 PostgreSQL 17에서 세 명령의 저장·replay receipt 테스트가
+통과했다. 전체 C alias/prefix/key parity, merchant full behavior, strict corpus 63건,
+실기기 IME/mobile, WSS/Ingress와 testnet 배포는 여전히 미완료다.

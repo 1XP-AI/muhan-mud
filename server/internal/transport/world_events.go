@@ -159,6 +159,31 @@ func (g *WorldConnector) publishYell(after world.State, actorID, text string) {
 	}
 }
 
+// publishDirectMessage delivers the committed recipient projection to the
+// exact online target. The target identity and rendered text come from the
+// receipt, so a replay or a later name collision cannot redirect the message.
+func (g *WorldConnector) publishDirectMessage(after world.State, event world.DirectMessageEvent) {
+	if event.TargetID == "" || event.Text == "" {
+		return
+	}
+	target, ok := after.Players[event.TargetID]
+	if !ok || !target.Online || target.Body.Name != event.TargetName {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		if connection.lease.ActorID != event.TargetID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow recipient must not block the sender's durable command.
+		}
+	}
+}
+
 // publishEmote fans out the committed action projection. The actor already
 // received the durable receipt response; a targeted recipient gets its
 // target-specific projection and everyone else in the room gets the room
