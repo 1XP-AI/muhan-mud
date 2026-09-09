@@ -531,6 +531,19 @@ cross-build, 실제 ARM64 PostgreSQL 17에서 세 명령의 저장·replay recei
 통과했다. 전체 C alias/prefix/key parity, merchant full behavior, strict corpus 63건,
 실기기 IME/mobile, WSS/Ingress와 testnet 배포는 여전히 미완료다.
 
+## 2026-09-09 직접 관리 병렬 레인: 묘사·사용자 조회·귀환
+
+다음 세 bounded slice를 Luna max 하위 에이전트가 신규 `world`/`session` 파일만 나눠
+구현하고, 메인 세션이 공용 parser와 connector를 직렬 연결했다. `묘사`는 C의 fullstr
+31바이트 경계와 canonical 설명 저장을, `사용자검색`/`사용자정보`는 online canonical
+identity와 가시성 fail-closed를, `귀환`은 combat/group/destination/MP/event 순서를
+각각 source-backed reducer와 durable `ExecuteGame` receipt로 고정한다.
+
+통합 후 live connector는 actor 응답과 observer room event를 분리하며, receipt replay는
+상태 변경과 fan-out을 재실행하지 않는다. 실제 ARM64 PostgreSQL 17에서 세 레인의 저장·
+재생을 확인했다. 전체 명령 parity, legacy room corpus 63건, NPC full tick/broadcast,
+IME/mobile 실기기, WSS/Ingress와 testnet 배포는 아직 남아 있다.
+
 ## 2026-09-09 병렬 서비스 lane 통합 계획 결과
 
 다음 병렬 작업은 서로 다른 신규 `world`/`session`/transport test 파일만 소유하고, 메인

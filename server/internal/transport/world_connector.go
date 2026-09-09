@@ -292,6 +292,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
+	descriptionCommand := false
+	playerLookupCommand := false
+	returnSquareCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -403,6 +406,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandGroupTalk:
 		groupTalkCommand = true
 		receipt, err = c.game.owners.ExecuteGroupTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandDescription:
+		descriptionCommand = true
+		receipt, err = c.game.owners.ExecuteDescriptionLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandPlayerLookup:
+		playerLookupCommand = true
+		receipt, err = c.game.owners.ExecutePlayerLookupLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandReturnSquare:
+		returnSquareCommand = true
+		receipt, err = c.game.owners.ExecuteReturnSquareLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -435,6 +447,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
+		errors.Is(err, session.ErrUnsupportedDescriptionLine) ||
+		errors.Is(err, session.ErrUnsupportedPlayerLookupLine) ||
+		errors.Is(err, session.ErrUnsupportedReturnSquareLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -582,6 +597,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if returnSquareCommand && !receipt.Replayed {
+		var result world.ReturnSquareResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Moved && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishReturnSquare(after, result)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -658,6 +681,20 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if groupTalkCommand {
 		var result world.GroupTalkResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if descriptionCommand {
+		var result world.DescriptionResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if playerLookupCommand {
+		if err = json.Unmarshal(receipt.Response, &output); err != nil {
+			// Keep the original receipt error for a malformed response.
+		}
+	} else if returnSquareCommand {
+		var result world.ReturnSquareResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

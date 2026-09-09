@@ -444,6 +444,36 @@ func (g *WorldConnector) publishFlee(after world.State, result world.FleeResult)
 	}
 }
 
+// publishReturnSquare fans out the committed departure and arrival texts
+// recorded by the return-square receipt. The actor receives the durable
+// response; replayed receipts never re-enter this projection.
+func (g *WorldConnector) publishReturnSquare(after world.State, result world.ReturnSquareResult) {
+	if result.Event == nil || result.Event.ActorID == "" {
+		return
+	}
+	event := *result.Event
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || connection.events == nil || connection.lease.ActorID == event.ExcludeActorID {
+			continue
+		}
+		if event.SourceText != "" && player.Body.RoomID == event.SourceRoomID {
+			select {
+			case connection.events <- event.SourceText:
+			default:
+			}
+		}
+		if event.DestinationText != "" && player.Body.RoomID == event.DestinationRoomID {
+			select {
+			case connection.events <- event.DestinationText:
+			default:
+			}
+		}
+	}
+}
+
 // publishPeek mirrors broadcast_rom2: the actor already has the durable
 // response, the target receives the private alert, and other room occupants
 // receive the room alert. Both projections are receipt-bound and only run on

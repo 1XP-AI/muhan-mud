@@ -672,3 +672,27 @@ ARM64 PostgreSQL 17 receipt 저장·replay와 Linux ARM64 cross-build도 이 lan
 통과했다. 전체 C command/economy parity, strict room corpus 63건,
 NPC full cadence/broadcast, IME/mobile 실기기, WSS/Ingress 및 testnet 배포 인수는 여전히
 미완료다.
+
+## 2026-09-09 직접 관리 병렬 레인: 묘사·사용자 조회·귀환
+
+세 개의 파일 소유권이 겹치지 않는 Luna max 레인을 병렬 실행한 뒤, 메인 세션에서
+parser·world connector·room fan-out을 직렬 통합했다.
+
+- `묘사`: 원작 `command12.c:description`의 suffix 입력(`<설명> 묘사`)과 bare
+  `묘사` 초기화를 연결했다. C의 `strlen(fullstr)` 31바이트 경계, UTF-8/control
+  검증, canonical trailing ASCII space, stale proposal 방어와 typed receipt/replay를
+  포함한다.
+- `사용자검색`/`사용자정보`: online canonical player의 exact-name 조회만 허용한다.
+  PINVIS·PDMINV·PBLIND·PDINVI 가시성 게이트를 적용하고, offline/ambiguous/legacy
+  file metadata는 existence oracle이 되지 않도록 fail-closed한다. 결과는 read-only
+  receipt로 저장·재생한다.
+- `귀환`/`귀`: C의 전투→광장→그룹 거부 순서, PFRTUN 목적지, 20레벨 초과 비무적
+  도력 소진, 원자적 room membership 이동, PDMINV broadcast 억제와 source/destination
+  observer event를 연결했다. denial도 unchanged-state receipt로 고정하고 replay에서는
+  이동·방송을 재실행하지 않는다.
+
+검증: 대상 world/session race 테스트, live connector dispatch·fan-out 테스트, 전체
+`go test -race ./... -skip '^TestRoomBodyCorpus$'`, `go vet ./...`, Linux ARM64
+cross-build, 실제 ARM64 PostgreSQL 17 receipt 저장·재생 테스트가 통과했다. strict room
+corpus 63건, 전체 C alias/prefix/key/ANSI parity, NPC full cadence/broadcast,
+IME/mobile 실기기, WSS/Ingress와 testnet 배포는 여전히 별도 인수 조건이다.

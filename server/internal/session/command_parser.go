@@ -54,6 +54,9 @@ const (
 	CommandMerchantPurchase
 	CommandNPCTalk
 	CommandGroupTalk
+	CommandDescription
+	CommandPlayerLookup
+	CommandReturnSquare
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -108,6 +111,18 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if _, ok := ParseGroupTalkLine(trimmed); ok {
 		parsed.Kind = CommandGroupTalk
+		return parsed, nil
+	}
+	if IsDescriptionLine(trimmed) {
+		parsed.Kind = CommandDescription
+		return parsed, nil
+	}
+	if IsPlayerLookupLine(trimmed) {
+		parsed.Kind = CommandPlayerLookup
+		return parsed, nil
+	}
+	if IsReturnSquareLine(trimmed) {
+		parsed.Kind = CommandReturnSquare
 		return parsed, nil
 	}
 	parsed.Kind = commandKind(tokens[0])

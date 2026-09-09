@@ -2268,3 +2268,18 @@ allocator·fan-out을 다시 실행하지 않는다. merchant catalog가 없거�
 명시적으로 이관되지 않은 경우 실행을 거부한다. 이 기능들은 전체 C 명령/경제 parity,
 strict room corpus 63건, NPC full tick/broadcast, 실제 IME/mobile 및 testnet 배포의
 완료를 의미하지 않는다.
+
+## 묘사·사용자 조회·귀환
+
+현재 connector는 다음 원작 터미널 명령의 bounded Go slice를 지원한다.
+
+- `<설명> 묘사`/`묘사`: 31바이트·UTF-8 경계와 trailing-space canonical 저장
+- `사용자검색 <이름>`/`사용자정보 <이름>`: online canonical exact 조회와 가시성
+  fail-closed; offline legacy file metadata는 사용하지 않음
+- `귀환`/`귀`: 전투·그룹 거부, PFRTUN 목적지, 고레벨 도력 소진, 원자적 이동과
+  source/destination room event
+
+세 명령 모두 `ExecuteGame` receipt/replay를 사용하고, replay에서는 room fan-out을
+반복하지 않는다. race/vet/ARM64 build 및 실제 ARM64 PostgreSQL 17 receipt 검증을
+통과했지만 전체 C parity, strict corpus 63건, IME/mobile 실기기, WSS/Ingress와
+testnet 배포는 별도 게이트다.
