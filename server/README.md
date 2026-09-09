@@ -2283,3 +2283,17 @@ strict room corpus 63건, NPC full tick/broadcast, 실제 IME/mobile 및 testnet
 반복하지 않는다. race/vet/ARM64 build 및 실제 ARM64 PostgreSQL 17 receipt 검증을
 통과했지만 전체 C parity, strict corpus 63건, IME/mobile 실기기, WSS/Ingress와
 testnet 배포는 별도 게이트다.
+
+## 비교·감정·명명
+
+터미널은 다음 아이템 명령을 canonical Go world/session 경계로 처리한다.
+
+- `비교 [물건] [occurrence]`: 무기·방어구만 원작 직업/레벨 판정으로 비교한다.
+- `감정 <물건> [occurrence]`: 도둑 또는 INVINCIBLE 이상만 직접 소지품을 감정한다.
+- `<물건> [occurrence] <새 이름> 명명`: OCNAME 아이템을 80-byte bounded name으로
+  원자적으로 변경하고 ONAMED를 설정한다.
+
+세 명령은 exact canonical direct root만 선택하며 nested/equipped/legacy/unmigrated 자료는
+추측하지 않고 거부한다. receipt replay는 상태 변경과 room announcement를 반복하지 않는다.
+race/vet/ARM64 build와 실제 ARM64 PostgreSQL 17 저장·재생 검증을 통과했지만 전체 C
+명령 parity, strict room corpus, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 남아 있다.

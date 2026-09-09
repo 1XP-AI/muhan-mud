@@ -57,6 +57,9 @@ const (
 	CommandDescription
 	CommandPlayerLookup
 	CommandReturnSquare
+	CommandCompare
+	CommandObjectAppraisal
+	CommandItemRename
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -76,6 +79,16 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	parsed := ParsedCommand{Line: line}
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
+		return parsed, nil
+	}
+	// Suffix commands are checked before the legacy leading-quote speech
+	// shortcut so a quoted item selector can still reach its own reducer.
+	if IsItemRenameLine(trimmed) {
+		parsed.Kind = CommandItemRename
+		parsed.Tokens = legacyTokens(trimmed)
+		if len(parsed.Tokens) > 7 {
+			return ParsedCommand{}, ErrCommandTooManyTokens
+		}
 		return parsed, nil
 	}
 	if _, ok := SayLineText(trimmed); ok {
@@ -123,6 +136,14 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsReturnSquareLine(trimmed) {
 		parsed.Kind = CommandReturnSquare
+		return parsed, nil
+	}
+	if IsCompareLine(trimmed) {
+		parsed.Kind = CommandCompare
+		return parsed, nil
+	}
+	if IsObjectAppraisalLine(trimmed) {
+		parsed.Kind = CommandObjectAppraisal
 		return parsed, nil
 	}
 	parsed.Kind = commandKind(tokens[0])

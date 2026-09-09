@@ -562,3 +562,18 @@ IME/mobile 실기기, WSS/Ingress와 testnet 배포는 아직 남아 있다.
 cross-build, disposable ARM64 PostgreSQL 17을 순서대로 실행한다. 이 결과가 통과해도
 strict room corpus 63건, 전체 C parity, NPC 전체 cadence, 실기기 IME/mobile, WSS/Ingress와
 testnet 배포 인수는 별도 게이트다.
+
+## 2026-09-09 직접 오케스트레이션 후속: 아이템 정보·이름 변경
+
+메인 세션이 Orca를 사용하지 않고 Luna max 에이전트를 세 독립 레인으로 직접 배치했다.
+각 레인은 신규 world/session 파일만 소유했고, parser·transport·receipt 통합과 최종
+검증은 메인 세션에서 수행했다.
+
+1. `비교` — canonical direct inventory 기반 source-level weapon/armor comparison.
+2. `감정` — THIEF/INVINCIBLE 권한과 deterministic object appraisal projection.
+3. `명명` — OCNAME/ONAMED를 포함한 80-byte bounded atomic item rename.
+
+세 명령은 모두 `ExecuteGame` receipt/replay를 사용하고, replay에서 reducer·mutation·room
+fan-out을 재실행하지 않는다. 실제 ARM64 PostgreSQL 17에서 저장·재생을 확인했다. 이
+게이트는 전체 C command table, prefix/key matcher, strict room corpus 63개, NPC full
+cadence/broadcast, WSS/Ingress·testnet 배포 인수를 승격하지 않는다.

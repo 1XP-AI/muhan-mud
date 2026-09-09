@@ -696,3 +696,26 @@ parser·world connector·room fan-out을 직렬 통합했다.
 cross-build, 실제 ARM64 PostgreSQL 17 receipt 저장·재생 테스트가 통과했다. strict room
 corpus 63건, 전체 C alias/prefix/key/ANSI parity, NPC full cadence/broadcast,
 IME/mobile 실기기, WSS/Ingress와 testnet 배포는 여전히 별도 인수 조건이다.
+
+## 2026-09-09 직접 관리 병렬 레인: 비교·감정·명명
+
+Orca 없이 메인 세션이 Luna max 하위 에이전트를 파일 소유권이 겹치지 않는 세 레인으로
+직접 배치하고, 공용 parser·connector만 직렬 통합했다.
+
+- `비교`: 원작 `command12.c:obj_compare`의 bare prompt와 무기/방어구 판정을 canonical
+  direct inventory exact name/positive occurrence로 연결했다. BODY 방어구 감쇠, 직업별
+  damage 보정, INVINCIBLE 레벨 표, unsupported/missing 응답을 typed read-only receipt로
+  고정했으며 nested/equipped/legacy/unmigrated 대상은 fail-closed한다.
+- `감정`: 원작 `command3.c:info_obj`의 THIEF 또는 INVINCIBLE 이상 권한, type/shots/
+  dice/armor/trait 출력을 canonical root projection으로 옮겼다. invisible gate와
+  deterministic response를 포함하며 상태는 변경하지 않는다.
+- `명명`: 원작 `command8.c:chg_name` suffix(`<물건> [#] <이름> 명명`)를 canonical
+  root mutation으로 옮겼다. 80-byte·UTF-8/control/공백 검증, OCNAME 제거·ONAMED 설정,
+  stale proposal 방어, post-commit room announcement와 receipt replay를 포함한다.
+
+검증: 세 레인의 world/session race 테스트, parser·live connector dispatch 테스트,
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...`, `git diff --check`, 실제 ARM64
+PostgreSQL 17의 세 명령 저장·재생 테스트가 통과했다. strict room corpus 63건, 전체 C
+alias/prefix/key/ANSI parity, NPC 전체 cadence/broadcast, IME/mobile 실기기, WSS/Ingress와
+testnet 배포는 여전히 별도 인수 조건이다.

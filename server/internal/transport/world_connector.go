@@ -295,6 +295,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	descriptionCommand := false
 	playerLookupCommand := false
 	returnSquareCommand := false
+	compareCommand := false
+	objectAppraisalCommand := false
+	itemRenameCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -415,6 +418,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandReturnSquare:
 		returnSquareCommand = true
 		receipt, err = c.game.owners.ExecuteReturnSquareLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandCompare:
+		compareCommand = true
+		receipt, err = c.game.owners.ExecuteCompareLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandObjectAppraisal:
+		objectAppraisalCommand = true
+		receipt, err = c.game.owners.ExecuteObjectAppraisalLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandItemRename:
+		itemRenameCommand = true
+		receipt, err = c.game.owners.ExecuteItemRenameLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -450,6 +462,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedDescriptionLine) ||
 		errors.Is(err, session.ErrUnsupportedPlayerLookupLine) ||
 		errors.Is(err, session.ErrUnsupportedReturnSquareLine) ||
+		errors.Is(err, session.ErrUnsupportedCompareLine) ||
+		errors.Is(err, session.ErrUnsupportedObjectAppraisalLine) ||
+		errors.Is(err, session.ErrUnsupportedItemRenameLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -605,6 +620,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if itemRenameCommand && !receipt.Replayed {
+		var result world.ItemRenameResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishItemRename(after, *result.Event)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -695,6 +718,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if returnSquareCommand {
 		var result world.ReturnSquareResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if compareCommand {
+		var result world.CompareResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if objectAppraisalCommand {
+		var result world.ObjectAppraisalResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if itemRenameCommand {
+		var result world.ItemRenameResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
