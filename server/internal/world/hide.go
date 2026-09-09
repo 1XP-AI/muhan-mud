@@ -21,36 +21,51 @@ const (
 	hideBlindFlag      = 42 // PBLIND
 )
 
-var ErrHideObjectUnsupported = errors.New("object hiding is not implemented")
+var (
+	// ErrHideObjectUnsupported is retained for callers that still distinguish
+	// the old pre-migration boundary. Object hiding is now admitted only for a
+	// canonical same-room floor root.
+	ErrHideObjectUnsupported = errors.New("object hiding is not implemented")
+	ErrHideObjectCannot      = errors.New("object cannot be hidden")
+)
 
-// HideProposal is the deterministic candidate for the bare player branch of
-// command5.c:hide.  Succeeded is the one random outcome that must travel with
-// a receipt: replay must not call the random source again, and both outcomes
-// produce a room projection in the legacy command.
-//
-// The object branch is deliberately not represented by a target identity.
-// Callers that have an object argument must reject it at the command boundary
-// (PlanHideObject/PlanHideTarget return ErrHideObjectUnsupported).
+// HideProposal is the deterministic candidate for command5.c:hide. Succeeded
+// is the one random outcome that must travel with a receipt: replay must not
+// call the random source again. ObjectID is authoritative only after it has
+// been resolved from the committed canonical room snapshot.
 type HideProposal struct {
-	ActorID     string
-	RoomID      int16
-	Now         int32
-	Chance      int
-	Interval    int32
-	WaitSeconds int32
-	Cooldown    bool
-	Succeeded   bool
-	Broadcast   bool
-	Response    string
+	ActorID string
+	RoomID  int16
+	// ObjectID/Name/Occurrence identify a canonical floor root when the
+	// object branch is selected.  They are resolved from the committed room
+	// snapshot during planning; clients never supply an item ID.
+	ObjectID         string
+	ObjectName       string
+	ObjectOccurrence int
+	ObjectBranch     bool
+	ObjectWasHidden  bool
+	Now              int32
+	Chance           int
+	Interval         int32
+	WaitSeconds      int32
+	Cooldown         bool
+	Succeeded        bool
+	Broadcast        bool
+	Response         string
 }
 
 // HideResult is the durable actor response plus the outcome needed to derive
 // the post-commit room event.  Succeeded is false for both a failed attempt
 // and a cooldown no-op; Broadcast distinguishes those cases.
 type HideResult struct {
-	Response  string
-	Broadcast bool
-	Succeeded bool
+	Response         string `json:"response"`
+	Broadcast        bool   `json:"broadcast"`
+	Succeeded        bool   `json:"succeeded"`
+	ObjectID         string `json:"object_id,omitempty"`
+	ObjectName       string `json:"object_name,omitempty"`
+	ObjectOccurrence int    `json:"object_occurrence,omitempty"`
+	ObjectBranch     bool   `json:"object_branch,omitempty"`
+	RoomText         string `json:"room_text,omitempty"`
 }
 
 // HideEvent is the committed-state projection of the bare player hide branch.
@@ -63,9 +78,16 @@ type HideEvent struct {
 	ActorID        string
 	ActorName      string
 	ExcludeActorID string
+	ObjectID       string
+	ObjectName     string
 	Succeeded      bool
 	Text           string
 }
+
+const (
+	hideObjectAttemptResponse = "당신은 그것을 숨겨보려고 합니다."
+	hideObjectSuccessResponse = "\r\n당신은 성공적으로 숨겼습니다."
+)
 
 // HideChance ports command5.c's player/bare chance calculation.  C indexes
 // bonus[] with dexterity and reads class constants from mtype.h; an admitted
@@ -109,6 +131,39 @@ func HideChance(player LegacyMonster) (int, error) {
 	return chance, nil
 }
 
+// HideObjectChance ports the object branch of command5.c:hide.  Its chance
+// table is intentionally separate from HideChance: the legacy player branch
+// uses different coefficients, while the object branch uses 10/5/5 for
+// thief/assassin, 5/9/3 for ranger, and 5/3/3 for all other classes.
+// Unlike the player branch, the source object path has no blindness cap.
+func HideObjectChance(player LegacyMonster) (int, error) {
+	if player.Class > 12 {
+		return 0, fmt.Errorf("hide object actor class outside legacy table")
+	}
+	if player.Stats[1] > 63 {
+		return 0, fmt.Errorf("hide object actor dexterity outside legacy bonus table")
+	}
+
+	levelBand := (int(player.Level) + 3) / 4
+	dexBonus := legacyStatBonus[player.Stats[1]]
+	var chance int
+	switch {
+	case player.Class == hideThiefClass || player.Class == hideAssassinClass:
+		chance = 10 + 5*levelBand + 5*dexBonus
+		if chance > 90 {
+			chance = 90
+		}
+	case player.Class == hideRangerClass:
+		chance = 5 + 9*levelBand + 3*dexBonus
+	default:
+		chance = 5 + 3*levelBand + 3*dexBonus
+		if chance > 90 {
+			chance = 90
+		}
+	}
+	return chance, nil
+}
+
 func hideInterval(player LegacyMonster) (int32, error) {
 	if player.Class > 12 {
 		return 0, fmt.Errorf("hide actor class outside legacy table")
@@ -136,6 +191,43 @@ func validHideActorName(name string) bool {
 		}
 	}
 	return true
+}
+
+// selectHideObjectRoot resolves an exact canonical room-floor root in stored
+// order. Nested contents are not room roots, while a container root itself is
+// a valid floor object. Prefix/key lookup is deliberately not inferred here;
+// the command boundary admits a display name and a positive occurrence only.
+func selectHideObjectRoot(room RoomState, name string, occurrence int) (string, Item, error) {
+	if occurrence < 1 {
+		return "", Item{}, fmt.Errorf("invalid hide object occurrence")
+	}
+	if !validHideActorName(name) {
+		return "", Item{}, fmt.Errorf("invalid hide object name")
+	}
+	if room.Items == nil {
+		if len(room.Resource.Objects) != 0 {
+			return "", Item{}, fmt.Errorf("%w: canonical hide room objects unavailable", ErrHideObjectUnsupported)
+		}
+		return "", Item{}, fmt.Errorf("%w: canonical hide room items required", ErrHideObjectUnsupported)
+	}
+	if err := room.Items.Validate(); err != nil {
+		return "", Item{}, fmt.Errorf("canonical hide room items unavailable: %w", err)
+	}
+	found := 0
+	for _, id := range room.Items.Inventory {
+		item, ok := room.Items.Items[id]
+		if !ok || id == "" {
+			return "", Item{}, fmt.Errorf("canonical hide room root absent")
+		}
+		if item.Object.Name != name {
+			continue
+		}
+		found++
+		if found == occurrence {
+			return id, item, nil
+		}
+	}
+	return "", Item{}, fmt.Errorf("hide object not found: %q", name)
 }
 
 // hideRoll validates the random boundary and turns a panicking injected RNG
@@ -223,19 +315,101 @@ func (s State) PlanHide(actorID string, now int32, roll func(int, int) int) (Hid
 	return proposal, nil
 }
 
-// PlanHideObject is the explicit fail-closed boundary for command5.c's
-// object branch.  No object identity, ONOTAK check, or object flag mutation is
-// admitted by this slice.
+// PlanHideObject plans command5.c:hide's canonical floor-object branch with
+// its default first occurrence. The player cooldown is checked before target
+// resolution or RNG, and a valid target consumes exactly one 1..100 roll.
 func (s State) PlanHideObject(actorID, objectName string, now int32, roll func(int, int) int) (HideProposal, error) {
-	return HideProposal{}, fmt.Errorf("%w: %q", ErrHideObjectUnsupported, objectName)
+	return s.PlanHideObjectWithOccurrence(actorID, objectName, 1, now, roll)
+}
+
+// PlanHideObjectWithOccurrence is the explicit object branch. The selector is
+// resolved against direct canonical floor roots only, in room inventory order.
+func (s State) PlanHideObjectWithOccurrence(actorID, objectName string, occurrence int, now int32, roll func(int, int) int) (HideProposal, error) {
+	if err := s.Validate(); err != nil {
+		return HideProposal{}, err
+	}
+	if actorID == "" || now < 0 {
+		return HideProposal{}, fmt.Errorf("invalid hide actor or clock")
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 || !validHideActorName(actor.Body.Name) {
+		return HideProposal{}, fmt.Errorf("online hide actor absent")
+	}
+	room, ok := s.Rooms[actor.Body.RoomID]
+	if !ok {
+		return HideProposal{}, fmt.Errorf("hide actor room absent")
+	}
+	chance, err := HideObjectChance(actor.Body)
+	if err != nil {
+		return HideProposal{}, err
+	}
+	interval, err := hideInterval(actor.Body)
+	if err != nil {
+		return HideProposal{}, err
+	}
+	timer := actor.Body.Timers[hideTimerIndex]
+	if timer.LastTime < 0 || timer.Interval < 0 {
+		return HideProposal{}, fmt.Errorf("hide timer outside legacy range")
+	}
+	deadline := int64(timer.LastTime) + int64(timer.Interval)
+	proposal := HideProposal{
+		ActorID:  actorID,
+		RoomID:   actor.Body.RoomID,
+		Now:      now,
+		Chance:   chance,
+		Interval: interval,
+	}
+	if int64(now) < deadline {
+		wait := deadline - int64(now)
+		if wait < 1 || wait > int64(^uint32(0)>>1) {
+			return HideProposal{}, fmt.Errorf("hide cooldown overflow")
+		}
+		proposal.Cooldown = true
+		proposal.WaitSeconds = int32(wait)
+		proposal.Response = hideWaitResponse(proposal.WaitSeconds)
+		return proposal, nil
+	}
+
+	objectID, object, err := selectHideObjectRoot(room, objectName, occurrence)
+	if err != nil {
+		return HideProposal{}, err
+	}
+	if flag(object.Object.Flags[:], objectNotTakeFlag) {
+		return HideProposal{}, fmt.Errorf("%w: %q", ErrHideObjectCannot, objectName)
+	}
+	success, err := hideRoll(roll, chance)
+	if err != nil {
+		return HideProposal{}, err
+	}
+	proposal.ObjectID = objectID
+	proposal.ObjectName = object.Object.Name
+	proposal.ObjectOccurrence = occurrence
+	proposal.ObjectBranch = true
+	proposal.ObjectWasHidden = flag(object.Object.Flags[:], objectHiddenFlag)
+	proposal.Succeeded = success
+	proposal.Broadcast = true
+	proposal.Response = hideObjectAttemptResponse
+	if success {
+		proposal.Response += hideObjectSuccessResponse
+	}
+	return proposal, nil
 }
 
 // PlanHideTarget is a command-boundary convenience for callers that parse an
-// optional hide argument.  An empty argument is the admitted bare path;
-// non-empty arguments are object requests and fail closed.
+// optional hide argument. An empty argument is the bare player branch; a
+// non-empty argument is a canonical same-room floor root.
 func (s State) PlanHideTarget(actorID, target string, now int32, roll func(int, int) int) (HideProposal, error) {
+	return s.PlanHideTargetWithOccurrence(actorID, target, 1, now, roll)
+}
+
+// PlanHideTargetWithOccurrence keeps the client input at display-name scope;
+// the authoritative object identity is resolved only from the current State.
+func (s State) PlanHideTargetWithOccurrence(actorID, target string, occurrence int, now int32, roll func(int, int) int) (HideProposal, error) {
 	if strings.TrimSpace(target) != "" {
-		return s.PlanHideObject(actorID, target, now, roll)
+		return s.PlanHideObjectWithOccurrence(actorID, target, occurrence, now, roll)
+	}
+	if occurrence != 1 {
+		return HideProposal{}, fmt.Errorf("bare hide occurrence must be one")
 	}
 	return s.PlanHide(actorID, now, roll)
 }
@@ -254,7 +428,13 @@ func (s State) ApplyHide(proposal HideProposal) (State, HideResult, error) {
 	if proposal.ActorID == "" || proposal.Now < 0 || proposal.Response == "" {
 		return State{}, HideResult{}, fmt.Errorf("invalid hide proposal")
 	}
-	chance, err := HideChance(actor.Body)
+	chance := 0
+	var err error
+	if proposal.ObjectBranch {
+		chance, err = HideObjectChance(actor.Body)
+	} else {
+		chance, err = HideChance(actor.Body)
+	}
 	if err != nil {
 		return State{}, HideResult{}, err
 	}
@@ -283,6 +463,55 @@ func (s State) ApplyHide(proposal HideProposal) (State, HideResult, error) {
 	}
 	if int64(proposal.Now) < deadline || proposal.WaitSeconds != 0 || !proposal.Broadcast {
 		return State{}, HideResult{}, fmt.Errorf("hide cooldown changed")
+	}
+	if proposal.ObjectBranch {
+		room, roomOK := s.Rooms[proposal.RoomID]
+		if !roomOK || room.Items == nil || proposal.ObjectID == "" || proposal.ObjectName == "" || proposal.ObjectOccurrence < 1 || proposal.ObjectOccurrence > len(room.Items.Inventory) {
+			return State{}, HideResult{}, fmt.Errorf("invalid hide object proposal")
+		}
+		objectID, object, err := selectHideObjectRoot(room, proposal.ObjectName, proposal.ObjectOccurrence)
+		if err != nil || objectID != proposal.ObjectID {
+			if err != nil {
+				return State{}, HideResult{}, fmt.Errorf("stale hide object proposal: %w", err)
+			}
+			return State{}, HideResult{}, fmt.Errorf("stale hide object identity")
+		}
+		if proposal.ObjectWasHidden != flag(object.Object.Flags[:], objectHiddenFlag) {
+			return State{}, HideResult{}, fmt.Errorf("stale hide object flag")
+		}
+		if flag(object.Object.Flags[:], objectNotTakeFlag) {
+			return State{}, HideResult{}, fmt.Errorf("%w: %q", ErrHideObjectCannot, proposal.ObjectName)
+		}
+		if proposal.Response != hideObjectAttemptResponse && proposal.Response != hideObjectAttemptResponse+hideObjectSuccessResponse {
+			return State{}, HideResult{}, fmt.Errorf("hide object response mismatch")
+		}
+		next := s.clone()
+		nextActor := next.Players[proposal.ActorID]
+		nextActor.Body.Timers[hideTimerIndex].LastTime = proposal.Now
+		nextActor.Body.Timers[hideTimerIndex].Interval = interval
+		next.Players[proposal.ActorID] = nextActor
+		nextRoom := next.Rooms[proposal.RoomID]
+		nextObject := nextRoom.Items.Items[proposal.ObjectID]
+		setObjectFlag(&nextObject.Object.Flags, objectHiddenFlag, proposal.Succeeded)
+		nextRoom.Items.Items[proposal.ObjectID] = nextObject
+		next.Rooms[proposal.RoomID] = nextRoom
+		if err := next.Validate(); err != nil {
+			return State{}, HideResult{}, err
+		}
+		roomText := fmt.Sprintf("\n%s님이 %s 숨겨보려고 합니다.\r\n", actor.Body.Name, proposal.ObjectName)
+		if proposal.Succeeded {
+			roomText = fmt.Sprintf("\n%s님이 %s 어딘가 숨깁니다.\r\n", actor.Body.Name, proposal.ObjectName)
+		}
+		return next, HideResult{
+			Response:         proposal.Response,
+			Broadcast:        true,
+			Succeeded:        proposal.Succeeded,
+			ObjectID:         proposal.ObjectID,
+			ObjectName:       proposal.ObjectName,
+			ObjectOccurrence: proposal.ObjectOccurrence,
+			ObjectBranch:     true,
+			RoomText:         roomText,
+		}, nil
 	}
 	if proposal.Succeeded {
 		if proposal.Response != "당신은 애써 숨어보려고 합니다.\r\n당신은 성공적으로 숨었습니다." {
@@ -344,4 +573,64 @@ func (s State) RoomHideEvent(actorID string, succeeded ...bool) (HideEvent, bool
 // explicit receipt outcome over the variadic convenience form.
 func (s State) RoomHideEventFor(actorID string, succeeded bool) (HideEvent, bool, error) {
 	return s.RoomHideEvent(actorID, succeeded)
+}
+
+// RoomHideObjectEvent derives the object-branch room projection from the
+// committed canonical root. The explicit outcome from a durable receipt is
+// preferred; when omitted, the committed OHIDDN bit is used. This keeps a
+// replay from rerolling or accidentally rebroadcasting a different object.
+func (s State) RoomHideObjectEvent(actorID, objectID string, succeeded ...bool) (HideEvent, bool, error) {
+	if len(succeeded) > 1 {
+		return HideEvent{}, false, fmt.Errorf("hide object event accepts at most one outcome")
+	}
+	if err := s.Validate(); err != nil {
+		return HideEvent{}, false, err
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 || !validHideActorName(actor.Body.Name) {
+		return HideEvent{}, false, fmt.Errorf("online hide actor absent")
+	}
+	room, ok := s.Rooms[actor.Body.RoomID]
+	if !ok || room.Items == nil {
+		return HideEvent{}, false, fmt.Errorf("canonical hide room items required")
+	}
+	object, ok := room.Items.Items[objectID]
+	if !ok || objectID == "" {
+		return HideEvent{}, false, fmt.Errorf("hide object absent")
+	}
+	// The event must address a direct room root, never a nested child.
+	root := false
+	for _, id := range room.Items.Inventory {
+		if id == objectID {
+			root = true
+			break
+		}
+	}
+	if !root || !validHideActorName(object.Object.Name) {
+		return HideEvent{}, false, fmt.Errorf("hide object is not a canonical room root")
+	}
+	outcome := flag(object.Object.Flags[:], objectHiddenFlag)
+	if len(succeeded) == 1 {
+		outcome = succeeded[0]
+	}
+	text := fmt.Sprintf("\n%s님이 %s 숨겨보려고 합니다.\r\n", actor.Body.Name, object.Object.Name)
+	if outcome {
+		text = fmt.Sprintf("\n%s님이 %s 어딘가 숨깁니다.\r\n", actor.Body.Name, object.Object.Name)
+	}
+	return HideEvent{
+		RoomID:         actor.Body.RoomID,
+		ActorID:        actorID,
+		ActorName:      actor.Body.Name,
+		ExcludeActorID: actorID,
+		ObjectID:       objectID,
+		ObjectName:     object.Object.Name,
+		Succeeded:      outcome,
+		Text:           text,
+	}, true, nil
+}
+
+// RoomHideObjectEventFor is a named form for receipt consumers that always
+// have a persisted object outcome.
+func (s State) RoomHideObjectEventFor(actorID, objectID string, succeeded bool) (HideEvent, bool, error) {
+	return s.RoomHideObjectEvent(actorID, objectID, succeeded)
 }

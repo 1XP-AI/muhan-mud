@@ -617,3 +617,43 @@ canonical PlayerState 필드로 제한했다.
 ARM64 PostgreSQL 17 receipt 테스트다. 이 레인은 G3 일부 기능의 bounded progress이며,
 전체 C parity·strict room corpus·NPC cadence·실기기 IME/mobile·WSS/Ingress·testnet
 배포 인수 조건은 여전히 남는다.
+
+## 2026-09-09 검증 비용 전수 점검과 수동 CI scope
+
+반복 실행 경로를 저장소 전체에서 점검한 결과, Go 개발 레인은
+`scripts/run-go-validation.sh fast`로 제한하고, 메인 통합에서만
+`scripts/run-go-validation.sh merge`를 실행하는 것이 안전한 최소 경계다. 레인마다
+반복하던 전체 race·`go vet`·Linux ARM64 cross-build·실제 PostgreSQL·브라우저·차트
+검증은 레인 완료 조건에서 제외했다. 변경 batch에 영속성 경계가 있을 때만 고유 ARM64
+PostgreSQL 컨테이너에서 receipt/replay를 한 번 실행한다.
+
+`.github/workflows/ci.yml`는 자동 push/PR 트리거를 추가하지 않고 수동
+`validation_scope` 입력을 제공한다.
+
+- `fast`(기본): self-hosted Linux ARM64에서 Go world/session/transport 표적 race만 실행
+- `integration`: 전체 Go race(기존 strict room corpus 예외), vet, Linux ARM64 build와 diff
+  check를 메인 merge 경계에서 한 번 실행
+- `release`: 기존 Supabase/PostgreSQL 계약, 브라우저/stack, x64·Windows·macOS 호환 matrix를
+  승인된 release 검토 시에만 실행
+
+수동 workflow의 scope가 기본값 `fast`이므로 기능 레인이나 일반 수동 확인이 ARM64 전체
+matrix와 브라우저/DB 비용을 자동으로 소비하지 않는다. 호환성·차트·실기기 IME/mobile과
+testnet 배포는 삭제하지 않고 release gate로 남겼다. 현재 적용 후 정책/runner 정적 검사는
+통과했고, 실제 원격 workflow dispatch·push·배포는 실행하지 않았다.
+전수 정적 검사에서 stack E2E runner가 누락했던 20261016~20261027 migration 12개도
+시간순 apply 목록에 보강했고, migration coverage 57개·shell 문법 검사를 통과했다.
+
+## 2026-09-09 직접 관리 병렬 후속: 뇌물·물건 숨기기·도망 함정
+
+Luna max 세 레인을 서로 다른 world/session 파일 소유권으로 병렬 실행하고 메인 세션에서
+parser·connector·room event를 통합했다. `뇌물`은 NPC visibility와 원작 threshold, gold
+debit·MTRADE 상태·follower/enemy 정리를 atomic receipt로 저장한다. `숨겨`/`숨어`는 같은
+방 canonical floor object와 occurrence를 선택하고 `OHIDDN` stealth와 C식 확률/RNG를
+한 번 적용한다. `도망`은 기존 arrival-trap hook을 실제 dart/pit/alarm/death 전이에
+연결하며 성공 이동과 실패 사망·경보를 모두 replay-safe receipt에 기록한다.
+
+검증은 레인 targeted race, parser/live connector 회귀, `scripts/run-go-validation.sh fast`,
+통합 `scripts/run-go-validation.sh merge`를 통과했다. 별도 ARM64 `postgres:17`에서
+`TestPostgresBribeCommandPersistsAndReplays` 저장·동일 command replay도 통과했으며,
+컨테이너는 테스트 직후 제거하고 공유 `sws26-db`는 건드리지 않았다. 전체 C parity, strict
+room corpus, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 아직 남아 있다.

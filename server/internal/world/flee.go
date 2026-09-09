@@ -10,9 +10,9 @@ import (
 
 // Flee is the bounded player branch of src/command7.c:flee.  The legacy
 // weapon-drop block is commented out, and its F_ISSET(xp->ext,52) reads past
-// the four-byte exit flag array.  Neither is guessed here.  Arrival traps are
-// also an explicit fail-closed boundary because check_traps is a separate
-// state transition (and can kill a player).
+// the four-byte exit flag array.  Neither is guessed here.  A successful
+// transfer continues through the canonical arrival-trap reducer in the same
+// candidate, matching C's move-then-check_traps ordering.
 const (
 	fleeAttackTimer         = 3  // LT_ATTCK
 	fleeSpellTimer          = 9  // LT_SPELL
@@ -49,9 +49,9 @@ const (
 	fleeCaretakerClass   = 10 // CARETAKER
 )
 
-// ErrFleeArrivalTrap marks a destination whose check_traps side effects are
-// not yet part of this command's atomic reducer.  The whole command is
-// rejected; no hidden/track/experience mutation is retained.
+// ErrFleeArrivalTrap is retained for source compatibility with the old
+// bounded boundary. PlanFlee now resolves arrival traps in its atomic
+// candidate and no longer returns this error for a supported trap.
 var ErrFleeArrivalTrap = fmt.Errorf("flee arrival trap is not implemented")
 
 // FleeProposal is the pure candidate for one player flee request.  next and
@@ -78,6 +78,8 @@ type FleeProposal struct {
 	ExperienceLoss    int32
 	Response          string
 	Transfer          TransferProposal
+	Death             *PlayerDeathResult
+	Alarm             *ArrivalAlarmResult
 
 	before State
 	next   State
@@ -87,14 +89,17 @@ type FleeProposal struct {
 // receipt data for post-commit event projection; the actor's response is
 // already complete and must not be recomputed on replay.
 type FleeResult struct {
-	Response          string `json:"response"`
-	Broadcast         bool   `json:"broadcast"`
-	Moved             bool   `json:"moved"`
-	ActorID           string `json:"actor_id"`
-	ActorName         string `json:"actor_name"`
-	SourceRoomID      int16  `json:"source_room_id"`
-	DestinationRoomID int16  `json:"destination_room_id"`
-	ExitName          string `json:"exit_name"`
+	Response          string              `json:"response"`
+	Broadcast         bool                `json:"broadcast"`
+	Moved             bool                `json:"moved"`
+	ActorID           string              `json:"actor_id"`
+	ActorName         string              `json:"actor_name"`
+	SourceRoomID      int16               `json:"source_room_id"`
+	DestinationRoomID int16               `json:"destination_room_id"`
+	ExitName          string              `json:"exit_name"`
+	ArrivalTrap       *ArrivalTrapResult  `json:"arrival_trap,omitempty"`
+	Death             *PlayerDeathResult  `json:"death,omitempty"`
+	Alarm             *ArrivalAlarmResult `json:"alarm,omitempty"`
 }
 
 // FleeEvent is the committed room projection.  The actor receives the
@@ -349,6 +354,63 @@ func applyFleePenalty(s State, proposal FleeProposal) (State, error) {
 	return next, nil
 }
 
+// applyFleeArrival completes the post-admission portion of command7.c. The
+// transfer candidate is already in the destination at this point, so trap
+// planning is attached to the same FleeProposal and every reducer below is
+// applied to one local candidate. All random work happens here, during Plan;
+// ApplyFlee only installs proposal.next and therefore never replays RNG.
+func applyFleeArrival(s State, proposal *FleeProposal, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, error) {
+	if proposal == nil || !proposal.Moved || proposal.Transfer.Entry == nil {
+		return s, nil
+	}
+	if err := s.attachArrivalTrap(proposal.ActorID, &proposal.Transfer, roll); err != nil {
+		return State{}, err
+	}
+	if proposal.Transfer.ArrivalTrap == nil {
+		return State{}, fmt.Errorf("flee arrival trap proposal absent")
+	}
+	next, err := s.ApplyArrivalTrap(proposal.ActorID, *proposal.Transfer.ArrivalTrap)
+	if err != nil {
+		return State{}, err
+	}
+	if proposal.Transfer.ArrivalTrap.Dead {
+		var death PlayerDeathResult
+		next, death, err = next.PlanPlayerDeath(
+			proposal.ActorID,
+			proposal.ActorID,
+			proposal.Now,
+			SceneOptions{ViewOptions: ViewOptions{Hour: proposal.Hour}, ViewerID: proposal.ActorID},
+			catalog,
+			roll,
+			allocate,
+		)
+		if err != nil {
+			return State{}, err
+		}
+		proposal.Death = &death
+	} else if proposal.Transfer.ArrivalTrap.Alarm && proposal.Transfer.ArrivalTrap.Triggered {
+		// C emits these actor-local lines before moving the alarm's permanent
+		// NPCs. Keep them in the receipt's movement messages so replay does not
+		// need to derive output from the post-commit world.
+		proposal.Transfer.Movement.Messages = append(proposal.Transfer.Movement.Messages,
+			"경보장치가 울립니다!\n", "근처에 경비원들이 없길 바랍니다.\n")
+		var alarm ArrivalAlarmResult
+		next, alarm, err = next.ApplyArrivalAlarmWithCatalog(
+			proposal.ActorID,
+			*proposal.Transfer.ArrivalTrap,
+			proposal.Now,
+			catalog,
+			roll,
+			allocate,
+		)
+		if err != nil {
+			return State{}, err
+		}
+		proposal.Alarm = &alarm
+	}
+	return next, nil
+}
+
 // PlanFlee implements the source's player flee eligibility and selected-exit
 // movement. Roll order is the source order: one chance roll per eligible exit,
 // and no random source call on cooldown, no-combat, or no-exit responses.
@@ -484,12 +546,8 @@ func (s State) PlanFlee(actorID string, now int32, hour int, roll func(int, int)
 		return proposal, nil
 	}
 	exit := room.Resource.Exits[selected]
-	destinationRoom, ok := s.Rooms[exit.Destination]
-	if !ok {
+	if _, ok := s.Rooms[exit.Destination]; !ok {
 		return FleeProposal{}, fmt.Errorf("flee destination room absent")
-	}
-	if destinationRoom.Resource.Trap != 0 || destinationRoom.Resource.TrapExit != 0 {
-		return FleeProposal{}, ErrFleeArrivalTrap
 	}
 	projectedDestination, err := s.ProjectRoom(exit.Destination)
 	if err != nil {
@@ -528,20 +586,37 @@ func (s State) PlanFlee(actorID string, now int32, hour int, roll func(int, int)
 		proposal.ExperienceLoss = loss
 		proposal.Response += fmt.Sprintf("당신은 도망을 간 댓가로 %d 만큼의 경험치를 잃었습니다.\r\n", loss)
 	}
-	proposal.Response += strings.Join(transfer.Movement.Messages, "")
-	if transfer.Movement.Moved {
-		proposal.Response += "\r\n"
-	}
 	withPenalty, err := applyFleePenalty(next, proposal)
 	if err != nil {
 		return FleeProposal{}, err
 	}
 	if transfer.Movement.Moved {
-		if scene, sceneErr := withPenalty.CurrentScene(actorID, hour); sceneErr != nil {
-			return FleeProposal{}, sceneErr
-		} else {
-			proposal.Response += scene
+		withPenalty, err = applyFleeArrival(withPenalty, &proposal, catalog, roll, allocate)
+		if err != nil {
+			return FleeProposal{}, err
 		}
+	}
+	proposal.Response += strings.Join(proposal.Transfer.Movement.Messages, "")
+	if proposal.Moved {
+		proposal.Response += "\r\n"
+		var scene string
+		if proposal.Death != nil {
+			scene = proposal.Death.Entry.Scene
+		} else {
+			scene, err = withPenalty.CurrentScene(actorID, hour)
+			if err != nil {
+				return FleeProposal{}, err
+			}
+		}
+		proposal.Response += scene
+		if proposal.Transfer.Entry != nil {
+			proposal.Transfer.Entry.Scene = scene
+		}
+		finalActor, ok := withPenalty.Players[actorID]
+		if !ok {
+			return FleeProposal{}, fmt.Errorf("flee actor absent after arrival")
+		}
+		proposal.DestinationRoomID = finalActor.Body.RoomID
 	}
 	proposal.next = withPenalty
 	return proposal, nil
@@ -559,7 +634,19 @@ func (s State) ApplyFlee(proposal FleeProposal) (State, FleeResult, error) {
 	if err := proposal.next.Validate(); err != nil {
 		return State{}, FleeResult{}, err
 	}
-	result := FleeResult{Response: proposal.Response, Broadcast: proposal.Broadcast, Moved: proposal.Moved, ActorID: proposal.ActorID, ActorName: proposal.ActorName, SourceRoomID: proposal.SourceRoomID, DestinationRoomID: proposal.DestinationRoomID, ExitName: proposal.ExitName}
+	result := FleeResult{
+		Response:          proposal.Response,
+		Broadcast:         proposal.Broadcast,
+		Moved:             proposal.Moved,
+		ActorID:           proposal.ActorID,
+		ActorName:         proposal.ActorName,
+		SourceRoomID:      proposal.SourceRoomID,
+		DestinationRoomID: proposal.DestinationRoomID,
+		ExitName:          proposal.ExitName,
+		ArrivalTrap:       proposal.Transfer.ArrivalTrap,
+		Death:             proposal.Death,
+		Alarm:             proposal.Alarm,
+	}
 	return proposal.next, result, nil
 }
 

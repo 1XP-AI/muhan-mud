@@ -2,6 +2,18 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      validation_scope:
+        description: >-
+          Choose the smallest gate that matches this change. Release runs the
+          legacy DB/browser/compatibility matrix and is not a per-lane check.
+        required: true
+        type: choice
+        options:
+          - fast
+          - integration
+          - release
+        default: fast
 
 # Manual execution preserves the local-first policy; hosted exceptions cover x64/Windows.
 concurrency:
@@ -12,8 +24,51 @@ permissions:
   contents: read
 
 jobs:
+  go-validation:
+    name: Go ${{ inputs.validation_scope }} gate
+    if: inputs.validation_scope != 'release'
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Linux ARM64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          command -v git
+
+      - name: Setup Go from module contract
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Run selected Go gate
+        shell: bash
+        env:
+          VALIDATION_SCOPE: ${{ inputs.validation_scope }}
+        run: |
+          set -euo pipefail
+          case "$VALIDATION_SCOPE" in
+            fast)
+              scripts/run-go-validation.sh fast
+              ;;
+            integration)
+              scripts/run-go-validation.sh merge
+              ;;
+            *)
+              echo "unsupported validation scope: $VALIDATION_SCOPE" >&2
+              exit 2
+              ;;
+          esac
+
   database-contract:
     name: Supabase ownership contract
+    if: inputs.validation_scope == 'release'
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 90
     services:
@@ -472,6 +527,7 @@ jobs:
 
   build-and-smoke:
     name: ${{ matrix.lane }}
+    if: inputs.validation_scope == 'release'
     runs-on: ${{ matrix.labels }}
     timeout-minutes: 90
     strategy:

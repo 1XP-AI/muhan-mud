@@ -1,8 +1,18 @@
 # Local-first validation
 
 GitHub-hosted CI is manual-only to avoid spending Actions budget on every push.
-The remote CI workflow was also disabled on 2026-09-07; do not re-enable or run it
-without explicit user approval. No billing/spending limit was changed.
+The remote CI workflow was also disabled on 2026-09-07; do not add an automatic
+trigger. When a manual run is explicitly approved, choose the smallest scope:
+
+| scope | purpose | expensive checks |
+| --- | --- | --- |
+| `fast` (default) | Go feature-lane feedback | changed Go package race tests only |
+| `integration` | main-branch/merge checkpoint after parallel lanes are integrated | full Go race, `go vet`, Linux ARM64 build, diff check once |
+| `release` | approved release or compatibility review | legacy DB contracts, browser/stack, x64/Windows/macOS matrix |
+
+The ARM64 build is therefore a merge checkpoint, not a per-agent or per-commit
+check. PostgreSQL, browser, Helm, and compatibility checks remain release gates.
+No billing/spending limit was changed.
 
 Install the tracked hook in each clone:
 

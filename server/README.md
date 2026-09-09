@@ -2332,3 +2332,24 @@ room corpus, NPC full cadence, 실기기 IME/mobile, WSS/Ingress 및 testnet 배
 경계에서 전체 gate와 격리 PostgreSQL을 한 번 실행하는 cadence를 따른다. 전체 C alias/
 prefix/key parity, strict room corpus 63건, NPC full cadence, 실기기 IME/mobile,
 WSS/Ingress와 testnet 배포는 아직 별도 인수 조건이다.
+
+## 검증 scope와 중복 실행 방지
+
+Go 기능 레인은 담당 패키지의 `gofmt`와 targeted `go test -race`만 실행한다. 전체 race·
+`go vet`·Linux ARM64 cross-build는 `scripts/run-go-validation.sh merge`를 메인 통합 시
+한 번만 실행하고, 영속성 변경 batch의 PostgreSQL receipt/replay도 고유 격리 DB에서 한 번만
+실행한다. `scripts/run-go-validation.sh fast`는 world/session/transport 표적 회귀를 위한
+기본 경로다.
+
+수동 GitHub CI는 `.github/workflows/ci.yml`의 `validation_scope`로 같은 경계를 따른다.
+`fast`는 Go 표적 race, `integration`은 전체 Go merge gate, `release`만 기존 Supabase/DB,
+브라우저/stack 및 x64·Windows·macOS 호환 matrix를 실행한다. 자동 push/PR workflow는 없으며,
+호환성·차트·실기기 검증을 삭제하지 않고 release 시점으로 이동했다.
+
+## 2026-09-09 뇌물·숨기기·도망 함정
+
+세 Luna max 병렬 레인을 통합해 `뇌물`, `숨겨`/`숨어`, arrival trap이 있는 `도망`을
+parser→world reducer→receipt/replay→WebSocket room event 경계에 연결했다. targeted race,
+fast/merge gate와 ARM64 PostgreSQL 17 `TestPostgresBribeCommandPersistsAndReplays`를
+통과했다. 전체 C parity, strict room corpus, NPC cadence, IME/mobile, WSS/Ingress와 testnet
+배포는 남아 있다.

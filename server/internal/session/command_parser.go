@@ -39,6 +39,7 @@ const (
 	CommandSearch
 	CommandTrack
 	CommandHide
+	CommandBribe
 	CommandPeek
 	CommandSettings
 	CommandDoor
@@ -119,6 +120,21 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMeditateLine(trimmed) {
 		parsed.Kind = CommandMeditate
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// Hide has both a bare player form and a canonical floor-object form;
+	// recognize it before the generic single-token gate so `숨겨 검` is not
+	// downgraded to an unknown command.
+	if IsHideLine(trimmed) {
+		parsed.Kind = CommandHide
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// Bribe is a suffix command whose first token is the NPC display name, not
+	// a fixed verb. Resolve it before the ordinary first-token table.
+	if IsBribeLine(trimmed) {
+		parsed.Kind = CommandBribe
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

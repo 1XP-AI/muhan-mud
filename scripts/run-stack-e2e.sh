@@ -151,6 +151,18 @@ apply_sql "$repo_root/supabase/migrations/20261012000000_pending_onboarding_snap
 apply_sql "$repo_root/supabase/migrations/20261013000000_private_function_execute_hardening.sql"
 apply_sql "$repo_root/supabase/migrations/20261014000000_player_snapshot_normalized_v1_replay_reader.sql"
 apply_sql "$repo_root/supabase/migrations/20261015000000_provisioning_completion_head_qualification.sql"
+apply_sql "$repo_root/supabase/migrations/20261016000000_bank_snapshot_v1_payload.sql"
+apply_sql "$repo_root/supabase/migrations/20261017000000_paired_snapshot_transaction_kernel.sql"
+apply_sql "$repo_root/supabase/migrations/20261018000000_money_transfer_semantics.sql"
+apply_sql "$repo_root/supabase/migrations/20261019000000_money_transfer_authority.sql"
+apply_sql "$repo_root/supabase/migrations/20261020000000_qualified_money_transfer.sql"
+apply_sql "$repo_root/supabase/migrations/20261021000000_paired_snapshot_baseline.sql"
+apply_sql "$repo_root/supabase/migrations/20261022000000_qualified_money_transfer_read.sql"
+apply_sql "$repo_root/supabase/migrations/20261023000000_money_transfer_reconciliation.sql"
+apply_sql "$repo_root/supabase/migrations/20261024000000_player_paired_route.sql"
+apply_sql "$repo_root/supabase/migrations/20261025000000_player_paired_read.sql"
+apply_sql "$repo_root/supabase/migrations/20261026000000_player_snapshot_save.sql"
+apply_sql "$repo_root/supabase/migrations/20261027000000_player_save_reconciliation.sql"
 
 postgres_port="$(docker port "$postgres_name" 5432/tcp 2>/dev/null | sed -n '1s/.*://p' || true)"
 if [[ -z "$postgres_port" ]]; then

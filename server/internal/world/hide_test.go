@@ -28,6 +28,18 @@ func hideStateFixture(class, level, dex byte) State {
 	}
 }
 
+func hideObjectStateFixture(class, level, dex byte) State {
+	s := hideStateFixture(class, level, dex)
+	room := s.Rooms[1]
+	room.Items = &ItemCollection{Items: map[string]Item{
+		"sword-1": {Object: LegacyObject{Name: "검"}, Contents: []string{"nested"}},
+		"sword-2": {Object: LegacyObject{Name: "검"}},
+		"nested":  {Object: LegacyObject{Name: "보석"}},
+	}, Inventory: []string{"sword-1", "sword-2"}}
+	s.Rooms[1] = room
+	return s
+}
+
 func TestHideChancePortsClassFormulaIntervalAndBlindCap(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -68,6 +80,127 @@ func TestHideChancePortsClassFormulaIntervalAndBlindCap(t *testing.T) {
 	}
 	if _, err := HideChance(LegacyMonster{Class: 4, Stats: [5]byte{10, 64}}); err == nil {
 		t.Fatal("out-of-range dexterity accepted")
+	}
+}
+
+func TestHideObjectChancePortsSourceFormula(t *testing.T) {
+	cases := []struct {
+		name  string
+		class byte
+		level byte
+		dex   byte
+		want  int
+	}{
+		{name: "ordinary", class: 4, level: 4, dex: 15, want: 11},
+		{name: "thief", class: hideThiefClass, level: 4, dex: 15, want: 20},
+		{name: "assassin", class: hideAssassinClass, level: 4, dex: 15, want: 20},
+		{name: "ranger", class: hideRangerClass, level: 4, dex: 15, want: 17},
+		{name: "ordinary-cap", class: 4, level: 100, dex: 63, want: 90},
+		{name: "ranger-no-cap", class: hideRangerClass, level: 100, dex: 63, want: 251},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := HideObjectChance(LegacyMonster{Class: tc.class, Level: tc.level, Stats: [5]byte{10, tc.dex}})
+			if err != nil || got != tc.want {
+				t.Fatalf("chance=%d err=%v, want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPlanAndApplyHideObjectSuccessUsesOccurrenceAndTogglesHiddenFlag(t *testing.T) {
+	before := hideObjectStateFixture(hideThiefClass, 4, 15)
+	calls := 0
+	proposal, err := before.PlanHideObjectWithOccurrence("alice", "검", 2, 100, func(low, high int) int {
+		calls++
+		if low != 1 || high != 100 {
+			t.Fatalf("roll range=%d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !proposal.ObjectBranch || proposal.ObjectID != "sword-2" || proposal.ObjectName != "검" || proposal.ObjectOccurrence != 2 || !proposal.Succeeded || !proposal.Broadcast || proposal.Chance != 20 {
+		t.Fatalf("proposal=%+v calls=%d", proposal, calls)
+	}
+	next, result, err := before.ApplyHide(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := next.Rooms[1].Items.Items["sword-2"]
+	firstObject := next.Rooms[1].Items.Items["sword-1"]
+	if !flag(object.Object.Flags[:], objectHiddenFlag) || flag(firstObject.Object.Flags[:], objectHiddenFlag) {
+		t.Fatalf("unexpected object flags: %+v", next.Rooms[1].Items.Items)
+	}
+	if next.Players["alice"].Body.Timers[hideTimerIndex] != (LegacyTimer{LastTime: 100, Interval: 5}) {
+		t.Fatalf("timer=%+v", next.Players["alice"].Body.Timers[hideTimerIndex])
+	}
+	if !result.ObjectBranch || result.ObjectID != "sword-2" || result.RoomText != "\nAlice님이 검 어딘가 숨깁니다.\r\n" {
+		t.Fatalf("result=%+v", result)
+	}
+	event, ok, err := next.RoomHideObjectEvent("alice", "sword-2", result.Succeeded)
+	if err != nil || !ok || !event.Succeeded || event.ObjectName != "검" || event.Text != result.RoomText {
+		t.Fatalf("event=%+v ok=%v err=%v", event, ok, err)
+	}
+}
+
+func TestHideObjectFailureClearsHiddenFlagAndStaleProposalIsAtomic(t *testing.T) {
+	before := hideObjectStateFixture(4, 4, 15)
+	room := before.Rooms[1]
+	item := room.Items.Items["sword-1"]
+	item.Object.Flags[objectHiddenFlag/8] |= 1 << (objectHiddenFlag % 8)
+	room.Items.Items["sword-1"] = item
+	before.Rooms[1] = room
+	proposal, err := before.PlanHideObject("alice", "검", 100, func(int, int) int { return 100 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, result, err := before.ApplyHide(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedObject := next.Rooms[1].Items.Items["sword-1"]
+	if result.Succeeded || flag(failedObject.Object.Flags[:], objectHiddenFlag) || next.Players["alice"].Body.Timers[hideTimerIndex].LastTime != 100 {
+		t.Fatalf("next=%+v result=%+v", next.Rooms[1].Items.Items["sword-1"], result)
+	}
+
+	changed := before.Rooms[1]
+	changedItem := changed.Items.Items["sword-1"]
+	changedItem.Object.Name = "다른검"
+	changed.Items.Items["sword-1"] = changedItem
+	changed.Items.Inventory = []string{"sword-1", "sword-2"}
+	changedState := before.clone()
+	changedState.Rooms[1] = changed
+	if _, _, err := changedState.ApplyHide(proposal); err == nil {
+		t.Fatal("stale object proposal accepted")
+	}
+}
+
+func TestHideObjectRejectsONOTAKBeforeRandomAndCooldownSkipsTargetAndRandom(t *testing.T) {
+	s := hideObjectStateFixture(4, 4, 15)
+	room := s.Rooms[1]
+	item := room.Items.Items["sword-1"]
+	item.Object.Flags[objectNotTakeFlag/8] |= 1 << (objectNotTakeFlag % 8)
+	room.Items.Items["sword-1"] = item
+	s.Rooms[1] = room
+	if _, err := s.PlanHideObject("alice", "검", 100, func(int, int) int {
+		t.Fatal("ONOTAK consumed random")
+		return 1
+	}); !errors.Is(err, ErrHideObjectCannot) {
+		t.Fatalf("ONOTAK err=%v", err)
+	}
+
+	s = hideObjectStateFixture(4, 4, 15)
+	player := s.Players["alice"]
+	player.Body.Timers[hideTimerIndex] = LegacyTimer{LastTime: 100, Interval: 15}
+	s.Players["alice"] = player
+	proposal, err := s.PlanHideObject("alice", "없는물건", 102, func(int, int) int {
+		t.Fatal("cooldown consumed random")
+		return 1
+	})
+	if err != nil || !proposal.Cooldown || proposal.WaitSeconds != 13 || proposal.ObjectBranch || proposal.Broadcast {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
 	}
 }
 

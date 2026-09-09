@@ -25,6 +25,14 @@ func (g *WorldConnector) publishMeditate(after world.State, event world.Meditate
 	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
 }
 
+// publishBribe delivers the committed NPC-bribe announcement to room
+// observers. The actor receives the typed receipt response, and the connector
+// calls this only for a first execution so a receipt replay cannot rebroadcast
+// the same room event.
+func (g *WorldConnector) publishBribe(after world.State, event world.BribeEvent) {
+	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
+}
+
 func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, text string) {
 	if actorID == "" || text == "" || excludeActorID == "" {
 		return

@@ -9,7 +9,11 @@ for workflow in (root / '.github/workflows').iterdir():
     text = workflow.read_text()
     trigger = re.search(r'^on:\n((?:[ \t].*\n|\n)+)', text, re.M)
     assert trigger, f'{workflow.name}: use an explicit block-form manual trigger'
-    assert trigger.group(1).strip() == 'workflow_dispatch:', (
+    trigger_body = trigger.group(1).strip()
+    assert trigger_body.startswith('workflow_dispatch:'), (
         f'{workflow.name}: hosted CI must remain manual-only; obtain user approval for changes'
+    )
+    assert not re.search(r'^\s+(push|pull_request|schedule):', trigger_body, re.M), (
+        f'{workflow.name}: automatic hosted CI triggers are disabled'
     )
 print('local_first_policy_test: all workflows are manual-only')

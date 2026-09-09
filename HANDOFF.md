@@ -7,12 +7,26 @@
 cross-build·격리 PostgreSQL·브라우저·차트는 메인 통합 또는 승인된 릴리스 경계에서
 batch당 한 번만 실행한다. `scripts/run-go-validation.sh fast`가 레인용이고,
 `scripts/run-go-validation.sh merge`가 통합용이다. 기존 `.github/workflows/ci.yml`는
-`workflow_dispatch` 전용이며 Linux ARM64, x64/Windows/macOS 호환 matrix를 유지한다.
+`workflow_dispatch` 전용이며 `fast`(기본 Go 표적 검사), `integration`(전체 Go race/vet와
+Linux ARM64 build 1회), `release`(기존 DB·브라우저·x64/Windows/macOS matrix) 선택으로
+비용 경계를 명시한다. Linux ARM64, x64/Windows/macOS 호환 검증 자체는 보존하되 release
+게이트에서만 실행한다.
 역사 문서에 반복된 전체 검증 명령은 실행 hook이 아니라 과거 증거이므로 매 레인마다
 재실행하지 않는다. `.githooks/pre-push`는 Go 전체 gate를 자동 호출하지 않으며 기존
 웹/정책 fast check와 명시적 `MUHAN_LOCAL_FULL_STACK=1` opt-in만 유지한다.
+전수 정책 검사에서 발견한 stack E2E migration coverage 누락 12개(20261016~27)는
+runner에 시간순으로 연결했고 정적 coverage·shell 검사를 통과했다. 실제 full stack은
+재실행하지 않았다.
 
-최신 bounded slice는 `기공집결`/`살기충전`/`참선`이다. `PPOWER`/`PSLAYE`/`PMEDIT`
+최신 bounded slice는 `뇌물`/`숨겨`/`도망`이다. `MTRADE` threshold·gold debit·NPC
+정리, `OHIDDN` object stealth, arrival trap의 dart/pit/alarm/death 처리를 각각
+snapshot-bound proposal/apply와 durable receipt/replay로 옮겼고, parser·WorldConnector·
+room event까지 연결했다. targeted session/world/transport race와 parser/live connector
+회귀, 통합 ARM64 PG17 receipt와 merge gate를 batch당 한 번 실행해 통과했다. 전체 C parity,
+strict room corpus 63건, NPC full cadence, 실기기 IME/mobile, WSS/Ingress·testnet 배포는
+여전히 남아 있다. `src/frp.new`는 사용자 소유 변경으로 계속 보존한다.
+
+이전 bounded slice는 `기공집결`/`살기충전`/`참선`이다. `PPOWER`/`PSLAYE`/`PMEDIT`
 flag와 원본 timer·cooldown·권한·성공 stat/THACO·실패 cooldown을 snapshot-bound
 proposal/apply와 durable receipt/replay로 옮겼고, parser·WorldConnector·room event까지
 연결했다. targeted session/world/transport race와 parser/live connector 회귀, 통합

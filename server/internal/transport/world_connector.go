@@ -280,6 +280,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	searchCommand := false
 	trackCommand := false
 	hideCommand := false
+	bribeCommand := false
 	fleeCommand := false
 	peekCommand := false
 	shopListCommand := false
@@ -356,6 +357,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandHide:
 		hideCommand = true
 		receipt, err = c.game.owners.ExecuteHideLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.HideOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandBribe:
+		bribeCommand = true
+		receipt, err = c.game.owners.ExecuteBribeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFlee:
 		fleeCommand = true
 		receipt, err = c.game.owners.ExecuteFleeLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.FleeOptions{Now: now, Hour: hour, Roll: c.game.config.Roll, Catalog: c.game.config.Catalog, Allocate: c.game.config.Allocate})
@@ -508,6 +512,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedSearchLine) ||
 		errors.Is(err, session.ErrUnsupportedTrackLine) ||
 		errors.Is(err, session.ErrUnsupportedHideLine) ||
+		errors.Is(err, session.ErrUnsupportedBribeLine) ||
 		errors.Is(err, session.ErrUnsupportedFleeLine) ||
 		errors.Is(err, session.ErrUnsupportedPeekLine) ||
 		errors.Is(err, session.ErrUnsupportedSettingsLine) ||
@@ -578,6 +583,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishHide(after, c.lease.ActorID, result.Succeeded)
+			}
+		}
+	}
+	if bribeCommand && !receipt.Replayed {
+		var result world.BribeResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishBribe(after, *result.Event)
 			}
 		}
 	}
@@ -717,6 +730,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if hideCommand {
 		var result world.HideResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if bribeCommand {
+		var result world.BribeResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

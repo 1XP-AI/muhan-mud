@@ -1,7 +1,6 @@
 package world
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -38,7 +37,7 @@ func TestPlanAndApplyFleeSuccessUsesEligibleExitAndMovesAtomically(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || proposal.Chance != 65 || proposal.Cooldown || proposal.NoCombat || !proposal.Moved || proposal.ExitName != "북" || !proposal.Broadcast {
+	if calls != 1 || proposal.Chance != 65 || proposal.Cooldown || proposal.NoCombat || !proposal.Moved || proposal.ExitName != "북" || !proposal.Broadcast || proposal.Transfer.ArrivalTrap == nil || proposal.Transfer.ArrivalTrap.Trap != 0 {
 		t.Fatalf("proposal=%+v calls=%d", proposal, calls)
 	}
 	if before.Players["alice"].Body.RoomID != 1 {
@@ -55,7 +54,7 @@ func TestPlanAndApplyFleeSuccessUsesEligibleExitAndMovesAtomically(t *testing.T)
 	if next.Rooms[1].PlayerIDs != nil || !reflect.DeepEqual(next.ActiveNPCIDs, []string{}) {
 		t.Fatalf("source membership/active NPCs=%+v/%+v", next.Rooms[1].PlayerIDs, next.ActiveNPCIDs)
 	}
-	if !strings.Contains(result.Response, "줄행랑") || !result.Moved {
+	if !strings.Contains(result.Response, "줄행랑") || !result.Moved || result.ArrivalTrap == nil || result.ArrivalTrap.Trap != 0 {
 		t.Fatalf("result=%+v", result)
 	}
 	event, ok, err := next.RoomFleeEvent(result)
@@ -148,25 +147,111 @@ func TestFleeAppliesPaladinLossBeforeDestinationDenial(t *testing.T) {
 	}
 }
 
-func TestFleeFailsClosedForArrivalTrapAndStaleProposal(t *testing.T) {
+func TestFleeAppliesArrivalDartAndRejectsStaleProposal(t *testing.T) {
 	s := fleeStateFixture()
 	destination := s.Rooms[2]
-	destination.Resource.Trap = 1
+	destination.Resource.Trap = TrapDart
 	s.Rooms[2] = destination
-	if _, err := s.PlanFlee("alice", 100, 12, func(int, int) int { return 1 }, nil, nil); !errors.Is(err, ErrFleeArrivalTrap) {
-		t.Fatalf("trap err=%v", err)
-	}
-
-	destination.Resource.Trap = 0
-	s.Rooms[2] = destination
-	p, err := s.PlanFlee("alice", 100, 12, func(int, int) int { return 1 }, nil, nil)
+	rolls := []int{1, 100, 1}
+	calls := 0
+	p, err := s.PlanFlee("alice", 100, 12, func(low, high int) int {
+		calls++
+		if len(rolls) == 0 {
+			t.Fatalf("unexpected random call %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if calls != 3 || p.Transfer.ArrivalTrap == nil || !p.Transfer.ArrivalTrap.Triggered || !p.Transfer.ArrivalTrap.Poisoned || p.Transfer.ArrivalTrap.Dead {
+		t.Fatalf("calls=%d proposal=%+v", calls, p)
+	}
+	next, result, err := s.ApplyFlee(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Players["alice"].Body.RoomID != 2 || next.Players["alice"].Body.HPCurrent != 99 || result.ArrivalTrap == nil || result.Death != nil {
+		t.Fatalf("next=%+v result=%+v", next.Players["alice"], result)
+	}
+
 	changed := s.Players["alice"]
 	changed.Body.Stats[1]++
 	s.Players["alice"] = changed
 	if _, _, err := s.ApplyFlee(p); err == nil {
 		t.Fatal("stale flee proposal accepted")
+	}
+}
+
+func TestFleeAppliesArrivalPitBeforeFinalScene(t *testing.T) {
+	s := fleeStateFixture()
+	s.Rooms[3] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 3}}}
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapPit
+	destination.Resource.TrapExit = 3
+	s.Rooms[2] = destination
+	rolls := []int{1, 100, 2}
+	calls := 0
+	p, err := s.PlanFlee("alice", 100, 12, func(low, high int) int {
+		calls++
+		if len(rolls) == 0 {
+			t.Fatalf("unexpected random call %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || p.Transfer.ArrivalTrap == nil || !p.Transfer.ArrivalTrap.Relocate || p.Death != nil {
+		t.Fatalf("calls=%d proposal=%+v", calls, p)
+	}
+	next, result, err := s.ApplyFlee(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Players["alice"].Body.RoomID != 3 || next.Players["alice"].Body.HPCurrent != 98 || result.DestinationRoomID != 3 {
+		t.Fatalf("actor=%+v result=%+v", next.Players["alice"], result)
+	}
+	if len(next.Rooms[2].PlayerIDs) != 0 || !reflect.DeepEqual(next.Rooms[3].PlayerIDs, []string{"alice"}) {
+		t.Fatalf("room membership=%+v/%+v", next.Rooms[2].PlayerIDs, next.Rooms[3].PlayerIDs)
+	}
+	if !strings.Contains(result.Response, "줄행랑") {
+		t.Fatalf("response=%q", result.Response)
+	}
+}
+
+func TestFleeAppliesArrivalAlarmWithCanonicalReducer(t *testing.T) {
+	s := fleeStateFixture()
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapAlarm
+	destination.Resource.TrapExit = 1
+	s.Rooms[2] = destination
+	rolls := []int{1, 100}
+	calls := 0
+	p, err := s.PlanFlee("alice", 100, 12, func(low, high int) int {
+		calls++
+		if len(rolls) == 0 {
+			t.Fatalf("unexpected random call %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || p.Transfer.ArrivalTrap == nil || !p.Transfer.ArrivalTrap.Alarm || p.Alarm == nil || p.Death != nil {
+		t.Fatalf("calls=%d proposal=%+v", calls, p)
+	}
+	next, result, err := s.ApplyFlee(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Players["alice"].Body.RoomID != 2 || result.Alarm == nil || !strings.Contains(result.Response, "경보장치가 울립니다!") {
+		t.Fatalf("next=%+v result=%+v", next.Players["alice"], result)
 	}
 }
