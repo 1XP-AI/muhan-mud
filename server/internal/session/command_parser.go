@@ -43,6 +43,7 @@ const (
 	CommandSettings
 	CommandDoor
 	CommandDoorKey
+	CommandFlee
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -189,6 +190,8 @@ func commandKind(first string) CommandKind {
 		return CommandTrack
 	case "숨겨", "숨어":
 		return CommandHide
+	case "도망", "도":
+		return CommandFlee
 	case "엿봐":
 		return CommandPeek
 	case "설정", "해제":
@@ -207,7 +210,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee:
 		return true
 	default:
 		return false

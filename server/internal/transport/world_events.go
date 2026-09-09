@@ -325,6 +325,39 @@ func (g *WorldConnector) publishHide(after world.State, actorID string, succeede
 	}
 }
 
+// publishFlee fans out the committed source departure and the selected
+// destination arrival. The legacy handler emits the latter on both successful
+// movement and destination denial; the actor receives only the durable
+// response, and replayed receipts never re-enter this path.
+func (g *WorldConnector) publishFlee(after world.State, result world.FleeResult) {
+	event, ok, err := after.RoomFleeEvent(result)
+	if err != nil || !ok {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || connection.events == nil {
+			continue
+		}
+		if event.SourceText != "" && player.Body.RoomID == event.SourceRoomID && connection.lease.ActorID != event.ExcludeActorID {
+			select {
+			case connection.events <- event.SourceText:
+			default:
+				// A slow client cannot block the fleeing actor's durable command.
+			}
+		}
+		if event.DestinationText != "" && player.Body.RoomID == event.DestinationRoomID && connection.lease.ActorID != event.ExcludeActorID {
+			select {
+			case connection.events <- event.DestinationText:
+			default:
+				// A slow client cannot block the fleeing actor's durable command.
+			}
+		}
+	}
+}
+
 // publishPeek mirrors broadcast_rom2: the actor already has the durable
 // response, the target receives the private alert, and other room occupants
 // receive the room alert. Both projections are receipt-bound and only run on

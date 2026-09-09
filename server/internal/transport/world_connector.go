@@ -274,6 +274,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	searchCommand := false
 	trackCommand := false
 	hideCommand := false
+	fleeCommand := false
 	peekCommand := false
 	infoCommand := false
 	settingsCommand := false
@@ -327,6 +328,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandHide:
 		hideCommand = true
 		receipt, err = c.game.owners.ExecuteHideLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.HideOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandFlee:
+		fleeCommand = true
+		receipt, err = c.game.owners.ExecuteFleeLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.FleeOptions{Now: now, Hour: hour, Roll: c.game.config.Roll, Catalog: c.game.config.Catalog, Allocate: c.game.config.Allocate})
 	case session.CommandPeek:
 		peekCommand = true
 		receipt, err = c.game.owners.ExecutePeekLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.PeekOptions{Now: now, Roll: c.game.config.Roll})
@@ -382,6 +386,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedSearchLine) ||
 		errors.Is(err, session.ErrUnsupportedTrackLine) ||
 		errors.Is(err, session.ErrUnsupportedHideLine) ||
+		errors.Is(err, session.ErrUnsupportedFleeLine) ||
 		errors.Is(err, session.ErrUnsupportedPeekLine) ||
 		errors.Is(err, session.ErrUnsupportedSettingsLine) ||
 		errors.Is(err, session.ErrUnsupportedDoorLine) ||
@@ -454,6 +459,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if fleeCommand && !receipt.Replayed {
+		var result world.FleeResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishFlee(after, result)
+			}
+		}
+	}
 	if peekCommand && !receipt.Replayed {
 		var result world.PeekResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Alert {
@@ -494,6 +507,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if hideCommand {
 		var result world.HideResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if fleeCommand {
+		var result world.FleeResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
