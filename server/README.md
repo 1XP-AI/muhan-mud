@@ -2126,3 +2126,10 @@ allocator/RNG 호출 순서, cancellation·invalid interval을 race 테스트로
 실제 격리 PostgreSQL 17에서 `TestWorldConnectorNPCResourceTickPostgresPersistsAndReplays`
 를 실행해 spawn receipt·revision·재시작 replay를 확인했다. 전체 NPC 전투 AI·room
 broadcast·update scheduler parity는 다음 인수 조건으로 남아 있다.
+
+`PlanNPCCombatRound`/`ApplyNPCCombatRound`는 canonical NPC가 exact player enemy
+identity를 대상으로 수행하는 한 번의 source-backed melee round를 순수 전이로 고정한다.
+`update_active`의 armor/THAC0 hit gate, `mdice` 피해, class별 `mod_profic` critical과
+stale/tamper·RNG·room membership 검증을 포함한다. player death continuation은 아직
+별도 reducer 조합 전이라 fail-closed하며, 이를 전체 NPC AI나 전투 tick 완료로 해석하지
+않는다.
