@@ -1480,6 +1480,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if marriageSendCommand && !receipt.Replayed {
+		var result world.MarriageSendResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishMarriageSend(after, *result.Event)
+			}
+		}
+	}
 	if returnSquareCommand && !receipt.Replayed {
 		var result world.ReturnSquareResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Moved && result.Event != nil {

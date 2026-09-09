@@ -103,3 +103,56 @@ func TestPostgresDivorceRequestAcceptPersistsAndReplays(t *testing.T) {
 		t.Fatalf("receipt count=%d", receipts)
 	}
 }
+
+func TestPostgresMarriageSendPersistsRenderedEventAndReplays(t *testing.T) {
+	dsn := os.Getenv("MUHAN_DIVORCE_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("isolated PostgreSQL required")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	store := storage.NewPostgres(db)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	worldID := fmt.Sprintf("marriage-send-%d", time.Now().UnixNano())
+	if err := store.CreateWorld(ctx, worldID, divorceSessionFixture(t)); err != nil {
+		t.Fatal(err)
+	}
+	var owners Ownership
+	lease, err := owners.Acquire("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := owners.ExecuteMarriageSendLine(ctx, store, worldID, "marriage-send-1", lease, "hello 사랑말")
+	if err != nil || first.Replayed || first.Revision != 1 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	var result world.MarriageSendResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetID != "bob" || result.Message != "hello" || !result.Delivered || result.Event == nil || !strings.Contains(result.Event.Text, "Alice님이 당신에게") {
+		t.Fatalf("result=%+v", result)
+	}
+	replay, err := owners.ExecuteMarriageSendLine(ctx, store, worldID, "marriage-send-1", lease, "hello 사랑말")
+	if err != nil || !replay.Replayed || replay.Revision != first.Revision || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	var receipts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM mud_go.world_commands WHERE world_id=$1`, worldID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 1 {
+		t.Fatalf("receipt count=%d", receipts)
+	}
+}

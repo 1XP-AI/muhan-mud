@@ -228,6 +228,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
+	if IsMarriageSendLine(trimmed) {
+		parsed.Kind = CommandMarriageSend
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
 	if family, ok := ParseFamilyLine(trimmed); ok {
 		parsed.Tokens = legacyTokens(trimmed)
 		switch family.Action {

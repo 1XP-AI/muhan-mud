@@ -1,5 +1,12 @@
 # Go MUD 서버 작업 영역
 
+최신 `사랑말` slice: 원작 suffix 문법인 `<메시지> 사랑말`을 canonical 기혼·배우자·
+UTF-8/255바이트 입력 검증과 함께 durable receipt로 연결했다. C `crt_str`의
+PINVIS/PDMINV/PDINVI 가시성, PANSIC/PBRIGH ANSI, `%j` 조사를 proposal에 렌더링해
+actor 응답과 배우자 event를 고정하며, 첫 commit 뒤 정확한 배우자 연결로만 전달한다.
+실제 ARM64 PostgreSQL 저장·replay와 race/vet가 통과했다. 전체 descriptor/title parity와
+운영 Supabase/WSS는 아직 미완료다.
+
 최신 후속 slice: `command11.c:divorce`의 `이혼` 신청·취소·수락을
 `PlanDivorce`/`ApplyDivorce`와 parser→session→WorldConnector durable receipt로
 연결했다. `PMARRI`/`PRDMAR`/`PRDDIV`·배우자 `key[2]`를 원자 저장하고, 배우자 알림과

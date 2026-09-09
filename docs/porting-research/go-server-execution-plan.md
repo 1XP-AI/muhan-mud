@@ -1,5 +1,16 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 배우자 대화(`사랑말`) receipt·ANSI 경계
+
+원작 parser가 마지막 토큰을 명령으로 취급하는 규칙에 맞춰 `<메시지> 사랑말`을
+`ParseMarriageSendLine`으로 분리했다. `PlanMarriageSend`/`ApplyMarriageSend`는
+PMARRI·배우자 key·온라인 reciprocal identity와 255바이트 UTF-8 메시지를 검증하고,
+`crt_str`의 PINVIS/PDMINV/PDINVI 및 PANSIC/PBRIGH·`%j`를 이용해 actor 응답과
+recipient event를 receipt에 고정한다. WorldConnector는 첫 commit 뒤에만 배우자 event를
+전송하며 replay에서는 재전송하지 않는다. 실제 ARM64 PostgreSQL request/replay와
+session/transport race·vet를 통과했다. 전체 descriptor/title parity와 legacy offline
+`load_ply` 분기, 운영·브라우저·배포 검증은 미완료다.
+
 ## 2026-09-10 이혼 후속 receipt·전송 경계
 
 `command11.c:divorce`의 순수 상태 전이를 `PlanDivorce`/`ApplyDivorce`로 만들고

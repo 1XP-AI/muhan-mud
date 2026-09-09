@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -43,8 +42,8 @@ func TestParseMarriageFollowupLinesAndCommandClassification(t *testing.T) {
 		line, message string
 	}{
 		{line: "사랑말", message: ""},
-		{line: " 사랑말 hello ", message: "hello"},
-		{line: "사랑말 안녕하세요 세계", message: "안녕하세요 세계"},
+		{line: " hello 사랑말 ", message: "hello"},
+		{line: "안녕하세요 세계 사랑말", message: "안녕하세요 세계"},
 	} {
 		command, ok := ParseMarriageSendLine(test.line)
 		if !ok || command.Message != test.message || !IsMarriageSendLine(test.line) {
@@ -55,7 +54,7 @@ func TestParseMarriageFollowupLinesAndCommandClassification(t *testing.T) {
 			t.Fatalf("spouse message classification line=%q parsed=%+v err=%v", test.line, parsed, err)
 		}
 	}
-	for _, line := range []string{"사랑말x hello", "이혼 extra", "이혼\n", string([]byte{0xff})} {
+	for _, line := range []string{"사랑말x hello", "사랑말 hello", "hello 사랑말 extra", "이혼 extra", "이혼\n", string([]byte{0xff})} {
 		if IsDivorceLine(line) || IsMarriageSendLine(line) {
 			t.Fatalf("invalid follow-up accepted: %q", line)
 		}
@@ -120,7 +119,7 @@ func TestExecuteDivorceLinePersistsAcceptAndReplays(t *testing.T) {
 	}
 }
 
-func TestExecuteMarriageSendFailsClosedBeforeReceipt(t *testing.T) {
+func TestExecuteMarriageSendPersistsAndReplaysReceipt(t *testing.T) {
 	store := &departureStore{state: divorceSessionFixture(t)}
 	var owners Ownership
 	lease, err := owners.Acquire("alice")
@@ -130,8 +129,19 @@ func TestExecuteMarriageSendFailsClosedBeforeReceipt(t *testing.T) {
 	if err := owners.Admit(lease, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	_, err = owners.ExecuteMarriageSendLine(context.Background(), store, "w", "marriage-send-1", lease, "사랑말 hello")
-	if !errors.Is(err, world.ErrMarriageSendDescriptorFormat) || store.commits != 0 {
-		t.Fatalf("marriage-send err=%v commits=%d", err, store.commits)
+	first, err := owners.ExecuteMarriageSendLine(context.Background(), store, "w", "marriage-send-1", lease, "hello 사랑말")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.MarriageSendResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetID != "bob" || result.Message != "hello" || !result.Delivered || result.Event == nil || !strings.Contains(result.Response, "Bob님") {
+		t.Fatalf("result=%+v", result)
+	}
+	replay, err := owners.ExecuteMarriageSendLine(context.Background(), store, "w", "marriage-send-1", lease, "hello 사랑말")
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }

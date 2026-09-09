@@ -1,5 +1,29 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (배우자 대화 출력·ANSI 경계)
+
+`command11.c:m_send`의 suffix 입력(`<메시지> 사랑말`)을 Go에 연결했다. `PMARRI`,
+`m<배우자>` `key[2]`, 온라인 canonical 상호 배우자와 255바이트 UTF-8 메시지를
+검증하고, C `crt_str`의 PINVIS/PDMINV/PDINVI 및 PANSIC/PBRIGH 색상·`%j` 조사
+규칙을 proposal에 렌더링해 actor 응답과 배우자 event를 하나의 `ExecuteGame` receipt로
+저장한다. 배우자 event는 최초 commit 뒤 정확한 durable ID/name에만 전달하며 replay에서는
+재전송하지 않는다. 구현 커밋은 다음 통합 시 기록한다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Divorce|MarriageSend|MarriageFollowup|Marriage|ParseCommand' -count=1) PASS
+(cd server && go test -race ./internal/session ./internal/transport -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+(cd server && MUHAN_DIVORCE_TEST_DATABASE_URL='postgresql://...' go test -race ./internal/session -run '^TestPostgres(DivorceRequestAccept|MarriageSend)' -count=1 -v) PASS (ARM64 postgres:17-alpine)
+git diff --check PASS
+```
+
+현재 `사랑말`은 원작 suffix 형태와 visibility/ANSI 출력까지 연결됐지만, 전체
+descriptor/title parity·legacy offline 배우자 `load_ply` 구분·전체 social 명령,
+운영 Supabase·브라우저/IME/mobile·WSS/Ingress·testnet 인수는 남아 있다. world 전체
+race의 기존 strict room corpus 63건 예외도 계속 기록한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (이혼 후속 영수증·전송 경계)
 
 `command11.c:divorce`의 온라인 canonical 경계를 Go parser→session→WorldConnector에

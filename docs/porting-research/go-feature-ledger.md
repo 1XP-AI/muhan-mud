@@ -1,5 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 배우자 대화 출력·ANSI receipt 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:m_send` / `<메시지> 사랑말` | PMARRI·`m<배우자>` key·온라인 reciprocal identity·255바이트 UTF-8 검증. `crt_str` PINVIS/PDMINV/PDINVI, PANSIC/PBRIGH·`%j`를 proposal에 렌더링하고 actor 응답/배우자 event를 durable receipt로 저장. 첫 commit에서만 정확한 recipient ID/name으로 전송 | session/transport/world race·vet, ARM64 PostgreSQL 저장·replay PASS. 전체 descriptor/title parity, offline `load_ply`, 운영 Supabase·브라우저/배포는 미완료 |
+
+`사랑말`은 C parser의 suffix 명령 순서를 그대로 사용한다. receipt replay에서는
+descriptor를 다시 조회하거나 event를 재전송하지 않는다.
+
 ## 2026-09-10 이혼·배우자 대화 후속 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

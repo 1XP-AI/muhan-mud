@@ -72,9 +72,10 @@ func (o *Ownership) ExecuteDivorceLine(ctx context.Context, store engine.Command
 	})
 }
 
-// MarriageSendCommand preserves all text after the `사랑말` alias as one
-// payload. The world reducer currently fails closed at the unported C
-// descriptor formatter boundary rather than approximating recipient output.
+// MarriageSendCommand preserves the text before the source suffix alias
+// `사랑말` as one payload. command1.c parses the final token as the command and
+// m_send then cuts that suffix from fullstr; the reducer receives only the
+// message bytes and never reparses them as a command.
 type MarriageSendCommand struct {
 	Message string
 }
@@ -99,15 +100,12 @@ func ParseMarriageSendLine(line string) (MarriageSendCommand, bool) {
 	if trimmed == "사랑말" {
 		return MarriageSendCommand{}, true
 	}
-	if !strings.HasPrefix(trimmed, "사랑말") {
+	separator := strings.LastIndexFunc(trimmed, unicode.IsSpace)
+	if separator < 0 || strings.TrimSpace(trimmed[separator:]) != "사랑말" {
 		return MarriageSendCommand{}, false
 	}
-	remainder := trimmed[len("사랑말"):]
-	first, size := utf8.DecodeRuneInString(remainder)
-	if first == utf8.RuneError || !unicode.IsSpace(first) {
-		return MarriageSendCommand{}, false
-	}
-	return MarriageSendCommand{Message: strings.TrimSpace(remainder[size:])}, true
+	message := strings.TrimSpace(trimmed[:separator])
+	return MarriageSendCommand{Message: message}, true
 }
 
 func IsMarriageSendLine(line string) bool {
@@ -121,9 +119,9 @@ type marriageSendLineRequest struct {
 	Message string `json:"message"`
 }
 
-// ExecuteMarriageSendLine retains the source command's durable boundary while
-// PlanMarriageSend remains fail-closed until descriptor/PLECHO formatting is
-// independently admitted.
+// ExecuteMarriageSendLine stores the source spouse-message response and
+// recipient projection as one durable receipt. Transport emits the recipient
+// event only after the first successful commit.
 func (o *Ownership) ExecuteMarriageSendLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
 	command, ok := ParseMarriageSendLine(line)
 	if !ok {

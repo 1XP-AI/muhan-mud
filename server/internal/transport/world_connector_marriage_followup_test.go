@@ -83,20 +83,32 @@ func TestWorldConnectorSubmitDivorceRequestAcceptPublishesDurableProjections(t *
 }
 
 func TestWorldConnectorMarriageFollowupFailClosedWithoutCommit(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		line string
-	}{
-		{name: "malformed divorce", line: "이혼 extra"},
-		{name: "descriptor-bound spouse message", line: "사랑말 hello"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := &connectorCommandStore{}
-			_, connections := boundedLaneConnection(t, store, connectorDivorceState(), "alice")
-			output, err := connections[0].Submit(context.Background(), test.line)
-			if err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || store.commits != 0 {
-				t.Fatalf("line=%q output=%q err=%v commits=%d", test.line, output, err, store.commits)
-			}
-		})
+	store := &connectorCommandStore{}
+	_, connections := boundedLaneConnection(t, store, connectorDivorceState(), "alice")
+	output, err := connections[0].Submit(context.Background(), "이혼 extra")
+	if err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || store.commits != 0 {
+		t.Fatalf("malformed divorce output=%q err=%v commits=%d", output, err, store.commits)
+	}
+}
+
+func TestWorldConnectorSubmitMarriageSendPublishesRenderedEvent(t *testing.T) {
+	store := &connectorCommandStore{}
+	_, connections := boundedLaneConnection(t, store, connectorDivorceState(), "alice", "bob")
+	output, err := connections[0].Submit(context.Background(), "hello 사랑말")
+	if err != nil || output != "Bob님에게 말을 전달하였습니다.\r\n" || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	select {
+	case event := <-connections[1].events:
+		if !strings.Contains(event, "Alice님이 당신에게 \"hello\"라고 이야기합니다") {
+			t.Fatalf("spouse event=%q", event)
+		}
+	default:
+		t.Fatal("spouse event missing")
+	}
+	select {
+	case event := <-connections[0].events:
+		t.Fatalf("actor received target event=%q", event)
+	default:
 	}
 }

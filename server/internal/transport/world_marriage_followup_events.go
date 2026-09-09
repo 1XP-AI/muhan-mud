@@ -49,3 +49,29 @@ func (g *WorldConnector) publishDivorce(after world.State, result world.DivorceR
 		}
 	}
 }
+
+// publishMarriageSend delivers the already-rendered spouse message to the
+// exact target captured by the receipt.  It intentionally does not send to
+// the actor: m_send's actor echo is part of the synchronous response, while
+// the target receives one asynchronous line after the commit.
+func (g *WorldConnector) publishMarriageSend(after world.State, event world.MarriageSendEvent) {
+	if event.RecipientID == "" || event.RecipientName == "" || event.Text == "" {
+		return
+	}
+	recipient, ok := after.Players[event.RecipientID]
+	if !ok || !recipient.Online || recipient.Body.Name != event.RecipientName {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		if connection.lease.ActorID != event.RecipientID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.Text:
+		default:
+			// A slow spouse cannot block the committed message receipt.
+		}
+	}
+}

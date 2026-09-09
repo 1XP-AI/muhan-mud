@@ -217,18 +217,52 @@ func TestApplyDivorceRejectsStaleAndMalformedRelationship(t *testing.T) {
 	}
 }
 
-func TestPlanMarriageSendFailsClosedAtCanonicalAndRendererBoundaries(t *testing.T) {
+func TestPlanAndApplyMarriageSendRendersCanonicalDescriptorFields(t *testing.T) {
 	base := divorceFollowupState()
-	if _, err := base.PlanMarriageSend("alice", "hello"); !errors.Is(err, ErrMarriageSendDescriptorFormat) {
-		t.Fatalf("descriptor boundary err=%v", err)
+	proposal, err := base.PlanMarriageSend("alice", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Response != "Bob님에게 말을 전달하였습니다.\r\n" || proposal.RecipientText != "\nAlice님이 당신에게 \"hello\"라고 이야기합니다.\r\n" || !proposal.Delivered {
+		t.Fatalf("plain proposal=%+v", proposal)
+	}
+	next, result, err := base.ApplyMarriageSend(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(next, base) || result.Response != proposal.Response || result.Event == nil || result.Event.Text != proposal.RecipientText || result.Event.RecipientID != "bob" {
+		t.Fatalf("plain result=%+v next=%+v", result, next)
 	}
 
 	plecho := base.clone()
 	actor := plecho.Players["alice"]
 	actor.Body.Flags[playerLocalEchoFlag/8] |= 1 << (playerLocalEchoFlag % 8)
 	plecho.Players["alice"] = actor
-	if _, err := plecho.PlanMarriageSend("alice", "hello"); !errors.Is(err, ErrMarriageSendPLECHOUnsupported) {
-		t.Fatalf("PLECHO boundary err=%v", err)
+	proposal, err = plecho.PlanMarriageSend("alice", "hello")
+	if err != nil || proposal.Response != "당신은 Bob님에게 \"hello\"라고 이야기합니다.\r\n" {
+		t.Fatalf("PLECHO proposal=%+v err=%v", proposal, err)
+	}
+
+	colored := base.clone()
+	target := colored.Players["bob"]
+	target.Body.Flags[26/8] |= 1 << (26 % 8) // PANSIC
+	target.Body.Flags[51/8] |= 1 << (51 % 8) // PBRIGH
+	colored.Players["bob"] = target
+	proposal, err = colored.PlanMarriageSend("alice", "hello")
+	if err != nil || proposal.RecipientText != "\n\x1b[1;34mAlice님이 당신에게 \"hello\"라고 이야기합니다.\x1b[0;37m\r\n" {
+		t.Fatalf("colored proposal=%+v err=%v", proposal, err)
+	}
+
+	hidden := base.clone()
+	target = hidden.Players["bob"]
+	target.Body.Flags[MarriageInvisibleFlag/8] |= 1 << (MarriageInvisibleFlag % 8)
+	hidden.Players["bob"] = target
+	actor = hidden.Players["alice"]
+	actor.Body.Flags[playerLocalEchoFlag/8] |= 1 << (playerLocalEchoFlag % 8)
+	hidden.Players["alice"] = actor
+	proposal, err = hidden.PlanMarriageSend("alice", "hello")
+	if err != nil || proposal.Response != "당신은 누군가에게 \"hello\"라고 이야기합니다.\r\n" {
+		t.Fatalf("hidden proposal=%+v err=%v", proposal, err)
 	}
 
 	empty := base.clone()

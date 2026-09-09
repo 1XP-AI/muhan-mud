@@ -440,9 +440,9 @@ type MarriageSendAction string
 
 const MarriageSend MarriageSendAction = "send"
 
-// MarriageSendEvent is intentionally semantic. The current Go State carries
-// canonical IDs/names but not the C descriptor/title/particle formatter, so a
-// future transport may render it only after that contract is admitted.
+// MarriageSendEvent is the recipient-specific projection of m_send.  The
+// formatter is evaluated against the recipient's persisted visibility/color
+// flags at plan time, so receipt replay never reruns descriptor lookup.
 type MarriageSendEvent struct {
 	RecipientID   string `json:"recipient_id"`
 	RecipientName string `json:"recipient_name"`
@@ -452,11 +452,10 @@ type MarriageSendEvent struct {
 	Text          string `json:"text,omitempty"`
 }
 
-// MarriageSendProposal binds the proof portion of m_send to one snapshot.
-// PlanMarriageSend currently fails closed after these checks because its
-// successful actor echo and recipient output require unported descriptor
-// formatting. Keeping the proposal type lets a future renderer admit the
-// same identity/snapshot contract without changing the receipt shape.
+// MarriageSendProposal binds the proof and rendered projections of m_send to
+// one snapshot.  Keeping the rendered recipient bytes in the proposal makes
+// the receipt replay independent of descriptor order or later visibility
+// changes.
 type MarriageSendProposal struct {
 	Action           MarriageSendAction
 	ActorID          string
@@ -465,6 +464,7 @@ type MarriageSendProposal struct {
 	TargetName       string
 	Message          string
 	Response         string
+	RecipientText    string
 	Delivered        bool
 	BeforeActorFlags [8]byte
 	BeforeActorKey   string
@@ -476,9 +476,9 @@ type MarriageSendProposal struct {
 
 type SpouseMessageProposal = MarriageSendProposal
 
-// MarriageSendResult is the future receipt projection. No network send is
-// performed by this package; the current admitted outcomes are no-op errors
-// until descriptor/title and PLECHO exact echo contracts are present.
+// MarriageSendResult is the durable receipt projection. No network send is
+// performed by this package; transport emits Event only after the first
+// successful commit.
 type MarriageSendResult struct {
 	Action     MarriageSendAction `json:"action"`
 	ActorID    string             `json:"actor_id"`
@@ -494,6 +494,11 @@ type MarriageSendResult struct {
 type SpouseMessageResult = MarriageSendResult
 
 const maxMarriageSendMessageBytes = 255 // command11.c fullstr[256], NUL reserved
+
+const (
+	marriageSendANSIFlag   uint = 26 // PANSIC
+	marriageSendBrightFlag uint = 51 // PBRIGH
+)
 
 // MaxMarriageSendMessageBytes exposes the source buffer boundary to terminal
 // adapters without allowing them to bypass validMarriageSendMessage.
@@ -517,6 +522,48 @@ func validMarriageSendMessage(message string) error {
 	return nil
 }
 
+// marriageSendPlayerDisplay ports the non-monster branch of crt_str() in
+// src/misc.c.  m_send always passes a player pointer, but keeping the
+// visibility test here makes the formatter fail closed if a future caller
+// accidentally supplies another creature type.  C's INV/DMF flags are
+// derived from the recipient descriptor: PDINVI detects both invisibility
+// kinds, while only the DM class can bypass PDMINV once detection is on.
+func marriageSendPlayerDisplay(viewer, subject LegacyMonster) string {
+	detectsInvisible := flag(viewer.Flags[:], marriageDetectInvisibleFlag)
+	dmViewer := int(viewer.Class) == playerDMClass
+	invisible := flag(subject.Flags[:], marriageInvisibleFlag)
+	dmInvisible := flag(subject.Flags[:], marriageDMInvisibleFlag)
+	if (invisible || dmInvisible) && !detectsInvisible || dmInvisible && !dmViewer {
+		return "누군가"
+	}
+	display := subject.Name
+	if invisible {
+		display += "(*)"
+	}
+	return display + "님"
+}
+
+func marriageSendJosa(display string) string {
+	if hasFinalHangul(display) {
+		return "이"
+	}
+	return "가"
+}
+
+// marriageSendANSI ports print()'s %C/%D color directives for the two fixed
+// m_send color arguments (blue 34 and white 37).  ANSI remains viewer-local;
+// it is part of the recipient event bytes, never canonical world state.
+func marriageSendANSI(viewer LegacyMonster, color string) string {
+	if !flag(viewer.Flags[:], marriageSendANSIFlag) {
+		return ""
+	}
+	bright := 0
+	if flag(viewer.Flags[:], marriageSendBrightFlag) && color != "37" {
+		bright = 1
+	}
+	return fmt.Sprintf("\x1b[%d;%sm", bright, color)
+}
+
 func marriageSendActor(s State, actorID string) (PlayerState, error) {
 	actor, err := divorceActor(s, actorID)
 	if err != nil {
@@ -536,12 +583,11 @@ func marriageSendOnlineSpouse(s State, actorID, spouseName string) (string, Play
 	return id, target, nil
 }
 
-// PlanMarriageSend ports the canonical proof gates of command11.c:m_send
-// (1247-1285): PMARRI, m<spouse> key[2], online spouse and non-empty bounded
-// text. The C actor echo uses %M and the recipient projection uses %C/%M/%j;
-// neither descriptor formatter exists in State. PLECHO is therefore rejected
-// explicitly, and even the non-PLECHO success path remains fail-closed until
-// a renderer can prove both outputs. No proposal or notification is emitted.
+// PlanMarriageSend ports command11.c:m_send (1247-1285): PMARRI,
+// m<spouse> key[2], online spouse and non-empty bounded text. The C
+// descriptor directives are reduced to the canonical player visibility and
+// ANSI flags already present in LegacyMonster; the rendered actor response and
+// recipient event are captured in the proposal before apply.
 func (s State) PlanMarriageSend(actorID, message string) (MarriageSendProposal, error) {
 	if err := s.Validate(); err != nil {
 		return MarriageSendProposal{}, err
@@ -571,15 +617,22 @@ func (s State) PlanMarriageSend(actorID, message string) (MarriageSendProposal, 
 	if err := validMarriageSendMessage(message); err != nil {
 		return MarriageSendProposal{}, err
 	}
+	message = strings.TrimSpace(message)
+	response := fmt.Sprintf("%s님에게 말을 전달하였습니다.\r\n", target.Body.Name)
 	if flag(actor.Body.Flags[:], playerLocalEchoFlag) {
-		return MarriageSendProposal{}, ErrMarriageSendPLECHOUnsupported
+		response = fmt.Sprintf("당신은 %s에게 \"%s\"라고 이야기합니다.\r\n", marriageSendPlayerDisplay(actor.Body, target.Body), message)
 	}
-	// Even with PLECHO disabled, m_send's recipient line contains C
-	// descriptor directives (%C/%M/%j/%D). Returning a plain approximation
-	// would make replay bytes dependent on an unproven renderer.
-	_ = targetID
-	_ = target
-	return MarriageSendProposal{}, ErrMarriageSendDescriptorFormat
+	display := marriageSendPlayerDisplay(target.Body, actor.Body)
+	recipientText := fmt.Sprintf("\n%s%s%s 당신에게 \"%s\"라고 이야기합니다.%s\r\n",
+		marriageSendANSI(target.Body, "34"), display, marriageSendJosa(display), message, marriageSendANSI(target.Body, "37"))
+	snapshot := s.clone()
+	return MarriageSendProposal{
+		Action: MarriageSend, ActorID: actorID, ActorName: actor.Body.Name,
+		TargetID: targetID, TargetName: target.Body.Name, Message: message,
+		Response: response, RecipientText: recipientText, Delivered: true,
+		BeforeActorFlags: actor.Body.Flags, BeforeActorKey: actor.Body.Keys[marriageSpouseKeyIndex],
+		before: snapshot, expectedActor: snapshot.Players[actorID], expectedTarget: snapshot.Players[targetID],
+	}, nil
 }
 
 // ApplyMarriageSend is provided for the eventual renderer-backed admission.
@@ -587,7 +640,7 @@ func (s State) PlanMarriageSend(actorID, message string) (MarriageSendProposal, 
 // present; the current planner never returns one because formatting is not
 // canonical yet.
 func (s State) ApplyMarriageSend(proposal MarriageSendProposal) (State, MarriageSendResult, error) {
-	if proposal.Action != MarriageSend || proposal.ActorID == "" || proposal.TargetID == "" || proposal.Message == "" || proposal.before.Version == 0 || !reflect.DeepEqual(s, proposal.before) {
+	if proposal.Action != MarriageSend || proposal.ActorID == "" || proposal.TargetID == "" || proposal.Message == "" || proposal.Response == "" || proposal.RecipientText == "" || proposal.before.Version == 0 || !reflect.DeepEqual(s, proposal.before) {
 		return State{}, MarriageSendResult{}, ErrMarriageSendInvalidProposal
 	}
 	fresh, err := s.PlanMarriageSend(proposal.ActorID, proposal.Message)
@@ -601,6 +654,7 @@ func (s State) ApplyMarriageSend(proposal MarriageSendProposal) (State, Marriage
 		Action: MarriageSend, ActorID: proposal.ActorID, ActorName: proposal.ActorName,
 		TargetID: proposal.TargetID, TargetName: proposal.TargetName, Message: proposal.Message,
 		Response: proposal.Response, Delivered: proposal.Delivered,
+		Event: &MarriageSendEvent{RecipientID: proposal.TargetID, RecipientName: proposal.TargetName, ActorID: proposal.ActorID, ActorName: proposal.ActorName, Message: proposal.Message, Text: proposal.RecipientText},
 	}, nil
 }
 
