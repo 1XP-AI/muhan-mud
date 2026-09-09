@@ -35,6 +35,8 @@ GO_FAST_RUN='Title|RangerPray' scripts/run-go-validation.sh fast
 # 명령/문서만 바뀐 경우에는 자동으로 Go 검사를 건너뛴다.
 # 필요할 때만 전체 런타임 표적을 명시한다.
 GO_FAST_PACKAGES=all scripts/run-go-validation.sh fast
+# 깨끗한 작업 트리의 마지막 커밋을 의도적으로 다시 검사할 때만 사용
+GO_FAST_COMMIT=1 scripts/run-go-validation.sh fast
 
 # 조립된 batch: 전체 Go race/vet만 필요할 때 한 번 (ARM64 cross-build 없음)
 scripts/run-go-validation.sh integration

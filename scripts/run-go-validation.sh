@@ -12,6 +12,7 @@ Usage:
   GO_FAST_RUN='TestNameRegex' scripts/run-go-validation.sh fast
   GO_FAST_PACKAGES='./internal/world ./internal/session' scripts/run-go-validation.sh fast
   GO_FAST_INCLUDE_STRICT=1 scripts/run-go-validation.sh fast
+  GO_FAST_COMMIT=1 scripts/run-go-validation.sh fast
   scripts/run-go-validation.sh integration
   scripts/run-go-validation.sh main
 
@@ -32,11 +33,12 @@ collect_changed_files() {
 	if [[ -n "$base" ]] && git -C "$root" rev-parse --verify "$base^{commit}" >/dev/null 2>&1; then
 		git -C "$root" diff --name-only "$base"...HEAD
 	else
-		# Include unstaged lane work so a developer can run fast before committing.
+		# Include only the current worktree so repeated calls on a clean tree do
+		# not silently re-run the previous commit's lane. A committed revision is
+		# an explicit choice via GO_FAST_COMMIT=1 or GO_FAST_BASE=<commit>.
 		git -C "$root" diff --name-only HEAD
-		git -C "$root" diff --name-only --cached
 		git -C "$root" ls-files --others --exclude-standard
-		if git -C "$root" rev-parse --verify HEAD^ >/dev/null 2>&1; then
+		if [[ "${GO_FAST_COMMIT:-0}" == 1 ]] && git -C "$root" rev-parse --verify HEAD^ >/dev/null 2>&1; then
 			git -C "$root" diff --name-only HEAD^ HEAD
 		fi
 	fi

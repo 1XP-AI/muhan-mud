@@ -31,6 +31,12 @@ stack-runner changes, and gateway/TypeScript tests run only for gateway, web,
 stack-contract, or package-lock changes. A multi-commit push uses its remote tip
 as one diff base so the same contract is not rerun once per commit.
 
+`fast` reads the current worktree by default. It does not infer `HEAD^..HEAD`
+when the tree is clean, so running it twice after a commit does not repeat the
+same lane accidentally. To audit a committed revision explicitly, set
+`GO_FAST_COMMIT=1` for `HEAD^..HEAD` or set `GO_FAST_BASE=<commit>` for a wider
+range.
+
 The old `merge` validation name is deliberately rejected by the script. This
 prevents an ambiguous command from silently consuming the main-merge ARM64
 budget; choose `integration` during development or `main` exactly at the

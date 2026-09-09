@@ -20,6 +20,8 @@ for workflow in (root / '.github/workflows').iterdir():
 go_validation = (root / 'scripts/run-go-validation.sh').read_text()
 assert 'affected_packages()' in go_validation
 assert 'GO_FAST_PACKAGES=all' in go_validation
+assert 'GO_FAST_COMMIT=1' in go_validation
+assert 'git -C "$root" diff --name-only HEAD^ HEAD' in go_validation
 assert "scripts/run-go-validation.sh integration" in go_validation
 assert "scripts/run-go-validation.sh main" in go_validation
 integration_start = go_validation.index('run_integration()')
