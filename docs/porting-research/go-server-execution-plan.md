@@ -577,3 +577,21 @@ testnet 배포 인수는 별도 게이트다.
 fan-out을 재실행하지 않는다. 실제 ARM64 PostgreSQL 17에서 저장·재생을 확인했다. 이
 게이트는 전체 C command table, prefix/key matcher, strict room corpus 63개, NPC full
 cadence/broadcast, WSS/Ingress·testnet 배포 인수를 승격하지 않는다.
+
+## 2026-09-09 직접 관리 병렬 후속: 능력 명령과 칭호
+
+두 Luna max 레인이 신규 world/session 파일을 분리해 `활보법`·`신원법`, `경계`·
+`잠력격발`, `칭호`·`칭호삭제`의 source-backed reducer와 TDD를 구현했다. 메인 세션은
+parser와 WebSocket connector를 직렬 연결하고, committed result의 room event만 첫
+실행에서 fan-out하도록 유지했다.
+
+각 reducer는 authenticated actor와 canonical PlayerState만 사용하며, random roll/clock은
+주입하고 proposal/apply로 stale snapshot을 거부한다. `ExecuteGame` receipt가 response와
+state transition을 함께 저장하므로 retry/replay에서 RNG, mutation, room broadcast가
+중복되지 않는다. title은 별도 웹 로그인 없이 xterm에서 생성·조회·삭제하는 78-byte
+canonical PlayerState 필드로 제한했다.
+
+통합 검증 명령은 전체 race 테스트, vet, Linux ARM64 cross-build, diff check 및 disposable
+ARM64 PostgreSQL 17 receipt 테스트다. 이 레인은 G3 일부 기능의 bounded progress이며,
+전체 C parity·strict room corpus·NPC cadence·실기기 IME/mobile·WSS/Ingress·testnet
+배포 인수 조건은 여전히 남는다.

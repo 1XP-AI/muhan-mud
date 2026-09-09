@@ -60,6 +60,10 @@ const (
 	CommandCompare
 	CommandObjectAppraisal
 	CommandItemRename
+	CommandRangerPray
+	CommandPrepare
+	CommandUpDmg
+	CommandTitle
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -85,6 +89,31 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	// shortcut so a quoted item selector can still reach its own reducer.
 	if IsItemRenameLine(trimmed) {
 		parsed.Kind = CommandItemRename
+		parsed.Tokens = legacyTokens(trimmed)
+		if len(parsed.Tokens) > 7 {
+			return ParsedCommand{}, ErrCommandTooManyTokens
+		}
+		return parsed, nil
+	}
+	if IsRangerPrayLine(trimmed) {
+		parsed.Kind = CommandRangerPray
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsPrepareLine(trimmed) {
+		parsed.Kind = CommandPrepare
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsUpDmgLine(trimmed) {
+		parsed.Kind = CommandUpDmg
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// Title parsing intentionally keeps exact spacing so an empty suffix such
+	// as "칭호 " is not silently converted into the read-only `칭호` command.
+	if IsTitleLine(line) {
+		parsed.Kind = CommandTitle
 		parsed.Tokens = legacyTokens(trimmed)
 		if len(parsed.Tokens) > 7 {
 			return ParsedCommand{}, ErrCommandTooManyTokens

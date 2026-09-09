@@ -53,6 +53,10 @@ type RoomState struct {
 type PlayerState struct {
 	Body   LegacyMonster
 	Online bool
+	// Title is the canonical player-selected title from alias.c. An empty
+	// value means no custom title; legacy alias files are never consulted by
+	// gameplay reducers.
+	Title string
 	// FollowingID is the single leader pointer from creature.following.
 	// FollowerIDs preserves first_fol head-insertion order, so movement can
 	// replay C's recursive follower batch without matching by display name.

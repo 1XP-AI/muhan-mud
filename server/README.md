@@ -2297,3 +2297,17 @@ testnet 배포는 별도 게이트다.
 추측하지 않고 거부한다. receipt replay는 상태 변경과 room announcement를 반복하지 않는다.
 race/vet/ARM64 build와 실제 ARM64 PostgreSQL 17 저장·재생 검증을 통과했지만 전체 C
 명령 parity, strict room corpus, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 남아 있다.
+
+## 능력 명령과 칭호
+
+현재 터미널 connector는 다음 bounded Go slice도 처리한다.
+
+- `활보법`/`신원법`: 직업·확률·cooldown·효과 stat과 legacy flag/timer를 atomic하게 반영
+- `경계`/`잠력격발`: 준비·잠력 효과와 원작 cooldown/실패 경계를 typed receipt로 저장
+- `칭호`/`칭호삭제`: 웹 계정과 무관하게 xterm에서 78-byte title을 저장·조회·삭제
+
+모든 명령은 `ExecuteGame` receipt/replay를 사용한다. 성공한 첫 실행만 room observer event를
+전달하고, replay에서는 RNG·state mutation·fan-out을 재실행하지 않는다. race/vet/ARM64
+build와 실제 ARM64 PostgreSQL 17 저장·재생 검증을 통과했지만 전체 C 명령 parity, strict
+room corpus, NPC full cadence, 실기기 IME/mobile, WSS/Ingress 및 testnet 배포는 별도 인수
+조건으로 남아 있다.

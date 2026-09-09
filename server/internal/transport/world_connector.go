@@ -298,6 +298,10 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	compareCommand := false
 	objectAppraisalCommand := false
 	itemRenameCommand := false
+	rangerPrayCommand := false
+	prepareCommand := false
+	upDmgCommand := false
+	titleCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -427,6 +431,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandItemRename:
 		itemRenameCommand = true
 		receipt, err = c.game.owners.ExecuteItemRenameLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandRangerPray:
+		rangerPrayCommand = true
+		receipt, err = c.game.owners.ExecuteRangerPrayLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.RangerPrayOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandPrepare:
+		prepareCommand = true
+		receipt, err = c.game.owners.ExecutePrepareLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, now)
+	case session.CommandUpDmg:
+		upDmgCommand = true
+		receipt, err = c.game.owners.ExecuteUpDmgLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.UpDmgOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandTitle:
+		titleCommand = true
+		receipt, err = c.game.owners.ExecuteTitleLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -465,6 +481,10 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedCompareLine) ||
 		errors.Is(err, session.ErrUnsupportedObjectAppraisalLine) ||
 		errors.Is(err, session.ErrUnsupportedItemRenameLine) ||
+		errors.Is(err, session.ErrUnsupportedRangerPrayLine) ||
+		errors.Is(err, session.ErrUnsupportedPrepareLine) ||
+		errors.Is(err, session.ErrUnsupportedUpDmgLine) ||
+		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -628,6 +648,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if rangerPrayCommand && !receipt.Replayed {
+		var result world.RangerPrayResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishRangerPray(after, *result.Event)
+			}
+		}
+	}
+	if prepareCommand && !receipt.Replayed {
+		var result world.PrepareResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishPrepare(after, *result.Event)
+			}
+		}
+	}
+	if upDmgCommand && !receipt.Replayed {
+		var result world.UpDmgResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishUpDmg(after, *result.Event)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -733,6 +777,26 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if itemRenameCommand {
 		var result world.ItemRenameResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if rangerPrayCommand {
+		var result world.RangerPrayResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if prepareCommand {
+		var result world.PrepareResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if upDmgCommand {
+		var result world.UpDmgResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if titleCommand {
+		var result world.TitleResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

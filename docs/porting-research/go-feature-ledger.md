@@ -719,3 +719,25 @@ Orca 없이 메인 세션이 Luna max 하위 에이전트를 파일 소유권이
 PostgreSQL 17의 세 명령 저장·재생 테스트가 통과했다. strict room corpus 63건, 전체 C
 alias/prefix/key/ANSI parity, NPC 전체 cadence/broadcast, IME/mobile 실기기, WSS/Ingress와
 testnet 배포는 여전히 별도 인수 조건이다.
+
+## 2026-09-09 직접 관리 병렬 레인: 능력·칭호
+
+Orca 없이 메인 세션이 Luna max 에이전트를 두 레인으로 병렬 배치하고, 공용 parser·
+connector·room fan-out은 메인 세션에서 직렬 통합했다.
+
+- `활보법`/`신원법`: 원작 `command9.c`의 직업 권한, 1..100 주사위·레벨/스탯 확률,
+  LT_HASTE/LT_PRAYD·PHASTE/PPRAYD 슬롯, 성공 stat 상승과 실패 cooldown을
+  snapshot-bound atomic reducer로 옮겼다. 수신자 응답과 committed room event를
+  receipt에 고정하고 replay에서는 RNG·방송을 재실행하지 않는다.
+- `경계`: PPREPA/LT_PREPA와 PBLIND·DM 예외를 반영한 cooldown/활성/atomic 전환을
+  연결했다. `잠력격발`: INVINCIBLE 권한, LT_UPDMG/PUPDMG cooldown, 성공 시 HP/MP/
+  dice/armor·효과 timer, 실패 시 원작 cooldown을 typed receipt로 저장한다.
+- `칭호`/`칭호삭제`: 웹 계정과 분리된 터미널 명령으로 canonical PlayerState에
+  78-byte UTF-8 title을 원자 저장·조회·삭제한다. 빈 값·control·공백 경계를 거부하며
+  receipt replay는 상태 변경을 반복하지 않는다.
+
+검증: 능력·칭호 world/session race 테스트, live connector dispatch/fan-out, 전체
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64
+cross-build 및 실제 ARM64 PostgreSQL 17 저장·재생을 통과했다. 전체 C alias/prefix/key/
+ANSI parity, strict room corpus 63건, NPC full cadence/broadcast, IME/mobile 실기기,
+WSS/Ingress와 testnet 배포는 여전히 별도 인수 조건이다.
