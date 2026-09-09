@@ -2133,3 +2133,32 @@ identity를 대상으로 수행하는 한 번의 source-backed melee round를 �
 stale/tamper·RNG·room membership 검증을 포함한다. player death continuation은 아직
 별도 reducer 조합 전이라 fail-closed하며, 이를 전체 NPC AI나 전투 tick 완료로 해석하지
 않는다.
+
+## 2026-09-09 NPC 전투 tick·플레이어 사망·상점 구매 후속
+
+`RunNPCCombatTick`/`RunNPCCombatPhase`를 player-vital/resource scheduler와 분리된
+durable receipt phase로 추가했다. C `update_active`의 canonical active-NPC 순서, room
+membership, 첫 enemy/player identity를 결정적으로 선택하고 `npc-combat-<slot>` command
+ID·slot timestamp·pending retry를 고정한다. 여러 non-lethal `PlanNPCCombatRound`를
+하나의 후보에 적용하며 lethal PLAYER는 아직 사망 continuation과 합쳐지지 않아 receipt
+summary에 fail-closed로 남긴다. 새 connector는 동일 receipt를 replay해 RNG와 공격을
+재실행하지 않는다. 실제 ARM64 PostgreSQL 17 test에서 저장·재생·request conflict·
+rollback·RNG 미재실행을 확인했다.
+
+`PlanNPCPlayerDeath`는 C `creature.c:die`의 NPC attacker PLAYER branch를 별도 순수
+후보로 만들었다. victim progression/장비·HP/MP/timer, NPC enemy 제거, source floor drop,
+room 1008 respawn, war 결과를 원자 후보에 묶고 NPC `MSUMMO`도 이 branch에서는 허용한다.
+death description/broadcast/savegame/summon side effect와 combat tick 조합은 아직
+fail-closed 경계다.
+
+`QuoteShopPurchase`/`BuyShopItem` 및 `RunShopPurchase`는 `RSHOPP` + 다음 방 `RNOTEL`
+저장고의 exact stock ID/value를 검증하고 nested item subtree를 새 canonical ID로
+복사한다. gold/weight/capacity/duplicate ID/temporary flag와 성공 구매 시 원작의
+`PHIDDN` 해제를 원자적으로 적용하며, 재고 원본은 변경하지 않는다. 동일 command ID
+replay는 allocator와 reducer를 재호출하지 않는다. parser/list/sell/trade/merchant NPC와
+실제 shop PostgreSQL replay는 남아 있다.
+
+검증 커밋: `2449963`, `84692d7`, `574d67c`, `9061745`, `387db25`, `958f2f7`,
+`e0aa717`. 전체 race/vet/ARM64 build 통과. strict room corpus 63개 예외, lethal NPC
+tick 통합, 전체 C command/economy, IME/mobile 실기기, backup/restore, WSS/Ingress와
+testnet 배포 인수는 여전히 미완료다.

@@ -412,3 +412,24 @@ Chromium stack E2E가 가능한 환경에서 replay/ingress를 재실행하는 �
 `6e86daa`에서 제거했다. 반복 transient drop 회귀를 포함한 Playwright 3 tests,
 web typecheck/build가 통과했으며, 운영 WSS/Ingress와 실제 모바일 키보드 검증은
 여전히 별도 배포 게이트다.
+
+## 2026-09-09 NPC combat/death/shop 후속 경계
+
+`RunNPCCombatTick`/`RunNPCCombatPhase`를 player-vital/resource scheduler와 분리된
+durable receipt phase로 추가했다. C `update_active`의 canonical active-NPC·room·첫
+enemy/player 순서를 고정하고 `npc-combat-<slot>` request를 pending retry/replay에
+재사용한다. 여러 non-lethal `PlanNPCCombatRound` 결과를 하나의 후보에 적용하며,
+lethal PLAYER는 `PlanNPCPlayerDeath`와 아직 같은 후보로 조합되지 않아 fail-closed
+summary로 남긴다. 실제 ARM64 PostgreSQL test는 저장/재생, request conflict, rollback,
+RNG 미재실행을 확인했다.
+
+`PlanNPCPlayerDeath`는 C `creature.c:die` PLAYER branch의 NPC attacker 경계를 별도
+순수 reducer로 고정한다. `MSUMMO`는 이 branch에서 검사하지 않으므로 허용하고,
+progression/equipment/timer, NPC enemy 제거, source drop, room 1008 admission, war 결과를
+원자 후보로 검증한다. death description/broadcast/savegame/summon side effect와
+combat tick 연결은 남아 있다.
+
+`QuoteShopPurchase`/`BuyShopItem`과 `RunShopPurchase`는 `RSHOPP`/`RNOTEL` 저장고의
+exact canonical stock ID/value를 nested graph deep-copy와 durable receipt로 연결했다.
+gold/weight/capacity/duplicate/temporary flag 및 성공 구매 `PHIDDN` 해제를 검증하며,
+parser/list/sell/trade/merchant와 실제 shop PG replay는 다음 gate다.

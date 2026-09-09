@@ -564,6 +564,25 @@ fixture는 각 예외의 원본 SHA-256·소비 위치·이슈 순서를 비교�
   변하지 않는 것과 `DecodeLegacyRoom` 및 zero-value `LegacyRoomAdmissionPolicy`가
   계속 거부하는 것을 확인한다. 따라서 이번 lane의 strict 예외 수는 **63개에서
   63개로 유지**되며, raw corpus와 strict/default 정책을 보존한 감사 증거만 추가됐다.
-  호환 정책으로 runtime catalog에 넣을 때도 기존 evidence 보존·명시적 검토 경계를
-  유지해야 한다. 후속 runtime 변환은 C 실행 transcript 또는 파일별 수동 매핑과
-  상태/출력 fixture가 확보된 뒤 한 issue class 이하의 bounded change로 재검토한다.
+호환 정책으로 runtime catalog에 넣을 때도 기존 evidence 보존·명시적 검토 경계를
+유지해야 한다. 후속 runtime 변환은 C 실행 transcript 또는 파일별 수동 매핑과
+상태/출력 fixture가 확보된 뒤 한 issue class 이하의 bounded change로 재검토한다.
+
+## 2026-09-09 NPC combat/death/shop bounded slices
+
+`RunNPCCombatTick`/`RunNPCCombatPhase`는 C `update_active`의 canonical active order와
+first enemy/player identity를 durable `npc-combat-<slot>` receipt로 연결한다. 여러
+non-lethal `PlanNPCCombatRound` 결과를 하나의 candidate에 순서대로 적용하고,
+lethal PLAYER는 현재 `PlanNPCPlayerDeath` 조합 전이라 fail-closed summary로 남긴다.
+실제 ARM64 PostgreSQL test는 receipt replay, request conflict, rollback과 RNG 미재실행을
+확인했다. 이는 full NPC update/tick/broadcast 완료가 아니다.
+
+`PlanNPCPlayerDeath`는 NPC 공격자의 C PLAYER 사망 branch를 source-backed pure candidate로
+추가했다. NPC `MSUMMO`는 PLAYER branch에서 허용되며, room/active/enemy/follower identity,
+progression/equipment/timer, floor drop, 1008 respawn, war 결과를 atomic하게 검증한다.
+death broadcast/savegame/summon side effect와 combat tick 통합은 남아 있다.
+
+`QuoteShopPurchase`/`BuyShopItem`과 `RunShopPurchase`는 `RSHOPP`/`RNOTEL` storage의
+exact stock/value를 canonical nested graph deep-copy와 durable receipt로 연결한다.
+구매 성공 `PHIDDN` 해제, gold/weight/capacity/allocator/temporary flag/stock ownership를
+검증하지만 parser/list/sell/trade/merchant/실제 shop PG replay는 미구현이다.
