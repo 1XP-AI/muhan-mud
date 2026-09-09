@@ -1,17 +1,19 @@
 # Muhan MUD 포팅 핸드오프
 
-## 최신 구현·검증 체크포인트 — 2026-09-10 (세션 정리·투표 원장·xterm 모바일 경계)
+## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 이관·연결 로컬 continuation 통합)
 
 이번 배치에서 완료된 하위 에이전트 세션은 모두 종료했다. 메인 워크트리에는
-`3a8bb8d` 투표 canonical `Ballots`/append-only `History` 원장, `ccd149c` 메일·게시판
-격리 PostgreSQL receipt/replay 회귀, `0c6f7d6` 중앙 xterm 모바일 IME·focus/viewport
-경계를 보존했다. `src/frp.new`는 사용자 변경으로 계속 미수정·미stage다.
+`28938b5` 투표 legacy importer와 canonical receipt continuation, `3a8bb8d` `Ballots`/
+append-only `History` 원장, `ccd149c` 메일·게시판 격리 PostgreSQL receipt/replay 회귀,
+`0c6f7d6` 중앙 xterm 모바일 IME·focus/viewport 경계를 보존했다. `src/frp.new`는
+사용자 변경으로 계속 미수정·미stage다.
 
 검증 결과:
 
 ```text
-(cd server && go test -race ./internal/world -run 'CanonicalVote|Vote' -count=1) PASS
-(cd server && go vet ./internal/world ./internal/transport) PASS
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Vote|LegacyVote' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+(cd server && scripts/run-go-validation.sh integration) PASS
 (cd web && npm test) PASS (51 tests)
 (cd web && npm run typecheck) PASS
 git diff --check PASS
@@ -19,14 +21,15 @@ git diff --check PASS
 
 메일·게시판 실제 ARM64 `postgres:17-alpine` 실행은 에이전트가 disposable DB에서
 4개 시나리오를 통과시켰다. 기본 환경에서는 해당 테스트가 명시적 DB URL이 없으면
-skip된다. canonical 투표 session/transport 연결, 전체 기능·운영 Supabase·실제 OS
+skip된다. 투표는 명시적 legacy importer와 원장 연결까지 완료했지만, 운영 Supabase·raw
+ISSUE parser·전체 기능·실제 OS
 IME/mobile·WSS/Ingress·testnet 인수는 아직 남아 있다.
 
 Orca는 MUD 메인 워크트리만 등록하고 하위 터미널은 0개다. 예전 `/Users/jjangg96/orca`
 연결 워크트리 30개는 각각 미커밋 변경이 남아 있어 유실 방지를 위해 삭제하지 않았다.
 다른 저장소의 Orca 터미널은 정리 범위가 아니므로 건드리지 않았다.
 
-## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 source gate·ballot fail-closed)
+## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 source gate·ballot fail-closed, 역사적 초기 단계)
 
 `command11.c:vote`의 원본 게이트를 Go에 연결했다. `투표` exact alias와 server-owned
 `VoteCatalog`(ISSUE의 안건 수·질문·최대 7개 선택지)를 검증하고, 21세 미만 일반

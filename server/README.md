@@ -1,11 +1,14 @@
 # Go MUD 서버 작업 영역
 
-최신 `투표` slice: `command11.c:vote`의 나이·투표소·ISSUE catalog gate와
-`vote_cmnd`의 y/n·a..g 연결 로컬 continuation을 구현했다. 현재 canonical State에
-레거시 `player/vote/<name>_v` ballot/history가 없으므로 실제 쓰기는 중복·유실 방지를
-위해 `ErrVoteStateUnresolved`로 fail-closed한다. parser/transport는 client-supplied issue나
-ballot identity를 받지 않으며 targeted race/vet가 통과했다. ballot schema/실제 PG와
-운영 Supabase, full vote continuation·브라우저/배포는 미완료다.
+최신 `투표` slice (`28938b5`): `command11.c:vote`의 나이·투표소·ISSUE catalog gate,
+`vote_cmnd`의 y/n·a..g 연결 로컬 continuation, canonical `State.Votes` 원장 연결을
+완료했다. 명시적 `player/vote/<name>_v` 이관기는 경로·raw byte·이름→ID resolver·ISSUE
+digest를 검증하고 실패 시 부분 변경을 만들지 않는다. 이미 이관된 원장은 write/rewrite와
+append-only history를 durable receipt로 저장하고 동일 command ID를 replay한다. parser/
+transport는 client-supplied issue나 ballot identity를 받지 않으며 연결 종료 시 draft를
+폐기한다. world/session/transport 전체 race·vet와 통합 gate가 통과했다. 실제 운영
+Supabase, raw ISSUE 파일 로더, 브라우저/WSS/Ingress·testnet 및 전체 명령 parity는
+미완료다.
 
 최신 `대답`/`/` slice: `command12.c:resend`의 연결별 마지막 수신자를 atomic
 `replyTarget`으로 유지하고, `대답 <메시지>`와 `/ <메시지>`를 서버 주입 exact ID로

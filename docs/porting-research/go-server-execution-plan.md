@@ -1,25 +1,29 @@
 # Go 게임 서버 전환 실행 계획
 
-## 2026-09-10 세션 정리·canonical 투표 원장·xterm 모바일 경계
+## 2026-09-10 투표 이관·연결 로컬 continuation 통합
 
 완료된 하위 에이전트 세션은 종료했고, MUD에 등록된 Orca 하위 터미널은 0개다.
 예전 Orca 경로의 연결 워크트리는 미커밋 변경을 보존하기 위해 삭제하지 않는다.
-메인에는 `0c6f7d6` xterm 모바일 IME/focus/viewport, `3a8bb8d` canonical 투표
-`Ballots`/append-only `History`, `ccd149c` 메일·게시판 실제 PostgreSQL receipt/replay
-회귀 테스트를 보존했다. `src/frp.new`와 사용자 변경은 계속 보호한다.
+메인에는 `28938b5`의 canonical 투표 이관기와 session/transport continuation,
+`0c6f7d6` xterm 모바일 IME/focus/viewport, `3a8bb8d` `Ballots`/append-only `History`,
+`ccd149c` 메일·게시판 PostgreSQL receipt/replay 회귀 테스트를 보존했다. `src/frp.new`와
+사용자 변경은 계속 보호한다.
 
 투표 원장은 `State.Votes`가 nil이면 legacy `player/vote/<name>_v` 이관 미완료로
 간주하고 fail-closed한다. 명시적으로 이관된 non-nil 원장은 write/rewrite/delete를
 순서 있는 history와 함께 원자적으로 검증하며 snapshot stale·중복·손상 상태를 거부한다.
-다만 session/transport의 `투표` continuation을 이 원장에 연결하고 실제 운영 DB와
-full 기능 인수를 통과하는 작업은 후속 단계다.
+`PlanLegacyVoteImport`/`ImportLegacyVotes`는 legacy active 파일을 명시적으로 읽어
+canonical map으로 변환하고, `BeginVoteContinuation`과 `ExecuteVoteContinuation`은
+원장에 연결된 write/rewrite receipt를 처리한다. 원작 선택지의 one-based 표시와
+연결 종료·transient retry·replay 경계도 TDD로 고정했다. 다만 실제 운영 DB에서의
+대규모 이관 실행, raw `ISSUE` parser, 전체 기능 인수는 후속 단계다.
 
 검증: world canonical vote race/transport vet/web 51 tests/typecheck/diff check PASS;
 실제 ARM64 `postgres:17-alpine` 메일·게시판 4개 시나리오 PASS(격리 컨테이너).
 
-## 2026-09-10 `투표` source gate·ballot authority 경계
+## 2026-09-10 `투표` source gate·ballot authority 경계 (역사적 초기 단계)
 
-`command11.c:vote`의 나이(18+LT_HOURS/일), `INVINCIBLE` 우회, `RELECT` 투표소,
+이 절은 canonical 원장 연결 전 초기 단계의 기록이다. `command11.c:vote`의 나이(18+LT_HOURS/일), `INVINCIBLE` 우회, `RELECT` 투표소,
 ISSUE 안건·최대 7개 선택지 검증을 `PlanVote`와 server-owned `VoteCatalog`로 분리했다.
 `VoteContinuation`은 y/n 재투표 확인과 a..g 선택만 연결 로컬에서 진행하며 receipt나
 world snapshot을 변경하지 않는다. 이 초기 게이트 단계에서는 C의
