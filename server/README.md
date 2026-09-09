@@ -25,14 +25,23 @@ ARM64 PostgreSQL 17, Go `-race`, Chromium을 함께 실행해 가입→월드 �
 이 디렉터리에서 실행한다. Go 1.27.1 툴체인이 필요하며 `go.mod`에 고정했다.
 
 ```sh
-# 병렬 레인: 담당 패키지만 빠르게 검증
+# 병렬 레인: 변경 경로에 영향받는 패키지만 빠르게 검증
 GO_FAST_RUN='Title|RangerPray' scripts/run-go-validation.sh fast
+# 명령/문서만 바뀐 경우에는 자동으로 Go 검사를 건너뛴다.
+# 필요할 때만 전체 런타임 표적을 명시한다.
+GO_FAST_PACKAGES=all scripts/run-go-validation.sh fast
 
 # 메인 통합: batch당 한 번만 전체 로컬 gate
 scripts/run-go-validation.sh merge
+
+# 영속성 명령 batch: disposable PG에서 한 번만 receipt/replay 확인
+MUHAN_BOUNDED_LANES_TEST_DATABASE_URL='postgresql://...' \
+  go test -race ./internal/session -run TestPostgresBoundedLanesPersistAndReplay -count=1
 ```
 
-레인마다 전체 race·vet·ARM64 build·PostgreSQL를 반복하지 않는다. 영속성 변경이 포함된
+레인마다 전체 race·vet·ARM64 build·PostgreSQL를 반복하지 않는다. `fast`는 world 변경 시
+session/transport 소비자까지, session 변경 시 transport까지 포함하고 transport-only 변경은
+transport만 검사한다. 영속성 변경이 포함된
 batch의 PG receipt 테스트는 하나의 격리 PostgreSQL에서 한 번만 묶어 실행하고, ARM64
 이미지/Helm·x64/Windows/macOS 호환·브라우저 IME/mobile·복구 검증은 승인된 통합 또는
 릴리스 gate에서만 실행한다. 직접 명령이 필요하면 `go test ./...`와 `go test -race ./...`를

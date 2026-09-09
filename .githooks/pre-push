@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 root="$(git rev-parse --show-toplevel)"
 has_update=0
+diff_base=""
 while read -r local_ref local_sha remote_ref remote_sha; do
   [[ "$local_sha" =~ ^0+$ ]] && continue
   if [[ "$local_sha" != "$(git rev-parse HEAD)" ]]; then
@@ -9,6 +10,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     exit 1
   fi
   has_update=1
+  # Reuse the remote tip as the comparison base so a multi-commit push is
+  # checked once, without rerunning unrelated stack contracts per commit.
+  if [[ -z "$diff_base" && ! "$remote_sha" =~ ^0+$ ]]; then
+    diff_base="$remote_sha"
+  fi
 done
 [[ "$has_update" == 1 ]] || exit 0
-exec bash "$root/scripts/check-local-before-push.sh"
+if [[ -n "$diff_base" ]]; then
+  MUHAN_DIFF_BASE="$diff_base" exec bash "$root/scripts/check-local-before-push.sh"
+else
+  exec bash "$root/scripts/check-local-before-push.sh"
+fi

@@ -6,7 +6,7 @@ trigger. When a manual run is explicitly approved, choose the smallest scope:
 
 | scope | purpose | expensive checks |
 | --- | --- | --- |
-| `fast` (default) | Go feature-lane feedback | changed Go package race tests only |
+| `fast` (default) | Go feature-lane feedback | affected Go package race tests only |
 | `integration` | main-branch/merge checkpoint after parallel lanes are integrated | full Go race, `go vet`, Linux ARM64 build, diff check once |
 | `release` | approved release or compatibility review | legacy DB contracts, browser/stack, x64/Windows/macOS matrix |
 
@@ -14,18 +14,33 @@ The ARM64 build is therefore a merge checkpoint, not a per-agent or per-commit
 check. PostgreSQL, browser, Helm, and compatibility checks remain release gates.
 No billing/spending limit was changed.
 
+For a batch that changes durable game receipts, run the single opt-in PG batch
+`go test -race ./internal/session -run TestPostgresBoundedLanesPersistAndReplay -count=1`
+with `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL` pointed at that batch's disposable
+PostgreSQL. It is not part of every feature-lane run.
+
+The fast script derives the smallest safe Go package set from the changed
+`server/internal` path: world changes include session/transport consumers,
+session changes include transport, and transport-only changes stay in transport.
+Changes outside those runtime packages skip the Go lane; use
+`GO_FAST_PACKAGES=all` for an explicit override. The pre-push hook applies the
+same principle to stack checks: migration coverage runs only for migration or
+stack-runner changes, and gateway/TypeScript tests run only for gateway, web,
+stack-contract, or package-lock changes. A multi-commit push uses its remote tip
+as one diff base so the same contract is not rerun once per commit.
+
 Install the tracked hook in each clone:
 
 ```sh
 bash scripts/install-local-hooks.sh
 ```
 
-The pre-push hook checks the workflow policy, migration coverage, strict stack
-TypeScript compilation and 19 SQL-transport/normalized-reader/lifecycle tests.
-Failures block pushes. It rejects pushes of a revision other than checked-out
-HEAD and dirty tracked files in the checked paths. It is a fast regression gate,
-not the whole legacy C, Rust, database or browser suite. Git hooks are local and
-can be bypassed; remote workflow configuration is the separate cost control.
+The pre-push hook checks the workflow policy and only the migration/stack
+contracts affected by the pushed paths. Failures block pushes. It rejects
+pushes of a revision other than checked-out HEAD and dirty tracked or untracked
+files in the checked paths. It is a fast regression gate, not the whole legacy C,
+Rust, database or browser suite. Git hooks are local and can be bypassed; remote
+workflow configuration is the separate cost control.
 
 Full isolated C/Gateway/browser/Postgres acceptance is run locally:
 

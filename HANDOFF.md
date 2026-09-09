@@ -1,5 +1,31 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 비용 최적화 + bounded lanes)
+
+반복 검증 전수 점검을 반영했다. `scripts/run-go-validation.sh fast`는 변경 경로를
+자동 분류해 world 변경 시 session/transport 소비자까지, session 변경 시 transport까지,
+transport-only 변경은 transport만 race 검사한다. 문서·명령만 바뀌면 Go 표적 검사를
+건너뛰고 `GO_FAST_PACKAGES=all`로만 명시적 전체 표적 검사를 요청한다. `.githooks/pre-push`는
+다중 커밋 push의 remote tip을 한 번만 기준으로 삼고, migration/stack-runner 또는
+gateway/web/stack contract 변경에 해당하는 검사만 실행한다. 전체 race/vet/Linux ARM64
+cross-build는 `scripts/run-go-validation.sh merge`에서 통합 batch당 한 번만, DB receipt는
+`TestPostgresBoundedLanesPersistAndReplay`를 하나의 disposable PostgreSQL에서 한 번만
+실행한다. CI는 계속 수동 `workflow_dispatch`이며 ARM64 build와 release matrix를 기능
+레인마다 재실행하지 않는다.
+
+이번 bounded batch는 C 원본과 대조한 `줄임말`(목록/추가/삭제, substitution fail-closed),
+`태워`/`소각`(직접 inventory root, 보호 규칙, cooldown/reward/jackpot), `배워`/`연마`
+(scroll level/alignment/class gate, spell bit, room 이동)를 Go world/session receipt와
+WorldConnector parser/dispatch/room event까지 연결했다. `go test -race` targeted 및
+connector 회귀, `scripts/run-go-validation.sh fast`, 통합 `scripts/run-go-validation.sh
+merge`, 정적 정책·migration coverage, ARM64 PostgreSQL 17의 3-lane 저장/replay batch를
+통과했다. 새 검증 harness는 환경변수 없이는 skip되며, 운영 DB를 사용하지 않는다.
+
+커밋 전 보존 조건: `src/frp.new`는 사용자 소유 변경으로 수정·stage·되돌리지 않는다.
+전체 게임 parity, strict room corpus 63건, NPC full tick, 브라우저 실기기 IME/mobile,
+WSS/Ingress·testnet 배포와 전체 legacy data migration은 아직 남아 있다. 목표 Project
+항목과 issue #1은 전체 인수 조건 전까지 `In Progress`를 유지한다.
+
 ## 현재 오케스트레이션 체크포인트 — 2026-09-09
 
 개발 속도 최적화를 전수 점검해 검증 cadence를 코드화했다. 병렬 Luna max 레인은 담당

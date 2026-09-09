@@ -33,6 +33,19 @@ func (g *WorldConnector) publishBribe(after world.State, event world.BribeEvent)
 	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
 }
 
+// publishBurn delivers the committed burn announcement to current room
+// occupants. The actor already received the durable response, so the event's
+// exclusion keeps the terminal output from being duplicated.
+func (g *WorldConnector) publishBurn(after world.State, event world.BurnEvent) {
+	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
+}
+
+// publishStudy delivers the committed scroll-study announcement to current
+// room occupants, suppressing replay and the actor's already-rendered receipt.
+func (g *WorldConnector) publishStudy(after world.State, event world.StudyEvent) {
+	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
+}
+
 func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, text string) {
 	if actorID == "" || text == "" || excludeActorID == "" {
 		return

@@ -57,6 +57,11 @@ type PlayerState struct {
 	// value means no custom title; legacy alias files are never consulted by
 	// gameplay reducers.
 	Title string
+	// Aliases is the canonical ordered alias.c list. A nil slice means the
+	// alias domain has not been imported for this player; a nonnil empty slice
+	// is an explicitly known empty list. Alias expansion is not performed by
+	// Go command reducers until its substitution contract is admitted.
+	Aliases []PlayerAlias
 	// FollowingID is the single leader pointer from creature.following.
 	// FollowerIDs preserves first_fol head-insertion order, so movement can
 	// replay C's recursive follower batch without matching by display name.
@@ -251,6 +256,9 @@ func (s State) Validate() error {
 		}
 		if id == "" || p.Body.Name == "" || p.Body.Type != 0 {
 			return fmt.Errorf("missing player identity")
+		}
+		if err := validatePlayerAliases(p.Aliases); err != nil {
+			return fmt.Errorf("invalid aliases for player %q: %w", id, err)
 		}
 		if _, ok := s.Rooms[p.Body.RoomID]; !ok {
 			return fmt.Errorf("missing player room")
@@ -465,6 +473,7 @@ func (s State) clone() State {
 		next.Rooms[id] = room
 	}
 	for id, player := range s.Players {
+		player.Aliases = clonePlayerAliases(player.Aliases)
 		player.PlayerEnemies = append([]string(nil), player.PlayerEnemies...)
 		player.FollowerIDs = append([]string(nil), player.FollowerIDs...)
 		if player.NPCFollowerIDs != nil {

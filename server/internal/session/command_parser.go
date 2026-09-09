@@ -67,6 +67,9 @@ const (
 	CommandTitle
 	CommandPowerAccuracy
 	CommandMeditate
+	CommandAlias
+	CommandBurn
+	CommandStudy
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -120,6 +123,27 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMeditateLine(trimmed) {
 		parsed.Kind = CommandMeditate
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// Alias.c accepts both the terminal prefix form and the original suffix
+	// form. Keep its process text behind the bounded parser instead of letting
+	// the generic tokenizer classify an arbitrary command template.
+	if IsAliasLine(trimmed) {
+		parsed.Kind = CommandAlias
+		parsed.Tokens = legacyTokens(trimmed)
+		if len(parsed.Tokens) > 7 {
+			return ParsedCommand{}, ErrCommandTooManyTokens
+		}
+		return parsed, nil
+	}
+	if IsBurnLine(trimmed) {
+		parsed.Kind = CommandBurn
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsStudyLine(trimmed) {
+		parsed.Kind = CommandStudy
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

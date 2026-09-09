@@ -106,6 +106,25 @@
 - 세부 실행 증거/남은 조건은 `server/README.md` 및 기능 원장을 따른다.
   아래 출발점은 준비 당시 기록이며 최신 구현이 없다는 뜻으로 해석하지 않는다.
 
+### 2026-09-09 bounded batch 및 검증 비용 감사
+
+`줄임말`은 목록/추가/삭제와 C suffix 문법을 canonical ordered alias state에 연결했고,
+`$N`/`$*` substitution은 command-queue 계약이 확정될 때까지 fail-closed로 둔다.
+`태워`/`소각`은 direct inventory root occurrence, ONOBUN·quest·event 보호,
+관리자 예외, PHIDDN·cooldown·reward/jackpot을 receipt에 기록한다. `배워`/`연마`는
+scroll type/level/alignment/class gate, spell catalog 1..56, spell bit·scroll 삭제 및
+alignment rejection room 이동을 receipt로 연결한다. 세 명령은 parser/WorldConnector와
+replay 억제 room event까지 이어졌으며, legacy `Body.Inventory`가 남은 actor와 unresolved
+spell/item은 fail-closed다. unit/session/transport TDD와 connector 회귀가 통과했다.
+
+반복 검증 감사 결과, `fast`는 변경 경로에 영향받는 Go 패키지만 race 검사하고, pre-push는
+push diff에 해당하는 migration/stack contract만 실행한다. 전체 race·vet·Linux ARM64
+cross-build는 `merge`에서 batch당 한 번, durable receipt PG 검사는
+`TestPostgresBoundedLanesPersistAndReplay`를 disposable PostgreSQL에서 한 번 실행한다.
+정책·self-hosted routing·migration coverage 및 `scripts/run-go-validation.sh merge`가
+통과했다. ARM64 이미지/Helm, browser/IME/mobile, strict room corpus, full parity와
+testnet 배포는 여전히 release/후속 G3~G5 조건이다.
+
 ## 확인된 출발점 (역사적 준비 기록)
 
 - 기존 C 게임 서버가 게임 동작의 기준이다. C의 PostgreSQL 연결 확장은 동결한다.
@@ -163,16 +182,18 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
 
 동일한 전체 검증을 병렬 레인마다 반복하지 않는다. 실행 경계는 다음처럼 고정한다.
 
-- **레인 단위**: 담당 파일의 `gofmt`, 변경 패키지 targeted `go test -race`만 실행한다.
-  필요하면 `GO_FAST_RUN`/`GO_FAST_PACKAGES`를 주어 `scripts/run-go-validation.sh fast`를
-  사용한다. 전체 저장소 race, `go vet ./...`, Linux ARM64 cross-build, disposable PG,
+- **레인 단위**: 담당 파일의 `gofmt`, 영향 패키지 targeted `go test -race`만 실행한다.
+  `scripts/run-go-validation.sh fast`가 변경 경로를 자동 분류한다(world→session/transport,
+  session→transport, transport-only→transport). 문서·명령 외 변경은 Go 표적 검사를
+  건너뛰며, 필요하면 `GO_FAST_RUN`/`GO_FAST_PACKAGES`(`all` 포함)를 주어 덮어쓴다. 전체 저장소 race, `go vet ./...`, Linux ARM64 cross-build, disposable PG,
   브라우저·Helm 검증은 레인 완료 조건이 아니다.
 - **메인 통합**: 여러 레인을 parser/transport/docs에 합친 뒤 `scripts/run-go-validation.sh
   merge`를 한 번만 실행한다. 이 명령이 전체 race(엄격 corpus 예외 제외), vet, Linux
   ARM64 build, diff check를 담당한다.
 - **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서
-  한 번만 묶어 실행한다. 레인별로 같은 이미지/DB를 재생성하지 않으며, 테스트가 만든
-  컨테이너·볼륨·포트만 정리한다.
+  한 번만 묶어 실행한다. 현재 bounded receipt batch는
+  `TestPostgresBoundedLanesPersistAndReplay`이며, `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`
+  로 연결한다. 레인별로 같은 이미지/DB를 재생성하지 않으며, 테스트가 만든 컨테이너·볼륨·포트만 정리한다.
 - **release/merge gate**: ARM64 이미지·차트, x64/Windows 호환, macOS 전용, 브라우저
   IME/mobile, 장애복구·백업은 각각 승인된 통합/릴리스 시점에만 실행한다. x64/Windows와
   macOS 검증을 삭제하지 않지만 Go 기능 레인에서 재실행하지 않는다.

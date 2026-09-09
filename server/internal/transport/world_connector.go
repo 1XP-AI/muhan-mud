@@ -304,6 +304,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	upDmgCommand := false
 	powerAccuracyCommand := false
 	meditateCommand := false
+	aliasCommand := false
+	burnCommand := false
+	studyCommand := false
 	titleCommand := false
 	infoCommand := false
 	settingsCommand := false
@@ -455,6 +458,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandMeditate:
 		meditateCommand = true
 		receipt, err = c.game.owners.ExecuteMeditateLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MeditateOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandAlias:
+		aliasCommand = true
+		receipt, err = c.game.owners.ExecuteAliasLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandBurn:
+		burnCommand = true
+		receipt, err = c.game.owners.ExecuteBurnLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.BurnOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandStudy:
+		studyCommand = true
+		receipt, err = c.game.owners.ExecuteStudyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandTitle:
 		titleCommand = true
 		receipt, err = c.game.owners.ExecuteTitleLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -501,6 +513,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedUpDmgLine) ||
 		errors.Is(err, session.ErrUnsupportedPowerAccuracyLine) ||
 		errors.Is(err, session.ErrUnsupportedMeditateLine) ||
+		errors.Is(err, session.ErrUnsupportedAliasLine) ||
+		errors.Is(err, session.ErrUnsupportedBurnLine) ||
+		errors.Is(err, session.ErrUnsupportedStudyLine) ||
 		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
@@ -714,6 +729,22 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if burnCommand && !receipt.Replayed {
+		var result world.BurnResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishBurn(after, *result.Event)
+			}
+		}
+	}
+	if studyCommand && !receipt.Replayed {
+		var result world.StudyResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishStudy(after, *result.Event)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -849,6 +880,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if meditateCommand {
 		var result world.MeditateResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if aliasCommand {
+		var result world.AliasResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if burnCommand {
+		var result world.BurnResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if studyCommand {
+		var result world.StudyResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
