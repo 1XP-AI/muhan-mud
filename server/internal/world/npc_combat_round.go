@@ -5,13 +5,8 @@ import (
 	"reflect"
 )
 
-const (
-	npcCombatHiddenFlag    = 1 // PHIDDN
-	npcCombatInvisibleFlag = 2 // PINVIS
-)
-
 // NPCCombatRoundProposal is the pure candidate for one ordinary NPC melee
-// swing from update_active/attack_crt. It intentionally stops before player
+// swing from update_active's NPC->PLAYER path. It intentionally stops before player
 // death: the existing player-death reducer has rules that need to be composed
 // by the durable scheduler, so a lethal round is rejected rather than saving a
 // partially-dead player.
@@ -53,40 +48,10 @@ func npcCombatContainsID(ids []string, want string) bool {
 	return false
 }
 
-func npcCombatCriticalDivisor(class byte) (int, error) {
-	switch class {
-	case 2, 4, 9, 10:
-		return 20, nil
-	case 6, 7:
-		return 25, nil
-	case 1, 3, 8:
-		return 30, nil
-	case 5, 11, 12:
-		return 40, nil
-	default:
-		return 0, fmt.Errorf("NPC combat class outside critical table")
-	}
-}
-
-func npcCombatCriticalChance(body LegacyMonster) (int, error) {
-	if len(body.Proficiency) <= 2 {
-		return 0, fmt.Errorf("NPC combat proficiency unavailable")
-	}
-	proficiency, err := WeaponProficiency(body.Class, body.Proficiency[2])
-	if err != nil {
-		return 0, err
-	}
-	divisor, err := npcCombatCriticalDivisor(body.Class)
-	if err != nil {
-		return 0, err
-	}
-	return proficiency / divisor, nil
-}
-
-func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, int) int) (damage int, critical bool, err error) {
+func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, int) int) (damage int, err error) {
 	damage, err = meleeDice(body, nil, roll)
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	// update.c subtracts the victim's armor contribution and clamps the
 	// ordinary attack to one. Armor is a signed legacy byte; widen first.
@@ -94,23 +59,7 @@ func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, in
 	if damage < 1 {
 		damage = 1
 	}
-	chance, err := npcCombatCriticalChance(body)
-	if err != nil {
-		return 0, false, err
-	}
-	criticalRoll, err := randomIn(roll, 1, 100)
-	if err != nil {
-		return 0, false, err
-	}
-	if criticalRoll <= chance {
-		multiplier, err := randomIn(roll, 3, 6)
-		if err != nil {
-			return 0, false, err
-		}
-		damage *= multiplier
-		critical = true
-	}
-	return damage, critical, nil
+	return damage, nil
 }
 
 // PlanNPCCombatRound plans one canonical NPC attack against an exact player
@@ -160,10 +109,6 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		return NPCCombatRoundProposal{}, err
 	}
 	next := s.clone()
-	nextNPC := next.NPCs[npcID]
-	nextPlayer := next.Players[playerID]
-	nextNPC.Body.Flags[0] &^= 1 << npcCombatHiddenFlag
-	nextNPC.Body.Flags[0] &^= 1 << npcCombatInvisibleFlag
 	proposal := NPCCombatRoundProposal{
 		NPCID: npcID, PlayerID: playerID, RoomID: npc.Body.RoomID,
 		PlayerHPBefore: int(player.Body.HPCurrent), PlayerHPAfter: int(player.Body.HPCurrent),
@@ -177,25 +122,22 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		threshold = 1
 	}
 	if n < threshold {
-		proposal.next.NPCs[npcID] = nextNPC
 		proposal.Hit = false
 		return proposal, nil
 	}
-	damage, critical, err := npcCombatDamage(npc.Body, player.Body, roll)
+	damage, err := npcCombatDamage(npc.Body, player.Body, roll)
 	if err != nil {
 		return NPCCombatRoundProposal{}, err
 	}
 	if damage >= int(player.Body.HPCurrent) {
 		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat player death continuation pending")
 	}
+	nextPlayer := next.Players[playerID]
 	nextPlayer.Body.HPCurrent = int16(int(player.Body.HPCurrent) - damage)
-	next.NPCs[npcID] = nextNPC
 	next.Players[playerID] = nextPlayer
 	proposal.next = next
 	proposal.Hit = true
-	proposal.Critical = critical
 	proposal.expectedHit = true
-	proposal.expectedCritical = critical
 	proposal.Damage = damage
 	proposal.PlayerHPAfter = int(nextPlayer.Body.HPCurrent)
 	return proposal, nil

@@ -439,12 +439,12 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 		len(saved.NPCs["npc-b"].Enemies) != 0 || !reflect.DeepEqual(saved.ActiveNPCIDs, []string{"npc-b"}) {
 		t.Fatalf("saved lethal state=%+v", saved)
 	}
-	if rollCalls != 3 {
-		t.Fatalf("attack RNG calls=%d, want exactly hit/damage/critical", rollCalls)
+	if rollCalls != 2 {
+		t.Fatalf("attack RNG calls=%d, want exactly hit/damage", rollCalls)
 	}
 
 	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-lethal", 5, 100)
-	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 3 {
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 2 {
 		t.Fatalf("replay=%+v commits=%d RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
 	}
 	if !bytes.Equal(replay.Response, receipt.Response) {

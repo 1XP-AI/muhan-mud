@@ -93,36 +93,82 @@ func TestNPCCombatRoundPlansAndAppliesHitDamageAndHP(t *testing.T) {
 	}
 }
 
-func TestNPCCombatRoundPlansCriticalDamageDeterministically(t *testing.T) {
+func TestNPCCombatRoundUsesOnlyHitAndDamageRNG(t *testing.T) {
 	s := npcCombatRoundFixture(t)
 	npc := s.NPCs["wolf-id"]
-	// WeaponProficiency(4, 31214) is 60; update_active's fighter modifier is
-	// profic/20, so the 1..100 critical roll below is inside the chance.
+	// This proficiency would trigger the old player->NPC critical branch. The
+	// NPC->PLAYER update_active path must never consult it.
 	npc.Body.Proficiency[2] = 31214
 	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
 	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
 		switch {
 		case low == 1 && high == 20:
-			return high
-		case low == 1 && high == 30:
-			return high
+			return 20
 		case low == 1 && high == 6:
-			return high
-		case low == 1 && high == 100:
-			return 1
-		case low == 3 && high == 6:
-			return 3
+			return 6
 		default:
 			t.Fatalf("unexpected random request %d..%d", low, high)
 			return 0
 		}
 	})
-	if err != nil || !proposal.Hit || !proposal.Critical || proposal.Damage != 18 || proposal.PlayerHPAfter != 22 {
+	if err != nil || !proposal.Hit || proposal.Critical || proposal.Damage != 6 || proposal.PlayerHPAfter != 34 {
 		t.Fatalf("proposal=%+v err=%v", proposal, err)
 	}
+	if want := [][2]int{{1, 20}, {1, 6}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
 	next, result, err := s.ApplyNPCCombatRound(proposal)
-	if err != nil || !result.Critical || result.Damage != 18 || next.Players["a"].Body.HPCurrent != 22 {
+	if err != nil || result.Critical || result.Damage != 6 || next.Players["a"].Body.HPCurrent != 34 {
 		t.Fatalf("result=%+v next=%+v err=%v", result, next, err)
+	}
+}
+
+func TestNPCCombatRoundPreservesNPCStealthOnHitAndMiss(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		roll int
+		hit  bool
+	}{
+		{name: "miss", roll: 1, hit: false},
+		{name: "hit", roll: 20, hit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			// PHIDDN/PINVIS are creature bits 1 and 2. C update_active does
+			// not clear either bit on the NPC->PLAYER path.
+			const stealthMask = byte(1<<1 | 1<<2)
+			npc.Body.Flags[0] |= stealthMask
+			npc.Body.Thaco = 20
+			s.NPCs["wolf-id"] = npc
+
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				switch {
+				case low == 1 && high == 20:
+					return tc.roll
+				case low == 1 && high == 6:
+					return 6
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil || proposal.Hit != tc.hit {
+				t.Fatalf("proposal=%+v err=%v", proposal, err)
+			}
+			if got := proposal.next.NPCs["wolf-id"].Body.Flags[0]; got&stealthMask != stealthMask {
+				t.Fatalf("planning cleared NPC stealth flags: %#x", got)
+			}
+			next, _, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := next.NPCs["wolf-id"].Body.Flags[0]; got&stealthMask != stealthMask {
+				t.Fatalf("applying cleared NPC stealth flags: %#x", got)
+			}
+		})
 	}
 }
 
