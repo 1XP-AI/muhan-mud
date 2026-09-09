@@ -1,0 +1,209 @@
+package world
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func npcCombatRoundFixture(t *testing.T) State {
+	t.Helper()
+	s := stateFixture()
+	player := s.Players["a"]
+	player.Body = LegacyMonster{
+		Name:   "Alice",
+		Type:   0,
+		Class:  4,
+		Level:  1,
+		Stats:  [5]byte{10, 10, 10, 10, 10},
+		RoomID: 1,
+		// update_active's ordinary NPC damage is mdice(crt) -
+		// ((70 - player.armor) / 5), clamped to one.  Armor 70 keeps the
+		// source-backed base damage at the deterministic 1d6 result.
+		Armor:     70,
+		HPMax:     40,
+		HPCurrent: 40,
+	}
+	player.Items = &ItemCollection{Items: map[string]Item{}}
+	s.Players["a"] = player
+	room := s.Rooms[1]
+	room.NPCIDs = []string{"wolf-id"}
+	s.Rooms[1] = room
+	s.NPCs = map[string]NPCState{
+		"wolf-id": {
+			Body: LegacyMonster{
+				Name:      "늑대",
+				Type:      1,
+				RoomID:    1,
+				Class:     4,
+				Level:     1,
+				Stats:     [5]byte{10, 10, 10, 10, 10},
+				HPMax:     20,
+				HPCurrent: 20,
+				DiceCount: 1,
+				DiceSides: 6,
+			},
+			Enemies: []NPCEnemy{{Target: EntityRef{Kind: "player", ID: "a"}, Damage: 0}},
+		},
+	}
+	s.ActiveNPCIDs = []string{"wolf-id"}
+	return s
+}
+
+func npcCombatRoundRoll(high int) func(int, int) int {
+	return func(low, gotHigh int) int {
+		if low == 1 && gotHigh == high {
+			return gotHigh
+		}
+		if low == 1 && gotHigh == 30 {
+			return gotHigh
+		}
+		if low == 1 && gotHigh == 100 {
+			return gotHigh
+		}
+		return gotHigh
+	}
+}
+
+func TestNPCCombatRoundPlansAndAppliesHitDamageAndHP(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.NPCID != "wolf-id" || proposal.PlayerID != "a" || proposal.RoomID != 1 || !proposal.Hit || proposal.Critical || proposal.Damage != 6 || proposal.PlayerHPBefore != 40 || proposal.PlayerHPAfter != 34 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if s.Players["a"].Body.HPCurrent != 40 || s.NPCs["wolf-id"].Body.HPCurrent != 20 {
+		t.Fatal("planning mutated source state")
+	}
+
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NPCID != "wolf-id" || result.PlayerID != "a" || !result.Hit || result.Critical || result.Damage != 6 || result.PlayerHP != 34 || result.TargetHP != 34 || result.Killed {
+		t.Fatalf("result=%+v", result)
+	}
+	if next.Players["a"].Body.HPCurrent != 34 || next.NPCs["wolf-id"].Body.HPCurrent != 20 {
+		t.Fatalf("next=%+v", next)
+	}
+	if err := next.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNPCCombatRoundPlansCriticalDamageDeterministically(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	// WeaponProficiency(4, 31214) is 60; update_active's fighter modifier is
+	// profic/20, so the 1..100 critical roll below is inside the chance.
+	npc.Body.Proficiency[2] = 31214
+	s.NPCs["wolf-id"] = npc
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		switch {
+		case low == 1 && high == 20:
+			return high
+		case low == 1 && high == 30:
+			return high
+		case low == 1 && high == 6:
+			return high
+		case low == 1 && high == 100:
+			return 1
+		case low == 3 && high == 6:
+			return 3
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil || !proposal.Hit || !proposal.Critical || proposal.Damage != 18 || proposal.PlayerHPAfter != 22 {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil || !result.Critical || result.Damage != 18 || next.Players["a"].Body.HPCurrent != 22 {
+		t.Fatalf("result=%+v next=%+v err=%v", result, next, err)
+	}
+}
+
+func TestNPCCombatRoundRequiresExactOnlineSameRoomEnemy(t *testing.T) {
+	base := npcCombatRoundFixture(t)
+	cases := []struct {
+		name string
+		fn   func(*State)
+	}{
+		{name: "missing npc id", fn: func(s *State) { s.NPCs["other"] = s.NPCs["wolf-id"] }},
+		{name: "offline player", fn: func(s *State) {
+			p := s.Players["a"]
+			p.Online = false
+			s.Players["a"] = p
+			s.Rooms[1] = RoomState{Resource: s.Rooms[1].Resource, NPCIDs: []string{"wolf-id"}}
+		}},
+		{name: "wrong room", fn: func(s *State) {
+			npc := s.NPCs["wolf-id"]
+			npc.Body.RoomID = 2
+			s.NPCs["wolf-id"] = npc
+			s.Rooms[1] = RoomState{Resource: s.Rooms[1].Resource, PlayerIDs: []string{"a"}}
+			s.Rooms[2] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2}}, NPCIDs: []string{"wolf-id"}}
+		}},
+		{name: "enemy absent", fn: func(s *State) { n := s.NPCs["wolf-id"]; n.Enemies = nil; s.NPCs["wolf-id"] = n }},
+		{name: "wrong enemy", fn: func(s *State) {
+			n := s.NPCs["wolf-id"]
+			n.Enemies = []NPCEnemy{{Target: EntityRef{Kind: "player", ID: "other"}}}
+			s.Players["other"] = PlayerState{Body: LegacyMonster{Name: "Other", RoomID: 2}, Online: false}
+			s.NPCs["wolf-id"] = n
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base.clone()
+			tc.fn(&s)
+			if _, err := s.PlanNPCCombatRound("wolf-id", "a", func(int, int) int { t.Fatal("invalid context consumed RNG"); return 0 }); err == nil {
+				t.Fatal("accepted invalid NPC/player context")
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundRejectsNilRNGAndLethalBeforeStateChange(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	if proposal, err := s.PlanNPCCombatRound("wolf-id", "a", nil); err == nil || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) {
+		t.Fatalf("nil RNG accepted proposal=%+v err=%v", proposal, err)
+	}
+
+	lethal := s.clone()
+	p := lethal.Players["a"]
+	p.Body.HPCurrent = 1
+	lethal.Players["a"] = p
+	before := lethal.clone()
+	proposal, err := lethal.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+	if err == nil || !strings.Contains(err.Error(), "death") || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) || !reflect.DeepEqual(lethal, before) {
+		t.Fatalf("lethal proposal was not fail-closed: proposal=%+v err=%v stateChanged=%v", proposal, err, !reflect.DeepEqual(lethal, before))
+	}
+}
+
+func TestNPCCombatRoundRejectsStaleAndTamperedProposalAtomically(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := s.clone()
+	p := changed.Players["a"]
+	p.Body.HPCurrent = 39
+	changed.Players["a"] = p
+	if next, result, err := changed.ApplyNPCCombatRound(proposal); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("stale proposal accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+
+	tampered := proposal
+	tampered.Damage++
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered damage accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+	tampered = proposal
+	tampered.NPCID = "other"
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered identity accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+}
