@@ -2078,7 +2078,7 @@ WSS/Ingress와 testnet 배포 인수는 계속 남아 있다.
 object respawn과 자동 door refresh만 durable receipt로 실행한다. due permanent NPC가
 있는 방은 익명 생성하지 않고 receipt의 `npc_pending_rooms`에 남기며, 아직 canonical
 item graph가 아닌 방은 `unmigrated_rooms`로 건너뛴다. NPC identity/active-order phase는
-별도 포팅 경계다.
+아래 durable scheduler 경계로 연결했으며, NPC 전투 AI는 별도 포팅 경계다.
 
 검증: 실제 격리 PostgreSQL 17에서 기존 캐릭터 link/replay·중복/이름 충돌·신규 world
 creation을 통과했고, Go + PostgreSQL + Chromium 브라우저에서 terminal signup/relogin과
@@ -2098,8 +2098,8 @@ inspection issue·소비 길이를 정렬된 증거로 고정하고, 검토된 c
 
 영구 NPC는 `NPCPermanentOrigin(room, slot)` identity를 기준으로 due respawn을
 순수 plan/apply한다. 이름으로 점유 여부를 추측하지 않고, active order·allocator·RNG·
-stale/tamper를 검증하며 부분 생성은 저장하지 않는다. transport scheduler 연결은
-별도 후속 경계로 유지한다.
+stale/tamper를 검증하며 부분 생성은 저장하지 않는다. transport scheduler는 아래
+`RunNPCResourceTick` 경계에서 같은 identity 계약을 durable receipt로 실행한다.
 
 원작 `도망`의 작은 수직 슬라이스도 Go session/transport receipt에 연결했다. 전투
 cooldown, 출구 필터 순서, guard/chance, 추적·은신 해제, destination 제한, paladin
