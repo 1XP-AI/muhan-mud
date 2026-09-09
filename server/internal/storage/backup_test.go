@@ -114,7 +114,7 @@ func TestPostgresWorldBackupRestoreFencesReceipts(t *testing.T) {
 	if _, err := store.CommitWorldCommand(ctx, worldID, "backup-receipt", json.RawMessage(`{"actor":"a"}`), 0, json.RawMessage(`{"Version":1,"Rooms":{},"Players":{}}`), json.RawMessage(`{"ok":true}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RestoreWorldBackup(ctx, backup, WorldBackupOptions{ExpectedRevision: &expected}); !errors.Is(err, ErrWorldRestoreConflict) {
+	if err := store.RestoreWorldBackup(ctx, backup, WorldBackupOptions{ExpectedRevision: &expected}); !errors.Is(err, ErrWorldConflict) {
 		t.Fatalf("receipt-bearing restore err=%v", err)
 	}
 	if err := store.RestoreWorldBackup(ctx, backup, WorldBackupOptions{Force: true}); err != nil {
