@@ -1,5 +1,29 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 패거리 추방·소셜 원장 transaction 경계
+
+`command12.c:fm_out`은 Go에서 `FamilyMutationExpel`로 처리한다. 온라인 canonical
+PFMBOS 두목과 immutable catalog boss가 일치해야 하고, 대상은 정확한 canonical 이름의
+온라인·가시성 character이며 현재 같은 family의 `FamilyState` row와 name/class가 일치해야
+한다. 적용은 대상 PFAMIL/DL_EXPND 제거와 member row 삭제를 한 reducer 결과로 만들며,
+fee=0·family-wide broadcast 없음·대상 전용 알림만 post-commit event로 남긴다. replay
+receipt는 event를 다시 발행하지 않는다. 원작의 offline `load_ply` fallback은 아직
+canonical online/session 정책에 포함하지 않아 fail-closed 상태다.
+
+운영 이관은 `Postgres.ImportFamilyLedger`/`ImportCharacterMemos`로 한정된 reviewed
+aggregate를 명시적 world/command ID와 expected revision으로 받아 snapshot과
+normalized evidence table, `world_commands`를 한 transaction으로 갱신한다. nil aggregate,
+중복/foreign identity, canonical name/class/timestamp/fee 불일치, raw path·credential 입력,
+replay request conflict는 거부한다. 이 API는 legacy 파일을 직접 읽지 않으며, source
+collector와 operator-approved identity mapping/restore tooling이 준비될 때까지 운영
+authority를 만들지 않는다.
+
+검증: 패거리 관련 world/session/transport race·vet, storage race/vet, ARM64
+`postgres:17-alpine` replay/rollback, `scripts/run-go-validation.sh fast`,
+`scripts/run-go-validation.sh integration`, `git diff --check`가 PASS했다. 실제
+Supabase 권한/RLS·대량 source import·복구 reader·전체 social parity·배포는 후속 승격
+조건이다.
+
 ## 2026-09-10 패거리 원장·메모 vertical slice
 
 이번 단계는 파일 기반 C 상태를 추측해 읽지 않고, 검토된 migration aggregate가 있을 때만

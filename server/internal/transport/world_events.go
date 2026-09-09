@@ -305,6 +305,35 @@ func (g *WorldConnector) publishFamilyTalk(after world.State, events []world.Fam
 	}
 }
 
+// publishFamilyMutation delivers targeted post-commit family notifications.
+// The receipt captures the exact identity/name, and replay callers never reach
+// this method, so a retry cannot duplicate or redirect an expulsion notice.
+func (g *WorldConnector) publishFamilyMutation(after world.State, events []world.FamilyMutationEvent) {
+	if len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, event := range events {
+		if event.RecipientID == "" || event.RecipientName == "" || event.Text == "" {
+			continue
+		}
+		recipient, ok := after.Players[event.RecipientID]
+		if !ok || !recipient.Online || recipient.Body.Name != event.RecipientName {
+			continue
+		}
+		for connection := range g.connections {
+			if connection.lease.ActorID != event.RecipientID || connection.events == nil {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+			}
+		}
+	}
+}
+
 // publishEmote fans out the committed action projection. The actor already
 // received the durable receipt response; a targeted recipient gets its
 // target-specific projection and everyone else in the room gets the room

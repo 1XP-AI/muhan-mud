@@ -58,6 +58,16 @@ func connectorFamilyApprovalState() world.State {
 	return state
 }
 
+func connectorFamilyExpulsionState() world.State {
+	state := connectorFamilyApprovalState()
+	applicant := state.Players["applicant"]
+	applicant.Body.Flags[world.FamilyPendingFlag/8] &^= 1 << (world.FamilyPendingFlag % 8)
+	applicant.Body.Flags[world.FamilyMemberFlag/8] |= 1 << (world.FamilyMemberFlag % 8)
+	state.Players["applicant"] = applicant
+	state.Family.Members[2] = append(state.Family.Members[2], world.FamilyMember{ID: "applicant", Name: "Alice", Class: 0})
+	return state
+}
+
 func TestWorldConnectorSubmitDispatchesFamilyMutation(t *testing.T) {
 	store := &connectorCommandStore{}
 	connector, connections := boundedLaneConnection(t, store, connectorFamilyMutationState(false, false), "applicant", "boss")
@@ -104,5 +114,33 @@ func TestWorldConnectorSubmitDispatchesFamilyApprovalAndActiveLeave(t *testing.T
 	saved, err := world.DecodeState(store.state)
 	if err != nil || !saved.Players["applicant"].Online || saved.Players["applicant"].Body.Gold != 130000 || saved.Players["boss"].Body.Gold != 70000 {
 		t.Fatalf("saved=%+v err=%v", saved.Players, err)
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesFamilyExpulsionAndTargetNotification(t *testing.T) {
+	store := &connectorCommandStore{}
+	connector, connections := boundedLaneConnection(t, store, connectorFamilyExpulsionState(), "boss", "applicant")
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+	output, err := connections[0].Submit(context.Background(), "패거리추방 Alice")
+	if err != nil || !strings.Contains(output, "Alice님을 패거리에서 추방") || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	select {
+	case event := <-connections[1].events:
+		if event != world.FamilyExpulsionNotification {
+			t.Fatalf("target event=%q", event)
+		}
+	default:
+		t.Fatal("target notification missing")
+	}
+	select {
+	case event := <-connections[0].events:
+		t.Fatalf("boss unexpectedly notified=%q", event)
+	default:
+	}
+	if duplicate, err := connections[0].Submit(context.Background(), "패거리추방 Alice"); err != nil || !strings.Contains(duplicate, "아직 구현되지 않은 명령") || store.commits != 1 {
+		// Each transport Submit receives a fresh command ID; this is a new
+		// command and must fail after the member has been removed.
+		t.Fatalf("duplicate command output=%q err=%v commits=%d", duplicate, err, store.commits)
 	}
 }

@@ -1,5 +1,13 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 패거리 추방·canonical social import
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command12.c:fm_out` | `FamilyMutationExpel`/`PlanFamilyExpulsion`이 exact online canonical target, PFMBOS/catalog boss, 동일 패거리 member ledger row를 확인하고 PFAMIL/DL_EXPND와 원장을 원자적으로 갱신한다. fee·broadcast 없이 target-only post-commit notification을 receipt에 담고 replay에서는 재전송하지 않는다. | world/session/transport race·vet·parser/transport 회귀 PASS. offline legacy `load_ply` 경로, 전체 C 출력 parity와 나머지 family/social 명령은 미완료 |
+| `family_member_<n>` canonical import | `Postgres.ImportFamilyLedger`가 명시된 `FamilyState`/`FamilyCatalog`를 world snapshot·`family_imports`·`family_catalog`·`family_members`·`world_commands`에 단일 transaction으로 저장한다. ID/name/class evidence만 사용하며 raw path·credential·이름 기반 claim은 거부한다. | ARM64 PostgreSQL replay/conflict/rollback PASS. 실제 source collector, operator identity review, normalized evidence restore reader, Supabase RLS/운영 권한은 미완료 |
+| `player/fal/<name>` memo import | `Postgres.ImportCharacterMemos`가 canonical recipient ID keyed nonnil memo aggregate를 snapshot·`character_memo_imports`·`character_memos`·receipt로 원자 저장하고 timestamp/sender/recipient integrity를 재검증한다. | ARM64 PostgreSQL replay/rollback 및 storage race/vet PASS. legacy file collector, 대량 운영 이관·복구와 전체 출력 parity는 미완료 |
+
 ## 2026-09-10 패거리 원장·승인/탈퇴 및 메모 command 경계
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

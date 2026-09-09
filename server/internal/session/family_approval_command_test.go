@@ -79,3 +79,61 @@ func TestExecuteFamilyApprovalPersistsAndReplaysReceipt(t *testing.T) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
+
+func familyExpulsionSessionFixture(t *testing.T) []byte {
+	t.Helper()
+	state, err := world.DecodeState(familyApprovalSessionFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := state.Players["applicant"]
+	target.Body.Flags[world.FamilyPendingFlag/8] &^= 1 << (world.FamilyPendingFlag % 8)
+	target.Body.Flags[world.FamilyMemberFlag/8] |= 1 << (world.FamilyMemberFlag % 8)
+	state.Players["applicant"] = target
+	state.Family.Members[2] = append(state.Family.Members[2], world.FamilyMember{ID: "applicant", Name: "Alice", Class: 4})
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestExecuteFamilyExpulsionPersistsNotifiesAndReplays(t *testing.T) {
+	store := &departureStore{state: familyExpulsionSessionFixture(t)}
+	owners, lease := admitFamilyBoss(t)
+	catalog := familyApprovalSessionCatalog()
+	first, err := owners.ExecuteFamilyExpulsionLine(context.Background(), store, "w", "family-expel-1", lease, "패거리추방 Alice", catalog)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.FamilyMutationResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.FamilyMutationExpel || result.ActorID != "boss" || result.TargetID != "applicant" || result.Fee != 0 || result.GoldTransferred != 0 || len(result.Events) != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["applicant"].Body.Flags[world.FamilyMemberFlag/8]&(1<<(world.FamilyMemberFlag%8)) != 0 || saved.Players["applicant"].Body.Daily[world.FamilyDailySlot].Max != 0 || len(saved.Family.Members[2]) != 1 {
+		t.Fatalf("saved=%+v family=%+v", saved.Players["applicant"].Body, saved.Family)
+	}
+	replay, err := owners.ExecuteFamilyExpulsionLine(context.Background(), store, "w", "family-expel-1", lease, "패거리추방 Alice", catalog)
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteFamilyExpulsionRollbackLeavesStateUnchanged(t *testing.T) {
+	initial := familyExpulsionSessionFixture(t)
+	store := &departureStore{state: initial, fail: true}
+	owners, lease := admitFamilyBoss(t)
+	if _, err := owners.ExecuteFamilyExpulsionLine(context.Background(), store, "w", "family-expel-rollback", lease, "패거리추방 Alice", familyApprovalSessionCatalog()); err == nil || store.commits != 1 || !bytes.Equal(store.state, initial) {
+		t.Fatalf("rollback err=%v commits=%d stateChanged=%t", err, store.commits, !bytes.Equal(store.state, initial))
+	}
+}

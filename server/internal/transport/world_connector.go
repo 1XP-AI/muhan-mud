@@ -1448,6 +1448,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrFamilyMutationTargetAmbiguous) ||
 		errors.Is(err, world.ErrFamilyMutationTargetNotPending) ||
 		errors.Is(err, world.ErrFamilyMutationTargetAlreadyMember) ||
+		errors.Is(err, world.ErrFamilyMutationTargetNotMember) ||
+		errors.Is(err, world.ErrFamilyMutationTargetSelf) ||
 		errors.Is(err, world.ErrFamilyMutationMemberLedgerMissing) ||
 		errors.Is(err, world.ErrFamilyMutationInsufficientGold) ||
 		errors.Is(err, world.ErrFamilyMutationGoldOverflow) ||
@@ -1773,6 +1775,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishFamilyTalk(after, result.Events)
+			}
+		}
+	}
+	if familyMutationCommand && !receipt.Replayed {
+		var result world.FamilyMutationResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishFamilyMutation(after, result.Events)
 			}
 		}
 	}

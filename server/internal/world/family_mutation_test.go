@@ -289,6 +289,72 @@ func TestFamilyMutationRejectsStaleAndTamperedProposalAtomically(t *testing.T) {
 	}
 }
 
+func familyMutationExpelFixture(t *testing.T) (State, FamilyCatalog) {
+	t.Helper()
+	s, catalog := familyMutationFixture(t)
+	target := s.Players["applicant"]
+	target.Body.Daily[FamilyDailySlot].Max = 2
+	familyMutationFlag(&target.Body, FamilyMemberFlag, true)
+	target.Body.Gold = 0 // fm_out has no fee or insufficient-gold gate.
+	s.Players["applicant"] = target
+	s.Family = &FamilyState{Members: map[int16][]FamilyMember{
+		2: {{ID: "boss", Name: "Boss", Class: 4}, {ID: "applicant", Name: "Alice", Class: 4}},
+	}}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s, catalog
+}
+
+func TestFamilyMutationExpelRemovesTargetAtomicallyAndNotifiesOnlyTarget(t *testing.T) {
+	s, catalog := familyMutationExpelFixture(t)
+	proposal, err := s.PlanFamilyExpulsion("boss", "Alice", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Action != FamilyMutationExpel || proposal.Fee != 0 || proposal.GoldTransferred != 0 || len(proposal.Events) != 1 || proposal.Events[0].RecipientID != "applicant" {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyFamilyExpulsion(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := next.Players["applicant"].Body
+	if flag(target.Flags[:], FamilyMemberFlag) || target.Daily[FamilyDailySlot].Max != 0 || target.Gold != 0 || len(next.Family.Members[2]) != 1 || next.Family.Members[2][0].ID != "boss" {
+		t.Fatalf("target/family after expel=%+v family=%+v", target, next.Family)
+	}
+	if result.Response != "Alice님을 패거리에서 추방하였습니다.\r\n" || len(result.Events) != 1 || result.Events[0].Text != FamilyExpulsionNotification {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, _, err := next.ApplyFamilyExpulsion(proposal); !errors.Is(err, ErrFamilyMutationStaleProposal) {
+		t.Fatalf("replay err=%v", err)
+	}
+}
+
+func TestFamilyMutationExpelFailsClosedForSelfVisibilityLedgerAndDuplicate(t *testing.T) {
+	s, catalog := familyMutationExpelFixture(t)
+	if _, err := s.PlanFamilyExpulsion("boss", "Boss", catalog); !errors.Is(err, ErrFamilyMutationTargetSelf) {
+		t.Fatalf("self err=%v", err)
+	}
+	hidden := s.clone()
+	target := hidden.Players["applicant"]
+	familyMutationFlag(&target.Body, playerInvisibleFlag, true)
+	hidden.Players["applicant"] = target
+	if _, err := hidden.PlanFamilyExpulsion("boss", "Alice", catalog); !errors.Is(err, ErrFamilyMutationTargetUnavailable) {
+		t.Fatalf("hidden err=%v", err)
+	}
+	missing := s.clone()
+	missing.Family.Members[2] = []FamilyMember{{ID: "boss", Name: "Boss", Class: 4}}
+	if _, err := missing.PlanFamilyExpulsion("boss", "Alice", catalog); !errors.Is(err, ErrFamilyMutationTargetNotMember) {
+		t.Fatalf("missing row err=%v", err)
+	}
+	duplicate := s.clone()
+	duplicate.Family.Members[2] = append(duplicate.Family.Members[2], FamilyMember{ID: "applicant", Name: "Alice", Class: 4})
+	if _, err := duplicate.PlanFamilyExpulsion("boss", "Alice", catalog); !errors.Is(err, ErrFamilyMemberDuplicate) {
+		t.Fatalf("duplicate err=%v", err)
+	}
+}
+
 func TestFamilyMutationRejectsNonCanonicalOnlineIdentityAndAmbiguousBoss(t *testing.T) {
 	s, catalog := familyMutationFixture(t)
 	bad := s.Players["applicant"]

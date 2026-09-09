@@ -105,6 +105,60 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   claim_id text NOT NULL CHECK(length(claim_id) BETWEEN 1 AND 128),
   epoch bigint NOT NULL CHECK(epoch>0),
   PRIMARY KEY(world_id,claim_id), UNIQUE(world_id,epoch)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.family_imports (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  command_id text NOT NULL CHECK(length(command_id) BETWEEN 1 AND 128),
+  aggregate_sha256 bytea NOT NULL CHECK(octet_length(aggregate_sha256)=32),
+  family_count integer NOT NULL CHECK(family_count BETWEEN 0 AND 15),
+  member_count integer NOT NULL CHECK(member_count BETWEEN 0 AND 100000),
+  imported_revision bigint NOT NULL CHECK(imported_revision>0),
+  PRIMARY KEY(world_id,command_id),
+  UNIQUE(world_id,aggregate_sha256)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.family_catalog (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  family_id smallint NOT NULL CHECK(family_id BETWEEN 1 AND 15),
+  family_name text NOT NULL CHECK(length(family_name) BETWEEN 1 AND 256),
+  boss_id text NOT NULL CHECK(length(boss_id)<=128),
+  boss_name text NOT NULL CHECK(length(boss_name) BETWEEN 1 AND 256),
+  fee bigint NOT NULL CHECK(fee>=0 AND fee<=214748),
+  command_id text NOT NULL,
+  PRIMARY KEY(world_id,family_id)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.family_members (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  family_id smallint NOT NULL CHECK(family_id BETWEEN 1 AND 15),
+  member_position integer NOT NULL CHECK(member_position>=0),
+  character_id text NOT NULL CHECK(length(character_id) BETWEEN 1 AND 128),
+  character_name text NOT NULL CHECK(length(character_name) BETWEEN 1 AND 256),
+  character_class smallint NOT NULL CHECK(character_class BETWEEN 0 AND 255),
+  command_id text NOT NULL,
+  PRIMARY KEY(world_id,family_id,member_position),
+  UNIQUE(world_id,character_id)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.character_memo_imports (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  command_id text NOT NULL CHECK(length(command_id) BETWEEN 1 AND 128),
+  aggregate_sha256 bytea NOT NULL CHECK(octet_length(aggregate_sha256)=32),
+  recipient_count integer NOT NULL CHECK(recipient_count BETWEEN 0 AND 100000),
+  memo_count integer NOT NULL CHECK(memo_count BETWEEN 0 AND 1000000),
+  imported_revision bigint NOT NULL CHECK(imported_revision>0),
+  PRIMARY KEY(world_id,command_id),
+  UNIQUE(world_id,aggregate_sha256)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.character_memos (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  recipient_id text NOT NULL CHECK(length(recipient_id) BETWEEN 1 AND 128),
+  memo_position integer NOT NULL CHECK(memo_position>=0),
+  memo_id text NOT NULL CHECK(length(memo_id) BETWEEN 1 AND 128),
+  sender_id text NOT NULL CHECK(length(sender_id) BETWEEN 1 AND 128),
+  sender_name text NOT NULL CHECK(length(sender_name) BETWEEN 1 AND 256),
+  body text NOT NULL CHECK(length(body) BETWEEN 1 AND 80),
+  created_at timestamptz NOT NULL,
+  command_id text NOT NULL,
+  PRIMARY KEY(world_id,recipient_id,memo_position),
+  UNIQUE(world_id,memo_id)
  );`)
 	return err
 }

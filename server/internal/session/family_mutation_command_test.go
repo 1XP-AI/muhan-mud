@@ -78,6 +78,7 @@ func TestParseFamilyMutationLineAdmitsBoundedSourceForms(t *testing.T) {
 		{line: "패거리가입 청룡", action: world.FamilyMutationApply, familyName: "청룡"},
 		{line: "  패거리탈퇴  ", action: world.FamilyMutationWithdraw},
 		{line: "가입허가 Alice", action: world.FamilyMutationApprove, targetName: "Alice"},
+		{line: "패거리추방 Alice", action: world.FamilyMutationExpel, targetName: "Alice"},
 	}
 	for _, tc := range tests {
 		command, ok := ParseFamilyMutationLine(tc.line)
@@ -90,6 +91,8 @@ func TestParseFamilyMutationLineAdmitsBoundedSourceForms(t *testing.T) {
 		"패거리가입 청룡 예",
 		"패거리탈퇴 Alice",
 		"가입허가 Alice 더",
+		"패거리추방",
+		"패거리추방 Alice 더",
 		"패거리가입\n청룡",
 		"패거리가입\x00청룡",
 		string([]byte{0xff}),

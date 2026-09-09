@@ -1,5 +1,40 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 추방·canonical 소셜 원장 이관)
+
+이번 배치에서 `command12.c:fm_out`의 온라인 패거리 추방 경계를 Go
+`State → session receipt → WorldConnector`까지 연결했다. 온라인 canonical
+PFMBOS 두목과 정확한 가시성 대상, 동일 패거리의 `FamilyState` member row를 모두
+확인한 뒤 대상의 PFAMIL/DL_EXPND를 지우고 원장에서 제거한다. 원작 계약대로 fee는
+0이고 패거리 전체 방송은 만들지 않으며, 대상이 아직 같은 canonical 이름인 경우에만
+commit 후 대상 전용 알림을 한 번 보낸다. self/hidden/ambiguous/missing-ledger/
+stale/replay는 commit 전에 닫힌다.
+
+`Postgres.ImportFamilyLedger`와 `ImportCharacterMemos`는 검토된 pointer-free
+aggregate만 받아 world snapshot, normalized family/memo evidence, `world_commands`
+receipt를 한 transaction으로 갱신한다. command ID replay와 aggregate conflict,
+expected revision/writer fence, canonical ID/name/class/timestamp/fee, nil pre-migration
+aggregate, credential/raw-path 입력을 fail-closed한다. legacy raw 파일이나 이름 기반
+계정 claim은 수행하지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Family|Memo|ParseCommand' -count=1) PASS
+(cd server && go test -race ./internal/storage -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport ./internal/storage ./cmd/muhan) PASS
+ARM64 postgres:17-alpine에서 social import/replay/rollback 테스트 PASS
+bash scripts/run-go-validation.sh fast PASS
+bash scripts/run-go-validation.sh integration PASS (전체 Go race/vet/diff gate)
+git diff --check PASS
+```
+
+이번 배치는 로컬 작업 tree에만 있으며 push/CI/배포는 실행하지 않았다. 실제 legacy
+`family_member_*`/`player/fal` 수집기와 operator 승인 manifest, normalized evidence
+복구 reader, Supabase RLS/운영 권한, 전체 social/family 출력 parity, room body 63건,
+브라우저·모바일·WSS/Ingress·testnet 승격은 남아 있다. `src/frp.new`와 변경이 남은
+기존 Orca worktree는 삭제하거나 stage하지 않는다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 원장·메모 command vertical slice)
 
 이번 배치에서 패거리 승인/활성 탈퇴와 `메모 <캐릭터명> <내용>`을 canonical

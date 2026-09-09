@@ -99,6 +99,11 @@ func ParseFamilyMutationLine(line string) (FamilyMutationCommand, bool) {
 		}
 		command.TargetName = tokens[1]
 		return command, true
+	case "패거리추방":
+		if len(tokens) != 2 || tokens[1] == "" || strings.TrimSpace(tokens[1]) != tokens[1] {
+			return FamilyMutationCommand{}, false
+		}
+		return FamilyMutationCommand{Action: world.FamilyMutationExpel, TargetName: tokens[1]}, true
 	default:
 		return FamilyMutationCommand{}, false
 	}
@@ -147,6 +152,16 @@ func IsFamilyLeaveLine(line string) bool {
 	return IsFamilyWithdrawalLine(line)
 }
 
+func ParseFamilyExpulsionLine(line string) (FamilyMutationCommand, bool) {
+	command, ok := ParseFamilyMutationLine(line)
+	return command, ok && command.Action == world.FamilyMutationExpel
+}
+
+func IsFamilyExpulsionLine(line string) bool {
+	_, ok := ParseFamilyExpulsionLine(line)
+	return ok
+}
+
 func unsupportedFamilyMutationStart() error {
 	return errors.Join(ErrUnsupportedFamilyMutationLine, ErrFamilyMutationSelectionRequired)
 }
@@ -189,6 +204,8 @@ func (o *Ownership) ExecuteFamilyMutationLineWithCatalog(ctx context.Context, st
 			proposal, err = state.PlanFamilyWithdrawal(actorID, catalog)
 		case world.FamilyMutationApprove:
 			proposal, err = state.PlanFamilyApproval(actorID, command.TargetName, catalog)
+		case world.FamilyMutationExpel:
+			proposal, err = state.PlanFamilyExpulsion(actorID, command.TargetName, catalog)
 		default:
 			return nil, nil, ErrUnsupportedFamilyMutationLine
 		}
@@ -240,4 +257,16 @@ func (o *Ownership) ExecuteFamilyWithdrawalLine(ctx context.Context, store engin
 
 func (o *Ownership) ExecuteFamilyLeaveLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalog world.FamilyCatalog) (storage.WorldReceipt, error) {
 	return o.ExecuteFamilyWithdrawalLine(ctx, store, worldID, commandID, lease, line, catalog)
+}
+
+func (o *Ownership) ExecuteFamilyExpulsionLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalog world.FamilyCatalog) (storage.WorldReceipt, error) {
+	command, ok := ParseFamilyMutationLine(line)
+	if !ok || command.Action != world.FamilyMutationExpel {
+		return storage.WorldReceipt{}, ErrUnsupportedFamilyMutationLine
+	}
+	return o.ExecuteFamilyMutationLineWithCatalog(ctx, store, worldID, commandID, lease, line, catalog)
+}
+
+func (o *Ownership) ExecuteFamilyExpelLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, catalog world.FamilyCatalog) (storage.WorldReceipt, error) {
+	return o.ExecuteFamilyExpulsionLine(ctx, store, worldID, commandID, lease, line, catalog)
 }

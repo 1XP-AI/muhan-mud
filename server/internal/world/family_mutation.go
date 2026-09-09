@@ -13,14 +13,16 @@ import (
 // mutations admitted by the current canonical State. Apply is the confirmed
 // application branch of family()/add_family(); Withdraw covers pending
 // cancellation and the ledger-backed active leave branch; Approve is the
-// ledger-backed boss_family branch. Bare interactive signup and fm_out remain
-// outside this reducer.
+// ledger-backed boss_family branch; Expel is the canonical-ledger fm_out
+// branch. Bare interactive signup remains outside this reducer.
 type FamilyMutationAction string
 
 const (
-	FamilyMutationApply    FamilyMutationAction = "apply"
-	FamilyMutationWithdraw FamilyMutationAction = "withdraw"
-	FamilyMutationApprove  FamilyMutationAction = "approve"
+	FamilyMutationApply     FamilyMutationAction = "apply"
+	FamilyMutationWithdraw  FamilyMutationAction = "withdraw"
+	FamilyMutationApprove   FamilyMutationAction = "approve"
+	FamilyMutationExpel     FamilyMutationAction = "expel"
+	FamilyMutationExpulsion                      = FamilyMutationExpel
 )
 
 // Compatibility spellings keep adapters aligned with the legacy command
@@ -31,9 +33,12 @@ const (
 	FamilyMutationSignup = FamilyMutationApply
 	FamilyMutationCancel = FamilyMutationWithdraw
 	FamilyMutationPermit = FamilyMutationApprove
+	FamilyMutationKick   = FamilyMutationExpel
 	FamilyJoin           = FamilyMutationApply
 	FamilyLeave          = FamilyMutationWithdraw
 	FamilyApprove        = FamilyMutationApprove
+	FamilyExpel          = FamilyMutationExpel
+	FamilyKick           = FamilyMutationExpel
 )
 
 const familyMutationDeactivatedBoss = "*해체*"
@@ -58,6 +63,8 @@ var (
 	ErrFamilyMutationTargetAmbiguous     = errors.New("family target identity is ambiguous")
 	ErrFamilyMutationTargetNotPending    = errors.New("family target has no matching application")
 	ErrFamilyMutationTargetAlreadyMember = errors.New("family target is already a member")
+	ErrFamilyMutationTargetNotMember     = errors.New("family target is not a member")
+	ErrFamilyMutationTargetSelf          = errors.New("family boss cannot expel itself")
 	ErrFamilyMutationMemberLedgerMissing = errors.New("family member ledger is unavailable")
 	ErrFamilyMutationInsufficientGold    = errors.New("family actor gold is insufficient")
 	ErrFamilyMutationGoldOverflow        = errors.New("family gold transfer overflows")
@@ -90,6 +97,8 @@ var (
 	ErrFamilyTargetAmbiguousMutation     = ErrFamilyMutationTargetAmbiguous
 	ErrFamilyTargetNotPending            = ErrFamilyMutationTargetNotPending
 	ErrFamilyTargetAlreadyMember         = ErrFamilyMutationTargetAlreadyMember
+	ErrFamilyTargetNotMember             = ErrFamilyMutationTargetNotMember
+	ErrFamilyTargetSelf                  = ErrFamilyMutationTargetSelf
 	ErrFamilyMemberLedgerUnavailable     = ErrFamilyMutationMemberLedgerMissing
 	ErrFamilyInsufficientGold            = ErrFamilyMutationInsufficientGold
 	ErrFamilyGoldOverflow                = ErrFamilyMutationGoldOverflow
@@ -100,8 +109,9 @@ const (
 	// These responses are the post-confirmation portions of add_family and
 	// exit_family.  Interactive prompts are connection-local and are not
 	// represented by a world proposal.
-	FamilyApplicationResponse = "\r\n가입 신청을 하였습니다. \r\n패거리 두목의 허가를 기다리십시요."
-	FamilyWithdrawalResponse  = "패거리 가입신청을 취소합니다."
+	FamilyApplicationResponse   = "\r\n가입 신청을 하였습니다. \r\n패거리 두목의 허가를 기다리십시요."
+	FamilyWithdrawalResponse    = "패거리 가입신청을 취소합니다."
+	FamilyExpulsionNotification = "\n당신은 패거리에서 추방 되었습니다.\r\n"
 )
 
 // FamilyMutationProposal binds one membership transition to one complete
@@ -140,6 +150,7 @@ type FamilyMutationProposal struct {
 	GoldTransferred         int64
 	Changed                 bool
 	BossNotificationPending bool
+	Events                  []FamilyMutationEvent
 	Response                string
 
 	before          State
@@ -156,36 +167,47 @@ type FamilyMutationProposal struct {
 type FamilyMembershipProposal = FamilyMutationProposal
 type FamilyApplicationProposal = FamilyMutationProposal
 
+// FamilyMutationEvent is a post-commit targeted notification. Recipient ID
+// and name are captured in the receipt so a retry cannot redirect the message
+// to a later occupant of the same display name.
+type FamilyMutationEvent struct {
+	RecipientID   string `json:"recipient_id"`
+	RecipientName string `json:"recipient_name"`
+	Text          string `json:"text"`
+}
+
 // FamilyMutationResult is the durable receipt projection for admitted family
 // transitions. Approval and active leave include the exact gold and member
-// ledger deltas; unsupported broadcast/fm_out side effects are not fabricated.
+// ledger deltas; fm_out includes only its targeted online notification and
+// never fabricates a family-wide broadcast.
 type FamilyMutationResult struct {
-	Action                  FamilyMutationAction `json:"action"`
-	ActorID                 string               `json:"actor_id"`
-	ActorName               string               `json:"actor_name"`
-	TargetID                string               `json:"target_id,omitempty"`
-	TargetName              string               `json:"target_name,omitempty"`
-	BossID                  string               `json:"boss_id,omitempty"`
-	BossName                string               `json:"boss_name,omitempty"`
-	FamilyID                int16                `json:"family_id"`
-	FamilyName              string               `json:"family_name"`
-	BeforeFamilyID          int16                `json:"before_family_id"`
-	AfterFamilyID           int16                `json:"after_family_id"`
-	BeforeFlags             [8]byte              `json:"before_flags"`
-	AfterFlags              [8]byte              `json:"after_flags"`
-	TargetBeforeFlags       [8]byte              `json:"target_before_flags,omitempty"`
-	TargetAfterFlags        [8]byte              `json:"target_after_flags,omitempty"`
-	BeforeGold              int32                `json:"before_gold,omitempty"`
-	AfterGold               int32                `json:"after_gold,omitempty"`
-	TargetBeforeGold        int32                `json:"target_before_gold,omitempty"`
-	TargetAfterGold         int32                `json:"target_after_gold,omitempty"`
-	BossBeforeGold          int32                `json:"boss_before_gold,omitempty"`
-	BossAfterGold           int32                `json:"boss_after_gold,omitempty"`
-	Fee                     int64                `json:"fee,omitempty"`
-	GoldTransferred         int64                `json:"gold_transferred,omitempty"`
-	Changed                 bool                 `json:"changed"`
-	BossNotificationPending bool                 `json:"boss_notification_pending,omitempty"`
-	Response                string               `json:"response"`
+	Action                  FamilyMutationAction  `json:"action"`
+	ActorID                 string                `json:"actor_id"`
+	ActorName               string                `json:"actor_name"`
+	TargetID                string                `json:"target_id,omitempty"`
+	TargetName              string                `json:"target_name,omitempty"`
+	BossID                  string                `json:"boss_id,omitempty"`
+	BossName                string                `json:"boss_name,omitempty"`
+	FamilyID                int16                 `json:"family_id"`
+	FamilyName              string                `json:"family_name"`
+	BeforeFamilyID          int16                 `json:"before_family_id"`
+	AfterFamilyID           int16                 `json:"after_family_id"`
+	BeforeFlags             [8]byte               `json:"before_flags"`
+	AfterFlags              [8]byte               `json:"after_flags"`
+	TargetBeforeFlags       [8]byte               `json:"target_before_flags,omitempty"`
+	TargetAfterFlags        [8]byte               `json:"target_after_flags,omitempty"`
+	BeforeGold              int32                 `json:"before_gold,omitempty"`
+	AfterGold               int32                 `json:"after_gold,omitempty"`
+	TargetBeforeGold        int32                 `json:"target_before_gold,omitempty"`
+	TargetAfterGold         int32                 `json:"target_after_gold,omitempty"`
+	BossBeforeGold          int32                 `json:"boss_before_gold,omitempty"`
+	BossAfterGold           int32                 `json:"boss_after_gold,omitempty"`
+	Fee                     int64                 `json:"fee,omitempty"`
+	GoldTransferred         int64                 `json:"gold_transferred,omitempty"`
+	Changed                 bool                  `json:"changed"`
+	BossNotificationPending bool                  `json:"boss_notification_pending,omitempty"`
+	Events                  []FamilyMutationEvent `json:"events,omitempty"`
+	Response                string                `json:"response"`
 }
 
 type FamilyMembershipResult = FamilyMutationResult
@@ -602,6 +624,69 @@ func familyMutationApprovalPlan(s State, actorID, targetName string, catalog Fam
 	}, nil
 }
 
+func familyMutationExpelPlan(s State, actorID, targetName string, catalog FamilyCatalog) (FamilyMutationProposal, error) {
+	if err := s.Validate(); err != nil {
+		return FamilyMutationProposal{}, err
+	}
+	if s.Family == nil {
+		return FamilyMutationProposal{}, ErrFamilyMutationMemberLedgerMissing
+	}
+	actor, family, err := familyMutationApprovalActor(s, actorID, catalog)
+	if err != nil {
+		return FamilyMutationProposal{}, err
+	}
+	targetID, target, err := familyMutationCanonicalTarget(s, actor, targetName)
+	if err != nil {
+		return FamilyMutationProposal{}, err
+	}
+	if targetID == actorID {
+		return FamilyMutationProposal{}, ErrFamilyMutationTargetSelf
+	}
+	active, pending, targetFamilyID, err := familyMutationMembership(target)
+	if err != nil {
+		return FamilyMutationProposal{}, err
+	}
+	if !active || pending || targetFamilyID != family.ID {
+		return FamilyMutationProposal{}, ErrFamilyMutationTargetNotMember
+	}
+	familyState, _, err := familyMutationMemberLedger(s, family.ID)
+	if err != nil {
+		return FamilyMutationProposal{}, err
+	}
+	member, found, err := familyState.hasMember(family.ID, targetID)
+	if err != nil {
+		return FamilyMutationProposal{}, fmt.Errorf("%w: %v", ErrFamilyMutationMemberLedgerMissing, err)
+	}
+	if !found {
+		return FamilyMutationProposal{}, errors.Join(ErrFamilyMutationTargetNotMember, ErrFamilyMutationMemberLedgerMissing)
+	}
+	if member.Name != target.Body.Name || member.Class != target.Body.Class {
+		return FamilyMutationProposal{}, ErrFamilyMutationIdentityUnresolved
+	}
+	beforeTargetFlags := target.Body.Flags
+	afterTargetFlags := beforeTargetFlags
+	afterTargetFlags[FamilyMemberFlag/8] &^= 1 << (FamilyMemberFlag % 8)
+	updatedFamily, _, err := familyState.removeMember(family.ID, targetID)
+	if err != nil {
+		return FamilyMutationProposal{}, fmt.Errorf("%w: %v", ErrFamilyMutationMemberLedgerMissing, err)
+	}
+	snapshot := s.clone()
+	return FamilyMutationProposal{
+		Action:  FamilyMutationExpel,
+		ActorID: actorID, ActorName: actor.Body.Name,
+		TargetID: targetID, TargetName: target.Body.Name,
+		BossID: actorID, BossName: actor.Body.Name,
+		FamilyID: family.ID, FamilyName: family.Name,
+		BeforeFamilyID: targetFamilyID, AfterFamilyID: 0,
+		BeforeFlags: actor.Body.Flags, AfterFlags: actor.Body.Flags,
+		TargetBeforeFlags: beforeTargetFlags, TargetAfterFlags: afterTargetFlags,
+		Changed: true, Events: []FamilyMutationEvent{{RecipientID: targetID, RecipientName: target.Body.Name, Text: FamilyExpulsionNotification}},
+		Response: fmt.Sprintf("%s님을 패거리에서 추방하였습니다.\r\n", target.Body.Name),
+		before:   snapshot, expectedActor: snapshot.Players[actorID], expectedBoss: snapshot.Players[actorID], expectedTarget: snapshot.Players[targetID], expectedFamily: familyState, afterFamily: updatedFamily,
+		expectedCatalog: cloneFamilyCatalog(catalog),
+	}, nil
+}
+
 // PlanFamilyMutation plans an admitted membership transition.  familyID is
 // required for apply and must be zero for withdraw; targetName is reserved
 // for approval and must be empty for the admitted actions.
@@ -628,6 +713,11 @@ func (s State) PlanFamilyMutation(actorID string, action FamilyMutationAction, f
 			return FamilyMutationProposal{}, ErrFamilyMutationInvalidProposal
 		}
 		return familyMutationApprovalPlan(s, actorID, targetName, catalog)
+	case FamilyMutationExpel:
+		if familyID != 0 || targetName == "" {
+			return FamilyMutationProposal{}, ErrFamilyMutationInvalidProposal
+		}
+		return familyMutationExpelPlan(s, actorID, targetName, catalog)
 	default:
 		return FamilyMutationProposal{}, ErrFamilyMutationInvalidAction
 	}
@@ -696,6 +786,17 @@ func (s State) PlanFamilyApprove(actorID, targetName string, catalog FamilyCatal
 	return s.PlanFamilyApproval(actorID, targetName, catalog)
 }
 
+// PlanFamilyExpulsion is the source-oriented fm_out reducer. It requires an
+// online canonical boss, an online visible exact target, and a matching member
+// row in the imported family ledger; no fee or broadcast is charged/emitted.
+func (s State) PlanFamilyExpulsion(actorID, targetName string, catalog FamilyCatalog) (FamilyMutationProposal, error) {
+	return s.PlanFamilyMutation(actorID, FamilyMutationExpel, 0, targetName, catalog)
+}
+
+func (s State) PlanFamilyExpel(actorID, targetName string, catalog FamilyCatalog) (FamilyMutationProposal, error) {
+	return s.PlanFamilyExpulsion(actorID, targetName, catalog)
+}
+
 func familyMutationProposalMatches(actual, expected FamilyMutationProposal) bool {
 	return actual.Action == expected.Action && actual.ActorID == expected.ActorID && actual.ActorName == expected.ActorName &&
 		actual.TargetID == expected.TargetID && actual.TargetName == expected.TargetName && actual.BossID == expected.BossID && actual.BossName == expected.BossName &&
@@ -703,7 +804,7 @@ func familyMutationProposalMatches(actual, expected FamilyMutationProposal) bool
 		actual.BeforeFlags == expected.BeforeFlags && actual.AfterFlags == expected.AfterFlags && actual.TargetBeforeFlags == expected.TargetBeforeFlags && actual.TargetAfterFlags == expected.TargetAfterFlags &&
 		actual.BeforeGold == expected.BeforeGold && actual.AfterGold == expected.AfterGold && actual.TargetBeforeGold == expected.TargetBeforeGold && actual.TargetAfterGold == expected.TargetAfterGold &&
 		actual.BossBeforeGold == expected.BossBeforeGold && actual.BossAfterGold == expected.BossAfterGold && actual.Fee == expected.Fee && actual.GoldTransferred == expected.GoldTransferred &&
-		actual.Changed == expected.Changed && actual.BossNotificationPending == expected.BossNotificationPending && actual.Response == expected.Response
+		actual.Changed == expected.Changed && actual.BossNotificationPending == expected.BossNotificationPending && reflect.DeepEqual(actual.Events, expected.Events) && actual.Response == expected.Response
 }
 
 func familyMutationResult(p FamilyMutationProposal) FamilyMutationResult {
@@ -719,6 +820,7 @@ func familyMutationResult(p FamilyMutationProposal) FamilyMutationResult {
 		BossBeforeGold: p.BossBeforeGold, BossAfterGold: p.BossAfterGold,
 		Fee: p.Fee, GoldTransferred: p.GoldTransferred,
 		Changed: p.Changed, BossNotificationPending: p.BossNotificationPending, Response: p.Response,
+		Events: append([]FamilyMutationEvent(nil), p.Events...),
 	}
 }
 
@@ -742,6 +844,8 @@ func (s State) ApplyFamilyMutation(proposal FamilyMutationProposal) (State, Fami
 		fresh, err = familyMutationWithdrawPlan(s, proposal.ActorID, proposal.expectedCatalog)
 	case FamilyMutationApprove:
 		fresh, err = familyMutationApprovalPlan(s, proposal.ActorID, proposal.TargetName, proposal.expectedCatalog)
+	case FamilyMutationExpel:
+		fresh, err = familyMutationExpelPlan(s, proposal.ActorID, proposal.TargetName, proposal.expectedCatalog)
 	default:
 		return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
 	}
@@ -754,11 +858,15 @@ func (s State) ApplyFamilyMutation(proposal FamilyMutationProposal) (State, Fami
 	if !proposal.Changed || proposal.Response == "" {
 		return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
 	}
-	if proposal.Action != FamilyMutationApprove && proposal.BeforeFlags == proposal.AfterFlags {
-		return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
+	if proposal.Action == FamilyMutationApply || proposal.Action == FamilyMutationWithdraw {
+		if proposal.BeforeFlags == proposal.AfterFlags {
+			return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
+		}
 	}
-	if proposal.Action == FamilyMutationApprove && proposal.TargetBeforeFlags == proposal.TargetAfterFlags {
-		return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
+	if proposal.Action == FamilyMutationApprove || proposal.Action == FamilyMutationExpel {
+		if proposal.TargetBeforeFlags == proposal.TargetAfterFlags {
+			return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
+		}
 	}
 
 	next := s.clone()
@@ -789,6 +897,13 @@ func (s State) ApplyFamilyMutation(proposal FamilyMutationProposal) (State, Fami
 		next.Players[proposal.TargetID] = target
 		family := proposal.afterFamily.Clone()
 		next.Family = &family
+	case FamilyMutationExpel:
+		target := next.Players[proposal.TargetID]
+		target.Body.Flags = proposal.TargetAfterFlags
+		target.Body.Daily[FamilyDailySlot].Max = 0
+		next.Players[proposal.TargetID] = target
+		family := proposal.afterFamily.Clone()
+		next.Family = &family
 	default:
 		return State{}, FamilyMutationResult{}, ErrFamilyMutationInvalidProposal
 	}
@@ -799,6 +914,11 @@ func (s State) ApplyFamilyMutation(proposal FamilyMutationProposal) (State, Fami
 		return State{}, FamilyMutationResult{}, err
 	}
 	if proposal.Action == FamilyMutationApprove {
+		if _, _, _, err := familyMutationMembership(next.Players[proposal.TargetID]); err != nil {
+			return State{}, FamilyMutationResult{}, err
+		}
+	}
+	if proposal.Action == FamilyMutationExpel {
 		if _, _, _, err := familyMutationMembership(next.Players[proposal.TargetID]); err != nil {
 			return State{}, FamilyMutationResult{}, err
 		}
@@ -822,6 +942,14 @@ func (s State) ApplyFamilyLeave(proposal FamilyMutationProposal) (State, FamilyM
 	return s.ApplyFamilyMutation(proposal)
 }
 
+func (s State) ApplyFamilyExpulsion(proposal FamilyMutationProposal) (State, FamilyMutationResult, error) {
+	return s.ApplyFamilyMutation(proposal)
+}
+
+func (s State) ApplyFamilyExpel(proposal FamilyMutationProposal) (State, FamilyMutationResult, error) {
+	return s.ApplyFamilyExpulsion(proposal)
+}
+
 func (s State) FamilyJoin(actorID string, familyID int16, catalog FamilyCatalog) (State, FamilyMutationResult, error) {
 	proposal, err := s.PlanFamilyJoin(actorID, familyID, catalog)
 	if err != nil {
@@ -838,6 +966,14 @@ func (s State) FamilyWithdrawal(actorID string, catalog FamilyCatalog) (State, F
 	return s.ApplyFamilyMutation(proposal)
 }
 
+func (s State) FamilyExpulsion(actorID, targetName string, catalog FamilyCatalog) (State, FamilyMutationResult, error) {
+	proposal, err := s.PlanFamilyExpulsion(actorID, targetName, catalog)
+	if err != nil {
+		return State{}, FamilyMutationResult{}, err
+	}
+	return s.ApplyFamilyMutation(proposal)
+}
+
 // Package-level wrappers mirror other world reducers for callers that keep a
 // State value as an explicit first argument.
 func PlanFamilyMutation(s State, actorID string, action FamilyMutationAction, familyID int16, targetName string, catalog FamilyCatalog) (FamilyMutationProposal, error) {
@@ -846,4 +982,12 @@ func PlanFamilyMutation(s State, actorID string, action FamilyMutationAction, fa
 
 func ApplyFamilyMutation(s State, proposal FamilyMutationProposal) (State, FamilyMutationResult, error) {
 	return s.ApplyFamilyMutation(proposal)
+}
+
+func PlanFamilyExpulsion(s State, actorID, targetName string, catalog FamilyCatalog) (FamilyMutationProposal, error) {
+	return s.PlanFamilyExpulsion(actorID, targetName, catalog)
+}
+
+func ApplyFamilyExpulsion(s State, proposal FamilyMutationProposal) (State, FamilyMutationResult, error) {
+	return s.ApplyFamilyExpulsion(proposal)
 }
