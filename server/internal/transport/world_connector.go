@@ -294,12 +294,32 @@ type worldConnection struct {
 	// receipt. It remains stable across an uncertain commit/response so a
 	// retry cannot render a newer snapshot or create a second page.
 	infoContinuationCommandID string
-	compose                   *composeDraft
-	passwordChange            session.PasswordChanger
-	passwordSecret            bool
+	// vote is command11.c's connection-local vote_cmnd state. It is never
+	// serialized into State or a receipt; the final choices are bound to one
+	// canonical receipt only after the connection has completed the prompts.
+	vote           *voteDraft
+	compose        *composeDraft
+	passwordChange session.PasswordChanger
+	passwordSecret bool
 	// ignore is command9.c's connection-local first_ignore list. It is never
 	// serialized with the world snapshot or a command receipt.
 	ignore IgnoreList
+}
+
+type votePhase uint8
+
+const (
+	voteConfirmPhase votePhase = iota + 1
+	voteChoicePhase
+	voteCommitPhase
+)
+
+type voteDraft struct {
+	commandID    string
+	catalog      world.VoteCatalog
+	continuation world.VoteContinuation
+	phase        votePhase
+	lastChoice   byte
 }
 
 type replyTarget struct {
@@ -535,6 +555,159 @@ func (c *worldConnection) submitBoardWriteContinuation(ctx context.Context, draf
 	return fmt.Sprintf("%3d: ", len(draft.body)+1), nil
 }
 
+func (c *worldConnection) clearVote() {
+	if c.vote == nil {
+		return
+	}
+	c.vote.continuation.Choices = nil
+	c.vote.catalog.Issue.Options = nil
+	c.vote.commandID = ""
+	c.vote.lastChoice = 0
+	c.vote.phase = 0
+	c.vote = nil
+}
+
+// submitVoteLine owns both the initial `투표` line and all source
+// vote_cmnd continuations. It runs before history/alias/parser handling so a
+// prompt response can never become an ordinary terminal command.
+func (c *worldConnection) submitVoteLine(ctx context.Context, line string) (string, bool, error) {
+	if c.vote == nil {
+		if _, ok := session.ParseVoteLine(line); !ok {
+			return "", false, nil
+		}
+		start, err := c.game.owners.BeginVoteContinuation(ctx, c.game.config.Store, c.game.config.WorldID, c.lease, session.VoteOptions{Catalog: c.game.config.VoteCatalog})
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+				return "", true, err
+			}
+			// A missing/incomplete canonical vote aggregate and all other
+			// unsupported source gates fail closed without a receipt.
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		phase := voteChoicePhase
+		if start.Projection.HasBallot {
+			phase = voteConfirmPhase
+		}
+		c.vote = &voteDraft{
+			commandID:    "vote-" + rand.Text(),
+			catalog:      start.Catalog,
+			continuation: start.Continuation,
+			phase:        phase,
+		}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		if phase == voteConfirmPhase {
+			return session.VoteAlreadyVotedResponse + session.VoteChangePrompt, true, nil
+		}
+		prompt, err := session.VotePromptForOption(start.Catalog.Issue, 0)
+		if err != nil {
+			c.clearVote()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return prompt, true, nil
+	}
+	output, err := c.submitVoteContinuation(ctx, line)
+	return output, true, err
+}
+
+func (c *worldConnection) submitVoteContinuation(ctx context.Context, line string) (string, error) {
+	draft := c.vote
+	if draft == nil {
+		return "", nil
+	}
+	switch draft.phase {
+	case voteConfirmPhase:
+		input, ok := session.ParseVoteConfirmationLine(line)
+		if !ok || input.Choice != 'Y' {
+			c.clearVote()
+			return session.VoteCancelResponse, nil
+		}
+		draft.phase = voteChoicePhase
+		prompt, err := session.VotePromptForOption(draft.catalog.Issue, 0)
+		if err != nil {
+			c.clearVote()
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		return prompt, nil
+	case voteChoicePhase:
+		input, ok := session.ParseVoteChoiceLine(line)
+		if !ok {
+			c.clearVote()
+			return session.VoteInvalidChoiceResponse, nil
+		}
+		next, done, err := draft.continuation.Choose(string([]byte{input.Choice}))
+		if err != nil {
+			c.clearVote()
+			return session.VoteInvalidChoiceResponse, nil
+		}
+		draft.continuation = next
+		draft.lastChoice = input.Choice
+		if !done {
+			prompt, promptErr := session.VotePromptForOption(draft.catalog.Issue, next.NextOption-1)
+			if promptErr != nil {
+				c.clearVote()
+				return "아직 구현되지 않은 명령입니다.\r\n", nil
+			}
+			return prompt, nil
+		}
+		return c.commitVote(ctx, draft)
+	case voteCommitPhase:
+		// A receipt commit may have succeeded while its response was lost.
+		// Retain the exact command ID and choices, and permit only a retry of
+		// the same final choice (or an explicit dot retry) so arbitrary input
+		// cannot become a vote authorization channel.
+		if line != "." {
+			input, ok := session.ParseVoteChoiceLine(line)
+			if !ok || input.Choice != draft.lastChoice {
+				return session.VoteCommitRetryResponse, nil
+			}
+		}
+		return c.commitVote(ctx, draft)
+	default:
+		c.clearVote()
+		return "아직 구현되지 않은 명령입니다.\r\n", nil
+	}
+}
+
+func (c *worldConnection) commitVote(ctx context.Context, draft *voteDraft) (string, error) {
+	receipt, err := c.game.owners.ExecuteVoteContinuation(ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease, draft.catalog, draft.continuation)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", err
+		}
+		if errors.Is(err, world.ErrVoteCatalogUnavailable) ||
+			errors.Is(err, world.ErrVoteCatalogInvalid) ||
+			errors.Is(err, world.ErrVoteActorAbsent) ||
+			errors.Is(err, world.ErrVoteAge) ||
+			errors.Is(err, world.ErrVoteRoom) ||
+			errors.Is(err, world.ErrVoteNumeric) ||
+			errors.Is(err, world.ErrVoteStateUnresolved) ||
+			errors.Is(err, world.ErrVoteStateInvalid) ||
+			errors.Is(err, world.ErrVoteBallotInvalid) ||
+			errors.Is(err, world.ErrVoteHistoryInvalid) ||
+			errors.Is(err, world.ErrVoteChoicesRequired) ||
+			errors.Is(err, world.ErrVoteChoicesInvalid) ||
+			errors.Is(err, world.ErrVoteNoBallot) ||
+			errors.Is(err, world.ErrVoteStaleProposal) ||
+			errors.Is(err, world.ErrVoteInvalidProposal) {
+			c.clearVote()
+			return "아직 구현되지 않은 명령입니다.\r\n", nil
+		}
+		draft.phase = voteCommitPhase
+		return session.VoteCommitRetryResponse, nil
+	}
+	var result world.VoteResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		// Keep the draft and command ID so a malformed/lost response can be
+		// retried through the same durable receipt identity.
+		draft.phase = voteCommitPhase
+		return session.VoteCommitRetryResponse, nil
+	}
+	c.clearVote()
+	return result.Response, nil
+}
+
 func (c *worldConnection) Submit(ctx context.Context, line string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -587,6 +760,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return output, nil
 	}
+	if output, handled, err := c.submitVoteLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	// Start `암호` before history expansion. The command is connection-local,
 	// so its line and all subsequent credential lines must not become the `!`
 	// history entry.
@@ -607,6 +789,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return output, nil
 	}
+	// History expansion can recreate the interactive `투표` command. Route it
+	// through the same connection-local gate before alias expansion/parser
+	// handling, just as the compose editor is routed above.
+	if output, handled, err := c.submitVoteLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
 	if beforeOK {
@@ -617,6 +811,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 			line = expanded
 		}
+	}
+	// An alias is server-owned input, but it may still expand to the exact
+	// vote alias. Keep that expansion inside the continuation boundary so a
+	// vote prompt is never routed to the ordinary parser.
+	if output, handled, err := c.submitVoteLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
 	}
 	commandID := "command-" + rand.Text()
 	parsed, parseErr := session.ParseCommand(line)
@@ -1974,6 +2180,7 @@ func (c *worldConnection) Close(ctx context.Context) {
 	// Disconnect discards any uncommitted editor input immediately. Durable
 	// departure cleanup may need a retry, but an abandoned title/body must not
 	// remain attached to that connection while it is sealed.
+	c.clearVote()
 	c.clearCompose()
 	// `first_ignore` is descriptor-local in the legacy server. Clear it at the
 	// connection boundary so a closed descriptor cannot retain names while a

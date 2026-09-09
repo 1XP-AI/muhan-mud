@@ -111,6 +111,25 @@ func TestParseVoteContinuationLineKeepsPromptsOutsideReceiptParser(t *testing.T)
 	}
 }
 
+func TestVotePromptForOptionUsesSourceOneBasedAnswerLines(t *testing.T) {
+	issue := voteSessionCatalog().Issue
+	question, err := VotePromptForOption(issue, 0)
+	if err != nil || !bytes.Contains([]byte(question), []byte(issue.Prompt)) {
+		t.Fatalf("question=%q err=%v", question, err)
+	}
+	first, err := VotePromptForOption(issue, 1)
+	if err != nil || !bytes.Contains([]byte(first), []byte(issue.Options[0])) || bytes.Contains([]byte(first), []byte(issue.Options[1])) {
+		t.Fatalf("first=%q err=%v", first, err)
+	}
+	second, err := VotePromptForOption(issue, 2)
+	if err != nil || !bytes.Contains([]byte(second), []byte(issue.Options[1])) {
+		t.Fatalf("second=%q err=%v", second, err)
+	}
+	if _, err := VotePromptForOption(issue, 3); !errors.Is(err, world.ErrVoteInvalidProposal) {
+		t.Fatalf("out-of-range err=%v", err)
+	}
+}
+
 func TestExecuteVoteLineFailsClosedBeforeReceiptWithoutBallotState(t *testing.T) {
 	store := &departureStore{state: voteSessionState(t)}
 	owners, lease := voteSessionOwner(t)
@@ -144,6 +163,59 @@ func TestExecuteVoteLineReceiptReplayPrecedesUnresolvedBallotReducer(t *testing.
 	owners, lease := voteSessionOwner(t)
 	replay, err := owners.ExecuteVoteLine(context.Background(), store, "w", "vote-replay", lease, "투표", voteSessionCatalog())
 	if err != nil || !replay.Replayed || replay.Revision != 11 || !bytes.Equal(replay.Response, []byte(`{"action":"vote-issue"}`)) || store.commits != 0 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestBeginVoteContinuationRequiresResolvedCanonicalState(t *testing.T) {
+	store := &departureStore{state: voteSessionState(t)}
+	owners, lease := voteSessionOwner(t)
+	if _, err := owners.BeginVoteContinuation(context.Background(), store, "w", lease, VoteOptions{Catalog: voteSessionCatalog()}); !errors.Is(err, world.ErrVoteStateUnresolved) {
+		t.Fatalf("unresolved vote start err=%v", err)
+	}
+	if store.commits != 0 {
+		t.Fatalf("unresolved vote start committed=%d", store.commits)
+	}
+}
+
+func TestExecuteVoteContinuationWritesAndReplaysCanonicalBallot(t *testing.T) {
+	state, err := world.DecodeState(voteSessionState(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Votes = &world.VoteState{Ballots: map[string]world.VoteBallot{}, History: []world.VoteHistoryEntry{}}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners, lease := voteSessionOwner(t)
+	start, err := owners.BeginVoteContinuation(context.Background(), store, "w", lease, VoteOptions{Catalog: voteSessionCatalog()})
+	if err != nil || start.Projection.HasBallot || start.Continuation.NextOption != 1 {
+		t.Fatalf("start=%+v err=%v", start, err)
+	}
+	continuation, done, err := start.Continuation.Choose("a")
+	if err != nil || done {
+		t.Fatalf("first choice=%+v done=%t err=%v", continuation, done, err)
+	}
+	continuation, done, err = continuation.Choose("g")
+	if err != nil || !done {
+		t.Fatalf("final choice=%+v done=%t err=%v", continuation, done, err)
+	}
+	first, err := owners.ExecuteVoteContinuation(context.Background(), store, "w", "vote-submit-1", lease, start.Catalog, continuation)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.VoteResult
+	if err := json.Unmarshal(first.Response, &result); err != nil || result.Operation != world.VoteOperationWrite || result.Response != world.VoteSubmittedResponse {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || string(saved.Votes.Ballots["actor"].Choices) != "AG" || len(saved.Votes.History) != 1 {
+		t.Fatalf("saved vote=%+v err=%v", saved.Votes, err)
+	}
+	replay, err := owners.ExecuteVoteContinuation(context.Background(), store, "w", "vote-submit-1", lease, start.Catalog, continuation)
+	if err != nil || !replay.Replayed || replay.Revision != first.Revision || !bytes.Equal(replay.Response, first.Response) || store.commits != 1 {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
