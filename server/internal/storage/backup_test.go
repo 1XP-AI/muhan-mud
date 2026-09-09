@@ -16,7 +16,7 @@ import (
 func backupFixtureSnapshot() WorldSnapshot {
 	return WorldSnapshot{
 		Revision: 7,
-		State:    json.RawMessage(`{"Version":1,"Rooms":{},"Players":{}}`),
+		State:    json.RawMessage("{\n  \"Version\": 1,\n  \"Rooms\": {},\n  \"Players\": {}\n}"),
 	}
 }
 

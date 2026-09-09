@@ -44,13 +44,17 @@ type WorldBackupOptions struct {
 }
 
 func NewWorldBackup(worldID string, snapshot WorldSnapshot) (WorldBackup, error) {
+	state, err := canonicalJSON(snapshot.State)
+	if err != nil {
+		return WorldBackup{}, err
+	}
 	b := WorldBackup{
 		Format:      WorldBackupFormat,
 		Version:     WorldBackupVersion,
 		WorldID:     worldID,
 		Revision:    snapshot.Revision,
-		State:       append(json.RawMessage(nil), snapshot.State...),
-		StateSHA256: stateSHA256(snapshot.State),
+		State:       state,
+		StateSHA256: stateSHA256(state),
 	}
 	if err := b.Validate(); err != nil {
 		return WorldBackup{}, err
@@ -94,6 +98,10 @@ func (b WorldBackup) Validate() error {
 	if len(bytes.TrimSpace(b.State)) == 0 || !json.Valid(b.State) || bytes.TrimSpace(b.State)[0] != '{' {
 		return errors.New("world backup state must be a JSON object")
 	}
+	canonical, err := canonicalJSON(b.State)
+	if err != nil || !bytes.Equal(canonical, b.State) {
+		return errors.New("world backup state must use canonical JSON")
+	}
 	if len(b.StateSHA256) != sha256.Size*2 {
 		return errors.New("invalid world backup checksum")
 	}
@@ -107,6 +115,14 @@ func (b WorldBackup) Validate() error {
 		return fmt.Errorf("invalid world backup state: %w", err)
 	}
 	return nil
+}
+
+func canonicalJSON(raw []byte) (json.RawMessage, error) {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(compact.Bytes()), nil
 }
 
 func stateSHA256(raw []byte) string {
