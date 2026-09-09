@@ -1,5 +1,19 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `투표` source gate·ballot authority 경계
+
+`command11.c:vote`의 나이(18+LT_HOURS/일), `INVINCIBLE` 우회, `RELECT` 투표소,
+ISSUE 안건·최대 7개 선택지 검증을 `PlanVote`와 server-owned `VoteCatalog`로 분리했다.
+`VoteContinuation`은 y/n 재투표 확인과 a..g 선택만 연결 로컬에서 진행하며 receipt나
+world snapshot을 변경하지 않는다. C의 `player/vote/<name>_v` 존재 확인·삭제·쓰기
+권위가 현재 Go State에 없으므로 `ApplyVote`는 성공 no-op을 허용하지 않고
+`ErrVoteStateUnresolved`로 fail-closed한다. parser/WorldConnector는 이 결과를 일반
+미구현 응답으로 유지하고 terminal이 catalog/ballot identity를 제공하지 못하게 한다.
+
+world/session/transport targeted race·vet 및 diff 검사가 통과했다. canonical ballot
+스키마·실제 PG 저장/replay와 full continuation/출력 parity, 운영/브라우저/배포 검증은
+후속 G3/G4/G5 승격 조건이다.
+
 ## 2026-09-10 `대답`/`/` reply receipt 경계
 
 `command12.c:resend`가 사용하는 연결별 `talksend`를 Go transport의 atomic

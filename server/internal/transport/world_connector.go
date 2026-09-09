@@ -41,10 +41,14 @@ type WorldConnectorConfig struct {
 	// Carry values are never interpreted from a terminal request; an absent
 	// catalog makes merchant purchase fail closed at the session boundary.
 	MerchantOffers world.MerchantOffers
-	Roll           func(int, int) int
-	Allocate       func() (string, error)
-	HelpFS         fs.FS
-	MaxSessions    int
+	// VoteCatalog is the server-owned snapshot of the current ISSUE resource.
+	// A zero catalog keeps `투표` fail-closed until per-player ballot state is
+	// migrated; terminal clients cannot supply or replace this dependency.
+	VoteCatalog world.VoteCatalog
+	Roll        func(int, int) int
+	Allocate    func() (string, error)
+	HelpFS      fs.FS
+	MaxSessions int
 }
 
 // WorldConnector implements the real world connection boundary. The host must
@@ -99,6 +103,13 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 			families[id] = family
 		}
 		config.FamilyCatalog.Families = families
+	}
+	if config.VoteCatalog.Issue.Number != 0 || config.VoteCatalog.Issue.Prompt != "" || len(config.VoteCatalog.Issue.Options) != 0 {
+		catalog, err := config.VoteCatalog.Clone()
+		if err != nil {
+			return nil, fmt.Errorf("invalid vote catalog: %w", err)
+		}
+		config.VoteCatalog = catalog
 	}
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
@@ -688,6 +699,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	marriageCommand := false
 	marriageSendCommand := false
 	divorceCommand := false
+	voteCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -797,6 +809,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDivorce:
 		divorceCommand = true
 		receipt, err = c.game.owners.ExecuteDivorceLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandVote:
+		voteCommand = true
+		receipt, err = c.game.owners.ExecuteVoteLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.VoteOptions{Catalog: c.game.config.VoteCatalog})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -1220,6 +1235,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedMarriageLine) ||
 		errors.Is(err, session.ErrUnsupportedMarriageSendLine) ||
 		errors.Is(err, session.ErrUnsupportedDivorceLine) ||
+		errors.Is(err, session.ErrUnsupportedVoteLine) ||
 		errors.Is(err, world.ErrDivorceActorAbsent) ||
 		errors.Is(err, world.ErrDivorceStateInvalid) ||
 		errors.Is(err, world.ErrDivorceSpouseKeyInvalid) ||
@@ -1238,7 +1254,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrMarriageSendPLECHOUnsupported) ||
 		errors.Is(err, world.ErrMarriageSendDescriptorFormat) ||
 		errors.Is(err, world.ErrMarriageSendStaleProposal) ||
-		errors.Is(err, world.ErrMarriageSendInvalidProposal) {
+		errors.Is(err, world.ErrMarriageSendInvalidProposal) ||
+		errors.Is(err, world.ErrVoteCatalogUnavailable) ||
+		errors.Is(err, world.ErrVoteCatalogInvalid) ||
+		errors.Is(err, world.ErrVoteActorAbsent) ||
+		errors.Is(err, world.ErrVoteAge) ||
+		errors.Is(err, world.ErrVoteRoom) ||
+		errors.Is(err, world.ErrVoteNumeric) ||
+		errors.Is(err, world.ErrVoteStateUnresolved) ||
+		errors.Is(err, world.ErrVoteStaleProposal) ||
+		errors.Is(err, world.ErrVoteInvalidProposal) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1824,6 +1849,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if divorceCommand {
 		var result world.DivorceResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if voteCommand {
+		var result world.VoteResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

@@ -108,6 +108,7 @@ const (
 	CommandMarriage
 	CommandMarriageSend
 	CommandDivorce
+	CommandVote
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -236,6 +237,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsReplyLine(trimmed) {
 		parsed.Kind = CommandReply
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsVoteLine(trimmed) {
+		parsed.Kind = CommandVote
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -576,6 +582,8 @@ func commandKind(first string) CommandKind {
 		return CommandMarriageSend
 	case "이혼":
 		return CommandDivorce
+	case "투표":
+		return CommandVote
 	case "써":
 		return CommandBoardWrite
 	case IgnoreCommandName:
@@ -628,7 +636,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandPassword, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandPassword, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore, CommandVote:
 		return true
 	default:
 		return false

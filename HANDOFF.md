@@ -1,5 +1,28 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 source gate·ballot fail-closed)
+
+`command11.c:vote`의 원본 게이트를 Go에 연결했다. `투표` exact alias와 server-owned
+`VoteCatalog`(ISSUE의 안건 수·질문·최대 7개 선택지)를 검증하고, 21세 미만 일반
+캐릭터·비투표소·음수 시각·잘못된/누락 catalog를 거절한다. `VoteContinuation`은
+`vote_cmnd`의 y/n 및 a..g 입력을 연결 로컬에서만 결정론적으로 진행하며 snapshot이나
+receipt에 사용자 선택을 저장하지 않는다. 현재 `State`에 `player/vote/<name>_v`에
+해당하는 canonical ballot/history가 없으므로 실제 투표 쓰기(`case 3`)는 중복 투표와
+유실을 막기 위해 receipt 전에 명시적으로 fail-closed한다. terminal 요청이 issue나
+ballot ID를 주입할 수 없고, 이미 저장된 command ID replay는 reducer보다 먼저 재생된다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Vote|Reply|DirectMessage|ParseCommand' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+실제 PostgreSQL 투표 저장은 canonical ballot schema가 확정될 때까지 실행 대상이
+아니며, 운영 Supabase·전체 vote continuation/파일 이관·브라우저/IME/mobile·WSS/Ingress·
+testnet은 미완료다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (대답·`/` reply receipt 경계)
 
 `command12.c:resend`의 `대답`/`/`을 연결 로컬 마지막 수신자 경계로 연결했다.

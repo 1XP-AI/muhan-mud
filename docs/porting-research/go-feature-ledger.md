@@ -1,5 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `투표` source gate·ballot authority 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:vote`·`vote_cmnd` / `투표` | `VoteCatalog` ISSUE snapshot과 나이·RELECT 투표소·최대 7개 선택지 gate를 `PlanVote`로 검증. y/n·a..g continuation은 연결 로컬 `VoteContinuation`에서만 진행하고, canonical ballot/history가 없으므로 `ApplyVote`는 쓰기 전에 fail-closed | world/session/transport targeted race·vet·diff PASS. `player/vote/<name>_v` 정규화와 실제 PG receipt 저장/replay, full continuation/출력·운영/브라우저/배포는 미완료 |
+
+투표 안건과 선택지는 client payload가 아니라 서버 소유 catalog에서만 공급된다. 기존
+vote 파일 권위가 이관되기 전에는 성공 응답이나 no-op 영수증을 만들지 않는다.
+
 ## 2026-09-10 `대답`/`/` reply receipt 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
