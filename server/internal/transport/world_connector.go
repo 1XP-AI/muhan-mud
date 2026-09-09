@@ -280,6 +280,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	peekCommand := false
 	shopListCommand := false
 	shopSellCommand := false
+	shopPurchaseCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -363,6 +364,13 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandShopSell:
 		shopSellCommand = true
 		receipt, err = c.game.owners.ExecuteShopLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandShopPurchase:
+		shopPurchaseCommand = true
+		err = c.game.owners.RunGame(c.lease, func() error {
+			var runErr error
+			receipt, runErr = c.game.runShopPurchaseByNameLocked(ctx, commandID, c.lease.ActorID, line)
+			return runErr
+		})
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -387,6 +395,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedEquipmentLine) ||
 		errors.Is(err, session.ErrUnsupportedBankLine) ||
 		errors.Is(err, session.ErrUnsupportedShopLine) ||
+		errors.Is(err, session.ErrUnsupportedShopPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -540,6 +549,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		var result world.ShopSaleResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
+		}
+	} else if shopPurchaseCommand {
+		var result world.ShopPurchaseResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = renderShopPurchaseOutput(result)
 		}
 	} else if settingsCommand {
 		var result world.SettingsResult

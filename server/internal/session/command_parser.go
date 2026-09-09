@@ -46,6 +46,7 @@ const (
 	CommandFlee
 	CommandShopList
 	CommandShopSell
+	CommandShopPurchase
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -174,6 +175,8 @@ func commandKind(first string) CommandKind {
 		return CommandShopList
 	case "팔아":
 		return CommandShopSell
+	case "사", "구입":
+		return CommandShopPurchase
 	case "끝":
 		return CommandQuit
 	case "시간":
