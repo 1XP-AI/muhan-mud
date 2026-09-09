@@ -169,6 +169,7 @@ func TestWorldConnectorNPCCombatTickPostgresPersistsAndReplays(t *testing.T) {
 	// Force the receipt INSERT to fail after the world UPDATE is attempted.
 	// CommitWorldCommand must roll back both statements, leaving no receipt so
 	// the exact same command can be retried after the injected failure is gone.
+	failedCommandID := fmt.Sprintf("npc-combat-fail-receipt-%d", time.Now().UnixNano())
 	constraintName := fmt.Sprintf("npc_combat_receipt_reject_%d", time.Now().UnixNano())
 	constraintAdded := false
 	defer func() {
@@ -178,7 +179,7 @@ func TestWorldConnectorNPCCombatTickPostgresPersistsAndReplays(t *testing.T) {
 			}
 		}
 	}()
-	if _, err := db2.ExecContext(ctx, fmt.Sprintf("ALTER TABLE mud_go.world_commands ADD CONSTRAINT %s CHECK (command_id <> 'npc-combat-fail-receipt')", constraintName)); err != nil {
+	if _, err := db2.ExecContext(ctx, fmt.Sprintf("ALTER TABLE mud_go.world_commands ADD CONSTRAINT %s CHECK (command_id <> '%s')", constraintName, failedCommandID)); err != nil {
 		t.Fatal(err)
 	}
 	constraintAdded = true
@@ -191,7 +192,7 @@ func TestWorldConnectorNPCCombatTickPostgresPersistsAndReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rollbackConnector.RunNPCCombatPhase(ctx, "npc-combat-fail-receipt", 6, 120); err == nil {
+	if _, err := rollbackConnector.RunNPCCombatPhase(ctx, failedCommandID, 6, 120); err == nil {
 		t.Fatal("receipt constraint failure was ignored")
 	}
 	afterRollback, err := restartedStore.LoadWorld(ctx, worldID)
@@ -206,7 +207,7 @@ func TestWorldConnectorNPCCombatTickPostgresPersistsAndReplays(t *testing.T) {
 		t.Fatalf("failed combat changed world before=%d/%s after=%d/%s", beforeRollback.Revision, beforeRollback.State, afterRollback.Revision, afterRollback.State)
 	}
 	var failedReceiptCount int
-	if err := db2.QueryRowContext(ctx, `SELECT count(*) FROM mud_go.world_commands WHERE world_id=$1 AND command_id=$2`, worldID, "npc-combat-fail-receipt").Scan(&failedReceiptCount); err != nil {
+	if err := db2.QueryRowContext(ctx, `SELECT count(*) FROM mud_go.world_commands WHERE world_id=$1 AND command_id=$2`, worldID, failedCommandID).Scan(&failedReceiptCount); err != nil {
 		t.Fatal(err)
 	}
 	if failedReceiptCount != 0 {
@@ -217,7 +218,7 @@ func TestWorldConnectorNPCCombatTickPostgresPersistsAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	constraintAdded = false
-	retried, err := rollbackConnector.RunNPCCombatPhase(ctx, "npc-combat-fail-receipt", 6, 120)
+	retried, err := rollbackConnector.RunNPCCombatPhase(ctx, failedCommandID, 6, 120)
 	if err != nil || retried.Replayed || retried.Revision != beforeRollback.Revision+1 {
 		t.Fatalf("retry after rollback=%+v err=%v", retried, err)
 	}

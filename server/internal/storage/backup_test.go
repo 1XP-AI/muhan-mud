@@ -121,7 +121,8 @@ func TestPostgresWorldBackupRestoreFencesReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored, err := store.LoadWorld(ctx, worldID)
-	if err != nil || restored.Revision != backup.Revision || string(restored.State) != string(backup.State) {
+	restoredState, canonicalErr := canonicalJSON(restored.State)
+	if err != nil || canonicalErr != nil || restored.Revision != backup.Revision || string(restoredState) != string(backup.State) {
 		t.Fatalf("restored=%+v err=%v", restored, err)
 	}
 	var receipts int
