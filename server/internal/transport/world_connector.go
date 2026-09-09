@@ -583,6 +583,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	turnCommand := false
 	absorbCommand := false
 	kickCommand := false
+	useCommand := false
+	changeClassCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -662,6 +664,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandKick:
 		kickCommand = true
 		receipt, err = c.game.owners.ExecuteKickLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.KickOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandUse:
+		useCommand = true
+		receipt, err = c.game.owners.ExecuteUseLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.UseOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandChangeClass:
+		changeClassCommand = true
+		receipt, err = c.game.owners.ExecuteChangeClassLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ChangeClassOptions{})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -877,6 +885,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedTurnLine) ||
 		errors.Is(err, session.ErrUnsupportedAbsorbLine) ||
 		errors.Is(err, session.ErrUnsupportedKickLine) ||
+		errors.Is(err, session.ErrUnsupportedUseLine) ||
+		errors.Is(err, session.ErrUnsupportedChangeClassLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -979,7 +989,28 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrAbsorbHPOverflow) ||
 		errors.Is(err, world.ErrKickDeathTransitionPending) ||
 		errors.Is(err, world.ErrKickCharmStateUnresolved) ||
-		errors.Is(err, world.ErrKickWarStateUnresolved) {
+		errors.Is(err, world.ErrKickWarStateUnresolved) ||
+		errors.Is(err, world.ErrUseUnsupported) ||
+		errors.Is(err, world.ErrUseFloor) ||
+		errors.Is(err, world.ErrDrinkMissingItem) ||
+		errors.Is(err, world.ErrDrinkNotPotion) ||
+		errors.Is(err, world.ErrDrinkEmpty) ||
+		errors.Is(err, world.ErrDrinkNoPotionRoom) ||
+		errors.Is(err, world.ErrDrinkSurvivalRoom) ||
+		errors.Is(err, world.ErrDrinkClass) ||
+		errors.Is(err, world.ErrDrinkSpellUnavailable) ||
+		errors.Is(err, world.ErrDrinkSpecial) ||
+		errors.Is(err, world.ErrChangeClassActorAbsent) ||
+		errors.Is(err, world.ErrChangeClassRoomAbsent) ||
+		errors.Is(err, world.ErrChangeClassRoom) ||
+		errors.Is(err, world.ErrChangeClassBlind) ||
+		errors.Is(err, world.ErrChangeClassUnsupportedClass) ||
+		errors.Is(err, world.ErrChangeClassSameClass) ||
+		errors.Is(err, world.ErrChangeClassExperience) ||
+		errors.Is(err, world.ErrChangeClassFamilyPending) ||
+		errors.Is(err, world.ErrChangeClassStaleProposal) ||
+		errors.Is(err, world.ErrChangeClassNumeric) ||
+		errors.Is(err, world.ErrChangeClassConfirmation) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1198,6 +1229,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishKick(after, *result.Event)
+			}
+		}
+	}
+	if useCommand && !receipt.Replayed {
+		var result world.UseResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishUse(after, *result.Event)
 			}
 		}
 	}
@@ -1423,6 +1462,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if kickCommand {
 		var result world.KickResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if useCommand {
+		var result world.UseResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if changeClassCommand {
+		var result world.ChangeClassResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

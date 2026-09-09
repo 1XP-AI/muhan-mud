@@ -1671,3 +1671,48 @@ race/vet/diff, ARM64 cross-build는 기본 브랜치 `main`, 실제 PostgreSQL·
 Windows/macOS는 승인된 `release`에서만 실행한다. 이번 batch에서는 ARM64·DB·browser·strict
 room corpus를 반복하지 않았다. 전체 C prefix/key/ANSI parity, NPC full tick, IME/mobile,
 WSS/Ingress와 testnet 배포는 계속 남은 승격 조건이며 `src/frp.new`는 수정·stage하지 않는다.
+
+## 2026-09-09 직접 관리 병렬 후속: 사용·암호·직업전환 및 검증 비용 재감사
+
+서로 겹치지 않는 세 Luna max 레인을 병렬 처리한 뒤 메인에서 공용 parser와
+`WorldConnector`만 조립했다. 완료된 레인은 끝나는 즉시 중단해 유휴 에이전트와 중복
+호출을 남기지 않았다.
+
+- **사용**(`command9.c:use`): canonical inventory/floor root를 이름+occurrence로
+  해석하고 OUSEFL·특수 SP_WAR를 확인한다. 무기/갑옷/광원은 기존 `ReadyItem`의
+  무장·착용·휴대 reducer로, 물약은 `PlanDrink`/`ApplyDrink`로 위임한다. floor 이동,
+  PHIDDN 해제, 소비와 room event를 하나의 proposal/apply receipt로 묶고, scroll/wand/
+  key/미확인 분기는 RNG·변경 전에 `ErrUseUnsupported`로 닫았다.
+- **암호**(`command11.c:passwd`): 현재→새 암호→확인 상태기를 connection-local로
+  추가하고, 출력·로그·영수증에는 평문/해시를 넣지 않는다. 새 bcrypt hash는 한 번만
+  만들며 저장 응답 유실 시 expected/replacement hash를 묶은 Postgres transaction이
+  동일 의도를 idempotent 재시도한다. `취소`와 잘못된 입력은 저장하지 않는다.
+- **직업전환**(`command7.c:change_class/chg_class_main`): blind/RTRAIN/class/XP/PFAMIL
+  게이트, RTRAIN+1..+3 destination class fold, XP 100000 차감과 `LowerPlayerLevel`의
+  stat/vital 변경을 snapshot-bound receipt로 구현했다. bare `직업전환`은 현재 원작
+  확인 문구를 기록하는 typed no-op이며, `직업전환 예`만 변경을 커밋한다. PFAMIL의
+  family roster와 lethal/전역 후속이 없는 상태에서는 fail-closed한다.
+
+검증 비용도 다시 전수 대조했다. workflow는 manual dispatch만 가지며 `fast`는 변경된 Go
+  패키지 race, 조립 후 `integration`은 전체 Go race/vet/diff 1회, 기본 브랜치 `main`만
+  Linux ARM64 cross-build, 명시적 기본 브랜치 `release`만 DB/browser/x64/Windows/macOS
+  호환성 matrix를 실행한다. release 안의 ARM64 native/runtime smoke는 운영 호환성
+  checkpoint이고 일반 기능 레인에서 재호출하지 않는다. migration 2회 적용과 replay
+  검사는 재실행 안전성을 위한 의도된 중복이며 제거하지 않았다. pre-push도 remote tip을
+  한 번만 기준으로 migration/stack 계약만 검사한다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/storage \
+  -run 'Use|ChangeClass|ClassChange|Password|ParseUseAndChangeClass' -count=1) PASS
+(cd server && go test -race ./internal/transport \
+  -run 'Turn|Absorb|Kick|Use|ChangeClass|WorldConnectorSubmitDispatches' -count=1) PASS
+scripts/run-go-validation.sh integration PASS
+git diff --check PASS
+```
+
+strict room corpus(63건), 실제 PostgreSQL password adapter, 브라우저/IME·모바일,
+ARM64 main gate, release matrix, 전체 C prefix/ANSI parity, NPC full tick, WSS/Ingress와
+testnet 배포는 이번 기능 레인에서 반복하지 않았다. `src/frp.new`는 사용자 소유 dirty
+변경으로 수정·stage하지 않았다.

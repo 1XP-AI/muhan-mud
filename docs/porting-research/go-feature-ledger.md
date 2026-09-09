@@ -1022,3 +1022,27 @@ x64/Windows/macOS 호환 matrix는 승인된 `release` 경계에서 batch당 한
 실행한다. Linux ARM64 build는 기본 브랜치 `main`, 실제 PostgreSQL·브라우저·x64/Windows/
 macOS matrix는 승인된 `release`에서만 실행해 반복 비용을 막는다. strict room corpus
 63건, NPC full tick, IME/mobile·WSS/Ingress·testnet 배포는 아직 미검증이다.
+
+## 2026-09-09 직접 관리 병렬 후속: 사용·암호·직업전환
+
+세 Luna max 레인은 각각 별도 world/session 또는 storage 파일만 소유하고 병렬로
+실행했다. 메인 세션에서 parser·connector를 한 번 조립한 뒤 전체 Go integration을 한
+번만 수행했다.
+
+| 원작 경계 | Go 구현 | 보수적 제한 |
+| --- | --- | --- |
+| `command9.c:use` / `사용 <아이템>` | canonical inventory/floor root, OUSEFL·SP_WAR, 기존 장비/물약 reducer 위임, PHIDDN·floor transfer·소비·room event 원자 receipt | scroll/wand/key와 미확인 reducer, prefix/모두/다중 occurrence는 fail-closed |
+| `command11.c:passwd` / `암호` | current→new→confirm 상태기, bcrypt 1회 생성, secret 비노출, expected/replacement hash 기반 Postgres transaction·idempotent retry | 현재 WorldConnector/xterm continuation에 노출하는 연결은 후속, 실제 PG 실행은 opt-in |
+| `command7.c:change_class` / `직업전환` | blind/RTRAIN/class/XP/PFAMIL gate, RTRAIN+1..+3 class fold, XP 100000 차감, `LowerPlayerLevel` stat/vital 보존·receipt | bare form은 typed prompt no-op, `예` one-line만 commit; family roster와 lethal/전역 후속은 fail-closed |
+
+### 검증 비용 경계
+
+현재 workflow는 manual dispatch만 사용한다. 기능 레인은 `fast`(영향 Go package race),
+조립 batch는 `integration`(전체 Go race/vet/diff 1회), 기본 브랜치 `main`은 Linux ARM64
+cross-build를 한 번만, 명시적 기본 브랜치 `release`는 PostgreSQL/browser와 x64·Windows·
+macOS 호환성 matrix를 실행한다. migration을 두 번 적용하는 단계와 command replay는
+재실행 안전성 증거라 유지하며, 동일 기능 레인에서 ARM64·DB·browser를 되풀이하지 않는다.
+
+이번 batch의 focused race와 integration은 통과했다. strict room corpus 63건, 전체 C
+prefix/key/ANSI parity, NPC full tick, 실기기 IME/mobile, WSS/Ingress·testnet 배포는
+여전히 전체 인수 전제다.

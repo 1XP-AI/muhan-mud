@@ -915,3 +915,36 @@ ARM64 cross-build는 기본 브랜치 `main`에서만, PostgreSQL·브라우저�
 승인된 `release`에서만 실행한다. 기능 레인에서 고비용 검사를 반복하지 않으며 strict room
 corpus 63건, NPC full tick, 전체 C prefix/key/ANSI parity, IME/mobile·WSS/Ingress와 testnet
 배포는 이후 승격 조건으로 남긴다.
+
+## 2026-09-09 직접 관리 병렬 후속: 사용·암호·직업전환과 비용 최적화
+
+G3의 세 독립 경계를 Luna max 레인으로 병렬 구현하고, 메인 세션은 공용 parser·connector
+통합만 수행한다.
+
+1. `사용`은 `command9.c:use`의 direct root 선택과 OUSEFL/SP_WAR 권한을 유지하고,
+   이미 검증된 장비·물약 reducer만 위임한다. 하나의 proposal/apply에서 floor 이동,
+   PHIDDN 해제, 소비·장비 변경·event를 함께 저장한다. scroll/wand/key와 미확인
+   reducer는 원자 후속이 준비될 때까지 fail-closed한다.
+2. `암호`는 `command11.c:passwd`를 account credential boundary로 분리한다. 현재 암호
+   검증→새 bcrypt hash 1회 생성→확인→expected hash 조건부 UPDATE를 수행하며, 응답
+   유실 재시도는 replacement hash를 확인해 중복 변경을 막는다. 평문은 상태기·receipt·
+   로그에 남기지 않는다. 게임 연결에 `암호` continuation을 노출하는 것은 별도 계약으로
+   남긴다.
+3. `직업전환`은 blind/RTRAIN/class/XP/PFAMIL gate와 C의 RTRAIN+1..+3 fold, XP
+   100000 차감 및 `down_level` 효과를 snapshot-bound receipt로 연결한다. bare 명령은
+   prompt no-op, `직업전환 예`만 현재 bounded slice에서 commit하며 family roster가
+   준비되기 전에는 PFAMIL을 거부한다.
+
+검증 cadence는 다음과 같이 고정한다.
+
+- 기능 레인: 변경 패키지의 `go test -race`만 실행한다.
+- 조립 batch: `scripts/run-go-validation.sh integration`(전체 Go race/vet/diff)을 한 번
+  실행한다.
+- 기본 브랜치 병합: `main` scope에서만 Linux ARM64 cross-build를 한 번 실행한다.
+- 명시적 release: PostgreSQL/browser와 x64·Windows·macOS 호환성 matrix만 실행한다.
+
+workflow는 manual dispatch만 가지므로 기능 개발 중 고비용 gate가 자동 반복되지 않는다.
+migration 2회 적용과 command replay는 재실행 안전성의 의도된 증거라 유지한다. 이번
+batch에서는 strict room corpus 63건·실제 PG·브라우저/IME·ARM64 main·release matrix를
+반복하지 않는다. 전체 C prefix/key/ANSI parity, NPC full tick, WSS/Ingress와 testnet
+배포는 승격 후속이다.
