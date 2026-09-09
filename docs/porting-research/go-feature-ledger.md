@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `PlayerSnapshotV1` PostgreSQL import·evidence
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| 검토된 CDTO → account/character/world | `Postgres.ImportPlayerSnapshot`가 caller-owned exact player ID와 item-ID manifest를 사용해 decode/canonicalize·offline admission·계정/linked character·world snapshot을 한 transaction으로 저장하고, command receipt를 재생 | ARM64 `postgres:17-alpine` import/replay/conflict/rollback PASS. 운영 Supabase schema·대량 수집/manifest와 account recovery는 미완료 |
+| 이관 evidence | `mud_go.character_imports`에 source/canonical SHA-256, source octets, inventory node count, imported revision만 저장. raw CDTO/password는 저장하지 않음 | 운영 보관·암호화·retention·전체 duplicate/loss 대조는 미완료 |
+
+재시도 request hash에는 canonical account name, explicit player ID, raw snapshot digest,
+credential digest, item manifest가 포함된다. 따라서 같은 command ID에 다른 source/hash/
+manifest를 주면 receipt replay가 아니라 `ErrCommandConflict`로 닫힌다.
+
 ## 2026-09-10 `PlayerSnapshotV1` CDTO decoder·offline admission
 
 | 원작/이관 경계 | Go 구현 | 검증/남은 조건 |

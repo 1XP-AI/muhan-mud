@@ -1,5 +1,20 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 PlayerSnapshotV1 PostgreSQL import·evidence receipt
+
+`Postgres.ImportPlayerSnapshot`가 검토된 CDTO bytes, account credential hash, caller-owned
+exact player ID와 deterministic item-ID manifest를 받아 snapshot 검증→offline State
+admission→account/character/world/evidence/command receipt를 한 transaction으로 저장한다.
+`mud_go.character_imports`는 raw source를 보관하지 않고 source/canonical SHA-256, byte 수,
+inventory node 수와 imported revision만 기록한다. 동일 command ID replay는 저장된 response만
+반환하고 request digest·expected revision·writer epoch·duplicate ID/name·manifest mismatch는
+fail-closed한다. raw bytes와 password를 receipt에 넣지 않는다.
+
+고유 loopback ARM64 `postgres:17-alpine`에서 최초 import, 동일 ID replay, 변경 snapshot
+conflict, world update constraint rollback을 통과했다(`scripts/run-go-player-snapshot-import-local.sh
+--allow-disposable`). 운영 Supabase 적용·대량 player 수집/manifest 생성·전체 데이터 대조 및
+account recovery는 아직 남아 있다.
+
 ## 2026-09-10 Go PlayerSnapshotV1 CDTO decoder·순수 admission
 
 Go 월드에 C/Rust `PlayerSnapshotV1`과 byte-compatible한 pointer-free CDTO decoder/encoder를

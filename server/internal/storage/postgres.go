@@ -55,6 +55,18 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   PRIMARY KEY(world_id,command_id),
   UNIQUE(world_id,revision)
  );
+ CREATE TABLE IF NOT EXISTS mud_go.character_imports (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  world_player_id text NOT NULL,
+  command_id text NOT NULL,
+  source_sha256 bytea NOT NULL CHECK(octet_length(source_sha256)=32),
+  canonical_sha256 bytea NOT NULL CHECK(octet_length(canonical_sha256)=32),
+  source_octets bigint NOT NULL CHECK(source_octets>0),
+  inventory_nodes integer NOT NULL CHECK(inventory_nodes>=0),
+  imported_revision bigint NOT NULL CHECK(imported_revision>0),
+  PRIMARY KEY(world_id,world_player_id),
+  UNIQUE(world_id,source_sha256)
+ );
  ALTER TABLE mud_go.worlds ADD COLUMN IF NOT EXISTS writer_epoch bigint NOT NULL DEFAULT 0 CHECK(writer_epoch>=0);
  ALTER TABLE mud_go.characters DROP CONSTRAINT IF EXISTS characters_stage_check;
  ALTER TABLE mud_go.characters ADD CONSTRAINT characters_stage_check CHECK(stage IN ('draft','linked'));

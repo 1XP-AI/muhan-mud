@@ -1,5 +1,31 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (PostgreSQL PlayerSnapshotV1 import)
+
+`Postgres.ImportPlayerSnapshot`와 `mud_go.character_imports` schema를 추가했다. 호출자가
+검토한 raw CDTO, account name/password hash, exact world player ID, deterministic item-ID
+manifest를 제출하면, snapshot decode/canonical digest·legacy name normalization·State
+offline admission을 거친 뒤 account/linked character/world JSON/evidence/command receipt를
+하나의 PostgreSQL transaction으로 저장한다. raw payload나 password는 receipt/evidence에
+넣지 않고 source/canonical SHA-256, source octets, inventory node count, imported revision만
+보존한다. same command ID 재시도는 저장 응답만 재생하며, request/hash·revision·writer
+fencing·중복 이름/ID·item manifest mismatch에서 fail-closed한다.
+
+`scripts/run-go-player-snapshot-import-local.sh --allow-disposable`는 고유 loopback
+ARM64 `postgres:17-alpine`만 만들고 종료 시 자기 컨테이너만 제거한다.
+
+검증:
+
+```text
+(cd server && MUHAN_PLAYER_SNAPSHOT_IMPORT_TEST_DATABASE_URL='postgresql://...' go test -race ./internal/storage -run '^TestPostgres.*PlayerSnapshot' -count=1 -v) PASS
+bash scripts/run-go-player-snapshot-import-local.sh --allow-disposable PASS
+```
+
+이 단계는 한 snapshot의 승인·저장·재생 경계까지만 완료했다. 운영 Supabase schema
+승인/백업·대량 raw player 수집/manifest 생성·전체 데이터 대조·account recovery/브라우저
+플레이·전체 command parity·WSS/Ingress·testnet 전환은 미완료다. `src/frp.new`와 예전
+dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (Go PlayerSnapshotV1 이관 경계)
 
 `server/internal/world/player_snapshot_v1.go`에 C/Rust와 동일한 pointer-free CDTO

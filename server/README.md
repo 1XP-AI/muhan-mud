@@ -1,5 +1,14 @@
 # Go MUD 서버 작업 영역
 
+최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
+caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
+state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.
+source/canonical SHA-256와 크기·inventory node 수만 evidence로 남기며 raw payload/password는
+남기지 않는다. 같은 command ID는 저장된 결과만 재생하고, source/hash/manifest 변경·중복
+identity·writer/revision 충돌은 fail-closed한다. `bash scripts/run-go-player-snapshot-import-local.sh
+--allow-disposable`가 ARM64 `postgres:17-alpine` import/replay/conflict/rollback을 검증한다.
+운영 Supabase 승인·대량 이관·전체 복구/대조는 미완료다.
+
 최신 이관 경계: `internal/world/player_snapshot_v1.go`가 C/Rust pointer-free
 `PlayerSnapshotV1` CDTO를 Go에서 직접 검증·재인코딩한다. envelope SHA-256, 40개 field
 계약, fixed-string/vital/daily bound, preorder object graph를 fail-closed로 확인하고
