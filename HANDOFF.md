@@ -3,9 +3,10 @@
 ## 최신 오케스트레이션 체크포인트 — 2026-09-10 (정리 확인 + 패거리말·주문·가입 경계)
 
 정리 상태를 다시 확인했다. Orca가 관리하는 worktree 목록에는 주 worktree만 남아
-있고, 예전 `orca/workspaces` 경로의 Git worktree 30개는 모두 동일한
-`objmon/Celduin_sign` 대소문자 충돌 dirty 상태라 보존했다. 이 변경을 확인 없이
-버리면 원본 파일을 잃을 수 있어 삭제하지 않았다. 직접 하위 레인은 Luna max로
+있고, 예전 `orca/workspaces` 경로의 Git worktree 30개는 보존했다. 그중 22개는
+`objmon/Celduin_sign` 대소문자 충돌만 남았고, 나머지 8개에는 `src/frp.new`·삭제된
+파일·Rust 변경·미추적 파일이 섞여 있다. 이 변경을 확인 없이 버리면 원본 파일을
+잃을 수 있어 삭제하지 않았다. 직접 하위 레인은 Luna max로
 소유 파일을 마친 뒤 중단/종료했고, 현재 남은 작업은 주 worktree에서만 통합한다.
 
 이번 후속은 다음 경계를 추가했다.

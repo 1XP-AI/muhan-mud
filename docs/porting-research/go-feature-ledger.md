@@ -3,9 +3,9 @@
 ## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
 
 Orca 관리 목록에는 주 worktree만 남아 있으며, Git에 남은 예전 `orca/workspaces`
-30개는 모두 `objmon/Celduin_sign` 대소문자 충돌로 dirty하여 보존했다. 직접 관리한
-Luna max 레인은 종료 후 주 worktree에서 통합했다. `src/frp.new`는 사용자 변경으로
-계속 제외한다.
+30개는 보존했다. 22개는 `objmon/Celduin_sign` 대소문자 충돌만 남았고, 8개에는
+`src/frp.new`·삭제된 파일·Rust·미추적 변경이 있어 확인 없이 삭제하지 않았다. 직접
+관리한 Luna max 레인은 종료 후 주 worktree에서 통합했고 `src/frp.new`는 계속 제외한다.
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |

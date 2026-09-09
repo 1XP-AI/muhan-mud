@@ -3,9 +3,10 @@
 ## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
 
 Orca worktree를 재확인한 결과 관리 목록에는 주 worktree만 남았다. 예전 Git
-`orca/workspaces` 30개는 모두 `objmon/Celduin_sign` 대소문자 충돌로 uncommitted 상태라
-삭제하지 않고 보존했다. 완료된 직접 레인은 Luna max 사용 후 중단/종료했으며 주
-worktree에서만 통합한다.
+`orca/workspaces` 30개는 보존했으며, 22개는 `objmon/Celduin_sign` 대소문자 충돌만,
+8개는 `src/frp.new`·삭제된 파일·Rust·미추적 변경을 포함한다. 내용 확인 없이
+삭제하지 않았다. 완료된 직접 레인은 Luna max 사용 후 중단/종료했으며 주 worktree에서만
+통합한다.
 
 이번 배치의 source-backed 수직 경계는 `패거리말`/`]` family chat의 deterministic
 read-only event receipt, 가입 신청·취소의 canonical identity/boss proof와 원자
