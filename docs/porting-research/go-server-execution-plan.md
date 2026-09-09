@@ -470,3 +470,18 @@ Go race/vet/ARM64 build, web 44/44를 확인했다. 백업 파일 운영 보관�
 실제 PostgreSQL 17에서 확인했다. 백업 파일 운영 보관·암호화·복원 연습,
 전체 명령/경제/NPC broadcast, strict corpus 63개, 실기기 IME/mobile, WSS/Ingress와
 testnet 배포는 계속 미완료다.
+
+## 2026-09-09 PR 리뷰 병렬 레인: 터미널 구매와 Go 차트 경계
+
+리뷰 대기 중인 독립 범위는 계약과 파일 소유권을 고정한 뒤 병렬 처리하고, main 연결과
+최종 통합 검증만 직렬화한다. `bbfd6ee`/`f22df5c`/`5299a18`은 C cmd 42/74의 `사`/`구입`
+bounded slice를 live connector에 연결했다. 클라이언트 상품 ID를 권위로 받지 않고 exact
+name/positive occurrence로 canonical storage item을 해석하며, `Ownership.RunGame`을
+통해 admission을 재검증한다. nested product allocator, receipt replay, request conflict와
+실패 시 무저장 경계를 실제 PG17에서 확인했다. merchant/trade/value/수리와 전체 경제
+parity는 여전히 별도 gate다.
+
+infra `f96fa6ff`는 Go runtime mode가 PVC를 마운트하지 않는 계약에 맞춰 help directory를
+이미지의 `/opt/muhan-seed/help`로 고정하고, source checkout pin을 최신 로컬 검증 커밋
+`42ef468`로 갱신했다. Helm/Docker/Secret/차트 전체 로컬 Node test는 **89/89** 통과했다.
+이 변경은 원격 push나 testnet 배포를 수행하지 않았으므로 배포 인수 증거가 아니다.

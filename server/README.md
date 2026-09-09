@@ -2208,3 +2208,16 @@ receipt 없는 대상만 허용하고, `Force`는 기존 receipt를 제거하고
 통과했다. 전체 command/economy parity, NPC full cadence/broadcast, strict room corpus
 63개, IME/mobile 실기기, 백업 파일 운영 보관·복원 연습, WSS/Ingress/testnet 배포는
 여전히 미완료다.
+
+## 2026-09-09 터미널 상점 구매 연결
+
+원작 상점 구매 별칭 `사`/`구입`을 중앙 parser와 live WebSocket connector에 연결했다.
+터미널은 stock ID를 제출하지 않고 정확한 canonical 상품명과 양수 occurrence만 제출하며,
+서버가 권위 저장고 snapshot에서 stock ID를 해석한다. prefix/key/merchant 구매는
+추측하지 않고 fail-closed한다. 기존 `BuyShopItem`의 nested graph deep-copy, gold/weight/
+capacity/duplicate/temporary flag/`PHIDDN` 규칙과 durable receipt/replay를 그대로 재사용하고,
+live connection은 `Ownership.RunGame` admission 경계를 통과한다.
+
+검증: session/world/transport TDD·race·vet, live connector output/admission/occurrence,
+실제 PostgreSQL 17의 name purchase receipt/replay/request conflict 및 nested allocator를
+통과했다. 전체 merchant/trade/value/수리와 나머지 C 경제 parity는 미완료다.
