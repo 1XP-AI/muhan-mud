@@ -43,6 +43,7 @@ func main() {
 	playerSnapshotDryRun := flag.Bool("import-player-snapshot-manifest-dry-run", false, "validate a PlayerSnapshotV1 manifest and its private files without connecting to PostgreSQL")
 	playerSnapshotInspectDir := flag.String("inspect-player-snapshot-dir", "", "explicitly inspect a private PlayerSnapshotV1 directory and record metadata")
 	playerSnapshotInspectWorld := flag.String("inspect-player-snapshot-world", "", "world ID to bind to -inspect-player-snapshot-dir")
+	playerSnapshotInspectFormat := flag.String("inspect-player-snapshot-format", "cdto-v1", "snapshot format for inspection: cdto-v1 or legacy-player-raw-v1")
 	playerSnapshotInspectDryRun := flag.Bool("inspect-player-snapshot-dry-run", false, "inspect PlayerSnapshotV1 files without connecting to PostgreSQL")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
@@ -68,7 +69,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	playerSnapshotInspectOptions, err := validatePlayerSnapshotInspectionFlags(*playerSnapshotInspectDir, *playerSnapshotInspectWorld, *playerSnapshotInspectDryRun)
+	playerSnapshotInspectOptions, err := validatePlayerSnapshotInspectionFlagsWithFormat(*playerSnapshotInspectDir, *playerSnapshotInspectWorld, *playerSnapshotInspectDryRun, *playerSnapshotInspectFormat)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func main() {
 	}
 	var playerSnapshotInspectionBatch playerSnapshotInspectionBatch
 	if playerSnapshotInspectOptions.Directory != "" {
-		playerSnapshotInspectionBatch, err = inspectPlayerSnapshotDirectory(playerSnapshotInspectOptions.Directory, playerSnapshotInspectOptions.WorldID)
+		playerSnapshotInspectionBatch, err = inspectPlayerSnapshotDirectoryWithFormat(playerSnapshotInspectOptions.Directory, playerSnapshotInspectOptions.WorldID, playerSnapshotInspectOptions.Format)
 		if err != nil {
 			log.Fatalf("player snapshot inspection rejected: %v", err)
 		}

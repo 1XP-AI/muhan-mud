@@ -20,6 +20,7 @@
 extern int read_crt_player(int fd, creature *player);
 
 #define FIXTURE_CAPACITY 16384UL
+#define RAW_FILE_MAX_BYTES (4UL * 1024UL * 1024UL)
 
 /* This test-only raw-file grammar is intentionally accepted for one audited
  * native layout only.  The exported CDTO fixtures remain portable; this gate
@@ -612,6 +613,110 @@ fail:
     return -1;
 }
 
+/* Read a native raw fixture for the Go-side differential test.  This helper
+ * is test-only and intentionally bounded; production code never calls it. */
+static int read_binary_file(path, bytes, length)
+const char *path;
+unsigned char **bytes;
+size_t *length;
+{
+    FILE *file;
+    size_t capacity;
+    size_t read_count;
+
+    *bytes = 0;
+    *length = 0U;
+    capacity = 4096U;
+    *bytes = (unsigned char *)malloc(capacity);
+    if (!*bytes)
+        return -1;
+    file = fopen(path, "rb");
+    if (!file)
+        goto fail;
+    for (;;) {
+        if (*length == capacity) {
+            unsigned char *grown;
+            if (capacity >= RAW_FILE_MAX_BYTES)
+                goto close_fail;
+            capacity *= 2U;
+            if (capacity > RAW_FILE_MAX_BYTES)
+                capacity = RAW_FILE_MAX_BYTES;
+            grown = (unsigned char *)realloc(*bytes, capacity);
+            if (!grown)
+                goto close_fail;
+            *bytes = grown;
+        }
+        read_count = fread(*bytes + *length, 1U, capacity - *length, file);
+        *length += read_count;
+        if (ferror(file))
+            goto close_fail;
+        if (feof(file))
+            break;
+    }
+    if (fclose(file))
+        goto fail;
+    return 0;
+close_fail:
+    fclose(file);
+fail:
+    free(*bytes);
+    *bytes = 0;
+    *length = 0U;
+    return -1;
+}
+
+static int raw_fixture(profile)
+fixture_profile profile;
+{
+    unsigned char *legacy;
+    unsigned long legacy_length;
+    int result;
+
+    if (legacy_fixture(profile, &legacy, &legacy_length))
+        return -1;
+    result = fwrite(legacy, 1U, (size_t)legacy_length, stdout) ==
+        (size_t)legacy_length ? 0 : -1;
+    free(legacy);
+    return result;
+}
+
+/* Classify a native raw file and, when accepted, print the exact portable
+ * CDTO projection.  This is the C half of the Go raw-file differential gate. */
+static int project_raw_file(path)
+const char *path;
+{
+    unsigned char *legacy;
+    unsigned char *wire;
+    size_t legacy_length;
+    size_t wire_length;
+    creature *decoded;
+    int result;
+
+    legacy = 0;
+    wire = 0;
+    decoded = 0;
+    if (read_binary_file(path, &legacy, &legacy_length))
+        return -1;
+    result = decode_legacy(legacy, (unsigned long)legacy_length, &decoded);
+    free(legacy);
+    if (result || !decoded) {
+        player_snapshot_v1_free_clone(decoded);
+        puts("reject");
+        return 0;
+    }
+    result = player_snapshot_v1_encode_loaded(decoded, &wire, &wire_length);
+    player_snapshot_v1_free_clone(decoded);
+    if (result != CDTO_V1_OK || !wire) {
+        cdto_v1_free_wire(wire);
+        puts("reject");
+        return 0;
+    }
+    fputs("accept ", stdout);
+    print_hex(wire, wire_length);
+    cdto_v1_free_wire(wire);
+    return 0;
+}
+
 static int make_negative_legacy_case(case_info, legacy, legacy_length, changed,
     changed_length)
 const legacy_negative_case *case_info;
@@ -812,6 +917,13 @@ char **argv;
         cdto_v1_free_wire(wire);
         return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "raw-fixture")) {
+        if (!strcmp(argv[2], "rich")) profile = FIXTURE_PROFILE_RICH;
+        else if (!strcmp(argv[2], "minimal")) profile = FIXTURE_PROFILE_MINIMAL;
+        else if (!strcmp(argv[2], "persisted-graph")) profile = FIXTURE_PROFILE_PERSISTED_GRAPH;
+        else return 2;
+        return raw_fixture(profile) ? 2 : 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "verify")) {
         if (verify(FIXTURE_PROFILE_RICH, argv[2])) {
             fprintf(stderr, "legacy_player_snapshot_v1_oracle: verification failed\n");
@@ -834,6 +946,8 @@ char **argv;
     }
     if (argc == 3 && !strcmp(argv[1], "project-portable"))
         return project_portable_fixture(argv[2]) ? 2 : 0;
-    fprintf(stderr, "usage: %s abi-fingerprint | abi-check CONTRACT | fixture [rich|minimal|persisted-graph] | verify [PROFILE] FIXTURE.hex | project-portable FIXTURE.hex\n", argv[0]);
+    if (argc == 3 && !strcmp(argv[1], "project-raw-file"))
+        return project_raw_file(argv[2]) ? 2 : 0;
+    fprintf(stderr, "usage: %s abi-fingerprint | abi-check CONTRACT | fixture [rich|minimal|persisted-graph] | raw-fixture PROFILE | verify [PROFILE] FIXTURE.hex | project-portable FIXTURE.hex | project-raw-file FILE\n", argv[0]);
     return 2;
 }

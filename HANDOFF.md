@@ -1,5 +1,32 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy native player raw reader)
+
+`server/internal/world/legacy_player_raw_v1.go`에 C `read_crt_player`의 native player
+파일을 audited little-endian raw-v1 ABI로 읽어 pointer-free `PlayerSnapshotV1`로 바꾸는
+migration-only reader를 추가했다. `creature=1952`, `object=376`, 8/16/32/64-bit scalar,
+pointer=64 계약을 자동 추정하지 않고 고정하며, root/child count·depth·전체 object bound와
+truncated/trailing EOF를 fail-closed한다. HP/MP·shots current clamp와 NUL 문자열 tail
+정규화를 재현하고, fd/ready/native pointer/password는 결과에 넣지 않는다.
+
+`cmd/muhan -inspect-player-snapshot-format legacy-player-raw-v1`로 private raw tree를
+read-only 수집할 수 있다. `mud_go.player_snapshot_import_ledger`에는 raw source SHA-256,
+크기, parser/ABI, 결과·quarantine 사유·inventory node 수만 저장하며 payload/credential/
+identity claim은 없다. raw는 operator 검토 후 canonical CDTO와 account/player/item manifest를
+만들어야 import할 수 있다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run 'LegacyPlayerSnapshotRawV1' -count=1) PASS
+(cd server && go test -race ./cmd/muhan -run 'PlayerSnapshot(Inspection|Manifest)|InspectPlayerSnapshotDirectoryAcceptsAuditedLegacyRawFormat' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/world) PASS
+bash scripts/run-legacy-player-snapshot-v1-differential.sh PASS (C raw fixture ↔ Go/C CDTO byte comparison)
+```
+
+운영 raw player 수집·ABI 승인·전체 캐릭터 대조/복구·대량 import·account recovery와 전체
+게임 기능 인수는 미완료다. `src/frp.new` 및 예전 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (PlayerSnapshotV1 operator manifest CLI)
 
 `cmd/muhan -import-player-snapshot-manifest`와

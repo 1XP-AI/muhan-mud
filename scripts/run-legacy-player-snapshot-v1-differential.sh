@@ -7,6 +7,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/muhan-s1-player-snapshot.XXXXXX")"
 oracle="$work_dir/legacy_player_snapshot_v1_oracle"
+raw_fixture_dir="$work_dir/raw"
 passed=0
 flags=(-std=gnu89 -fcommon -I"$repo_root/src" -ffunction-sections -fdata-sections)
 link_flags=()
@@ -59,6 +60,21 @@ fi
 LEGACY_PLAYER_SNAPSHOT_V1_C_ORACLE="$oracle" \
   cargo test --manifest-path "$repo_root/rust/Cargo.toml" -p muhan-core-dto \
   --test player_snapshot_projection_corpus
+
+# Generate the native raw stream directly from the test-only C serializer.  The
+# Go parser then consumes these bytes and asks the same C oracle for its
+# canonical projection, so raw layout, load-time clamping, and tail
+# canonicalization are compared rather than inferred from a hand-built image.
+mkdir -p "$raw_fixture_dir"
+for profile in rich minimal persisted-graph; do
+  "$oracle" raw-fixture "$profile" > "$raw_fixture_dir/$profile.raw"
+done
+(
+  export LEGACY_PLAYER_SNAPSHOT_V1_RAW_FIXTURE_DIR="$raw_fixture_dir"
+  export LEGACY_PLAYER_SNAPSHOT_V1_C_ORACLE="$oracle"
+  cd "$repo_root/server"
+  go test -race ./internal/world -run '^TestLegacyPlayerSnapshotRawV1OracleProfiles$' -count=1
+)
 
 verify_profile() {
   local profile="$1"

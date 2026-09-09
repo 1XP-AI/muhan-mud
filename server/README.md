@@ -15,6 +15,13 @@ read-only 수집은 `-inspect-player-snapshot-dir`와 `-inspect-player-snapshot-
 `-inspect-player-snapshot-dry-run`은 DB 없이 같은 검증을 한다. malformed/public/symlink는
 자동 이관하지 않고 quarantine evidence로만 남긴다.
 
+원본 native C player 파일은 `-inspect-player-snapshot-format legacy-player-raw-v1`을
+명시해야 한다. Go reader는 고정된 `LegacyPlayerSnapshotRawV1ABI`만 받아 C
+`read_crt_player`의 clamp·문자열 정규화를 거친 pointer-free CDTO projection을 만든다.
+raw의 descriptor/pointer/password는 저장하지 않으며, 운영 import에는 별도 검토된 CDTO와
+account/player/item manifest가 필요하다. 실제 C raw fixture와 Go/C projection 비교는
+`bash scripts/run-legacy-player-snapshot-v1-differential.sh`에서 실행한다.
+
 최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
 caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
 state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,44 @@ func TestValidatePlayerSnapshotInspectionFlags(t *testing.T) {
 	options, err := validatePlayerSnapshotInspectionFlags("snapshots", "muhan-01", true)
 	if err != nil || options.Directory != "snapshots" || options.WorldID != "muhan-01" || !options.DryRun {
 		t.Fatalf("options=%+v err=%v", options, err)
+	}
+	rawOptions, err := validatePlayerSnapshotInspectionFlagsWithFormat("snapshots", "muhan-01", true, playerSnapshotInspectionFormatRaw)
+	if err != nil || rawOptions.Format != playerSnapshotInspectionFormatRaw {
+		t.Fatalf("raw options=%+v err=%v", rawOptions, err)
+	}
+	if _, err := validatePlayerSnapshotInspectionFlagsWithFormat("snapshots", "muhan-01", false, "unknown"); err == nil {
+		t.Fatal("unknown inspection format was accepted")
+	}
+}
+
+func TestInspectPlayerSnapshotDirectoryAcceptsAuditedLegacyRawFormat(t *testing.T) {
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	if err := os.Mkdir(rawDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 1956)
+	copy(raw[0:80], []byte("raw-player"))
+	raw[319] = 0 // PLAYER in the audited C build.
+	binary.LittleEndian.PutUint16(raw[332:334], 1)
+	binary.LittleEndian.PutUint16(raw[334:336], 1)
+	binary.LittleEndian.PutUint16(raw[336:338], 1)
+	binary.LittleEndian.PutUint16(raw[338:340], 1)
+	binary.LittleEndian.PutUint32(raw[1952:1956], 0)
+	path := filepath.Join(rawDir, "player.raw")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := inspectPlayerSnapshotDirectoryWithFormat(rawDir, "muhan-01", playerSnapshotInspectionFormatRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Reports) != 1 {
+		t.Fatalf("reports=%+v", batch.Reports)
+	}
+	report := batch.Reports[0]
+	if report.Result != "validated" || report.ParserVersion != world.LegacyPlayerSnapshotRawV1ParserVersion || report.ABI != world.LegacyPlayerSnapshotRawV1ABI || report.SourceOctets != int64(len(raw)) || report.InventoryNodeCount != 0 {
+		t.Fatalf("raw report=%+v", report)
 	}
 }
 

@@ -1,5 +1,23 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 레거시 native player raw reader·inspection format
+
+`server/internal/world/legacy_player_raw_v1.go`에 `read_crt_player`가 저장한 native
+`creature(1952)`/`object(376)` 스트림을 읽는 **migration-only** Go reader를 추가했다.
+little-endian·8-bit char·16-bit short·32-bit int·64-bit long/pointer의 명시적 ABI 계약만
+허용하며, descriptor·native pointer·password는 버린 뒤 pointer-free `PlayerSnapshotV1`로
+정규화한다. HP/MP·shots current clamp, NUL 문자열 tail 정규화, root/child count·depth/
+object bound, EOF/trailing 검증을 C reader 순서에 맞춰 적용한다. `InspectLegacyPlayerSnapshotRawV1`
+은 raw SHA-256과 source bytes를 별도 이관 evidence로 제공하지만 게임 런타임이나 계정 claim을
+호출하지 않는다.
+
+`cmd/muhan -inspect-player-snapshot-format legacy-player-raw-v1`로 private raw tree를
+read-only 검사할 수 있다. ledger에는 parser/ABI·path·digest·크기·graph node·quarantine
+사유만 기록하며 raw payload는 저장하지 않는다. `scripts/run-legacy-player-snapshot-v1-differential.sh`
+가 test-only C oracle의 실제 native fixture를 생성하고 C/Go canonical CDTO projection을
+byte-for-byte 비교한다. 이 경계는 운영 raw 수집 승인, 전체 계정/캐릭터 대조, 대량 import와
+복구를 아직 완료하지 않는다.
+
 ## 2026-09-10 PlayerSnapshotV1 operator manifest CLI
 
 `cmd/muhan -import-player-snapshot-manifest`가 검토된 CDTO snapshot 묶음을 명시적으로

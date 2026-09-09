@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 legacy native player raw reader·inspection
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `read_crt_player` native raw stream | `DecodeLegacyPlayerSnapshotRawV1`가 audited little-endian raw-v1 ABI의 `creature`/재귀 `object` bytes를 bounds·EOF·depth·count와 load-time clamp까지 검증하고 pointer-free `PlayerSnapshotV1`로 변환. password/descriptor/pointer는 결과에 포함하지 않음 | `scripts/run-legacy-player-snapshot-v1-differential.sh`에서 C oracle raw fixture와 C/Go CDTO projection byte-for-byte PASS; 운영 ABI 승인·대량 수집/대조·복구는 미완료 |
+| raw inspection evidence | `-inspect-player-snapshot-format legacy-player-raw-v1`가 private 0700 tree를 lexical scan하고 raw SHA-256/크기/graph node/parser·ABI/quarantine metadata만 ledger에 기록 | Go cmd race·vet targeted PASS; 운영 Supabase 승인과 raw→manifest operator review는 미완료 |
+
+raw format은 self-describing하지 않으므로 `LegacyPlayerSnapshotRawV1ABI` 일치가 선행되어야
+한다. raw bytes를 바로 import하지 않고, 검토된 canonical CDTO와 명시적 account/player/item
+manifest를 거친다.
+
 ## 2026-09-10 `PlayerSnapshotV1` operator manifest·read-only inspection
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

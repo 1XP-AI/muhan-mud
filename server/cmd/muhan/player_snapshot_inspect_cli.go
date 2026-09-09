@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	maxPlayerSnapshotInspectionFiles = 1024
-	playerSnapshotInspectionParser   = "go-player-snapshot-v1"
-	playerSnapshotInspectionABI      = "cdto-v1"
+	maxPlayerSnapshotInspectionFiles   = 1024
+	playerSnapshotInspectionParser     = "go-player-snapshot-v1"
+	playerSnapshotInspectionABI        = "cdto-v1"
+	playerSnapshotInspectionFormatCDTO = "cdto-v1"
+	playerSnapshotInspectionFormatRaw  = "legacy-player-raw-v1"
 )
 
 var (
@@ -34,6 +36,7 @@ type playerSnapshotInspectionOptions struct {
 	Directory string
 	WorldID   string
 	DryRun    bool
+	Format    string
 }
 
 type playerSnapshotInspectionBatch struct {
@@ -42,11 +45,18 @@ type playerSnapshotInspectionBatch struct {
 }
 
 func validatePlayerSnapshotInspectionFlags(directory, worldID string, dryRun bool) (playerSnapshotInspectionOptions, error) {
+	return validatePlayerSnapshotInspectionFlagsWithFormat(directory, worldID, dryRun, playerSnapshotInspectionFormatCDTO)
+}
+
+func validatePlayerSnapshotInspectionFlagsWithFormat(directory, worldID string, dryRun bool, format string) (playerSnapshotInspectionOptions, error) {
 	if directory == "" {
-		if worldID != "" || dryRun {
+		if worldID != "" || dryRun || format != playerSnapshotInspectionFormatCDTO {
 			return playerSnapshotInspectionOptions{}, errPlayerSnapshotInspectionDirRequired
 		}
 		return playerSnapshotInspectionOptions{}, nil
+	}
+	if format != playerSnapshotInspectionFormatCDTO && format != playerSnapshotInspectionFormatRaw {
+		return playerSnapshotInspectionOptions{}, errors.New("unsupported player snapshot inspection format")
 	}
 	if worldID == "" {
 		return playerSnapshotInspectionOptions{}, errPlayerSnapshotInspectionWorldRequired
@@ -54,15 +64,22 @@ func validatePlayerSnapshotInspectionFlags(directory, worldID string, dryRun boo
 	if len(worldID) > 128 || !validOpaqueImportID(worldID) {
 		return playerSnapshotInspectionOptions{}, errors.New("invalid player snapshot inspection world")
 	}
-	return playerSnapshotInspectionOptions{Directory: directory, WorldID: worldID, DryRun: dryRun}, nil
+	return playerSnapshotInspectionOptions{Directory: directory, WorldID: worldID, DryRun: dryRun, Format: format}, nil
 }
 
 // inspectPlayerSnapshotDirectory scans only the supplied tree and produces
 // metadata. It never returns raw payload bytes, and it completes the whole
 // scan before the caller can write any ledger row.
 func inspectPlayerSnapshotDirectory(directory, worldID string) (playerSnapshotInspectionBatch, error) {
+	return inspectPlayerSnapshotDirectoryWithFormat(directory, worldID, playerSnapshotInspectionFormatCDTO)
+}
+
+func inspectPlayerSnapshotDirectoryWithFormat(directory, worldID, format string) (playerSnapshotInspectionBatch, error) {
 	if directory == "" {
 		return playerSnapshotInspectionBatch{}, errPlayerSnapshotInspectionDirRequired
+	}
+	if format != playerSnapshotInspectionFormatCDTO && format != playerSnapshotInspectionFormatRaw {
+		return playerSnapshotInspectionBatch{}, errors.New("unsupported player snapshot inspection format")
 	}
 	if len(worldID) > 128 || !validOpaqueImportID(worldID) {
 		return playerSnapshotInspectionBatch{}, errPlayerSnapshotInspectionWorldRequired
@@ -104,7 +121,7 @@ func inspectPlayerSnapshotDirectory(directory, worldID string) (playerSnapshotIn
 			}
 			return nil
 		}
-		report, bytesRead, fileErr := inspectPlayerSnapshotFile(path, relative)
+		report, bytesRead, fileErr := inspectPlayerSnapshotFileWithFormat(path, relative, format)
 		if fileErr != nil {
 			return fileErr
 		}
@@ -137,9 +154,16 @@ func validInspectionSourcePath(value string) bool {
 }
 
 func inspectPlayerSnapshotFile(path, relative string) (storage.PlayerSnapshotInspection, int64, error) {
+	return inspectPlayerSnapshotFileWithFormat(path, relative, playerSnapshotInspectionFormatCDTO)
+}
+
+func inspectPlayerSnapshotFileWithFormat(path, relative, format string) (storage.PlayerSnapshotInspection, int64, error) {
+	parserVersion, abi, err := playerSnapshotInspectionContract(format)
+	if err != nil {
+		return storage.PlayerSnapshotInspection{}, 0, err
+	}
 	base := storage.PlayerSnapshotInspection{
-		SourcePath: relative, ParserVersion: playerSnapshotInspectionParser,
-		ABI: playerSnapshotInspectionABI,
+		SourcePath: relative, ParserVersion: parserVersion, ABI: abi,
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -187,20 +211,46 @@ func inspectPlayerSnapshotFile(path, relative string) (storage.PlayerSnapshotIns
 	digest := sha256.Sum256(raw)
 	base.SourceSHA256 = digest
 	base.SourceOctets = int64(len(raw))
-	if inspection, inspectErr := world.InspectPlayerSnapshotV1(raw); inspectErr != nil {
+	var snapshot world.PlayerSnapshotV1
+	var inspectErr error
+	switch format {
+	case playerSnapshotInspectionFormatRaw:
+		inspection, rawErr := world.InspectLegacyPlayerSnapshotRawV1(raw)
+		if rawErr == nil {
+			snapshot = inspection.Snapshot
+		}
+		inspectErr = rawErr
+	default:
+		inspection, cdtoErr := world.InspectPlayerSnapshotV1(raw)
+		if cdtoErr == nil {
+			snapshot = inspection.Snapshot
+		}
+		inspectErr = cdtoErr
+	}
+	if inspectErr != nil {
 		base.Result = "quarantined"
 		base.QuarantineReason = boundedInspectionReason(inspectErr)
 		return base, int64(len(raw)), nil
-	} else {
-		canonical, encodeErr := world.EncodePlayerSnapshotV1(inspection.Snapshot)
-		if encodeErr != nil || !bytes.Equal(canonical, raw) {
-			base.Result = "quarantined"
-			base.QuarantineReason = "snapshot is not canonical"
-			return base, int64(len(raw)), nil
-		}
-		base.Result = "validated"
-		base.InventoryNodeCount = len(inspection.Snapshot.Inventory.Nodes)
+	}
+	canonical, encodeErr := world.EncodePlayerSnapshotV1(snapshot)
+	if encodeErr != nil || (format == playerSnapshotInspectionFormatCDTO && !bytes.Equal(canonical, raw)) {
+		base.Result = "quarantined"
+		base.QuarantineReason = "snapshot is not canonical"
 		return base, int64(len(raw)), nil
+	}
+	base.Result = "validated"
+	base.InventoryNodeCount = len(snapshot.Inventory.Nodes)
+	return base, int64(len(raw)), nil
+}
+
+func playerSnapshotInspectionContract(format string) (string, string, error) {
+	switch format {
+	case playerSnapshotInspectionFormatCDTO:
+		return playerSnapshotInspectionParser, playerSnapshotInspectionABI, nil
+	case playerSnapshotInspectionFormatRaw:
+		return world.LegacyPlayerSnapshotRawV1ParserVersion, world.LegacyPlayerSnapshotRawV1ABI, nil
+	default:
+		return "", "", errors.New("unsupported player snapshot inspection format")
 	}
 }
 

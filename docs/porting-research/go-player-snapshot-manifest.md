@@ -12,6 +12,26 @@ read-only 수집 모드다. private `0700` 디렉터리의 파일을 lexical 순
 `-inspect-player-snapshot-dry-run`은 같은 스캔을 DB 없이 실행한다. malformed·symlink·public
 파일은 quarantine evidence가 되며 자동 이관이나 identity claim으로 승격되지 않는다.
 
+원본 C player save를 조사할 때는 형식을 명시적으로 바꾼다.
+
+```sh
+# native raw player 파일은 audited little-endian ABI로만 읽고, CDTO로
+# 정규화한 뒤 metadata만 ledger에 기록한다(게임 런타임/계정 claim 없음).
+go run ./cmd/muhan \
+  -inspect-player-snapshot-dir /private/muhan-players/raw \
+  -inspect-player-snapshot-world muhan-01 \
+  -inspect-player-snapshot-format legacy-player-raw-v1 \
+  -inspect-player-snapshot-dry-run
+```
+
+raw 형식에는 self-describing ABI가 없으므로 수집 승인 시
+`LegacyPlayerSnapshotRawV1ABI` 계약(`creature=1952`, `object=376`, little-endian
+`long/pointer=64`)을 별도로 확인해야 한다. Go reader는 `read_crt_player`의 HP/MP·shot
+clamp와 NUL 문자열 정규화를 재현하고, descriptor·native pointer·password를 snapshot이나
+로그에 넣지 않는다. 지원하지 않는 ABI는 자동 추정하지 않고 격리해야 하며, raw 파일을
+직접 `-import-player-snapshot-manifest`에 넣지 말고 operator가 검토한 CDTO와 hash/item
+manifest를 만든 뒤 import한다.
+
 ## 파일 보안·구성
 
 - manifest와 각 `snapshot_file`은 심볼릭 링크가 아닌 정규 파일이고 권한이 정확히 `0600`이어야 한다.
@@ -81,5 +101,5 @@ fail-closed conflict가 난다.
 ## 현재 범위와 승격 조건
 
 이 계약은 한 번에 검토된 snapshot 묶음을 Go import API에 전달하는 재현 가능한 경계다. legacy
-raw player 파일 자동 수집, 대량 데이터 대조·복구, 운영 Supabase 승인, 전체 명령 parity, 브라우저/
+raw player 파일의 운영 대량 수집·대조·복구, 운영 Supabase 승인, 전체 명령 parity, 브라우저/
 IME/mobile, WSS/Ingress와 testnet 승격은 별도 인수 조건으로 남는다.
