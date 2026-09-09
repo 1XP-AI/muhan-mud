@@ -14,6 +14,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/1XP-Inc/muhan-mud/server/internal/game"
 	"github.com/1XP-Inc/muhan-mud/server/internal/identity"
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
@@ -24,14 +25,23 @@ func main() {
 	databaseURL := flag.String("database", "", "disposable PostgreSQL connection URL")
 	worldID := flag.String("world", "browser-e2e", "world snapshot ID to reset")
 	characterName := flag.String("name", "BrowserAlice", "character name to reset")
+	existingName := flag.String("existing-name", "BrowserOld", "canonical character already linked to the disposable world")
+	existingPassword := flag.String("existing-password", "existingpw", "password for the pre-seeded canonical character")
 	flag.Parse()
-	if *databaseURL == "" || *worldID == "" || *characterName == "" {
-		log.Fatal("-database, -world, and -name are required")
+	if *databaseURL == "" || *worldID == "" || *characterName == "" || *existingName == "" || *existingPassword == "" {
+		log.Fatal("-database, -world, -name, -existing-name, and -existing-password are required")
 	}
 
 	name, err := identity.CanonicalName(*characterName)
 	if err != nil {
 		log.Fatalf("invalid character name: %v", err)
+	}
+	canonicalExistingName, err := identity.CanonicalName(*existingName)
+	if err != nil {
+		log.Fatalf("invalid existing character name: %v", err)
+	}
+	if canonicalExistingName == name {
+		log.Fatal("existing character name must differ from signup character name")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -47,8 +57,18 @@ func main() {
 	if err := root.Migrate(ctx); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	if err := resetDisposableFixture(ctx, db, *worldID, name); err != nil {
+	if err := resetDisposableFixture(ctx, db, *worldID, name, canonicalExistingName); err != nil {
 		log.Fatalf("reset disposable fixture: %v", err)
+	}
+	existingDraft, err := game.BuildCreation(game.CreationChoices{
+		Male: true, Class: 4, Stats: game.Stats{12, 10, 12, 10, 10}, Weapon: 1, RaceChoice: 7,
+	})
+	if err != nil {
+		log.Fatalf("build existing character: %v", err)
+	}
+	existingPlayer, err := world.NewPlayerFromDraft(canonicalExistingName, existingDraft)
+	if err != nil {
+		log.Fatalf("build existing world character: %v", err)
 	}
 	state := world.State{
 		Version: 1,
@@ -61,7 +81,7 @@ func main() {
 				NPCIDs: []string{"npc-key", "npc-name"},
 			},
 		},
-		Players: map[string]world.PlayerState{},
+		Players: map[string]world.PlayerState{"legacy-existing-player": existingPlayer},
 		NPCs: map[string]world.NPCState{
 			"npc-key": {
 				Body: world.LegacyMonster{
@@ -84,10 +104,19 @@ func main() {
 	if err := root.CreateWorld(ctx, *worldID, raw); err != nil {
 		log.Fatalf("create world: %v", err)
 	}
+	existingHash, err := identity.HashPassword([]byte(*existingPassword))
+	if err != nil {
+		log.Fatalf("hash existing character password: %v", err)
+	}
+	if _, err := root.LinkExistingWorldCharacter(ctx, *worldID, "browser-link-existing", 0, canonicalExistingName, existingHash, "legacy-existing-player"); err != nil {
+		clear(existingHash)
+		log.Fatalf("link existing world character: %v", err)
+	}
+	clear(existingHash)
 	fmt.Printf("browser fixture ready: world=%s name=%s\n", *worldID, name)
 }
 
-func resetDisposableFixture(ctx context.Context, db *sql.DB, worldID, name string) error {
+func resetDisposableFixture(ctx context.Context, db *sql.DB, worldID string, names ...string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -105,12 +134,14 @@ func resetDisposableFixture(ctx context.Context, db *sql.DB, worldID, name strin
 			return err
 		}
 	}
-	for _, statement := range []string{
-		`DELETE FROM mud_go.characters WHERE account_id IN (SELECT id FROM mud_go.accounts WHERE name=$1)`,
-		`DELETE FROM mud_go.accounts WHERE name=$1`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement, name); err != nil {
-			return err
+	for _, name := range names {
+		for _, statement := range []string{
+			`DELETE FROM mud_go.characters WHERE account_id IN (SELECT id FROM mud_go.accounts WHERE name=$1)`,
+			`DELETE FROM mud_go.accounts WHERE name=$1`,
+		} {
+			if _, err := tx.ExecContext(ctx, statement, name); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()

@@ -94,6 +94,9 @@ func (p *Postgres) CreateInWorld(ctx context.Context, worldID, commandID string,
 	if err = tx.QueryRowContext(ctx, `INSERT INTO mud_go.characters(account_id,draft) VALUES($1,$2) RETURNING id`, accountID, string(draftJSON)).Scan(&characterID); err != nil {
 		return "", err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE mud_go.characters SET stage='linked',world_id=$2,world_player_id=$1 WHERE id=$1`, characterID, worldID); err != nil {
+		return "", err
+	}
 	if _, exists := state.Players[characterID]; exists {
 		return "", errors.New("world character identity collision")
 	}

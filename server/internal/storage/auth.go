@@ -41,17 +41,21 @@ func (p *Postgres) Register(ctx context.Context, name string, password []byte, d
 }
 
 // Authenticate verifies stored credentials before returning any character data.
-// Session ownership, rate limits and live-world admission are separate gates.
+// For a linked legacy character, ID is the explicit world_player_id so the
+// world connector cannot accidentally admit the database row UUID instead of
+// the canonical player identity. Session ownership, rate limits and live-world
+// admission remain separate gates.
 func (p *Postgres) Authenticate(ctx context.Context, name string, password []byte) (Character, error) {
 	canonical, err := identity.CanonicalName(name)
 	if err != nil {
 		return Character{}, ErrCredentials
 	}
 	var result Character
+	var databaseID, worldID, worldPlayerID, stage string
 	var hash, raw []byte
-	err = p.db.QueryRowContext(ctx, `SELECT c.id,c.draft,a.credential_hash
+	err = p.db.QueryRowContext(ctx, `SELECT c.id,c.draft,a.credential_hash,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'')
  FROM mud_go.accounts a JOIN mud_go.characters c ON c.account_id=a.id
- WHERE a.name=$1`, canonical).Scan(&result.ID, &raw, &hash)
+ WHERE a.name=$1`, canonical).Scan(&databaseID, &raw, &hash, &stage, &worldID, &worldPlayerID)
 	defer clear(hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Character{}, ErrCredentials
@@ -67,6 +71,13 @@ func (p *Postgres) Authenticate(ctx context.Context, name string, password []byt
 	}
 	if err := json.Unmarshal(raw, &result.Draft); err != nil {
 		return Character{}, err
+	}
+	result.ID = databaseID
+	if stage == "linked" && worldID != "" && worldPlayerID != "" {
+		result.ID = worldPlayerID
+		result.Linked = true
+		result.WorldID = worldID
+		result.WorldPlayerID = worldPlayerID
 	}
 	return result, nil
 }

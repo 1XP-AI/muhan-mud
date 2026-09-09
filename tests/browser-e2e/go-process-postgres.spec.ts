@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 const characterName = process.env.MUHAN_BROWSER_CHARACTER_NAME ?? "BrowserAlice";
 const gamePassword = process.env.MUHAN_BROWSER_GAME_PASSWORD ?? "pw1234";
+const existingCharacterName = process.env.MUHAN_BROWSER_EXISTING_CHARACTER_NAME ?? "BrowserOld";
+const existingGamePassword = process.env.MUHAN_BROWSER_EXISTING_GAME_PASSWORD ?? "existingpw";
 const infoPrompt = "[엔터]를 누르세요. 그만보시려면 [.]을 치세요: ";
 
 async function submitLine(page: Page, value: string): Promise<void> {
@@ -99,6 +101,21 @@ async function reloginAndLook(page: Page): Promise<void> {
   await expect(page.locator(".xterm-screen")).not.toContainText(gamePassword);
 }
 
+async function loginExistingCharacter(page: Page): Promise<void> {
+  await page.goto("/");
+  await waitForLoginPrompt(page);
+  await submitAndWait(page, existingCharacterName, "암호");
+  await submitAndWait(page, existingGamePassword, "== 브라우저 광장 ==");
+  await expect(page.locator(".xterm-screen")).toContainText("실제 Go 서버와 PostgreSQL");
+  await expect(page.locator(".xterm-screen")).not.toContainText(existingGamePassword);
+}
+
+async function beginExistingLogin(page: Page): Promise<void> {
+  await page.goto("/");
+  await waitForLoginPrompt(page);
+  await submitAndWait(page, existingCharacterName, "암호");
+}
+
 test("real Go process and PostgreSQL survive browser signup, world admission, and relogin", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -111,6 +128,35 @@ test("real Go process and PostgreSQL survive browser signup, world admission, an
   await expect(page.getByLabel("무한대전 게임 터미널")).toHaveCount(1);
   await createCharacterAndEnterWorld(page);
   await reloginAndLook(page);
+
+  expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
+});
+
+test("pre-seeded canonical character admits once and rejects a duplicate session", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+
+  await loginExistingCharacter(page);
+
+  const duplicate = await page.context().newPage();
+  duplicate.on("pageerror", (error) => errors.push(error.message));
+  duplicate.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  try {
+    await beginExistingLogin(duplicate);
+    await submitAndWait(
+      duplicate,
+      existingGamePassword,
+      "게임 입장을 완료하지 못했습니다. 잠시 후 다시 접속해 주세요.",
+    );
+    await submitAndWait(page, "설정 색", "색        :  사용 ");
+  } finally {
+    await duplicate.close();
+  }
 
   expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
 });

@@ -20,8 +20,9 @@ type Postgres struct {
 func NewPostgres(db *sql.DB) *Postgres { return &Postgres{db: db} }
 
 // Migrate is an explicit provisioning step, not called on player connections.
-// Characters remain pre-level drafts; world snapshots are an internal command
-// persistence boundary. No world admission path exists yet.
+// Characters may be draft-only registrations or explicitly linked to an
+// already-initialized world player. World snapshots remain the gameplay
+// authority; credentials never replace canonical player state.
 func (p *Postgres) Migrate(ctx context.Context) error {
 	_, err := p.db.ExecContext(ctx, `
  CREATE SCHEMA IF NOT EXISTS mud_go;
@@ -34,9 +35,11 @@ func (p *Postgres) Migrate(ctx context.Context) error {
  CREATE TABLE IF NOT EXISTS mud_go.characters (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id uuid NOT NULL UNIQUE REFERENCES mud_go.accounts(id),
-  stage text NOT NULL DEFAULT 'draft' CHECK(stage='draft'),
+  stage text NOT NULL DEFAULT 'draft' CHECK(stage IN ('draft','linked')),
   draft jsonb NOT NULL CHECK(jsonb_typeof(draft)='object'),
-  revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0)
+  revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0),
+  world_id text,
+  world_player_id text
  );
  CREATE TABLE IF NOT EXISTS mud_go.worlds (
   id text PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 128),
@@ -53,6 +56,11 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   UNIQUE(world_id,revision)
  );
  ALTER TABLE mud_go.worlds ADD COLUMN IF NOT EXISTS writer_epoch bigint NOT NULL DEFAULT 0 CHECK(writer_epoch>=0);
+ ALTER TABLE mud_go.characters DROP CONSTRAINT IF EXISTS characters_stage_check;
+ ALTER TABLE mud_go.characters ADD CONSTRAINT characters_stage_check CHECK(stage IN ('draft','linked'));
+ ALTER TABLE mud_go.characters ADD COLUMN IF NOT EXISTS world_id text;
+ ALTER TABLE mud_go.characters ADD COLUMN IF NOT EXISTS world_player_id text;
+ CREATE UNIQUE INDEX IF NOT EXISTS characters_world_player_unique ON mud_go.characters(world_id,world_player_id) WHERE world_id IS NOT NULL AND world_player_id IS NOT NULL;
  CREATE TABLE IF NOT EXISTS mud_go.world_writer_claims (
   world_id text NOT NULL REFERENCES mud_go.worlds(id),
   claim_id text NOT NULL CHECK(length(claim_id) BETWEEN 1 AND 128),
@@ -102,8 +110,11 @@ func (p *Postgres) Create(ctx context.Context, name string, hash []byte, draft g
 }
 
 type Character struct {
-	ID    string
-	Draft game.Creation
+	ID            string
+	Draft         game.Creation
+	Linked        bool
+	WorldID       string
+	WorldPlayerID string
 }
 
 func (p *Postgres) Load(ctx context.Context, name string) (Character, error) {
@@ -113,14 +124,22 @@ func (p *Postgres) Load(ctx context.Context, name string) (Character, error) {
 	}
 	name = canonical
 	var result Character
+	var databaseID, worldID, worldPlayerID, stage string
 	var raw []byte
-	err := p.db.QueryRowContext(ctx, `SELECT c.id,c.draft FROM mud_go.characters c
- JOIN mud_go.accounts a ON a.id=c.account_id WHERE a.name=$1`, name).Scan(&result.ID, &raw)
+	err := p.db.QueryRowContext(ctx, `SELECT c.id,c.draft,c.stage,COALESCE(c.world_id,''),COALESCE(c.world_player_id,'') FROM mud_go.characters c
+	JOIN mud_go.accounts a ON a.id=c.account_id WHERE a.name=$1`, name).Scan(&databaseID, &raw, &stage, &worldID, &worldPlayerID)
 	if err != nil {
 		return Character{}, err
 	}
 	if err = json.Unmarshal(raw, &result.Draft); err != nil {
 		return Character{}, err
+	}
+	result.ID = databaseID
+	if stage == "linked" && worldID != "" && worldPlayerID != "" {
+		result.ID = worldPlayerID
+		result.Linked = true
+		result.WorldID = worldID
+		result.WorldPlayerID = worldPlayerID
 	}
 	return result, nil
 }

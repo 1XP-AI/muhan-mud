@@ -9,6 +9,8 @@ cd "$repo_root"
 
 world_id="${MUHAN_BROWSER_WORLD_ID:-browser-e2e}"
 character_name="${MUHAN_BROWSER_CHARACTER_NAME:-BrowserAlice}"
+existing_name="${MUHAN_BROWSER_EXISTING_CHARACTER_NAME:-BrowserOld}"
+existing_password="${MUHAN_BROWSER_EXISTING_GAME_PASSWORD:-existingpw}"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/muhan-browser-e2e.XXXXXX")"
 templates="$scratch/templates"
 mkdir -p "$templates"
@@ -37,7 +39,9 @@ trap cleanup EXIT INT TERM
 "$scratch/seed" \
   -database "$MUHAN_BROWSER_DATABASE_URL" \
   -world "$world_id" \
-  -name "$character_name"
+  -name "$character_name" \
+  -existing-name "$existing_name" \
+  -existing-password "$existing_password"
 
 DATABASE_URL="$MUHAN_BROWSER_DATABASE_URL" \
 ALLOWED_ORIGINS="http://127.0.0.1:${MUHAN_BROWSER_PORT}" \

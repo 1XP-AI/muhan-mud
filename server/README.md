@@ -2064,3 +2064,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
 
 strict room corpus 기존 63개 예외, 전체 C 명령/tick/경제, 실제 PostgreSQL/Chromium 재실행,
 WSS/Ingress와 testnet 배포 인수는 계속 남아 있다.
+
+## 2026-09-09 기존 캐릭터 이관·룸 자원 스케줄러 후속
+
+`LinkExistingWorldCharacter`를 추가해 운영자가 정확한 world/player ID와 기대 revision을
+제시한 경우에만 이미 canonical `PlayerState`인 캐릭터를 게임 이름/비밀번호 계정에
+연결한다. 이름만으로 claim하지 않으며, bcrypt hash 형식·중복 이름·중복 player link·
+명령 ID 재사용 충돌을 거절한다. 계정/character row, world revision, immutable receipt는
+한 PostgreSQL transaction으로 저장하고, 인증 결과는 linked world player ID를 반환한다.
+신규 `CreateInWorld`도 동일한 linked 메타데이터를 기록한다.
+
+`WorldConnector.RunRoomResourceTick`과 `-room-resource-tick` worker는 canonical floor
+object respawn과 자동 door refresh만 durable receipt로 실행한다. due permanent NPC가
+있는 방은 익명 생성하지 않고 receipt의 `npc_pending_rooms`에 남기며, 아직 canonical
+item graph가 아닌 방은 `unmigrated_rooms`로 건너뛴다. NPC identity/active-order phase는
+별도 포팅 경계다.
+
+검증: 실제 격리 PostgreSQL 17에서 기존 캐릭터 link/replay·중복/이름 충돌·신규 world
+creation을 통과했고, Go + PostgreSQL + Chromium 브라우저에서 terminal signup/relogin과
+실제 linked character 로그인·동시 중복 세션 거부를 **2 passed**로 확인했다. 전체
+`go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`, Linux ARM64
+cross-build, web typecheck/test(42/42)도 통과했다. strict room corpus 63개 예외, 전체
+NPC/tick/command parity, IME/mobile 실기기, backup/restore와 testnet 배포 인수는 아직
+미완료다.
