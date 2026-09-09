@@ -1484,3 +1484,26 @@ commit `ae3f6769`까지 완료했다. `node --test scripts/docker-source-paths.t
 이번 batch에서는 ARM64 cross-build, 실제 PostgreSQL/browser/release matrix, strict room corpus
 63건, full board editor/mail send, NPC full parity, IME/mobile 실기기, WSS/Ingress와 testnet
 배포를 반복하지 않았다. 사용자 소유 `src/frp.new`만 dirty 상태로 보존한다.
+
+## 2026-09-09 xterm compose continuation 연결 체크포인트
+
+`편지보내기 <이름>`과 `써`의 multiline continuation을 메인 connector에 통합했다.
+`worldConnection`은 connection-local draft와 stable command ID를 보유하고, 작성 중인
+행을 history/alias/parser로 넘기지 않는다. 메일은 첫 `.`에서 canonical mailbox에 한
+번 append하고, 게시판은 제목·본문·번호를 한 번 append한다. 게시판 `!!`/빈 제목은
+receipt 없이 취소되고, `Close`/성공 시 draft references를 버린다. transient commit 오류
+뒤에는 같은 command ID와 메일 ID로 재시도하며, board room event는 최초 commit에만
+전달한다.
+
+변경 파일은 `server/internal/session/compose_command.go`,
+`server/internal/transport/world_connector.go`, `server/internal/world/mail_send.go`,
+`server/internal/world/board_write.go`와 각 race/PG 회귀 테스트·문서다. 현재 원작의
+제목 직후 `.` 빈 게시글은 fail-closed 차이로 명시했다.
+
+검증: targeted `go test -race`(world/session/transport), `scripts/run-go-validation.sh
+fast`, 전체 `scripts/run-go-validation.sh integration`, `go vet`, policy 테스트 통과.
+`MUHAN_MAIL_BOARD_TEST_DATABASE_URL`이 없어서 opt-in PostgreSQL test는 실행하지 않았으며,
+ARM64 cross-build/browser/release/testnet은 이번 레인에서 반복하지 않았다. `src/frp.new`는
+사용자 소유 dirty binary로 계속 보존한다. 다음 작업은 실제 disposable PG에서 새 send/write
+receipt를 함께 검증하고, 빈 게시글·legacy post/board 이관 차이를 differential 결정하는
+것이다.

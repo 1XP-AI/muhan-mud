@@ -854,3 +854,18 @@ combat strict ordering은 다음 scheduler 통합 범위다. 실제 PG 검증은
 
 이번 batch도 전체 C 명령/prefix/key/ANSI parity, strict room corpus 63건, NPC full cadence,
 실기기 IME/mobile, WSS/Ingress와 testnet 배포 인수를 완료한 것으로 간주하지 않는다.
+
+## 2026-09-09 xterm compose continuation 통합
+
+앞선 world slice를 `WorldConnector`의 연결별 continuation에 연결했다.
+
+| 영역 | 현재 동작 | 증거/남은 조건 |
+| --- | --- | --- |
+| `편지보내기 <이름>` | 우체국·canonical recipient를 확인한 뒤 메일 행을 모으고 첫 `.`에서 메일 하나를 원자 append | session/transport/world race, transient commit 재시도 회귀 통과; 실제 PG는 opt-in disposable URL에서만 실행 |
+| `써` | 게시판 object/board ID를 확인하고 제목·본문을 모은 뒤 첫 `.`에서 번호/본문을 원자 append, `!!`·빈 제목 취소 | commit 뒤 observer event만 전달하고 replay는 억제; 원작의 제목 직후 빈 본문은 현재 fail-closed 차이로 기록 |
+| 입력 경계 | continuation이 history/alias/일반 parser보다 먼저 소비되며 body의 `!`/`!!`는 명령으로 실행되지 않음 | WebSocket line framing은 기존 512-byte 계약 재사용; IME/mobile 실기기와 전체 C 출력 parity는 미완료 |
+| 검증 cadence | fast=영향 패키지 race, integration=전체 Go race/vet/diff, main=ARM64 1회, release=PG/browser/호환성 | 이번 batch는 고비용 gate를 반복하지 않음 |
+
+`server/internal/session/mail_board_command_pg_test.go`는 mail read/send/delete와 board
+list/read/write 경계를 하나의 opt-in PostgreSQL 실행으로 묶는다. URL이 없으면 명시적으로
+skip되며 일반 unit/race 성공을 실제 DB 증거로 해석하지 않는다.

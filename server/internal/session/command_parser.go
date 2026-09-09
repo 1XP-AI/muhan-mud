@@ -74,6 +74,8 @@ const (
 	CommandAlias
 	CommandBurn
 	CommandStudy
+	CommandMailSend
+	CommandBoardWrite
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -153,6 +155,16 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsBoardLine(trimmed) {
 		parsed.Kind = CommandBoard
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsMailSendLine(trimmed) {
+		parsed.Kind = CommandMailSend
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsBoardWriteLine(trimmed) {
+		parsed.Kind = CommandBoardWrite
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -350,8 +362,12 @@ func commandKind(first string) CommandKind {
 		return CommandSave
 	case "편지받기", "편지삭제":
 		return CommandMail
+	case "편지보내기":
+		return CommandMailSend
 	case "게시판":
 		return CommandBoard
+	case "써":
+		return CommandBoardWrite
 	case "정보":
 		return CommandInfo
 	case "도움말", "?":

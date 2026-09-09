@@ -64,8 +64,12 @@ func TestWorldConnectorSubmitDispatchesMailReadAndDelete(t *testing.T) {
 	if err != nil || len(saved.Mailboxes["recipient"]) != 0 {
 		t.Fatalf("saved mailbox=%v err=%v", saved.Mailboxes["recipient"], err)
 	}
-	unsupported, err := connection.Submit(context.Background(), "편지보내기")
-	if err != nil || !strings.Contains(unsupported, "아직") || store.commits != 2 {
-		t.Fatalf("unsupported=%q err=%v commits=%d", unsupported, err, store.commits)
+	missingRecipient, err := connection.Submit(context.Background(), "편지보내기")
+	if err != nil || !strings.Contains(missingRecipient, "누구한테") || store.commits != 2 {
+		t.Fatalf("missing recipient=%q err=%v commits=%d", missingRecipient, err, store.commits)
+	}
+	historyCompose, err := connection.Submit(context.Background(), "!")
+	if err != nil || !strings.Contains(historyCompose, "누구한테") || store.commits != 2 {
+		t.Fatalf("history compose=%q err=%v commits=%d", historyCompose, err, store.commits)
 	}
 }

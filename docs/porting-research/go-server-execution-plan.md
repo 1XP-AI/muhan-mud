@@ -742,6 +742,22 @@ room corpus, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배�
 전체 C command parity, strict room corpus, NPC full combat/broadcast, 실기기 IME/mobile,
 WSS/Ingress와 testnet 배포 인수는 여전히 남아 있다.
 
+### 2026-09-09 xterm 메일·게시판 continuation 연결
+
+`편지보내기 <이름>`과 `써`를 `WorldConnector`의 연결별 continuation으로 연결했다.
+작성 중 입력은 history/alias/일반 parser보다 먼저 소비하고, 최종 `.` 한 번만
+`ExecuteGame` receipt를 생성한다. 메일 본문에서 `!`와 `!!`는 그대로 보존하며, 게시판
+본문의 `!!`와 제목 단계의 빈 줄은 영수증 없이 취소한다. transient commit 오류에도
+command ID·메일 ID·시각·payload를 초안에 유지해 같은 요청을 재시도하고, 완료/연결 종료
+시 초안을 폐기한다. 게시판 event는 최초 commit 성공 뒤에만 전송한다.
+
+world/session/transport targeted race와 전체 Go integration을 이 변경을 조립한 뒤 한 번
+검증했다. `MUHAN_MAIL_BOARD_TEST_DATABASE_URL`이 설정된 경우에만 하나의 disposable
+PostgreSQL에서 mail/board receipt와 replay를 실행하도록 테스트를 추가했다. 원작의
+제목 직후 `.` 빈 게시글 등록은 현재 fail-closed 차이이며 differential 결정 전까지
+운영 경로에서 허용하지 않는다. ARM64 cross-build, browser/IME/mobile, release matrix와
+testnet 배포는 해당 cadence 경계에서만 실행한다.
+
 ## 2026-09-09 메일·게시판 bounded slice 및 검증 중복 감사
 
 세 Luna max 레인을 직접 병렬 실행한 뒤 메인 세션에서 공용 parser와 WebSocket connector를

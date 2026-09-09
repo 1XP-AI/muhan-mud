@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"strings"
 	"sync"
 	"time"
 
@@ -242,6 +244,25 @@ type worldConnection struct {
 	ready, closed    bool
 	closeAfterSubmit bool
 	infoPending      bool
+	compose          *composeDraft
+}
+
+type composeKind uint8
+
+const (
+	composeMailSend composeKind = iota + 1
+	composeBoardWrite
+)
+
+type composeDraft struct {
+	kind        composeKind
+	commandID   string
+	recipientID string
+	boardID     int
+	title       string
+	body        []string
+	timestamp   time.Time
+	messageID   string
 }
 
 // Events is an optional asynchronous room-output stream. The WebSocket
@@ -255,6 +276,187 @@ func (c *worldConnection) ShouldClose() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closeAfterSubmit
+}
+
+func (c *worldConnection) clearCompose() {
+	if c.compose == nil {
+		return
+	}
+	// The editor is connection-local and must not survive disconnect or a
+	// completed receipt. Strings cannot be scrubbed in place in Go; dropping
+	// every reference is the safest lifetime boundary available here.
+	c.compose.body = nil
+	c.compose.title = ""
+	c.compose.recipientID = ""
+	c.compose.messageID = ""
+	c.compose.commandID = ""
+	c.compose.boardID = 0
+	c.compose.timestamp = time.Time{}
+	c.compose.kind = 0
+	c.compose = nil
+}
+
+// submitComposeLine consumes the connection-local editor before history,
+// aliases or the ordinary parser. Only the final line calls ExecuteGame;
+// title/body prompts and cancellations are deliberately receipt-free.
+func (c *worldConnection) submitComposeLine(ctx context.Context, line string) (string, bool, error) {
+	if c.compose != nil {
+		output, err := c.submitComposeContinuation(ctx, line)
+		return output, true, err
+	}
+	if command, ok := session.ParseMailSendLine(line); ok {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		actor, actorOK := state.Players[c.lease.ActorID]
+		room, roomOK := state.Rooms[actor.Body.RoomID]
+		if !actorOK || !actor.Online || actor.Body.Type != 0 || !roomOK || !roomFlagSet(room.Resource.Flags, world.RoomPostOfficeFlag) {
+			return world.MailRoomResponse, true, nil
+		}
+		if command.Recipient == "" {
+			c.lastCommand = strings.TrimLeft(line, " ")
+			return "누구한테 편지를 보내시려구요?\n", true, nil
+		}
+		recipientID, err := state.ResolveMailRecipientID(command.Recipient)
+		if err != nil {
+			return "그런 사용자는 없습니다.\n", true, nil
+		}
+		c.compose = &composeDraft{kind: composeMailSend, commandID: "mail-send-" + rand.Text(), recipientID: recipientID}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return session.MailSendPrompt, true, nil
+	}
+	if _, ok := session.ParseBoardWriteLine(line); ok {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		_, _, boardID, err := state.BoardContext(c.lease.ActorID)
+		if err != nil {
+			return "이곳에는 게시판이 없습니다.\r\n", true, nil
+		}
+		c.compose = &composeDraft{kind: composeBoardWrite, commandID: "board-write-" + rand.Text(), boardID: boardID}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return session.BoardWriteTitlePrompt, true, nil
+	}
+	return "", false, nil
+}
+
+func roomFlagSet(flags [8]byte, bit int) bool {
+	return bit >= 0 && bit/8 < len(flags) && flags[bit/8]&(1<<uint(bit%8)) != 0
+}
+
+func (c *worldConnection) submitComposeContinuation(ctx context.Context, line string) (string, error) {
+	draft := c.compose
+	if draft == nil {
+		return "", nil
+	}
+	switch draft.kind {
+	case composeMailSend:
+		return c.submitMailSendContinuation(ctx, draft, line)
+	case composeBoardWrite:
+		return c.submitBoardWriteContinuation(ctx, draft, line)
+	default:
+		c.clearCompose()
+		return "명령을 처리할 수 없습니다.\r\n", nil
+	}
+}
+
+func (c *worldConnection) submitMailSendContinuation(ctx context.Context, draft *composeDraft, line string) (string, error) {
+	if strings.HasPrefix(line, ".") {
+		body := strings.Join(draft.body, "\n")
+		if draft.timestamp.IsZero() {
+			now, _ := c.game.config.Clock()
+			draft.timestamp = time.Unix(int64(now), 0).UTC()
+		}
+		if draft.messageID == "" && c.game.config.Allocate != nil {
+			messageID, err := c.game.config.Allocate()
+			if err != nil {
+				return "편지를 보내지 못했습니다. 다시 시도해 주세요.\n", nil
+			}
+			draft.messageID = messageID
+		}
+		receipt, err := c.game.owners.ExecuteMailSendWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease, world.MailSendPayload{
+			RecipientID: draft.recipientID,
+			Body:        body,
+			Timestamp:   draft.timestamp,
+		}, session.MailSendOptions{MessageID: draft.messageID})
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+				return "", err
+			}
+			return "편지를 보내지 못했습니다. 다시 시도해 주세요.\n", nil
+		}
+		var result world.MailSendResult
+		if err := json.Unmarshal(receipt.Response, &result); err != nil {
+			return "편지를 보내지 못했습니다. 다시 시도해 주세요.\n", nil
+		}
+		c.clearCompose()
+		return result.Response, nil
+	}
+	candidate := append(append([]string(nil), draft.body...), line)
+	if err := world.ValidateMailSendBody(strings.Join(candidate, "\n")); err != nil {
+		return session.MailSendInvalidLineResponse, nil
+	}
+	draft.body = candidate
+	return session.MailSendContinuePrompt, nil
+}
+
+func (c *worldConnection) submitBoardWriteContinuation(ctx context.Context, draft *composeDraft, line string) (string, error) {
+	if draft.title == "" {
+		if line == "" {
+			c.clearCompose()
+			return session.BoardWriteCancelResponse, nil
+		}
+		if err := world.ValidateBoardTitle(line); err != nil {
+			return session.BoardWriteInvalidTitleResponse, nil
+		}
+		draft.title = line
+		return session.BoardWriteBodyPrompt + fmt.Sprintf("%3d: ", len(draft.body)+1), nil
+	}
+	if strings.HasPrefix(line, "!!") {
+		c.clearCompose()
+		return session.BoardWriteCancelResponse, nil
+	}
+	if strings.HasPrefix(line, ".") {
+		payload, err := world.BoardWritePayloadFromLines(draft.boardID, draft.title, draft.body)
+		if err != nil {
+			return "게시물을 등록할 수 없습니다. 본문을 입력해 주세요.\r\n", nil
+		}
+		if draft.timestamp.IsZero() {
+			now, _ := c.game.config.Clock()
+			draft.timestamp = time.Unix(int64(now), 0).UTC()
+		}
+		receipt, err := c.game.owners.ExecuteBoardWrite(ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease, payload, draft.timestamp)
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+				return "", err
+			}
+			return "게시물을 등록하지 못했습니다. 다시 시도해 주세요.\r\n", nil
+		}
+		var result world.BoardWriteResult
+		if err := json.Unmarshal(receipt.Response, &result); err != nil {
+			return "게시물을 등록하지 못했습니다. 다시 시도해 주세요.\r\n", nil
+		}
+		c.clearCompose()
+		if !receipt.Replayed && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
+			}
+		}
+		return result.Response, nil
+	}
+	if err := world.ValidateBoardWriteLine(line); err != nil {
+		return session.BoardWriteInvalidLineResponse + fmt.Sprintf("%3d: ", len(draft.body)+1), nil
+	}
+	candidate := append(append([]string(nil), draft.body...), line)
+	if len(strings.Join(candidate, "\n"))+1 > world.MaxBoardBodyBytes {
+		return session.BoardWriteInvalidLineResponse + fmt.Sprintf("%3d: ", len(draft.body)+1), nil
+	}
+	draft.body = candidate
+	return fmt.Sprintf("%3d: ", len(draft.body)+1), nil
 }
 
 func (c *worldConnection) Submit(ctx context.Context, line string) (string, error) {
@@ -285,7 +487,29 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return text, nil
 	}
+	if output, handled, err := c.submitComposeLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	line, c.lastCommand = session.ExpandHistoryLine(c.lastCommand, line)
+	// History expansion can recreate an interactive command. Route that
+	// expanded line through the same continuation gate before aliases or the
+	// ordinary parser; otherwise `!` after `편지보내기`/`써` would be classified
+	// as a command kind with no editor entry point.
+	if output, handled, err := c.submitComposeLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
 	if beforeOK {
@@ -1021,6 +1245,10 @@ func (c *worldConnection) Close(ctx context.Context) {
 	if c.closed {
 		return
 	}
+	// Disconnect discards any uncommitted editor input immediately. Durable
+	// departure cleanup may need a retry, but an abandoned title/body must not
+	// remain attached to that connection while it is sealed.
+	c.clearCompose()
 	before, beforeOK := c.game.snapshot(ctx)
 	// Ownership remains reserved on every failure; background worker owns retries.
 	if err := c.game.cleanup.Enqueue(c.lease); err != nil {

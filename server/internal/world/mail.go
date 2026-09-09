@@ -57,9 +57,9 @@ type MailMessage struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// MailAction is deliberately closed: interactive compose/send is not part of
-// this bounded slice. MailSend exists only so callers can make that omission
-// explicit rather than accidentally treating it as a read or delete.
+// MailAction is deliberately closed. MailSend is the canonical one-message
+// append used by the world domain; collecting the legacy interactive editor's
+// lines remains an adapter/session concern.
 type MailAction string
 
 const (

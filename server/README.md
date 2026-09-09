@@ -2446,3 +2446,23 @@ index/body 전체 데이터 이관은 후속 범위다.
 `integration`, 정책·shell·YAML·migration coverage 검사를 통과했으며 고비용 release
 검증은 반복하지 않았다. 같은 release job에서 중복되던 Node toolchain 초기화도 job당 한
 번으로 통합했다. `src/frp.new`의 사용자 변경은 계속 보존한다.
+
+## 2026-09-09 xterm 멀티라인 메일·게시판 연결
+
+`편지보내기 <이름>`과 `써`를 연결별 continuation으로 처리한다. 메일은 행의 첫
+`.`에서, 게시판은 제목 뒤 본문 행의 첫 `.`에서만 하나의 durable `ExecuteGame`
+receipt를 만든다. 작성 중인 `!`·`!!`·`저장`은 일반 parser/history/alias로 흘러가지
+않으며, 게시판의 `!!`와 제목의 빈 줄은 영수증 없이 취소된다. 연결 종료나 완료 시
+초안은 즉시 폐기한다.
+
+최종화에 쓰는 command ID, 메일 ID와 시각은 초안에 고정해 transient commit 오류 뒤
+같은 request를 재시도한다. 게시판 room event는 최초 commit 뒤에만 fan-out하고
+receipt replay에서는 재방송하지 않는다. 본문은 Supabase/PostgreSQL world snapshot의
+canonical mailbox/board aggregate에 한 번에 append한다. 원작의 제목 직후 `.`인 빈
+게시글은 현재 운영 계약에서 fail-closed로 남겨 두었으며, 차후 differential 결정 전에는
+자동 등록하지 않는다.
+
+검증은 session/transport/world targeted race와 전체 Go integration을 조립 시 각각 한
+번 실행했다. 실제 PostgreSQL receipt/replay는 `MUHAN_MAIL_BOARD_TEST_DATABASE_URL`을
+명시한 disposable DB에서만 실행하도록 묶었고, 이 기능 레인에서는 ARM64 build,
+PostgreSQL/browser/release matrix를 반복하지 않았다.
