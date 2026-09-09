@@ -7,7 +7,7 @@
 검증하고, C `crt_str`의 PINVIS/PDMINV/PDINVI 및 PANSIC/PBRIGH 색상·`%j` 조사
 규칙을 proposal에 렌더링해 actor 응답과 배우자 event를 하나의 `ExecuteGame` receipt로
 저장한다. 배우자 event는 최초 commit 뒤 정확한 durable ID/name에만 전달하며 replay에서는
-재전송하지 않는다. 구현 커밋은 다음 통합 시 기록한다.
+재전송하지 않는다. 구현 커밋은 `77bc622`다.
 
 검증 결과:
 
