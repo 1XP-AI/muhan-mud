@@ -104,6 +104,7 @@ const (
 	CommandFamilyList
 	CommandFamilyTalk
 	CommandFamilyMutation
+	CommandMarriage
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -217,6 +218,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsFamilyTalkLine(trimmed) {
 		parsed.Kind = CommandFamilyTalk
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsMarriageLine(trimmed) {
+		parsed.Kind = CommandMarriage
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -549,6 +555,8 @@ func commandKind(first string) CommandKind {
 		return CommandMailSend
 	case "게시판":
 		return CommandBoard
+	case "결혼":
+		return CommandMarriage
 	case "써":
 		return CommandBoardWrite
 	case IgnoreCommandName:
