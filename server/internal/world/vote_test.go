@@ -2,6 +2,7 @@ package world
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -160,6 +161,176 @@ func TestApplyVoteFailsClosedWhenBallotAuthorityIsAbsent(t *testing.T) {
 	}
 	if _, _, err := state.ApplyVote(VoteProposal{}); !errors.Is(err, ErrVoteInvalidProposal) {
 		t.Fatalf("zero proposal err=%v", err)
+	}
+}
+
+func voteCanonicalState(t *testing.T, catalog VoteCatalog, ballots map[string]VoteBallot, history []VoteHistoryEntry) State {
+	t.Helper()
+	s := voteTestState(4, 3*86400, true)
+	s.Votes = &VoteState{Ballots: ballots, History: history}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestCanonicalVoteBallotWriteRewriteDeleteAndHistory(t *testing.T) {
+	catalog := voteTestCatalog()
+	digest, err := catalog.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := voteCanonicalState(t, catalog, map[string]VoteBallot{}, []VoteHistoryEntry{})
+
+	write, err := s.PlanVoteWithChoices("actor", catalog, []byte("abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write.Operation != VoteOperationWrite || write.HasBallot || !write.BallotStateResolved || !reflect.DeepEqual(write.Choices, []byte("ABC")) {
+		t.Fatalf("write proposal=%+v", write)
+	}
+	next, result, err := s.ApplyVote(write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "vote" || result.Operation != VoteOperationWrite || result.ActorID != "actor" || result.ActorName != "Alice" || result.CatalogDigest != digest || !result.Changed || result.HistorySequence != 1 || !reflect.DeepEqual(result.Choices, []byte("ABC")) || result.Response != VoteSubmittedResponse {
+		t.Fatalf("write result=%+v", result)
+	}
+	ballot, ok := next.Votes.Ballots["actor"]
+	if !ok || ballot.CatalogDigest != digest || !reflect.DeepEqual(ballot.Choices, []byte("ABC")) || len(next.Votes.History) != 1 {
+		t.Fatalf("written state=%+v", next.Votes)
+	}
+	if !reflect.DeepEqual(s.Votes.Ballots, map[string]VoteBallot{}) {
+		t.Fatal("write mutated source snapshot")
+	}
+
+	rewrite, err := next.PlanVoteWithChoices("actor", catalog, []byte("CBA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewrite.Operation != VoteOperationRewrite || !rewrite.HasBallot || !reflect.DeepEqual(rewrite.PreviousChoices, []byte("ABC")) {
+		t.Fatalf("rewrite proposal=%+v", rewrite)
+	}
+	rewritten, rewriteResult, err := next.ApplyVote(rewrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewriteResult.Operation != VoteOperationRewrite || !rewriteResult.Changed || rewriteResult.HistorySequence != 2 || !reflect.DeepEqual(rewriteResult.PreviousChoices, []byte("ABC")) || !reflect.DeepEqual(rewriteResult.Choices, []byte("CBA")) {
+		t.Fatalf("rewrite result=%+v", rewriteResult)
+	}
+	if got := string(rewritten.Votes.Ballots["actor"].Choices); got != "CBA" || len(rewritten.Votes.History) != 2 {
+		t.Fatalf("rewritten state=%+v", rewritten.Votes)
+	}
+	if _, _, err := rewritten.ApplyVote(write); !errors.Is(err, ErrVoteStaleProposal) {
+		t.Fatalf("old write proposal err=%v", err)
+	}
+
+	remove, err := rewritten.PlanVoteDelete("actor", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remove.Operation != VoteOperationDelete || !remove.HasBallot || !reflect.DeepEqual(remove.PreviousChoices, []byte("CBA")) {
+		t.Fatalf("delete proposal=%+v", remove)
+	}
+	deleted, deleteResult, err := rewritten.ApplyVote(remove)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleteResult.Operation != VoteOperationDelete || !deleteResult.Changed || deleteResult.HistorySequence != 3 || !reflect.DeepEqual(deleteResult.PreviousChoices, []byte("CBA")) {
+		t.Fatalf("delete result=%+v", deleteResult)
+	}
+	if len(deleted.Votes.Ballots) != 0 || len(deleted.Votes.History) != 3 {
+		t.Fatalf("deleted state=%+v", deleted.Votes)
+	}
+	if err := deleted.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCanonicalVotePlanApplyRejectsUnresolvedAndStaleBallotAuthority(t *testing.T) {
+	catalog := voteTestCatalog()
+	unresolved := voteTestState(4, 3*86400, true)
+	proposal, err := unresolved.PlanVoteWithChoices("actor", catalog, []byte("ABC"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := unresolved.ApplyVote(proposal); !errors.Is(err, ErrVoteStateUnresolved) {
+		t.Fatalf("unresolved apply err=%v", err)
+	}
+	if !reflect.DeepEqual(unresolved, voteTestState(4, 3*86400, true)) {
+		t.Fatal("unresolved vote changed state")
+	}
+
+	s := voteCanonicalState(t, catalog, map[string]VoteBallot{}, []VoteHistoryEntry{})
+	proposal, err = s.PlanVoteWithChoices("actor", catalog, []byte("ABC"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := s.clone()
+	changed.Votes.History = append(changed.Votes.History, VoteHistoryEntry{Sequence: 1, Operation: VoteOperationWrite, ActorID: "actor", CatalogDigest: proposal.CatalogDigest, Choices: []byte("GAA")})
+	changed.Votes.Ballots["actor"] = VoteBallot{CatalogDigest: proposal.CatalogDigest, Choices: []byte("GAA")}
+	// The stale check must reject a different, but otherwise valid, ballot
+	// snapshot before any replacement mutation.
+	if _, _, err := changed.ApplyVote(proposal); !errors.Is(err, ErrVoteStaleProposal) {
+		t.Fatalf("changed authority err=%v", err)
+	}
+
+	badChoices := proposal
+	badChoices.Choices = []byte("AB")
+	if _, _, err := s.ApplyVote(badChoices); !errors.Is(err, ErrVoteInvalidProposal) {
+		t.Fatalf("short choices err=%v", err)
+	}
+	if _, _, err := s.ApplyVote(VoteProposal{}); !errors.Is(err, ErrVoteInvalidProposal) {
+		t.Fatalf("zero canonical proposal err=%v", err)
+	}
+}
+
+func TestCanonicalVoteStateCodecPreservesNilMarkersAndHistory(t *testing.T) {
+	catalog := voteTestCatalog()
+	digest, err := catalog.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := voteCanonicalState(t, catalog, map[string]VoteBallot{
+		"actor": {CatalogDigest: digest, Choices: []byte("ABC")},
+	}, []VoteHistoryEntry{})
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeState(raw)
+	if err != nil || !reflect.DeepEqual(decoded, s) {
+		t.Fatalf("decoded=%+v err=%v", decoded, err)
+	}
+
+	for name, mutate := range map[string]func(*State){
+		"missing ballots marker": func(s *State) { s.Votes.Ballots = nil },
+		"missing history marker": func(s *State) { s.Votes.History = nil },
+		"invalid digest": func(s *State) {
+			ballot := s.Votes.Ballots["actor"]
+			ballot.CatalogDigest = "legacy-file-only"
+			s.Votes.Ballots["actor"] = ballot
+		},
+		"invalid choice": func(s *State) {
+			ballot := s.Votes.Ballots["actor"]
+			ballot.Choices = []byte("A!")
+			s.Votes.Ballots["actor"] = ballot
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := s.clone()
+			mutate(&bad)
+			if err := bad.Validate(); err == nil {
+				t.Fatal("invalid vote state accepted")
+			}
+			raw, err := json.Marshal(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeState(raw); err == nil {
+				t.Fatal("decoder accepted invalid vote state")
+			}
+		})
 	}
 }
 

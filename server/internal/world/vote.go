@@ -34,10 +34,16 @@ var (
 	ErrVoteAge                = errors.New("actor is below the vote age")
 	ErrVoteRoom               = errors.New("actor is not in an election room")
 	ErrVoteNumeric            = errors.New("vote age state is outside the canonical range")
-	// State deliberately has no canonical per-player ballot/history field. A
-	// successful vote would otherwise have to consult player/vote/<name>_v,
-	// which is a legacy file authority and must not be guessed by this runtime.
+	// A nil State.Votes means the legacy player/vote/<name>_v domain has not
+	// been imported.  Reducers never fall back to that file, because doing so
+	// would make duplicate detection and replacement non-atomic.
 	ErrVoteStateUnresolved = errors.New("canonical vote ballot state is unresolved")
+	ErrVoteStateInvalid    = errors.New("canonical vote ballot state is invalid")
+	ErrVoteBallotInvalid   = errors.New("canonical vote ballot is invalid")
+	ErrVoteHistoryInvalid  = errors.New("canonical vote history is invalid")
+	ErrVoteChoicesRequired = errors.New("vote choices are required")
+	ErrVoteChoicesInvalid  = errors.New("vote choices are invalid")
+	ErrVoteNoBallot        = errors.New("canonical vote ballot is absent")
 	ErrVoteStaleProposal   = errors.New("stale vote proposal")
 	ErrVoteInvalidProposal = errors.New("invalid vote proposal")
 )
@@ -45,13 +51,15 @@ var (
 // Source-oriented aliases keep the missing ballot boundary discoverable to
 // adapters that use the legacy file terminology.
 var (
-	ErrVoteHistoryUnresolved = ErrVoteStateUnresolved
-	ErrVoteBallotUnresolved  = ErrVoteStateUnresolved
-	ErrVoteStateMissing      = ErrVoteStateUnresolved
-	ErrVoteIssueUnavailable  = ErrVoteCatalogUnavailable
-	ErrVoteIssueInvalid      = ErrVoteCatalogInvalid
-	ErrVoteActorUnavailable  = ErrVoteActorAbsent
-	ErrVoteNotElectionRoom   = ErrVoteRoom
+	ErrVoteHistoryUnresolved  = ErrVoteStateUnresolved
+	ErrVoteBallotUnresolved   = ErrVoteStateUnresolved
+	ErrVoteStateMissing       = ErrVoteStateUnresolved
+	ErrVoteIssueUnavailable   = ErrVoteCatalogUnavailable
+	ErrVoteIssueInvalid       = ErrVoteCatalogInvalid
+	ErrVoteActorUnavailable   = ErrVoteActorAbsent
+	ErrVoteNotElectionRoom    = ErrVoteRoom
+	ErrVoteBallotStateInvalid = ErrVoteStateInvalid
+	ErrVoteBallotInvalidState = ErrVoteStateInvalid
 )
 
 // These are the only actor-facing denial strings emitted by vote() before it
@@ -62,7 +70,86 @@ var (
 const (
 	VoteTooYoungResponse = "당신은 투표할 나이가 아닙니다.\n"
 	VoteRoomResponse     = "투표소가 아닙니다.\n"
+	// This is the source's case-3 response.  It is emitted only after the
+	// canonical ballot transaction has produced the new state.
+	VoteSubmittedResponse = "투표를 하였습니다.\n"
 )
+
+// VoteOperation names the state-level meaning of the legacy vote file
+// accesses.  Read observes an existing ballot, Write creates one, Rewrite
+// replaces one, and Delete removes one.  Rewrite is represented as one
+// atomic canonical operation even though C performs unlink before collecting
+// the replacement choices; this avoids losing an old ballot on a dropped
+// connection while retaining the same final active-file result.
+type VoteOperation string
+
+// VoteAction is a descriptive alias for callers that name the operation as
+// an action in a command/event envelope.
+type VoteAction = VoteOperation
+
+const (
+	VoteOperationRead    VoteOperation = "read"
+	VoteOperationWrite   VoteOperation = "write"
+	VoteOperationRewrite VoteOperation = "rewrite"
+	VoteOperationDelete  VoteOperation = "delete"
+
+	// Descriptive aliases keep source/schema adapters from depending on one
+	// spelling while all values remain the same closed set.
+	VoteReadOperation    = VoteOperationRead
+	VoteWriteOperation   = VoteOperationWrite
+	VoteRewriteOperation = VoteOperationRewrite
+	VoteDeleteOperation  = VoteOperationDelete
+)
+
+// VoteBallot is the canonical replacement for one player/vote/<name>_v
+// active file.  The actor ID is the map key in VoteState.Ballots; keeping the
+// digest with the raw A..G choices binds a migrated ballot to the exact ISSUE
+// snapshot whose options were displayed.  The legacy file has no issue ID,
+// so import must resolve that relationship before this state can be used.
+type VoteBallot struct {
+	CatalogDigest string `json:"catalog_digest"`
+	Choices       []byte `json:"choices"`
+}
+
+// VoteHistoryEntry is the append-only state projection of vote file
+// replacement.  It intentionally has no wall-clock or command ID: neither
+// is present in command11.c's file, and those fields belong to the later
+// mud_commands/mud_state_events schema.  Sequence is deterministic within a
+// canonical VoteState and lets a DB adapter map each entry to an event row.
+type VoteHistoryEntry struct {
+	Sequence              uint64        `json:"sequence"`
+	Operation             VoteOperation `json:"operation"`
+	ActorID               string        `json:"actor_id"`
+	CatalogDigest         string        `json:"catalog_digest"`
+	PreviousCatalogDigest string        `json:"previous_catalog_digest,omitempty"`
+	PreviousChoices       []byte        `json:"previous_choices,omitempty"`
+	Choices               []byte        `json:"choices,omitempty"`
+}
+
+// VoteHistory is the concise source/schema spelling for a history entry.
+type VoteHistory = VoteHistoryEntry
+
+// VoteState is the explicit migration boundary for the legacy vote domain.
+// A nil *VoteState on State means source authority is unresolved.  Once
+// imported, Ballots and History must both be non-nil (empty is meaningful),
+// so a missing map/slice cannot be mistaken for an empty vote population.
+// Ballots is the current active projection; History is append-only and is
+// checked against it whenever entries are present.
+type VoteState struct {
+	Ballots map[string]VoteBallot `json:"ballots"`
+	History []VoteHistoryEntry    `json:"history"`
+}
+
+// VoteBallotState is a descriptive alias for callers that name the aggregate
+// after its persisted row rather than the source command.
+type VoteBallotState = VoteState
+
+func cloneVoteChoices(choices []byte) []byte {
+	if choices == nil {
+		return nil
+	}
+	return append([]byte(nil), choices...)
+}
 
 // VoteIssue is the structured equivalent of the current ISSUE resource:
 // the first line's number is Number, the second line is Prompt, and the
@@ -107,6 +194,208 @@ func validVoteText(value string, required bool) bool {
 		}
 	}
 	return true
+}
+
+func validVoteCatalogDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func validateVoteChoices(choices []byte, required bool) error {
+	if len(choices) == 0 {
+		if required {
+			return ErrVoteChoicesRequired
+		}
+		return nil
+	}
+	if len(choices) > VoteMaxSelections {
+		return fmt.Errorf("%w: count %d", ErrVoteChoicesInvalid, len(choices))
+	}
+	for index, choice := range choices {
+		if choice < 'A' || choice > 'G' {
+			return fmt.Errorf("%w: choice %d", ErrVoteChoicesInvalid, index+1)
+		}
+	}
+	return nil
+}
+
+// normalizeVoteChoices mirrors vote_cmnd's low()/up() handling. User input
+// may use lowercase a..g, while every canonical ballot/history row stores
+// uppercase bytes so replay and digest-bound receipts have one encoding.
+func normalizeVoteChoices(choices []byte, required bool) ([]byte, error) {
+	if len(choices) == 0 {
+		if required {
+			return nil, ErrVoteChoicesRequired
+		}
+		return nil, nil
+	}
+	if len(choices) > VoteMaxSelections {
+		return nil, fmt.Errorf("%w: count %d", ErrVoteChoicesInvalid, len(choices))
+	}
+	normalized := cloneVoteChoices(choices)
+	for index, choice := range normalized {
+		if choice >= 'a' && choice <= 'g' {
+			normalized[index] = choice - ('a' - 'A')
+			continue
+		}
+		if choice < 'A' || choice > 'G' {
+			return nil, fmt.Errorf("%w: choice %d", ErrVoteChoicesInvalid, index+1)
+		}
+	}
+	return normalized, nil
+}
+
+func validateVoteBallot(ballot VoteBallot) error {
+	if !validVoteCatalogDigest(ballot.CatalogDigest) {
+		return fmt.Errorf("%w: issue digest", ErrVoteBallotInvalid)
+	}
+	if err := validateVoteChoices(ballot.Choices, true); err != nil {
+		return fmt.Errorf("%w: %v", ErrVoteBallotInvalid, err)
+	}
+	return nil
+}
+
+func validateVoteHistoryEntry(entry VoteHistoryEntry, expectedSequence uint64) error {
+	if entry.Sequence != expectedSequence {
+		return fmt.Errorf("%w: sequence=%d expected=%d", ErrVoteHistoryInvalid, entry.Sequence, expectedSequence)
+	}
+	if entry.ActorID == "" || !validVoteCatalogDigest(entry.CatalogDigest) {
+		return fmt.Errorf("%w: missing actor or issue digest", ErrVoteHistoryInvalid)
+	}
+	if entry.PreviousCatalogDigest != "" && !validVoteCatalogDigest(entry.PreviousCatalogDigest) {
+		return fmt.Errorf("%w: invalid previous issue digest", ErrVoteHistoryInvalid)
+	}
+	switch entry.Operation {
+	case VoteOperationWrite:
+		if entry.PreviousCatalogDigest != "" || len(entry.PreviousChoices) != 0 {
+			return fmt.Errorf("%w: write contains previous choices", ErrVoteHistoryInvalid)
+		}
+		if err := validateVoteChoices(entry.Choices, true); err != nil {
+			return fmt.Errorf("%w: %v", ErrVoteHistoryInvalid, err)
+		}
+	case VoteOperationRewrite:
+		if err := validateVoteChoices(entry.PreviousChoices, true); err != nil {
+			return fmt.Errorf("%w: previous choices: %v", ErrVoteHistoryInvalid, err)
+		}
+		if err := validateVoteChoices(entry.Choices, true); err != nil {
+			return fmt.Errorf("%w: %v", ErrVoteHistoryInvalid, err)
+		}
+	case VoteOperationDelete:
+		if err := validateVoteChoices(entry.PreviousChoices, true); err != nil {
+			return fmt.Errorf("%w: previous choices: %v", ErrVoteHistoryInvalid, err)
+		}
+		if len(entry.Choices) != 0 {
+			return fmt.Errorf("%w: delete contains new choices", ErrVoteHistoryInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported operation %q", ErrVoteHistoryInvalid, entry.Operation)
+	}
+	return nil
+}
+
+// Validate checks the imported vote aggregate independently of State.  It
+// treats nil Ballots/History as an unresolved import marker and requires
+// contiguous history when history rows are present.  An imported snapshot may
+// legitimately have no history yet (for example, a first canonical export
+// containing active rows), but a non-empty history must replay exactly to the
+// active map so duplicate or lost replacement rows cannot hide in JSON.
+func (v VoteState) Validate() error {
+	if v.Ballots == nil || v.History == nil {
+		return ErrVoteStateUnresolved
+	}
+	for actorID, ballot := range v.Ballots {
+		if actorID == "" {
+			return fmt.Errorf("%w: empty ballot actor", ErrVoteStateInvalid)
+		}
+		if err := validateVoteBallot(ballot); err != nil {
+			return fmt.Errorf("%w: actor %q: %v", ErrVoteStateInvalid, actorID, err)
+		}
+	}
+	if len(v.History) == 0 {
+		return nil
+	}
+	active := make(map[string]VoteBallot, len(v.Ballots))
+	for index, entry := range v.History {
+		sequence := uint64(index + 1)
+		if err := validateVoteHistoryEntry(entry, sequence); err != nil {
+			return err
+		}
+		previous, exists := active[entry.ActorID]
+		switch entry.Operation {
+		case VoteOperationWrite:
+			if exists {
+				return fmt.Errorf("%w: duplicate write for actor %q", ErrVoteHistoryInvalid, entry.ActorID)
+			}
+		case VoteOperationRewrite:
+			if !exists || !reflect.DeepEqual(previous.Choices, entry.PreviousChoices) {
+				return fmt.Errorf("%w: rewrite predecessor mismatch for actor %q", ErrVoteHistoryInvalid, entry.ActorID)
+			}
+		case VoteOperationDelete:
+			if !exists || !reflect.DeepEqual(previous.Choices, entry.PreviousChoices) {
+				return fmt.Errorf("%w: delete predecessor mismatch for actor %q", ErrVoteHistoryInvalid, entry.ActorID)
+			}
+		}
+		if entry.Operation == VoteOperationDelete {
+			delete(active, entry.ActorID)
+		} else {
+			active[entry.ActorID] = VoteBallot{CatalogDigest: entry.CatalogDigest, Choices: cloneVoteChoices(entry.Choices)}
+		}
+	}
+	if !reflect.DeepEqual(active, v.Ballots) {
+		return fmt.Errorf("%w: history does not match active ballots", ErrVoteHistoryInvalid)
+	}
+	return nil
+}
+
+// Clone returns an independent vote aggregate while preserving nil import
+// markers. It deliberately does not validate; State.clone is used only after
+// the source snapshot has already passed validation.
+func (v VoteState) Clone() VoteState {
+	next := VoteState{}
+	if v.Ballots != nil {
+		next.Ballots = make(map[string]VoteBallot, len(v.Ballots))
+		for actorID, ballot := range v.Ballots {
+			ballot.Choices = cloneVoteChoices(ballot.Choices)
+			next.Ballots[actorID] = ballot
+		}
+	}
+	if v.History != nil {
+		next.History = make([]VoteHistoryEntry, len(v.History))
+		for index, entry := range v.History {
+			entry.PreviousChoices = cloneVoteChoices(entry.PreviousChoices)
+			entry.Choices = cloneVoteChoices(entry.Choices)
+			next.History[index] = entry
+		}
+	}
+	return next
+}
+
+// WithVoteState installs a fully imported canonical vote aggregate into a
+// world snapshot. It is the state-level migration seam for a future legacy
+// vote exporter; callers must provide the complete active map and explicit
+// history marker, and all ballot actors must already resolve to State.Players.
+func (s State) WithVoteState(votes VoteState) (State, error) {
+	if err := s.Validate(); err != nil {
+		return State{}, err
+	}
+	if err := votes.Validate(); err != nil {
+		return State{}, err
+	}
+	next := s.clone()
+	copy := votes.Clone()
+	next.Votes = &copy
+	if err := next.Validate(); err != nil {
+		return State{}, err
+	}
+	return next, nil
+}
+
+// WithVotes is the concise alias used by state adapters.
+func (s State) WithVotes(votes VoteState) (State, error) {
+	return s.WithVoteState(votes)
 }
 
 // Validate checks the complete server-owned issue/options resource. The
@@ -168,17 +457,21 @@ func (c VoteCatalog) Digest() (string, error) {
 }
 
 // VoteIssueProjection is the read-only, source-backed portion of vote(). It
-// proves the actor's age/room gates and snapshots the current issue. It does
-// not claim that the actor has or has not voted, and it deliberately carries
-// no actor-facing prompt until the ballot authority is migrated.
+// proves the actor's age/room gates and snapshots the current issue. When
+// BallotStateResolved is false it does not claim that the actor has or has
+// not voted; that is the nil-State.Votes migration boundary. When true,
+// HasBallot and PreviousChoices are an exact active-ballot projection.
 type VoteIssueProjection struct {
-	Action        string    `json:"action"`
-	ActorID       string    `json:"actor_id"`
-	ActorName     string    `json:"actor_name"`
-	RoomID        int16     `json:"room_id"`
-	Issue         VoteIssue `json:"issue"`
-	CatalogDigest string    `json:"catalog_digest"`
-	Changed       bool      `json:"changed"`
+	Action              string    `json:"action"`
+	ActorID             string    `json:"actor_id"`
+	ActorName           string    `json:"actor_name"`
+	RoomID              int16     `json:"room_id"`
+	Issue               VoteIssue `json:"issue"`
+	CatalogDigest       string    `json:"catalog_digest"`
+	BallotStateResolved bool      `json:"ballot_state_resolved"`
+	HasBallot           bool      `json:"has_ballot"`
+	PreviousChoices     []byte    `json:"previous_choices,omitempty"`
+	Changed             bool      `json:"changed"`
 }
 
 // VoteProjection and VoteIssueResult are descriptive aliases for callers
@@ -186,36 +479,59 @@ type VoteIssueProjection struct {
 type VoteProjection = VoteIssueProjection
 type VoteIssueResult = VoteIssueProjection
 
-// VoteProposal is a snapshot-bound candidate for the part of vote() that can
-// be proven from State. ApplyVote still fails closed because State has no
-// per-player ballot/history field and therefore cannot atomically implement
-// vote_cmnd's file existence, replacement, and final write branches.
+// VoteProposal is a snapshot-bound candidate for one vote-file operation.
+// PlanVote creates a read/projection proposal; PlanVoteWithChoices (or
+// WithChoices) creates a write/rewrite proposal; PlanVoteDelete creates the
+// explicit unlink operation. Private expectations make all three operations
+// stale-safe and prevent a caller from changing a write into a delete by
+// editing exported fields after planning.
 type VoteProposal struct {
-	Action        string
-	ActorID       string
-	ActorName     string
-	RoomID        int16
-	Issue         VoteIssue
-	CatalogDigest string
-	Changed       bool
+	Action                string
+	Operation             VoteOperation
+	ActorID               string
+	ActorName             string
+	RoomID                int16
+	Issue                 VoteIssue
+	CatalogDigest         string
+	BallotStateResolved   bool
+	HasBallot             bool
+	PreviousCatalogDigest string
+	PreviousChoices       []byte
+	Choices               []byte
+	Changed               bool
 
-	before          State
-	expectedActor   PlayerState
-	expectedRoom    RoomState
-	expectedCatalog VoteCatalog
+	before                 State
+	expectedActor          PlayerState
+	expectedRoom           RoomState
+	expectedCatalog        VoteCatalog
+	expectedBallot         VoteBallot
+	expectedHasBallot      bool
+	expectedResolved       bool
+	expectedOperation      VoteOperation
+	expectedPreviousDigest string
+	expectedPrevious       []byte
+	expectedChoices        []byte
 }
 
-// VoteResult is kept as a typed shape for future ballot migration. No
-// successful VoteResult is produced by ApplyVote in this bounded slice.
+// VoteResult is the deterministic actor-facing outcome of one canonical
+// ballot operation. Choices and PreviousChoices are copied, so a receipt
+// serializer cannot alias the mutable State snapshot.
 type VoteResult struct {
-	Action        string    `json:"action"`
-	ActorID       string    `json:"actor_id"`
-	ActorName     string    `json:"actor_name"`
-	RoomID        int16     `json:"room_id"`
-	Issue         VoteIssue `json:"issue"`
-	CatalogDigest string    `json:"catalog_digest"`
-	Changed       bool      `json:"changed"`
-	Response      string    `json:"response,omitempty"`
+	Action                string        `json:"action"`
+	Operation             VoteOperation `json:"operation"`
+	ActorID               string        `json:"actor_id"`
+	ActorName             string        `json:"actor_name"`
+	RoomID                int16         `json:"room_id"`
+	Issue                 VoteIssue     `json:"issue"`
+	CatalogDigest         string        `json:"catalog_digest"`
+	BallotStateResolved   bool          `json:"ballot_state_resolved"`
+	HadBallot             bool          `json:"had_ballot"`
+	PreviousCatalogDigest string        `json:"previous_catalog_digest,omitempty"`
+	PreviousChoices       []byte        `json:"previous_choices,omitempty"`
+	Choices               []byte        `json:"choices,omitempty"`
+	HistorySequence       uint64        `json:"history_sequence,omitempty"`
+	Changed               bool          `json:"changed"`
+	Response              string        `json:"response,omitempty"`
 }
 
 func (s State) voteActor(actorID string) (PlayerState, RoomState, error) {
@@ -245,8 +561,10 @@ func (s State) voteActor(actorID string) (PlayerState, RoomState, error) {
 }
 
 // PlanVote validates the source's deterministic gates and binds one immutable
-// issue/options snapshot. It does not read any filesystem and does not infer
-// prior ballot state from a player name.
+// issue/options snapshot. If Votes is imported it also performs the legacy
+// case-0 ballot read against the canonical active map. If Votes is nil the
+// proposal remains useful as a gate/projection, but BallotStateResolved is
+// false and ApplyVote will fail closed before writing anything.
 func (s State) PlanVote(actorID string, catalog VoteCatalog) (VoteProposal, error) {
 	actor, room, err := s.voteActor(actorID)
 	if err != nil {
@@ -260,24 +578,185 @@ func (s State) PlanVote(actorID string, catalog VoteCatalog) (VoteProposal, erro
 	if err != nil {
 		return VoteProposal{}, err
 	}
+	before := s.clone()
+	resolved := before.Votes != nil
+	var ballot VoteBallot
+	var hasBallot bool
+	if resolved {
+		ballot, hasBallot = before.Votes.Ballots[actorID]
+	}
+	operation := VoteOperationRead
+	previousDigest := ""
+	previous := []byte(nil)
+	if hasBallot {
+		previousDigest = ballot.CatalogDigest
+		previous = cloneVoteChoices(ballot.Choices)
+	}
 	return VoteProposal{
-		Action:          "vote",
-		ActorID:         actorID,
-		ActorName:       actor.Body.Name,
-		RoomID:          room.Resource.ID,
-		Issue:           canonicalCatalog.Issue,
-		CatalogDigest:   digest,
-		Changed:         false,
-		before:          s,
-		expectedActor:   actor,
-		expectedRoom:    room,
-		expectedCatalog: canonicalCatalog,
+		Action:                 "vote",
+		Operation:              operation,
+		ActorID:                actorID,
+		ActorName:              actor.Body.Name,
+		RoomID:                 room.Resource.ID,
+		Issue:                  canonicalCatalog.Issue,
+		CatalogDigest:          digest,
+		BallotStateResolved:    resolved,
+		HasBallot:              hasBallot,
+		PreviousCatalogDigest:  previousDigest,
+		PreviousChoices:        previous,
+		Changed:                false,
+		before:                 before,
+		expectedActor:          before.Players[actorID],
+		expectedRoom:           before.Rooms[room.Resource.ID],
+		expectedCatalog:        canonicalCatalog,
+		expectedBallot:         ballot,
+		expectedHasBallot:      hasBallot,
+		expectedResolved:       resolved,
+		expectedOperation:      operation,
+		expectedPreviousDigest: previousDigest,
+		expectedPrevious:       cloneVoteChoices(previous),
 	}, nil
 }
 
 // PlanVoteIssue is the source-name alias for PlanVote.
 func (s State) PlanVoteIssue(actorID string, catalog VoteCatalog) (VoteProposal, error) {
 	return s.PlanVote(actorID, catalog)
+}
+
+// WithChoices binds the final A..G sequence collected by VoteContinuation to
+// a previously planned issue. It does not consult files or mutate State. A
+// resolved existing ballot becomes Rewrite; an explicitly imported empty map
+// becomes Write. An unresolved plan retains the deterministic choice payload
+// but ApplyVote will reject it with ErrVoteStateUnresolved.
+func (p VoteProposal) WithChoices(choices []byte) (VoteProposal, error) {
+	if p.Action != "vote" || p.Issue.Number < 1 || len(p.Issue.Options) != p.Issue.Number || p.CatalogDigest == "" {
+		return VoteProposal{}, ErrVoteInvalidProposal
+	}
+	normalized, err := normalizeVoteChoices(choices, true)
+	if err != nil {
+		return VoteProposal{}, err
+	}
+	if len(normalized) != p.Issue.Number {
+		return VoteProposal{}, fmt.Errorf("%w: count=%d expected=%d", ErrVoteChoicesInvalid, len(normalized), p.Issue.Number)
+	}
+	next := p
+	next.Choices = normalized
+	next.Changed = false
+	next.expectedChoices = cloneVoteChoices(normalized)
+	if p.BallotStateResolved {
+		if p.HasBallot {
+			next.Operation = VoteOperationRewrite
+		} else {
+			next.Operation = VoteOperationWrite
+		}
+	} else {
+		// This value is descriptive only until the State.Votes import marker is
+		// resolved; ApplyVote checks the marker before any mutation.
+		next.Operation = VoteOperationWrite
+	}
+	next.expectedOperation = next.Operation
+	return next, nil
+}
+
+// BindChoices is a descriptive alias for WithChoices used by continuation
+// owners that model the final user input as a payload binding step.
+func (p VoteProposal) BindChoices(choices []byte) (VoteProposal, error) {
+	return p.WithChoices(choices)
+}
+
+// PlanVoteWithChoices plans the source case-3 write after all continuation
+// choices have been collected.  The catalog and active ballot are read from
+// the same State snapshot, so a changed ISSUE or player ballot is stale at
+// apply time rather than silently overwriting another vote.
+func (s State) PlanVoteWithChoices(actorID string, catalog VoteCatalog, choices []byte) (VoteProposal, error) {
+	proposal, err := s.PlanVote(actorID, catalog)
+	if err != nil {
+		return VoteProposal{}, err
+	}
+	return proposal.WithChoices(choices)
+}
+
+// PlanVoteBallot is the explicit aggregate spelling for
+// PlanVoteWithChoices.
+func (s State) PlanVoteBallot(actorID string, catalog VoteCatalog, choices []byte) (VoteProposal, error) {
+	return s.PlanVoteWithChoices(actorID, catalog, choices)
+}
+
+// PlanVoteDelete plans the source unlink operation. It is primarily useful to
+// an adapter that needs to represent the y-confirmation boundary separately;
+// ordinary replacement should use PlanVoteWithChoices so delete+write is one
+// canonical transaction. Missing active ballots are a deterministic no-op at
+// ApplyVote, matching unlink on an already absent file.
+func (s State) PlanVoteDelete(actorID string, catalog VoteCatalog) (VoteProposal, error) {
+	proposal, err := s.PlanVote(actorID, catalog)
+	if err != nil {
+		return VoteProposal{}, err
+	}
+	proposal.Operation = VoteOperationDelete
+	proposal.Choices = nil
+	proposal.expectedChoices = nil
+	proposal.expectedOperation = VoteOperationDelete
+	return proposal, nil
+}
+
+// PlanVoteRewrite is a descriptive alias for the atomic replacement plan.
+func (s State) PlanVoteRewrite(actorID string, catalog VoteCatalog, choices []byte) (VoteProposal, error) {
+	proposal, err := s.PlanVoteWithChoices(actorID, catalog, choices)
+	if err != nil {
+		return VoteProposal{}, err
+	}
+	if proposal.BallotStateResolved && !proposal.HasBallot {
+		return VoteProposal{}, ErrVoteNoBallot
+	}
+	return proposal, nil
+}
+
+// CurrentVoteBallot returns an independent active-ballot projection and an
+// explicit presence bit. A nil State.Votes is unresolved rather than an empty
+// result, so callers cannot accidentally treat a legacy file miss as a vote
+// absence.
+func (s State) CurrentVoteBallot(actorID string, catalog VoteCatalog) (VoteBallot, bool, error) {
+	proposal, err := s.PlanVote(actorID, catalog)
+	if err != nil {
+		return VoteBallot{}, false, err
+	}
+	if !proposal.BallotStateResolved {
+		return VoteBallot{}, false, ErrVoteStateUnresolved
+	}
+	if !proposal.HasBallot {
+		return VoteBallot{}, false, nil
+	}
+	return VoteBallot{CatalogDigest: proposal.expectedBallot.CatalogDigest, Choices: cloneVoteChoices(proposal.expectedBallot.Choices)}, true, nil
+}
+
+// VoteBallot is the descriptive method spelling for CurrentVoteBallot.
+func (s State) VoteBallot(actorID string, catalog VoteCatalog) (VoteBallot, bool, error) {
+	return s.CurrentVoteBallot(actorID, catalog)
+}
+
+// VoteHistoryFor returns a stable, actor-filtered copy of the canonical
+// history. It is a projection helper only; callers still need PlanVote for
+// actor/room/ISSUE authorization before presenting a result.
+func (s State) VoteHistoryFor(actorID string) ([]VoteHistoryEntry, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	if s.Votes == nil {
+		return nil, ErrVoteStateUnresolved
+	}
+	if actorID == "" {
+		return nil, ErrVoteActorAbsent
+	}
+	history := make([]VoteHistoryEntry, 0)
+	for _, entry := range s.Votes.History {
+		if entry.ActorID != actorID {
+			continue
+		}
+		entry.PreviousChoices = cloneVoteChoices(entry.PreviousChoices)
+		entry.Choices = cloneVoteChoices(entry.Choices)
+		history = append(history, entry)
+	}
+	return history, nil
 }
 
 // ProjectVoteIssue exposes only the proof-backed read projection. This is
@@ -290,13 +769,16 @@ func (s State) ProjectVoteIssue(actorID string, catalog VoteCatalog) (VoteIssueP
 		return VoteIssueProjection{}, err
 	}
 	return VoteIssueProjection{
-		Action:        "vote-issue",
-		ActorID:       proposal.ActorID,
-		ActorName:     proposal.ActorName,
-		RoomID:        proposal.RoomID,
-		Issue:         proposal.Issue,
-		CatalogDigest: proposal.CatalogDigest,
-		Changed:       false,
+		Action:              "vote-issue",
+		ActorID:             proposal.ActorID,
+		ActorName:           proposal.ActorName,
+		RoomID:              proposal.RoomID,
+		Issue:               proposal.Issue,
+		CatalogDigest:       proposal.CatalogDigest,
+		BallotStateResolved: proposal.BallotStateResolved,
+		HasBallot:           proposal.HasBallot,
+		PreviousChoices:     cloneVoteChoices(proposal.PreviousChoices),
+		Changed:             false,
 	}, nil
 }
 
@@ -305,11 +787,60 @@ func (s State) VoteIssue(actorID string, catalog VoteCatalog) (VoteIssueProjecti
 	return s.ProjectVoteIssue(actorID, catalog)
 }
 
-// ApplyVote verifies a proposal against the same canonical snapshot, then
-// rejects the mutation. The rejection is intentional: command11.c's final
-// vote is a read/delete/write operation against player/vote/<name>_v, while
-// State has no ballot/history field. Returning a successful no-op here would
-// allow duplicate votes or silently lose an existing vote.
+func voteResultFromProposal(proposal VoteProposal, operation VoteOperation, hadBallot bool, previousDigest string, previousChoices, choices []byte, sequence uint64, changed bool) VoteResult {
+	return VoteResult{
+		Action:                "vote",
+		Operation:             operation,
+		ActorID:               proposal.ActorID,
+		ActorName:             proposal.ActorName,
+		RoomID:                proposal.RoomID,
+		Issue:                 cloneVoteIssue(proposal.Issue),
+		CatalogDigest:         proposal.CatalogDigest,
+		BallotStateResolved:   proposal.BallotStateResolved,
+		HadBallot:             hadBallot,
+		PreviousCatalogDigest: previousDigest,
+		PreviousChoices:       cloneVoteChoices(previousChoices),
+		Choices:               cloneVoteChoices(choices),
+		HistorySequence:       sequence,
+		Changed:               changed,
+	}
+}
+
+func cloneVoteIssue(issue VoteIssue) VoteIssue {
+	issue.Options = append([]string(nil), issue.Options...)
+	return issue
+}
+
+func nextVoteHistorySequence(history []VoteHistoryEntry) (uint64, error) {
+	if len(history) == 0 {
+		return 1, nil
+	}
+	last := history[len(history)-1].Sequence
+	if last == ^uint64(0) {
+		return 0, fmt.Errorf("%w: sequence overflow", ErrVoteHistoryInvalid)
+	}
+	return last + 1, nil
+}
+
+func appendVoteHistory(votes *VoteState, entry VoteHistoryEntry) (uint64, error) {
+	sequence, err := nextVoteHistorySequence(votes.History)
+	if err != nil {
+		return 0, err
+	}
+	entry.Sequence = sequence
+	entry.PreviousChoices = cloneVoteChoices(entry.PreviousChoices)
+	entry.Choices = cloneVoteChoices(entry.Choices)
+	votes.History = append(votes.History, entry)
+	return sequence, nil
+}
+
+// ApplyVote verifies a proposal against the same canonical snapshot and
+// applies the explicit read/delete/write/rewrite operation. A nil State.Votes
+// is the unresolved legacy-file boundary and remains fail-closed even when a
+// proposal includes choices. With an imported VoteState, case-0 read returns a
+// deterministic no-change result; case-1 y is represented by Delete when an
+// adapter needs the source unlink separately, while the ordinary replacement
+// path is one atomic Rewrite.
 func (s State) ApplyVote(proposal VoteProposal) (State, VoteResult, error) {
 	if err := s.Validate(); err != nil {
 		return State{}, VoteResult{}, err
@@ -336,7 +867,94 @@ func (s State) ApplyVote(proposal VoteProposal) (State, VoteResult, error) {
 	if err != nil || digest != proposal.CatalogDigest || !reflect.DeepEqual(catalog.Issue, proposal.Issue) || proposal.Changed {
 		return State{}, VoteResult{}, ErrVoteInvalidProposal
 	}
-	return State{}, VoteResult{}, ErrVoteStateUnresolved
+	if proposal.BallotStateResolved != proposal.expectedResolved || proposal.HasBallot != proposal.expectedHasBallot || proposal.PreviousCatalogDigest != proposal.expectedPreviousDigest || !reflect.DeepEqual(proposal.PreviousChoices, proposal.expectedPrevious) || !reflect.DeepEqual(proposal.Choices, proposal.expectedChoices) || proposal.Operation != proposal.expectedOperation {
+		return State{}, VoteResult{}, ErrVoteInvalidProposal
+	}
+	if s.Votes == nil {
+		return State{}, VoteResult{}, ErrVoteStateUnresolved
+	}
+	current, hasBallot := s.Votes.Ballots[proposal.ActorID]
+	if hasBallot != proposal.HasBallot || (hasBallot && !reflect.DeepEqual(current, proposal.expectedBallot)) {
+		return State{}, VoteResult{}, ErrVoteStaleProposal
+	}
+	if proposal.Operation == VoteOperationRead {
+		var choices []byte
+		if hasBallot {
+			choices = current.Choices
+		}
+		previousDigest := ""
+		if hasBallot {
+			previousDigest = current.CatalogDigest
+		}
+		result := voteResultFromProposal(proposal, VoteOperationRead, hasBallot, previousDigest, choices, nil, 0, false)
+		return s, result, nil
+	}
+	next := s.clone()
+	if next.Votes == nil || next.Votes.Ballots == nil || next.Votes.History == nil {
+		return State{}, VoteResult{}, ErrVoteStateUnresolved
+	}
+	switch proposal.Operation {
+	case VoteOperationDelete:
+		if !hasBallot {
+			result := voteResultFromProposal(proposal, VoteOperationDelete, false, "", nil, nil, 0, false)
+			return s, result, nil
+		}
+		delete(next.Votes.Ballots, proposal.ActorID)
+		sequence, err := appendVoteHistory(next.Votes, VoteHistoryEntry{
+			Operation:             VoteOperationDelete,
+			ActorID:               proposal.ActorID,
+			CatalogDigest:         proposal.CatalogDigest,
+			PreviousCatalogDigest: current.CatalogDigest,
+			PreviousChoices:       current.Choices,
+		})
+		if err != nil {
+			return State{}, VoteResult{}, err
+		}
+		result := voteResultFromProposal(proposal, VoteOperationDelete, true, current.CatalogDigest, current.Choices, nil, sequence, true)
+		if err := next.Validate(); err != nil {
+			return State{}, VoteResult{}, err
+		}
+		return next, result, nil
+	case VoteOperationWrite, VoteOperationRewrite:
+		if err := validateVoteChoices(proposal.Choices, true); err != nil || len(proposal.Choices) != proposal.Issue.Number {
+			return State{}, VoteResult{}, ErrVoteInvalidProposal
+		}
+		if proposal.Operation == VoteOperationWrite && hasBallot {
+			return State{}, VoteResult{}, ErrVoteStaleProposal
+		}
+		if proposal.Operation == VoteOperationRewrite && !hasBallot {
+			return State{}, VoteResult{}, ErrVoteStaleProposal
+		}
+		previous := []byte(nil)
+		if hasBallot {
+			previous = current.Choices
+		}
+		next.Votes.Ballots[proposal.ActorID] = VoteBallot{CatalogDigest: proposal.CatalogDigest, Choices: cloneVoteChoices(proposal.Choices)}
+		previousDigest := ""
+		if hasBallot {
+			previousDigest = current.CatalogDigest
+		}
+		history := VoteHistoryEntry{
+			Operation:             proposal.Operation,
+			ActorID:               proposal.ActorID,
+			CatalogDigest:         proposal.CatalogDigest,
+			PreviousCatalogDigest: previousDigest,
+			PreviousChoices:       previous,
+			Choices:               proposal.Choices,
+		}
+		sequence, err := appendVoteHistory(next.Votes, history)
+		if err != nil {
+			return State{}, VoteResult{}, err
+		}
+		result := voteResultFromProposal(proposal, proposal.Operation, hasBallot, previousDigest, previous, proposal.Choices, sequence, true)
+		result.Response = VoteSubmittedResponse
+		if err := next.Validate(); err != nil {
+			return State{}, VoteResult{}, err
+		}
+		return next, result, nil
+	default:
+		return State{}, VoteResult{}, ErrVoteInvalidProposal
+	}
 }
 
 // ApplyVoteIssue is the descriptive alias for ApplyVote.
@@ -347,9 +965,8 @@ func (s State) ApplyVoteIssue(proposal VoteProposal) (State, VoteResult, error) 
 // VoteContinuation describes only connection-local progress through
 // vote_cmnd's case 1/case 2 prompts. It is deliberately not embedded in
 // State, a receipt, or a catalog: user input is not authority and a dropped
-// connection discards this value. A future ballot adapter must persist the
-// final choice through a separate canonical field before case 3 can be
-// enabled.
+// connection discards this value. A caller must bind the final choice through
+// PlanVoteWithChoices before case 3 can be applied.
 type VoteContinuation struct {
 	CatalogDigest string
 	IssueNumber   int
@@ -374,7 +991,7 @@ func NewVoteContinuation(projection VoteIssueProjection) (VoteContinuation, erro
 
 // Choose records one source a..g choice without mutating State. done becomes
 // true when the number of choices in ISSUE has been collected; even then the
-// caller must not write a ballot until the canonical State field exists.
+// caller must bind the sequence to a snapshot-bound proposal before writing.
 func (c VoteContinuation) Choose(input string) (next VoteContinuation, done bool, err error) {
 	if c.CatalogDigest == "" || c.IssueNumber < 1 || c.IssueNumber > VoteMaxSelections || c.NextOption < 1 || c.NextOption > c.IssueNumber || len(c.Choices) != c.NextOption-1 {
 		return VoteContinuation{}, false, ErrVoteInvalidProposal

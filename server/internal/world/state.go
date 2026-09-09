@@ -35,6 +35,11 @@ type State struct {
 	// Property special number -> invited character IDs (legacy invite_N, 10 slots).
 	// Nil is unimported; a nonnil empty map explicitly means no invitations.
 	Invitations map[int16][]string
+	// Nil means the legacy player/vote/<name>_v domain has not been imported.
+	// A nonnil VoteState is the canonical active-ballot plus append-only vote
+	// history aggregate; its maps/slices retain their own nil-vs-empty markers.
+	// Vote reducers never consult the legacy files as a fallback.
+	Votes *VoteState
 	// Nil is pre-migration. Canonical NPC bodies are owned here, not by rooms.
 	NPCs map[string]NPCState
 	// Global C first_active order. Nil is unresolved; [] is known inactive.
@@ -107,6 +112,21 @@ func (s State) Validate() error {
 	if s.Boards != nil {
 		if err := s.Boards.Validate(); err != nil {
 			return fmt.Errorf("invalid board state: %w", err)
+		}
+	}
+	if s.Votes != nil {
+		if err := s.Votes.Validate(); err != nil {
+			return fmt.Errorf("invalid vote state: %w", err)
+		}
+		for actorID := range s.Votes.Ballots {
+			if _, ok := s.Players[actorID]; !ok {
+				return fmt.Errorf("%w: vote ballot actor absent", ErrVoteStateInvalid)
+			}
+		}
+		for _, entry := range s.Votes.History {
+			if _, ok := s.Players[entry.ActorID]; !ok {
+				return fmt.Errorf("%w: vote history actor absent", ErrVoteStateInvalid)
+			}
 		}
 	}
 	for _, ids := range s.Invitations {
@@ -488,6 +508,10 @@ func (s State) clone() State {
 		for property, ids := range s.Invitations {
 			next.Invitations[property] = append([]string(nil), ids...)
 		}
+	}
+	if s.Votes != nil {
+		votes := s.Votes.Clone()
+		next.Votes = &votes
 	}
 	if s.War != nil {
 		war := *s.War
