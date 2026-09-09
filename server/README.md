@@ -2221,3 +2221,20 @@ live connection은 `Ownership.RunGame` admission 경계를 통과한다.
 검증: session/world/transport TDD·race·vet, live connector output/admission/occurrence,
 실제 PostgreSQL 17의 name purchase receipt/replay/request conflict 및 nested allocator를
 통과했다. 전체 merchant/trade/value/수리와 나머지 C 경제 parity는 미완료다.
+
+## 2026-09-09 `교환` NPC 거래 수직 슬라이스
+
+원작 `command10.c:trade`의 접미 명령 형식인 `물건 괴물이름 교환`을 중앙 parser와
+실제 WebSocket connector에 연결했다. `NPCState.TradeOffers`는 C `carry[0..4]`/
+`carry[5..9]` 쌍을 명시적으로 이관한 canonical 템플릿이며, 미이관 `Body.Carry`를
+실행 시 추측하지 않는다. 같은 방 `MTRADE` NPC와 플레이어의 직접 inventory root를
+정확한 이름·양수 occurrence로 선택하고, `ONAMED`·손상 물건·key[0] 불일치·중복
+NPC를 거부한다. 교환한 root subtree는 제거하고 보상 subtree는 command ID 기반의
+결정적 canonical ID로 새로 만들어 하나의 durable receipt에 저장한다. 퀘스트 보상,
+숙련도, 보상 없음 경로와 room broadcast를 포함하며 receipt replay에서는 reducer·ID
+할당·방송을 다시 실행하지 않는다.
+
+검증: world/session/transport TDD·race·vet, C carry-pair import, live connector dispatch,
+실제 ARM64 PostgreSQL 17의 저장·동일 command replay·request conflict, Linux ARM64
+cross-build를 통과했다. 원본 prefix/key `find_obj`와 merchant/repair/전체 경제 parity,
+full NPC tick/broadcast는 별도 인수 조건으로 남아 있다.

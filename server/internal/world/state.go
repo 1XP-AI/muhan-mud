@@ -425,6 +425,7 @@ func (s State) clone() State {
 		next.NPCs = make(map[string]NPCState, len(s.NPCs))
 		for id, npc := range s.NPCs {
 			npc.Body.Inventory = cloneObjects(npc.Body.Inventory)
+			npc.TradeOffers = cloneNPCTradeOffers(npc.TradeOffers)
 			if npc.Items != nil {
 				items := npc.Items.clone()
 				npc.Items = &items

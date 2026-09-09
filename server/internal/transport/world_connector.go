@@ -281,6 +281,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	shopListCommand := false
 	shopSellCommand := false
 	shopPurchaseCommand := false
+	tradeCommand := false
 	infoCommand := false
 	settingsCommand := false
 	doorCommand := false
@@ -371,6 +372,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			receipt, runErr = c.game.runShopPurchaseByNameLocked(ctx, commandID, c.lease.ActorID, line)
 			return runErr
 		})
+	case session.CommandTrade:
+		tradeCommand = true
+		receipt, err = c.game.owners.ExecuteTradeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
 		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
@@ -396,6 +400,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedBankLine) ||
 		errors.Is(err, session.ErrUnsupportedShopLine) ||
 		errors.Is(err, session.ErrUnsupportedShopPurchaseLine) ||
+		errors.Is(err, session.ErrUnsupportedTradeLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
 		errors.Is(err, session.ErrUnsupportedInfoLine) ||
 		errors.Is(err, session.ErrUnsupportedHelpLine) ||
@@ -511,6 +516,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if tradeCommand && !receipt.Replayed {
+		var result world.NPCTradeResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishTrade(after, c.lease.ActorID, result)
+			}
+		}
+	}
 	if session.IsQuitLine(line) {
 		c.closeAfterSubmit = true
 	}
@@ -554,6 +567,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		var result world.ShopPurchaseResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = renderShopPurchaseOutput(result)
+		}
+	} else if tradeCommand {
+		var result world.NPCTradeResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
 		}
 	} else if settingsCommand {
 		var result world.SettingsResult

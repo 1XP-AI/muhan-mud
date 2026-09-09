@@ -445,3 +445,31 @@ func (g *WorldConnector) publishDoorKey(after world.State, actorID string, resul
 		}
 	}
 }
+
+// publishTrade mirrors command10.c's room broadcast after a committed NPC
+// exchange. The actor already receives the durable response; replayed receipts
+// never re-enter this path, and a slow connection is dropped without blocking
+// the world command loop.
+func (g *WorldConnector) publishTrade(after world.State, actorID string, result world.NPCTradeResult) {
+	if result.Action != "trade-npc-item" || result.OfferedItemName == "" {
+		return
+	}
+	actor, ok := after.Players[actorID]
+	if !ok || !actor.Online {
+		return
+	}
+	message := fmt.Sprintf("\n%s이 %s에게 %s를 교환합니다.\r\n", actor.Body.Name, result.NPCName, result.OfferedItemName)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != actor.Body.RoomID || connection.lease.ActorID == actorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- message:
+		default:
+			// A slow client cannot block the trader's durable command.
+		}
+	}
+}

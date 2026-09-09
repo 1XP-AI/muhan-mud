@@ -613,3 +613,16 @@ writer epoch을 증가시켜 이전 writer를 fencing한다. `b9b1abf`는 0600·
 file export/restore CLI를 추가했고 `c2a0fa5`는 JSONB compacting checksum mismatch를
 canonical JSON으로 수정했다. 실제 ARM64 PG17 API/CLI 복구 테스트를 통과했지만 백업
 파일 보관·암호화·운영 복원 연습은 G4 인수 조건으로 남긴다.
+
+## 2026-09-09 trade bounded slice update
+
+ledger 76 `trade`는 전체 parity가 아니라 다음 범위의 Go 수직 slice로 갱신됐다.
+
+- 원본 `src/command10.c:trade`의 suffix 입력 `물건 괴물이름 교환`과 명시적 occurrence 확장
+- `NPCTradeOffers`의 C `carry` 쌍 import 및 canonical template 검증
+- same-room `MTRADE` NPC/직접 inventory root exact selection, named/damaged/key mismatch 거부
+- offered subtree 제거, reward subtree deterministic ID 복제, quest/experience/proficiency 반영
+- durable receipt replay, request conflict, PostgreSQL 저장/재생 및 room broadcast
+
+prefix/key `find_obj`, merchant NPC, repair/value, 전체 C 경제/ANSI parity는 여전히 미구현이며
+이 항목의 전체 인수 상태는 `partial`이다.

@@ -485,3 +485,26 @@ infra `f96fa6ff`는 Go runtime mode가 PVC를 마운트하지 않는 계약에 �
 이미지의 `/opt/muhan-seed/help`로 고정하고, source checkout pin을 최신 로컬 검증 커밋
 `42ef468`로 갱신했다. Helm/Docker/Secret/차트 전체 로컬 Node test는 **89/89** 통과했다.
 이 변경은 원격 push나 testnet 배포를 수행하지 않았으므로 배포 인수 증거가 아니다.
+
+## 2026-09-09 직접 관리 병렬 레인: NPC `교환`
+
+PR 리뷰와 무관한 파일 경계를 유지한 채 Luna max 하위 레인이 C `command10.c:trade`의
+원본 suffix 입력(`물건 괴물이름 교환`)과 `MTRADE` offer migration을 조사했고, 메인
+세션이 결과를 인수해 통합했다. `NPCTradeOffers`는 `carry` 숫자 쌍을 catalog object
+template로 명시적으로 변환하며, unresolved template·비거래 NPC·미이관 offer는
+fail-closed한다. live 명령은 exact canonical player root/NPC 이름과 양수 occurrence만
+받고, 보상 object graph는 command ID 기반 ID로 원자 복제한다. 동일 command ID 재시도는
+receipt의 저장 응답을 그대로 반환하며 RNG/allocator/reducer와 room event를 재실행하지
+않는다.
+
+검증 결과:
+
+- `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1` 통과
+- `go vet ./...` 통과
+- `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...` 통과
+- 실제 ARM64 `postgres:17`에서 trade 저장·replay·request conflict 통과
+- 브라우저 mock xterm 3개 + feature-off 1개, 실제 Go+PostgreSQL Chromium 2개 통과
+
+이 레인은 bounded economy progress이며 merchant/repair/value, 전체 C prefix/key matcher,
+NPC 전체 cadence/broadcast, strict room corpus 63건, 실기기 IME/mobile, WSS/Ingress와
+testnet 배포 인수는 완료로 승격하지 않는다.

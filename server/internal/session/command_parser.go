@@ -47,6 +47,7 @@ const (
 	CommandShopList
 	CommandShopSell
 	CommandShopPurchase
+	CommandTrade
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -89,6 +90,10 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if _, ok := world.ParseDirectionalToken(trimmed); ok {
 		parsed.Kind = CommandDirectional
+		return parsed, nil
+	}
+	if _, ok := ParseTradeLine(trimmed); ok {
+		parsed.Kind = CommandTrade
 		return parsed, nil
 	}
 	parsed.Kind = commandKind(tokens[0])
@@ -177,6 +182,11 @@ func commandKind(first string) CommandKind {
 		return CommandShopSell
 	case "사", "구입":
 		return CommandShopPurchase
+	case "교환":
+		// The legacy parser treats the final Korean command token as str[0],
+		// so trade lines are recognized by ParseTradeLine above rather than
+		// by this first-token table.
+		return CommandTrade
 	case "끝":
 		return CommandQuit
 	case "시간":

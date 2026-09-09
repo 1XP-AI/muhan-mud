@@ -35,6 +35,22 @@ type NPCState struct {
 	// It is used by the command6 MDMFOL movement slice; an empty value means
 	// this NPC is not attached to a player follower list.
 	FollowingPlayerID string
+	// TradeOffers is the explicit migration of command10.c's MTRADE
+	// carry[0..4]/carry[5..9] pairs. Nil means the offer table has not been
+	// migrated; an empty non-nil slice is a known MTRADE NPC with no offers.
+	// These are immutable object templates, not player-owned item identities.
+	// The trade reducer materializes a fresh canonical graph for each reward.
+	TradeOffers []NPCTradeOffer
+}
+
+// NPCTradeOffer is one source-backed MTRADE contract. Wanted is compared with
+// the player's exact canonical inventory root by name and key[0], matching the
+// two fields command10.c compares after load_obj. Reward is nil when C's paired
+// carry entry is zero, in which case the offered item is consumed without a
+// replacement object.
+type NPCTradeOffer struct {
+	Wanted LegacyObject  `json:"wanted"`
+	Reward *LegacyObject `json:"reward,omitempty"`
 }
 
 func (s State) validateNPCs() error {
@@ -70,6 +86,9 @@ func (s State) validateNPCs() error {
 	for id, npc := range s.NPCs {
 		if id == "" || !seen[id] || npc.Body.Type != 1 || npc.Body.Name == "" {
 			return fmt.Errorf("invalid NPC identity or type")
+		}
+		if err := validateNPCTradeOffers(npc); err != nil {
+			return fmt.Errorf("NPC %s trade offers: %w", id, err)
 		}
 		enemies := map[EntityRef]bool{}
 		for _, enemy := range npc.Enemies {
