@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small regression guard for the shared-runner routing/isolation contract."""
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[2]
 workflow = (root / '.github/workflows/ci.yml').read_text()
@@ -33,6 +34,14 @@ assert workflow.count('ca-certificates git pkg-config') == 2
 assert 'M3_RUNTIME_LINK_OUTFILE="$TMPDIR/muhan-m3-runtime"' in workflow
 assert makefile.count('/tmp/muhan-unit') == 1  # local default only
 assert 'MUHAN_UNIT_DIR ?= /tmp/muhan-unit' in makefile
+
+# Toolchain setup is job-scoped. Repeating setup-node in the long release jobs
+# only reinitializes PATH/cache and adds latency without changing the tested
+# environment, so keep one initialization per job.
+for job in ('database-contract', 'build-and-smoke'):
+    match = re.search(rf'(?ms)^  {job}:\n.*?(?=^  [A-Za-z0-9_-]+:|\Z)', workflow)
+    assert match, job
+    assert match.group(0).count('uses: actions/setup-node@v4') == 1, job
 for config in ('playwright.config.ts', 'playwright.feature-off.config.ts'):
     assert 'process.env.MUHAN_BROWSER_PORT' in (root / 'tests/browser-e2e' / config).read_text()
 print('self_hosted_ci_policy_test: routing, explicit tools, isolated outputs and ports passed')

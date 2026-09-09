@@ -30,6 +30,8 @@ const (
 	CommandQuit
 	CommandRead
 	CommandSave
+	CommandMail
+	CommandBoard
 	CommandInfo
 	CommandHelp
 	CommandYell
@@ -146,6 +148,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsStudyLine(trimmed) {
 		parsed.Kind = CommandStudy
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsBoardLine(trimmed) {
+		parsed.Kind = CommandBoard
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -341,6 +348,10 @@ func commandKind(first string) CommandKind {
 		return CommandRead
 	case "저장", "save":
 		return CommandSave
+	case "편지받기", "편지삭제":
+		return CommandMail
+	case "게시판":
+		return CommandBoard
 	case "정보":
 		return CommandInfo
 	case "도움말", "?":
@@ -379,7 +390,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
 		return true
 	default:
 		return false

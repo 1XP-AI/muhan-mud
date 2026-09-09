@@ -741,3 +741,29 @@ room corpus, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배�
 브라우저·release matrix는 이전 batch 증거를 재사용하며 이번 기능 레인에서 반복하지 않는다.
 전체 C command parity, strict room corpus, NPC full combat/broadcast, 실기기 IME/mobile,
 WSS/Ingress와 testnet 배포 인수는 여전히 남아 있다.
+
+## 2026-09-09 메일·게시판 bounded slice 및 검증 중복 감사
+
+세 Luna max 레인을 직접 병렬 실행한 뒤 메인 세션에서 공용 parser와 WebSocket connector를
+통합했다.
+
+1. `편지받기`/`편지삭제`는 `src/post.c`의 RPOSTO(10) 방 경계와 canonical
+   `State.Mailboxes`를 사용한다. 수신자별 ordered message, sender identity, UTF-8/control
+   및 body 크기를 검증하고, 전체 mailbox 삭제는 하나의 durable receipt에서만 수행한다.
+   `편지보내기`의 다중 행 editor는 이번 경계 밖으로 명시적으로 fail-closed한다.
+2. `게시판`/`읽어 게시판 <번호>`/`글삭제 게시판 <번호>`는 `src/board.c`의 닫힌 board ID
+   집합(100–116, 120), newest-first 목록, 삭제 tombstone, 작성자/DM 권한, 비작성자 조회수
+   증가를 canonical `BoardState`에 연결했다. 게시판 object와 board ID는 현재 방의 canonical
+   item에서만 해석하며, `써`의 다중 행 editor와 전체 board object migration은 후속이다.
+3. validation workflow를 다시 전수 점검했다. `fast`는 영향 패키지 race만, `integration`은
+   전체 Go race/vet/diff만, `main`은 기본 브랜치 ARM64 cross-build를 한 번, `release`만
+   DB·browser·x64/Windows/macOS matrix를 실행한다. pre-push는 변경된 migration/stack
+   계약만 검사하고 다중 커밋 push에서 remote tip을 한 번만 기준으로 삼는다. 중복 실행을
+   유발하는 추가 결함은 발견되지 않았다. 다만 같은 release job 안에서 반복되던 Node
+   toolchain 초기화 5회를 2회(각 job 1회)로 줄여 설치·캐시 초기화 시간을 절약했다.
+
+이번 변경에서 `go test -race` 영향 패키지와 통합 gate, 정책·shell·YAML·migration coverage
+검사를 통과했다. ARM64 cross-build, 실제 PostgreSQL/browser/compatibility matrix, strict
+room corpus 63건, 전체 C command/prefix/key/ANSI parity, full board/mail editor, NPC full
+cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 cadence 정책에 따라 반복하지 않았고
+아직 전체 인수 조건으로 남아 있다.

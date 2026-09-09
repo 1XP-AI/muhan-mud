@@ -840,3 +840,17 @@ fail-closed하고, 지정 경로는 canonical 파일을 시작 시 한 번 읽�
 조건이다. NPC 유지보수 bounded prefix는 프로세스 scheduler에 연결했지만 maintenance→
 combat strict ordering은 다음 scheduler 통합 범위다. 실제 PG 검증은 opt-in 고유 DB에서만
 실행한다.
+
+## 2026-09-09 메일·게시판 bounded slice와 cadence 감사
+
+직접 배치한 Luna max 레인에서 원작 `post.c`/`board.c`의 저장 경계를 분리 구현하고 메인
+세션에서 parser·transport를 통합했다.
+
+| 영역 | Go 경계 | 검증/남은 조건 |
+| --- | --- | --- |
+| 우체국 수신/삭제 | `State.Mailboxes`, `편지받기`, `편지삭제`, RPOSTO(10), ordered sender/body/timestamp, 전체 삭제 atomic receipt/replay | targeted race·integration 통과; interactive `편지보내기` editor와 legacy post 이관은 미구현 |
+| 게시판 목록/읽기/삭제 | `BoardState`, `게시판`, `읽어 게시판 <번호>`, `글삭제 게시판 <번호>`, board ID 100–116/120, tombstone·조회수·작성자/DM 권한 | targeted race·integration 통과; `써` editor, 전체 board object/index/body 이관은 미구현 |
+| 검증 비용 | fast=영향 race, integration=전체 Go, main=기본 브랜치 ARM64 1회, release=DB/browser/호환성 matrix | 정책·shell·YAML·migration coverage 통과; release job별 Node 초기화 1회로 통합; 중복 실행 결함 없음 |
+
+이번 batch도 전체 C 명령/prefix/key/ANSI parity, strict room corpus 63건, NPC full cadence,
+실기기 IME/mobile, WSS/Ingress와 testnet 배포 인수를 완료한 것으로 간주하지 않는다.

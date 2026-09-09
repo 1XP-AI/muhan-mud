@@ -1459,3 +1459,28 @@ testnet 인수는 여전히 미완료다.
 `f09b0a4a606f61d0ffb8505f660d421d31bda030`을 가리키도록 갱신했으며, infra 테스트 재실행과
 commit `ae3f6769`까지 완료했다. `node --test scripts/docker-source-paths.test.mjs`는 2/2
 통과했다. `src/frp.new`는 계속 사용자 dirty 변경으로 보존한다.
+
+## 2026-09-09 메일·게시판 bounded 후속 및 검증 감사
+
+이번 로컬 batch에서 Luna max 세 레인을 직접 병렬 실행하고 공용 parser/connector를 메인
+세션에서 통합했다.
+
+- `편지받기`/`편지삭제`: `State.Mailboxes` ordered canonical mailbox, sender/body/timestamp
+  검증, RPOSTO(10) 우체국 방 게이트, 전체 mailbox 원자 삭제와 receipt replay 경계를 추가했다.
+  `편지보내기` interactive multi-line editor는 명시적 unsupported로 남겼다.
+- `게시판`/`읽어 게시판 <번호>`/`글삭제 게시판 <번호>`: `BoardState`와 State 연결, board_dir
+  허용 ID(100–116, 120), canonical 게시판 object 해석, newest-first 목록, 삭제/복구 권한과
+  non-owner 조회수 증가를 추가했다. `써` editor 및 전체 board data migration은 후속이다.
+- CI 비용 감사: fast/integration/main/release 및 pre-push 호출 그래프에 중복 ARM64·DB·browser
+  실행 결함이 없음을 확인했다. ARM64는 main 병합에서 한 번, DB/browser/호환성 matrix는
+  release에서만 실행하며, 기능 레인은 영향 패키지 race와 조립 integration만 사용한다.
+  같은 release job 안에서 반복되던 Node toolchain 초기화 5회는 job당 1회로 통합했다.
+
+검증 결과: 영향 패키지 `scripts/run-go-validation.sh fast` PASS, 전체
+`scripts/run-go-validation.sh integration` PASS, `go test -race` board/mail/parser/connector
+표적 PASS, `python3 tests/unit/local_first_policy_test.py` PASS,
+`python3 tests/unit/self_hosted_ci_policy_test.py` PASS,
+`python3 tests/unit/stack_e2e_migration_coverage_test.py` PASS, shell/YAML/diff 검사 PASS.
+이번 batch에서는 ARM64 cross-build, 실제 PostgreSQL/browser/release matrix, strict room corpus
+63건, full board editor/mail send, NPC full parity, IME/mobile 실기기, WSS/Ingress와 testnet
+배포를 반복하지 않았다. 사용자 소유 `src/frp.new`만 dirty 상태로 보존한다.

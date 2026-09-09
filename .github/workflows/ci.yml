@@ -474,11 +474,6 @@ jobs:
 
       # The replay-reader gate executes the explicit comparator from dist,
       # before the later filesystem relay E2E consumes the same compiled relay.
-      - name: Setup Node for M4 relay contracts
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Install, test, typecheck, and build M4 relay contracts
         shell: bash
         working-directory: services/m4-file-snapshot-manifest-relay
@@ -535,11 +530,6 @@ jobs:
           make -C src character-save-journal-v2-runtime-shadow-pg17-integration \
             CC=gcc PG_CONFIG=pg_config \
             M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE=1
-
-      - name: Setup Node for importer integration
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
 
       - name: Install importer dependencies
         shell: bash
@@ -940,12 +930,6 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/run-shutdown-scenario.sh --output "$RUNNER_TEMP/muhan-shutdown-scenario.json"
-
-      - name: Setup Node for Gateway/Web contracts
-        if: matrix.lane == 'linux-arm64'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
 
       - name: Install and verify Gateway/Web
         if: matrix.lane == 'linux-arm64'

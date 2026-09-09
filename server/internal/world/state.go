@@ -16,6 +16,15 @@ type State struct {
 	Version int
 	Rooms   map[int16]RoomState
 	Players map[string]PlayerState
+	// Nil means the legacy post directory has not been imported. A nonnil map
+	// is the canonical, per-recipient ordered mailbox projection. Mailbox
+	// ordering is the slice order; it must never be reconstructed from map
+	// iteration or a client supplied name.
+	Mailboxes map[string][]MailMessage
+	// Nil means board indexes have not been imported. A nonnil BoardState is
+	// the canonical ordered board/post projection and is validated as part of
+	// the same world snapshot.
+	Boards *BoardState
 	// BankAccounts is the canonical Go representation of the legacy per-player
 	// bank file. A missing map is an unimported bank domain; an account with a
 	// zero balance is still explicit. Item storage is kept separate until the
@@ -91,6 +100,14 @@ func (s State) Validate() error {
 	}
 	if err := s.validateNPCs(); err != nil {
 		return err
+	}
+	if err := s.validateMailboxes(); err != nil {
+		return err
+	}
+	if s.Boards != nil {
+		if err := s.Boards.Validate(); err != nil {
+			return fmt.Errorf("invalid board state: %w", err)
+		}
 	}
 	for _, ids := range s.Invitations {
 		if len(ids) > 10 {
@@ -420,6 +437,20 @@ func (s State) applyTransfer(actorID string, p TransferProposal, idAware bool, d
 
 func (s State) clone() State {
 	next := State{Version: s.Version, Rooms: make(map[int16]RoomState, len(s.Rooms)), Players: make(map[string]PlayerState, len(s.Players))}
+	if s.Mailboxes != nil {
+		next.Mailboxes = make(map[string][]MailMessage, len(s.Mailboxes))
+		for recipientID, messages := range s.Mailboxes {
+			if messages == nil {
+				next.Mailboxes[recipientID] = nil
+				continue
+			}
+			next.Mailboxes[recipientID] = append([]MailMessage{}, messages...)
+		}
+	}
+	if s.Boards != nil {
+		boards := s.Boards.Clone()
+		next.Boards = &boards
+	}
 	if s.BankAccounts != nil {
 		next.BankAccounts = make(map[string]BankAccount, len(s.BankAccounts))
 		for characterID, account := range s.BankAccounts {

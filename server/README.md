@@ -2427,3 +2427,22 @@ fail-closed 동작을 고정했다.
 새 변경 검증: scheduler/session/live connector targeted race, cmd 프로세스 테스트(격리 DB
 환경이 없으면 의도적 skip). 전체 race/vet/integration, ARM64 cross-build, 실제 DB·browser·
 release matrix는 기능 레인마다 반복하지 않고 승인된 cadence에서만 실행한다.
+
+## 2026-09-09 메일·게시판과 검증 비용 경계
+
+`편지받기`/`편지삭제`는 원작 `post.c`의 우체국 방 플래그를 canonical room에서 확인하고,
+수신자별 ordered mailbox를 Supabase/PostgreSQL world snapshot에 저장한다. 읽기는 상태를
+바꾸지 않는 typed receipt이고, 삭제는 전체 편지함을 원자적으로 비운다. `편지보내기`의
+interactive editor는 아직 연결하지 않고 명시적으로 거부한다.
+
+`게시판` 목록, `읽어 게시판 <번호>`, `글삭제 게시판 <번호>`는 원작 `board.c`의 허용 board
+ID와 게시판 object를 검증한 뒤 BoardState receipt로 처리한다. 목록은 newest-first이며 일반
+사용자는 삭제 글을 보지 못하고, 비작성자 읽기만 조회 수를 올린다. `써` editor와 board
+index/body 전체 데이터 이관은 후속 범위다.
+
+검증은 변경 경로에 맞춰 targeted race를 먼저 실행하고 조립 시 `integration`을 한 번만
+실행한다. Linux ARM64 cross-build는 main 병합의 `main`, DB·브라우저·x64/Windows/macOS는
+승인된 `release`에서만 실행한다. 이번 변경에서는 `scripts/run-go-validation.sh fast`,
+`integration`, 정책·shell·YAML·migration coverage 검사를 통과했으며 고비용 release
+검증은 반복하지 않았다. 같은 release job에서 중복되던 Node toolchain 초기화도 job당 한
+번으로 통합했다. `src/frp.new`의 사용자 변경은 계속 보존한다.
