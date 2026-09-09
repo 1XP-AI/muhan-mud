@@ -2112,3 +2112,15 @@ Chromium 가입→월드 입장→재로그인·기존 캐릭터 중복 세션 *
 pin test **2 passed**. 일반 `TestRoomBodyCorpus`는 기존 unsupported body 63건으로
 계속 실패하며, 전체 기능·NPC scheduler·IME/mobile 실기기·backup/restore·WSS/Ingress와
 testnet 배포 인수는 아직 남아 있다.
+
+## 2026-09-09 NPC identity scheduler durable 연결
+
+`RunNPCResourceTick`/`RunNPCResourceScheduler`와 `-npc-resource-tick` worker를
+추가해 canonical room의 영구 NPC respawn을 engine receipt에 연결했다. cadence slot과
+`npc-resources-<slot>` command ID를 고정하고, 저장 결과가 불확실하거나 실패하면 같은
+slot·timestamp·request를 재사용한다. canonical NPC/item graph가 아닌 방은
+`unmigrated_rooms`로 증거만 남기며 익명 NPC를 만들지 않는다. identity order와
+allocator/RNG 호출 순서, cancellation·invalid interval을 race 테스트로 검증했다.
+
+이 단계는 NPC 전투 AI·room broadcast·전체 update scheduler를 완료했다는 뜻이 아니며,
+실제 PostgreSQL scheduler replay와 전체 NPC 행동 parity는 다음 인수 조건으로 남아 있다.
