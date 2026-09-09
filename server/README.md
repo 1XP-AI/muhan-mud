@@ -1,5 +1,11 @@
 # Go MUD 서버 작업 영역
 
+최신 G4 검증: `bash scripts/run-go-backup-restore-local.sh --allow-disposable`가 격리된
+ARM64 `postgres:17-alpine`에서 Go schema `pg_dump`/`pg_restore`, receipt replay/request
+conflict, writer epoch fencing과 복원 후 새 command 저장을 PASS했다. 테스트 컨테이너와
+archive는 실행 종료 시 정리했다. 운영 보관·암호화·PITR 및 전체 데이터 이관 복원은 아직
+미완료다.
+
 최신 구현: `정보` 후속 `[엔터]` 페이지를 `ExecuteInfoContinuation` durable receipt로
 연결했다. 주문·현주문·임무 projection은 한 번 읽은 canonical snapshot과 response를
 고정하고, 불확실한 커밋 뒤에는 connection-local command ID를 재사용해 동일 receipt를

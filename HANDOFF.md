@@ -25,6 +25,28 @@ git diff --check PASS
 strict room corpus 63건과 testnet 배포는 여전히 미완료다. `src/frp.new`와 예전 dirty
 worktree는 보존한다.
 
+## 최신 G4 검증 체크포인트 — 2026-09-10 (Go PostgreSQL 백업·복구)
+
+Go `mud_go` 스키마에 대해 `scripts/run-go-backup-restore-local.sh`를 추가했다.
+격리된 ARM64 `postgres:17-alpine`에서 source DB에 revision 2와 receipt 2개를 기록한
+뒤 PostgreSQL custom-format `pg_dump`/`pg_restore`로 target DB를 복원하고, receipt
+replay·request conflict·writer epoch fencing·복원 후 revision 3 쓰기를 확인한다.
+`TestPostgresWorldBackupRestoreFencesReceipts`는 receipt가 있는 restore의 expected
+revision 경계와 Force 복원 후 구 writer 거부도 검증한다. 구현 커밋은 `357220b`다.
+
+검증:
+
+```text
+bash scripts/run-go-backup-restore-local.sh --allow-disposable PASS
+(cd server && go test -race ./internal/storage -run 'Test(WorldBackup|PostgresWorldBackup)' -count=1) PASS
+(cd server && go vet ./internal/storage) PASS
+bash -n scripts/run-go-backup-restore-local.sh && git diff --check PASS
+```
+
+스크립트는 자신이 만든 컨테이너와 임시 archive만 제거했다. 운영 보관·암호화·키 회전·
+retention, PostgreSQL 장애/PITR, 전체 레거시 중복·유실 대조, Supabase 운영 복원,
+WSS/Ingress·testnet은 미완료다.
+
 ## 최신 검증 체크포인트 — 2026-09-10 (실제 PG·브라우저 모바일 viewport)
 
 실제 PostgreSQL 17 ARM64, Go `-race`, Chromium을 연결한

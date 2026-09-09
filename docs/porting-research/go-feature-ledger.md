@@ -1,5 +1,11 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 G4 PostgreSQL 백업·복구 증거
+
+| 원작/운영 경계 | Go 검증 | 남은 조건 |
+| --- | --- | --- |
+| Go `mud_go` world snapshot·command receipt의 backup/restore | `run-go-backup-restore-local.sh`와 `TestPostgresWorldBackupPhysicalRestore`가 ARM64 PostgreSQL custom-format dump/restore 뒤 revision 2·receipt 2개·동일 ID replay·request conflict·writer epoch fencing·후속 revision 3 저장을 확인 | 운영 archive 보관/암호화/retention/PITR, 전체 legacy duplicate/loss 대조, Supabase 운영 복원과 장애 중 재접속은 미완료 |
+
 ## 2026-09-10 `정보` 후속 페이지 durable receipt 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

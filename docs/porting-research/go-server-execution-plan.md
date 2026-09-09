@@ -1,5 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 Go PostgreSQL 백업·복구 경계
+
+`scripts/run-go-backup-restore-local.sh`는 격리된 ARM64 `postgres:17-alpine`에서 Go
+`mud_go` schema를 custom-format `pg_dump`/`pg_restore`하고, 복원 전후 receipt replay,
+request conflict, writer epoch fencing과 후속 revision 저장을 검증한다. 실제 실행은
+PASS했으며 스크립트는 자신이 만든 컨테이너와 archive만 정리했다. 운영 보관·암호화·
+retention·PITR·Supabase 복원과 전체 레거시 데이터 대조는 G4 승격 조건으로 남긴다.
+
 ## 2026-09-10 `정보` 후속 페이지 durable receipt
 
 `command4.c:info_2`로 이어지는 `[엔터]` 입력을 `ExecuteInfoContinuation` 영수증으로
