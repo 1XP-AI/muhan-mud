@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 검증 체크포인트 — 2026-09-10 (bounded PostgreSQL receipt/replay)
+
+고유 loopback 포트와 임시 데이터 디렉터리를 사용하는 ARM64 `postgres:17-alpine`
+컨테이너에서 `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`을 설정하고
+`go test -race ./internal/session -run '^TestPostgresBoundedLanesPersistAndReplay$' -count=1 -v`를
+실행했다. alias·burn·study·family-mutation 네 케이스 모두 저장 후 같은 command ID
+replay까지 **PASS**했으며 테스트 소유 컨테이너는 종료 후 제거했다. 다른 Docker 자원은
+건드리지 않았다. 이는 bounded lane 증거이며 전체 PostgreSQL 이관·전체 명령·운영
+Supabase 검증을 의미하지 않는다.
+
 ## 최신 검증 체크포인트 — 2026-09-10 (실제 PG·브라우저 기존 캐릭터 경로)
 
 격리된 ARM64 `postgres:17-alpine` 컨테이너에서 Go `-race` 서버, xterm 브라우저와

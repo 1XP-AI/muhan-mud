@@ -1,5 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 bounded PostgreSQL receipt/replay 검증
+
+고유 임시 PostgreSQL 17 ARM64 인스턴스에서
+`TestPostgresBoundedLanesPersistAndReplay`를 실행했다. alias·burn·study·family-mutation
+각 최초 receipt와 같은 command ID replay가 모두 PASS였고, 종료 trap은 테스트 소유
+컨테이너만 제거했다. 이 결과는 bounded 저장 경계 증거이며 전체 DB 이관·운영 Supabase
+연결·전체 기능 인수로 확대하지 않는다.
+
 ## 2026-09-10 패거리 가입/탈퇴 session·transport 연결
 
 `command11.c`의 패거리 mutation 중 canonical Go State로 증명 가능한 부분을

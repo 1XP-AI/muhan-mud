@@ -1,5 +1,13 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 bounded PostgreSQL receipt/replay 검증
+
+고유 loopback 포트의 ARM64 `postgres:17-alpine`에서
+`TestPostgresBoundedLanesPersistAndReplay`를 실행해 alias·burn·study·family-mutation
+네 케이스의 최초 저장과 동일 command ID replay를 모두 PASS로 확인했다. 테스트가 만든
+컨테이너만 제거했으며, 이 증거는 bounded lane에 한정된다. 전체 PostgreSQL 이관·운영
+Supabase·전체 명령 인수는 미완료다.
+
 ## 2026-09-10 패거리 가입/탈퇴 세션·전송 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

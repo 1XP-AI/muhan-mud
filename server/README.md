@@ -1,5 +1,10 @@
 # Go MUD 서버 작업 영역
 
+최신 영속성 검증: 고유 ARM64 `postgres:17-alpine`에서
+`TestPostgresBoundedLanesPersistAndReplay`의 alias·burn·study·family-mutation 저장 및
+동일 command ID replay 네 케이스가 모두 PASS했다. 컨테이너는 테스트 종료 후 제거했다.
+이것은 bounded receipt 경계의 증거이며 전체 PostgreSQL/Supabase 이관 완료를 뜻하지 않는다.
+
 상태: 2026-09-08 누적 Go 수직 슬라이스 진행 중. `cmd/muhan`은 가입/로그인과
 방향/함정/NPC 이동 receipt를 포함한 로컬 실행 경로가 있지만 전체 게임 명령·전투·
 tick·브라우저/배포 인수는 아직 완료되지 않았다.
