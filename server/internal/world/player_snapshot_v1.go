@@ -32,6 +32,7 @@ const (
 	playerSnapshotCDTOWireVersion   = uint16(1)
 	playerSnapshotKind              = uint16(7)
 	playerSnapshotObjectGraphKind   = uint16(6)
+	bankSnapshotKind                = uint16(8)
 	playerSnapshotPrefixLength      = 16
 	playerSnapshotDigestLength      = sha256.Size
 	playerSnapshotFieldHeaderLength = 7
@@ -355,7 +356,7 @@ func decodePlayerSnapshotRecord(raw []byte) (playerSnapshotRecord, error) {
 		return playerSnapshotRecord{}, fmt.Errorf("%w: unsupported wire version", ErrPlayerSnapshotMalformed)
 	}
 	kind := binary.BigEndian.Uint16(raw[10:12])
-	if kind != playerSnapshotKind && kind != playerSnapshotObjectGraphKind {
+	if kind != playerSnapshotKind && kind != playerSnapshotObjectGraphKind && kind != bankSnapshotKind {
 		return playerSnapshotRecord{}, fmt.Errorf("%w: unsupported kind %d", ErrPlayerSnapshotMalformed, kind)
 	}
 	payloadLength := int(binary.BigEndian.Uint32(raw[12:16]))

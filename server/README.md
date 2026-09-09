@@ -47,6 +47,12 @@ identity·writer/revision 충돌은 fail-closed한다. `bash scripts/run-go-play
 --allow-disposable`가 ARM64 `postgres:17-alpine` import/replay/conflict/rollback을 검증한다.
 운영 Supabase 승인·대량 이관·전체 복구/대조는 미완료다.
 
+은행 raw 이관을 시작하기 전에는 `world.EncodeBankSnapshotV1`·
+`world.DecodeBankSnapshotV1`·`world.VerifyBankSnapshotV1`로 kind-8 아티팩트를 먼저
+검증한다. 이 API는 C/Rust ObjectGraphV1과 byte-stable한 단일 detached root만 허용하는
+오프라인 경계이며 PostgreSQL이나 게임 세션을 변경하지 않는다. 계정/캐릭터 매핑과
+실제 bank receipt import는 별도 operator 승인 단계다.
+
 최신 이관 경계: `internal/world/player_snapshot_v1.go`가 C/Rust pointer-free
 `PlayerSnapshotV1` CDTO를 Go에서 직접 검증·재인코딩한다. envelope SHA-256, 40개 field
 계약, fixed-string/vital/daily bound, preorder object graph를 fail-closed로 확인하고

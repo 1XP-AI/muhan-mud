@@ -290,6 +290,15 @@ PG seed, 전체 room graph 및 runtime admission은 아직 `미구현; G1/G4`다
 
 ## 2026-09-09 시간·수련·상인 선택 bounded lanes 및 cadence 재감사
 
+## 2026-09-10 kind-8 은행 아티팩트 Go codec
+
+`BankSnapshotV1` kind-8 CDTO를 Go에서 직접 encode/decode/inspect/verify한다. C/Rust와
+같은 단일 detached ObjectGraphV1 root, canonical re-encode, whole-artifact SHA-256,
+4 MiB limit을 적용하고, 결과는 오프라인 이관 증거일 뿐 계정·게임 상태 권한을 만들지
+않는다. `go test -race ./internal/world -run '^TestBankSnapshotV1'`, `go vet`,
+`scripts/run-cdto-differential.sh`가 통과했다. legacy bank 파일 parser, account mapping,
+실제 PostgreSQL gold/graph import 및 복구는 여전히 P0 후속 항목이다.
+
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |
 | `command8.c:prt_time` / `시간` | `world.ProjectTime`·`session.ExecuteTimeLine`·`WorldConnector` read-only receipt; game hour와 PST 관측값을 request에 고정 | world/session/transport race·replay 통과; 전체 C clock/local-time parity와 운영 시계 이관은 미완료 |
@@ -594,7 +603,7 @@ dispatch 후보를 모두 적었다. 모든 행에 공통으로 적용되는 G0 
 | 주문·spell list·realm | `global.c:spllist/ospell`, `magic1.c`–`magic8.c`, `command9.c` | known spell/realm, MP cost, level/class/room restriction, duration/timer, combat vs utility, failure and dispel | direct magic tests 없음; `tests/unit/creature_v1_test.c` only serializes spell bytes | 미구현; G3 fixture 필요 |
 | NPC 대화/talk files | `files3.c:256-342`, `command8.c:817-1039`, `mstruct.h:ttag`, `docs/crt_talk` | key→response/action/CAST/GIVE/ATTACK, bounded text and deterministic side effects | direct talk test 없음; resource/test fixture gap | 미구현 |
 | shop/buy/sell/trade/repair/forge | `command7.c`, `command10.c`, `command8.c`, `docs/rom_stor` | shop storage room/price, item ownership/value, trade quest outputs, repair/forge choices and costs | no direct shop/forge command tests; object/file codec tests are indirect only | 미구현 |
-| bank/inventory transfer | `bank.c`, `bank_store.c`, `bank_money_*`, `docs/porting-research/bank-live-capture-gap-20260907.md` | bank object graph and gold before/after, retry/conflict/legacy fallback, room requirement | `tests/unit/bank_store_test.c`, `bank_legacy_abi_test.c`, `bank_evidence_test.c`, `bank_snapshot_v1_test.c`, `bank_transfer_snapshot_v1_test.c`, `bank_money_*_test.c`; live gameplay route remains separate | 미구현; existing tests do not prove Go bank command |
+| bank/inventory transfer | `bank.c`, `bank_store.c`, `bank_money_*`, `docs/porting-research/bank-live-capture-gap-20260907.md` | bank object graph and gold before/after, retry/conflict/legacy fallback, room requirement | `tests/unit/bank_store_test.c`, `bank_legacy_abi_test.c`, `bank_evidence_test.c`, `bank_snapshot_v1_test.c`, `bank_transfer_snapshot_v1_test.c`, `bank_money_*_test.c`; Go kind-8 artifact codec now has direct round-trip/digest tests; live gameplay route remains separate | **부분 구현**; kind-8 artifact 검증만 완료, legacy bank import/account mapping·전체 graph/gold parity는 미구현 |
 | 우편·게시판·메모·공지 | `post.c`, `board.c`, `command11.c`, `command12.c`, `docs/dm.doc` | append/read/delete ordering, board index/file bounds, room/permission requirements, durable text | no direct handler tests; `tests/stack-e2e/*` covers onboarding/evidence, not in-game board | 미구현 |
 | alias/title/description/name | `alias.c`, `command2.c`, `command8.c`, `command11.c`, `command12.c` | alias list/order, title mutation, description/name validation, persistence and UTF-8 bounds | `tests/unit/alias_title_snapshot_v1_test.c`, `alias_title_snapshot_manifest_v1_test.c`, related contract/fixture tests | 미구현; snapshot tests are migration contracts, not Go command tests |
 | family/kingdom/marriage/vote/invite | `command11.c`, `command12.c`, `post.c`, `player.c`, `mtype.h` | membership/owner permissions, war/reward, family chat/news, marriage/divorce, invite/vote file state | direct feature tests 없음; stack e2e only asserts selected directory cleanup/metadata | 미구현; P1/P0 ownership and transaction contract needed |
@@ -613,7 +622,7 @@ native struct/pointer/endianness/`long` 폭에 묶여 있으므로 Go DB schema�
 | object catalog / nested object graph | `files1.c:64-130,411-477`, `files3.c:26-248`, `object.c`, `mstruct.h:object` | fixed strings, value/weight/type/dice/flags, ordered nested children, parent ownership rebuilt not serialized | `object_v1_test.c`, `object_graph_v1_test.c`, decoder/serializer tests | 미구현; P0 |
 | monster/NPC catalog and room instances | `files1.c:207-294,478-741`, `files2.c:385-515`, `creature.c`, `docs/crt_flag`, `docs/crt_talk` | stats/flags/spells/AI/talk/quest/carry and room attachment; runtime enemy/follower/talk pointers are not raw DB fields | `creature_v1_test.c`, `creature_object_layout_contract_test.py`, codec harnesses | 미구현; P0 |
 | player record and inventory | `player_store.c`, `file_player_store.c`, `player_path.c`, `files1.c:152-206,465-536`, `command8.c:717-805` | identity, password migration policy, stats/HP/MP/XP/gold/quests/timers, ordered inventory; ready items normalized before save | `player_store_*`, `player_record_serializer_test.c`, `player_snapshot_v1_test.c`, `legacy_player_*` harnesses | 미구현; P0 |
-| bank files / gold | `bank.c`, `bank_store.c`, `bank_snapshot_v1*`, `bank_money_*` | bank item graph and gold transaction with idempotent retry/conflict semantics | bank unit and PG adapter tests; live capture explicitly gap-documented | 미구현; P0 |
+| bank files / gold | `bank.c`, `bank_store.c`, `bank_snapshot_v1*`, `bank_money_*` | bank item graph and gold transaction with idempotent retry/conflict semantics | bank unit and PG adapter tests; Go `BankSnapshotV1` kind-8 codec round-trip/digest tests; live capture explicitly gap-documented | **부분 구현**; artifact codec만 완료, live capture·계정 매핑·PG import/복구는 미구현 |
 | aliases/titles and social files | `alias.c`, `post.c`, `board.c`, `command11.c`, `command12.c`, `mtype.h` roots | aliases/title/description, mail/board/news, family/marriage/vote/invite/memo ownership/order | alias/title contracts; no complete social gameplay fixture | 미구현; P1 |
 | runtime/session/tick evidence | `mstruct.h:extra/iobuf`, `io.c`, `update.c`, onboarding/M3 files | descriptor/socket/queues/timers/RNG/session identity are runtime; command id/version/receipt is durable only where contract requires | onboarding/M3/journal tests; these do not implement Go world state | 미구현; T/P2 boundary pending |
 | static help/editor/resource files | `docs/*`, `resource_path.c`, `bin/*`, `objmon/*`, `rooms/*` | versioned catalog/resource bytes and path aliases; not normal player DML | `resource_tree_manifest_test.py`, path relocation tools, docs | 미구현; R |

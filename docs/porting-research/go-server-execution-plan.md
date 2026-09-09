@@ -506,6 +506,25 @@ read receipt)를 추가했다. 모두 Go world/session/transport와 xterm parser
 동일 command ID replay를 검증했다. family/global broadcast 및 전체 merchant purchase
 원장이 아직 없으므로 해당 가지는 fail-closed이며 전체 G3 인수로 승격하지 않는다.
 
+### 2026-09-10 kind-8 은행 아티팩트 Go 검증 경계
+
+`server/internal/world/bank_snapshot_v1.go`에 C/Rust `BankSnapshotV1`과 동일한 kind-8
+CDTO reader/writer를 추가했다. embedded ObjectGraphV1의 canonical envelope·digest·
+길이·fixed-string·shots·preorder 구조를 기존 Go codec으로 검증하고, 은행 의미에
+필요한 단일 detached root를 별도로 요구한다. `InspectBankSnapshotV1`은 원본 바이트와
+SHA-256을 소유 복사로 보존하며 `VerifyBankSnapshotV1`은 독립 digest가 맞을 때만
+결과를 반환한다. 이 경계는 비라이브 이관/복구 아티팩트 전용으로, 계정·캐릭터 권한이나
+PostgreSQL 변경을 만들지 않는다. 실제 legacy bank 파일 수집·계정 매핑·gold/graph
+import receipt와 복구 연습은 후속 G4 조건이다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run '^TestBankSnapshotV1' -count=1) PASS
+(cd server && go vet ./internal/world) PASS
+bash scripts/run-cdto-differential.sh PASS (C/Rust baseline incl. BankSnapshotV1)
+```
+
 이번 배치에서 실행한 것은 `fast`, 조립 `integration`, 정책·shell·migration coverage,
 diff 검사다. ARM64 cross-build·실제 DB/browser·release matrix는 각각 `main`/`release`
 경계에서만 실행한다.

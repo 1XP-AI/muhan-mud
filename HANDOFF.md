@@ -1,5 +1,24 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (Go BankSnapshotV1 codec)
+
+`server/internal/world/bank_snapshot_v1.go`에 C/Rust kind-8 `BankSnapshotV1`과 동일한
+canonical ObjectGraphV1 wrapper를 추가했다. 단일 detached root, envelope/digest/4 MiB
+bound, fixed-string/shots/preorder graph를 검증하고 `Inspect`/`Verify`는 source bytes와
+독립 SHA-256을 소유 복사로 보존한다. 이 코드는 offline migration/recovery evidence
+경계라서 계정·세션·PostgreSQL을 변경하지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run '^TestBankSnapshotV1' -count=1) PASS
+(cd server && go vet ./internal/world) PASS
+bash scripts/run-cdto-differential.sh PASS
+```
+
+남은 조건은 legacy bank 파일 parser/계정 매핑, gold·nested graph 실제 import receipt,
+복구 연습과 전체 G3 기능 인수다. `src/frp.new` 및 예전 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (review→import manifest builder)
 
 `cmd/muhan`에 `-build-player-snapshot-manifest-review`와
