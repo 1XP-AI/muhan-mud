@@ -2181,3 +2181,27 @@ Linux ARM64 cross-build, web typecheck 및 **44/44** 테스트, 실제 PostgreSQ
 receipt race test, 실제 Go+PostgreSQL+Chromium 가입→월드 입장→재로그인·중복 세션
 **2 passed**. strict room corpus의 기존 unsupported body 63건, 전체 C 명령/경제 parity,
 IME/mobile 실기기, backup/restore, WSS/Ingress와 testnet 배포 인수는 여전히 남아 있다.
+
+## 2026-09-09 G3/G4 병렬 후속: 상점·NPC scheduler·백업
+
+`41e0a47`은 원작 `품목`/`팔아`의 bounded marketplace slice를 추가했다. `RSHOPP`/
+`RPAWNS`와 다음 `RNOTEL` 저장고를 canonical room/item graph로 확인하고, list는
+read-only deterministic receipt, sell은 직접 소지 root·정확한 occurrence·`value/2`
+상한·품질/visibility/중첩/flag/weight/gold 검증과 원자 소유권 이동으로 처리한다.
+prefix/key selection, 이중지급 RNG branch, merchant/repair는 source fixture가 없어
+fail-closed한다. 실제 PG17 receipt replay/conflict를 통과했다.
+
+`451bec4`는 기존 `RunNPCCombatTick`을 바꾸지 않고 `NPCCombatScheduler` lifecycle을
+추가했다. `RunOnce`/`Start`/`Run`/`Wait`/`Stop`/`Shutdown`을 제공하며 고정 slot·now·
+command ID, pending retry, receipt replay, 중복 worker와 cancellation을 보장한다.
+프로세스 main wiring과 전체 update cadence는 아직 별도 gate다.
+
+`9d8d95c`/`f73b5b1`은 checksum·format version·world revision을 포함한 deterministic
+backup envelope와 fail-closed restore를 추가했다. 기본 복구는 expected revision 및
+receipt 없는 대상만 허용하고, `Force`는 기존 receipt를 제거하고 writer epoch을 올려
+구 writer를 fencing한다. 실제 PG17 복구 테스트를 통과했다.
+
+통합 검증은 race/vet/ARM64 build, web 44/44, PG17 combat/shop/backup receipt를
+통과했다. 전체 command/economy parity, NPC main wiring/broadcast, strict room corpus
+63개, IME/mobile 실기기, 백업 파일 운영 보관·복원 연습, WSS/Ingress/testnet 배포는
+여전히 미완료다.

@@ -590,3 +590,24 @@ exact stock/value를 canonical nested graph deep-copy와 durable receipt로 연�
 구매 성공 `PHIDDN` 해제, gold/weight/capacity/allocator/temporary flag/stock ownership,
 receipt replay/conflict/insert rollback을 실제 PostgreSQL 17에서 검증하지만
 parser/list/sell/trade/merchant는 미구현이다.
+
+## 2026-09-09 marketplace·scheduler·backup bounded slices
+
+`ListShopItems`/`SellShopItem`과 `ExecuteShopLine`은 원작 `품목`/`팔아`의
+canonical `RSHOPP`/`RPAWNS`·`RNOTEL` 경계를 receipt에 연결했다. list는 저장 순서와
+가격을 읽기 전용으로 고정하고, sell은 exact direct-root/explicit occurrence,
+visibility, 품질·내용물·event flag, weight/gold overflow, `value/2` payout과
+`OPERMT`/`OTEMPP`/`OPERM2` 소유권 전환을 원자 적용한다. 실제 ARM64 PG17 replay/conflict
+검증을 통과했지만 prefix/key `find_obj`, double-payout RNG, merchant/repair와 전체
+경제 인수는 미완료다.
+
+`NPCCombatScheduler`는 기존 durable combat reducer의 외부 lifecycle 경계다.
+`RunOnce`/`Start`/`Run`/`Wait`/`Stop`/`Shutdown`이 고정 cadence와 pending retry/replay,
+중복 worker 방지·cancellation을 검증한다. main process wiring, 전체 update cadence,
+room broadcast는 아직 남아 있다.
+
+`WorldBackup` envelope는 format/version/world ID/revision/state SHA-256을 포함하고,
+unknown field·trailing JSON·checksum·`world.DecodeState` 실패를 거부한다. restore는
+expected revision과 receipt 없는 대상만 기본 허용하며 `Force` 시 receipt를 삭제하고
+writer epoch을 증가시켜 이전 writer를 fencing한다. 실제 ARM64 PG17 복구 테스트를
+통과했지만 백업 파일 보관·암호화·운영 복원 연습은 G4 인수 조건으로 남긴다.
