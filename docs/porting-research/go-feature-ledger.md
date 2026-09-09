@@ -1,10 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `post/ISSUE` raw 카탈로그 파서·서버 주입
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `post/ISSUE` 안건·선택지 파일 | `ParseVoteCatalog`/`LoadVoteCatalogFile`이 raw bytes를 UTF-8/EUC-KR·CRLF·최종 개행 변형까지 검증하고, 안건/선택지 한도·trailing/truncation/malformed를 fail-closed. `cmd/muhan -vote-issue-file`/`MUD_VOTE_ISSUE_FILE`은 `-world`에서만 server-owned catalog를 주입하며 SHA-256/evidence를 보존 | `3a05962` world parser race·vet·diff PASS. 운영 Supabase 대규모 이관, 실제 운영 파일 승인/보관, 전체 투표 출력·기능 parity와 브라우저/배포는 미완료 |
+
 ## 2026-09-10 `투표` 이관·continuation·receipt 통합
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |
-| `command11.c:vote`·`vote_cmnd` / `투표` | `VoteCatalog` gate, one-based ISSUE 출력, 연결 로컬 y/n·a..g continuation, `State.Votes` write/rewrite/history receipt를 `PlanLegacyVoteImport`/`ImportLegacyVotes`와 parser→session→transport로 연결. legacy path/raw bytes/name→ID resolver/digest를 all-or-nothing으로 검증하고 disconnect 시 draft를 폐기 | `28938b5`: world/session/transport vote·import race/vet, 전체 Go integration, diff check PASS. 실제 운영 Supabase 대규모 이관, raw `ISSUE` 파일 parser, 브라우저/WSS/Ingress·testnet 및 전체 command parity는 미완료 |
+| `command11.c:vote`·`vote_cmnd` / `투표` | `VoteCatalog` gate, one-based ISSUE 출력, 연결 로컬 y/n·a..g continuation, `State.Votes` write/rewrite/history receipt를 `PlanLegacyVoteImport`/`ImportLegacyVotes`와 parser→session→transport로 연결. legacy path/raw bytes/name→ID resolver/digest를 all-or-nothing으로 검증하고 disconnect 시 draft를 폐기 | `28938b5`, `3a05962`, `4fd7a8b`: world/session/transport vote·import/parser race/vet, 전체 Go integration, diff check PASS. 실제 운영 Supabase 대규모 이관, 운영 파일 승인/보관, 브라우저/WSS/Ingress·testnet 및 전체 command parity는 미완료 |
 
 투표 원장은 nil이면 이관 미완료로 fail-closed한다. Importer는 source active 파일에 없는
 history를 추측해 만들지 않으며, 운영 migration 도구에서 반환된 path/SHA-256 evidence를

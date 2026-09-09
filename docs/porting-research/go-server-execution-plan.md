@@ -1,9 +1,24 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 ISSUE 카탈로그 파서·서버 주입 및 worktree 정리
+
+`3a05962`에서 legacy `post/ISSUE` raw 파일을 server-owned `VoteCatalog`로 파싱하고
+`-vote-issue-file`/`MUD_VOTE_ISSUE_FILE`로 `-world` 서버에만 주입한다. UTF-8/EUC-KR,
+CRLF/최종 개행, 안건·선택지 한도, malformed/truncated/trailing bytes를 fail-closed로
+검증하며 raw SHA-256/evidence를 함께 보존한다. `4fd7a8b`는 alias 통합 테스트의 고정
+시계를 추가했다. world VoteCatalog race, 영향 패키지 vet, 전체 Go integration, diff check가
+통과했다.
+
+MUD Orca 하위 터미널은 0개다. 대소문자 충돌만 있던 연결 worktree 22개는 삭제했고,
+사용자 `src/frp.new`·Rust·삭제/미추적 변경이 있는 8개와 branch ref는 보존했다. 운영
+Supabase 대규모 이관 실행, 전체 명령/출력 parity, 실제 OS IME/mobile, WSS/Ingress,
+testnet 승격은 여전히 후속 조건이다.
+
 ## 2026-09-10 투표 이관·연결 로컬 continuation 통합
 
 완료된 하위 에이전트 세션은 종료했고, MUD에 등록된 Orca 하위 터미널은 0개다.
-예전 Orca 경로의 연결 워크트리는 미커밋 변경을 보존하기 위해 삭제하지 않는다.
+예전 Orca 경로의 연결 worktree 중 충돌-only 22개는 정리했으며, 미커밋 변경이 남은
+8개는 보존한다.
 메인에는 `28938b5`의 canonical 투표 이관기와 session/transport continuation,
 `0c6f7d6` xterm 모바일 IME/focus/viewport, `3a8bb8d` `Ballots`/append-only `History`,
 `ccd149c` 메일·게시판 PostgreSQL receipt/replay 회귀 테스트를 보존했다. `src/frp.new`와
@@ -16,7 +31,7 @@
 canonical map으로 변환하고, `BeginVoteContinuation`과 `ExecuteVoteContinuation`은
 원장에 연결된 write/rewrite receipt를 처리한다. 원작 선택지의 one-based 표시와
 연결 종료·transient retry·replay 경계도 TDD로 고정했다. 다만 실제 운영 DB에서의
-대규모 이관 실행, raw `ISSUE` parser, 전체 기능 인수는 후속 단계다.
+대규모 이관 실행과 전체 기능 인수는 후속 단계다.
 
 검증: world canonical vote race/transport vet/web 51 tests/typecheck/diff check PASS;
 실제 ARM64 `postgres:17-alpine` 메일·게시판 4개 시나리오 PASS(격리 컨테이너).

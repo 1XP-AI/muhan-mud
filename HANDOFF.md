@@ -1,5 +1,28 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (ISSUE 카탈로그 파서·작업공간 정리)
+
+`3a05962`에서 원작 `post/ISSUE` raw 바이트를 서버 소유 `VoteCatalog`로 파싱하는
+경계를 추가했다. UTF-8/EUC-KR·CRLF·최종 개행 변형, 안건/선택지 수·크기, trailing/
+truncation/malformed 입력을 fail-closed로 검증하고 raw bytes/SHA-256/evidence를 보존한다.
+`cmd/muhan`은 `-vote-issue-file` 또는 `MUD_VOTE_ISSUE_FILE`을 `-world` 모드에서만 받아
+catalog를 주입하며 backup/restore/seed 모드와 섞이지 않는다. `4fd7a8b`는 alias 통합
+테스트의 시계를 고정해 integration gate를 결정론적으로 만들었다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world -run 'VoteCatalog|VoteIssue' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+(cd server && scripts/run-go-validation.sh integration) PASS
+git diff --check PASS
+```
+
+MUD Orca에는 메인 워크트리만 등록되고 하위 터미널은 0개다. 대소문자 충돌만 있던
+예전 Git worktree 22개는 삭제했으며, `src/frp.new`, Rust 수정, 삭제/미추적 파일이
+남은 8개는 유실 방지를 위해 보존했다. 해당 브랜치 ref와 다른 저장소의 작업공간은
+삭제하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 이관·연결 로컬 continuation 통합)
 
 이번 배치에서 완료된 하위 에이전트 세션은 모두 종료했다. 메인 워크트리에는
@@ -21,13 +44,14 @@ git diff --check PASS
 
 메일·게시판 실제 ARM64 `postgres:17-alpine` 실행은 에이전트가 disposable DB에서
 4개 시나리오를 통과시켰다. 기본 환경에서는 해당 테스트가 명시적 DB URL이 없으면
-skip된다. 투표는 명시적 legacy importer와 원장 연결까지 완료했지만, 운영 Supabase·raw
-ISSUE parser·전체 기능·실제 OS
-IME/mobile·WSS/Ingress·testnet 인수는 아직 남아 있다.
+skip된다. 투표는 명시적 legacy importer·원장 연결·raw ISSUE parser 및 서버 주입까지
+완료했지만, 운영 Supabase 대규모 이관 실행·전체 기능·실제 OS IME/mobile·WSS/Ingress·
+testnet 인수는 아직 남아 있다.
 
 Orca는 MUD 메인 워크트리만 등록하고 하위 터미널은 0개다. 예전 `/Users/jjangg96/orca`
-연결 워크트리 30개는 각각 미커밋 변경이 남아 있어 유실 방지를 위해 삭제하지 않았다.
-다른 저장소의 Orca 터미널은 정리 범위가 아니므로 건드리지 않았다.
+연결 worktree 중 대소문자 충돌만 남은 22개는 정리했고, `src/frp.new`·Rust·삭제/미추적
+변경이 있는 8개와 브랜치 ref는 보존했다. 다른 저장소의 Orca 터미널은 정리 범위가
+아니므로 건드리지 않았다.
 
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (투표 source gate·ballot fail-closed, 역사적 초기 단계)
 
