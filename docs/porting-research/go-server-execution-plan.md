@@ -1,5 +1,28 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 소셜 manifest·복구 승격 경계
+
+운영자가 검토한 `family-ledger-v1` 또는 `character-memos-v1` JSON만
+`-import-social-manifest`로 제출할 수 있다. 기본 path-only와
+`-import-social-manifest-dry-run`은 private 0600·unknown field·aggregate digest·
+canonical ID/name/class/timestamp/fee·explicit boss ID를 확인한 뒤 DB/listener 없이
+종료한다. `-import-social-manifest-apply`가 없으면 `ImportFamilyLedger`/
+`ImportCharacterMemos`를 호출하지 않으며, seed/backup/player/bank inspection 등 다른
+mode와의 조합은 거부한다. raw legacy 파일, credential, 평문 비밀번호, 이름만으로 만든
+identity claim은 이 경계에 들어오지 않는다.
+
+재시작 시 `RestoreSocialState`는 read-only transaction으로 world row와 normalized
+family/memo evidence를 함께 읽어 expected revision/writer epoch, command receipt,
+aggregate SHA, row ordering/count와 snapshot authority를 검증한다. 후속 snapshot이
+이관 당시 aggregate와 달라도 현재 snapshot을 반환하며 evidence로 덮어쓰지 않는다.
+누락/고아/tamper/mismatch는 fail-closed하고, 실제 rollback은 별도 backup/restore
+훈련의 책임이다. `scripts/run-go-social-import-local.sh --allow-disposable`가 CLI
+apply와 restore/fence/replay/rollback을 ARM64 PostgreSQL에서 재현한다.
+
+이번 승격은 소셜 import 경계의 로컬 증거만 추가한다. 실제 `family_member_*`/`player/fal`
+수집기, operator identity mapping, Supabase RLS/권한·PITR, 전체 social parity와
+운영 장애 복구는 아직 G4/G5 조건이다.
+
 ## 2026-09-10 패거리 추방·소셜 원장 transaction 경계
 
 `command12.c:fm_out`은 Go에서 `FamilyMutationExpel`로 처리한다. 온라인 canonical

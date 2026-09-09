@@ -54,6 +54,9 @@ func main() {
 	playerSnapshotManifestMapping := flag.String("build-player-snapshot-manifest-mapping", "", "private operator identity/item mapping JSON for reviewed player snapshots")
 	playerSnapshotManifestOutput := flag.String("build-player-snapshot-manifest-output", "", "private destination manifest for reviewed player snapshot import")
 	playerSnapshotManifestDryRun := flag.Bool("build-player-snapshot-manifest-dry-run", false, "validate review, mapping, and CDTO files without writing an import manifest or connecting to PostgreSQL")
+	socialImportManifest := flag.String("import-social-manifest", "", "explicitly validate or import one reviewed Family/Memo aggregate manifest")
+	socialImportDryRun := flag.Bool("import-social-manifest-dry-run", false, "validate a reviewed social aggregate manifest without connecting to PostgreSQL")
+	socialImportApply := flag.Bool("import-social-manifest-apply", false, "explicitly apply a reviewed social aggregate manifest to PostgreSQL")
 	bankSnapshotInspectDir := flag.String("inspect-bank-snapshot-dir", "", "inspect all private BankSnapshotV1 files under a directory and emit metadata-only JSON")
 	bankSnapshotInspectFile := flag.String("inspect-bank-snapshot-file", "", "inspect one private BankSnapshotV1 file and emit metadata-only JSON")
 	bankSnapshotInspectDryRun := flag.Bool("inspect-bank-snapshot-dry-run", false, "run BankSnapshotV1 inspection without connecting to PostgreSQL (inspection is always DB-free)")
@@ -101,6 +104,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	socialImportOptions, err := validateSocialImportFlags(*socialImportManifest, *socialImportDryRun, *socialImportApply)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectOptions, err := validateBankSnapshotInspectionFlags(*bankSnapshotInspectDir, *bankSnapshotInspectFile)
 	if err != nil {
 		log.Fatal(err)
@@ -116,6 +123,7 @@ func main() {
 	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
 	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
 	bankRawConversionSelected := bankRawConvertOptions.Root != ""
+	socialImportSelected := socialImportOptions.ManifestPath != ""
 	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}
@@ -153,6 +161,10 @@ func main() {
 		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
 		log.Fatal("player snapshot manifest build mode cannot be combined with migrate, seed, or world flags")
 	}
+	if socialImportSelected &&
+		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected) {
+		log.Fatal("social import mode cannot be combined with import, inspection, conversion, seed, backup, or world flags")
+	}
 	if bankSnapshotInspectionSelected &&
 		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("bank snapshot inspection mode cannot be combined with import, conversion, seed, backup, or world flags")
@@ -164,6 +176,17 @@ func main() {
 	if bankRawConversionSelected &&
 		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("legacy raw bank conversion mode cannot be combined with import, inspection, seed, backup, or world flags")
+	}
+	var socialBatch socialImportBatch
+	if socialImportSelected {
+		socialBatch, err = readSocialImportManifest(socialImportOptions.ManifestPath)
+		if err != nil {
+			log.Fatalf("social import manifest rejected: %v", err)
+		}
+		if !socialImportOptions.Apply {
+			log.Printf("social import manifest validated: kind=%s world=%s command=%s; no database connection or write performed", socialBatch.Kind, socialBatch.WorldID, socialBatch.CommandID)
+			return
+		}
 	}
 	if bankSnapshotInspectionSelected {
 		inspectionJSON, inspectErr := InspectBankSnapshotReviewJSON(bankSnapshotInspectOptions.Directory, bankSnapshotInspectOptions.File)
@@ -289,6 +312,16 @@ func main() {
 		log.Fatal("database unavailable")
 	}
 	repo := storage.NewPostgres(db)
+	if socialImportOptions.Apply {
+		importCtx, importCancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := runSocialImport(importCtx, repo, socialBatch)
+		importCancel()
+		if err != nil {
+			log.Fatalf("social import failed: %v", err)
+		}
+		log.Printf("social import completed: kind=%s world=%s command=%s", socialBatch.Kind, socialBatch.WorldID, socialBatch.CommandID)
+		return
+	}
 	if *migrate {
 		migrationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()

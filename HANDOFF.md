@@ -1,5 +1,42 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (소셜 manifest CLI·복구 reader)
+
+검토된 `family-ledger-v1`/`character-memos-v1` JSON manifest를 읽는 운영 경계를
+추가했다. 기본 경로 또는 `-import-social-manifest-dry-run`은 private 0600·크기·형식·
+unknown field·canonical ID/name/class/timestamp/fee를 검증한 뒤 `DATABASE_URL`,
+listener, writer를 열지 않고 종료한다. `-import-social-manifest-apply`를 명시한 경우에만
+`ImportFamilyLedger` 또는 `ImportCharacterMemos`를 호출하며, 다른 import/seed/backup/
+inspection/world 모드와 섞이지 않는다. 평문 비밀번호·credential·raw/source path·이름
+기반 claim은 manifest 스키마에서 거부한다.
+
+재시작 경계에는 `ReadFamilyLedgerEvidence`, `ReadCharacterMemosEvidence`,
+`RestoreSocialState`를 추가했다. PostgreSQL normalized rows의 count/hash/receipt/row
+ordering을 읽어 현재 world snapshot과 대조하고, expected revision과 writer fence를
+확인한다. evidence가 snapshot을 덮어쓰거나 누락 identity를 복구하지 않으며, tamper·
+orphan·불일치는 fail-closed한다.
+
+반복 검증은 `scripts/run-go-social-import-local.sh --allow-disposable`로 ARM64
+`postgres:17-alpine` 한 개만 만들고 CLI apply·import replay/rollback·restore·fence를
+실행한 뒤 자신이 만든 컨테이너만 삭제한다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -run 'Social' -count=1) PASS
+(cd server && go test -race ./internal/storage -run 'Social' -count=1) PASS
+(cd server && go vet ./cmd/muhan ./internal/storage) PASS
+bash scripts/run-go-social-import-local.sh --allow-disposable PASS
+bash scripts/run-go-validation.sh integration PASS
+git diff --check PASS
+```
+
+이번 배치는 로컬 작업 tree에만 있으며 push/CI/배포는 실행하지 않았다. 실제 legacy
+`family_member_*`/`player/fal` 수집기와 operator 승인 mapping, 전체 social/family
+parity, normalized evidence 보관·PITR, room body 63건, 브라우저·모바일·WSS/Ingress·
+testnet 승격은 남아 있다. `src/frp.new`와 변경이 남은 기존 Orca worktree는 계속
+보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 추방·canonical 소셜 원장 이관)
 
 이번 배치에서 `command12.c:fm_out`의 온라인 패거리 추방 경계를 Go

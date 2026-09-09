@@ -1,5 +1,12 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 소셜 aggregate manifest·복구 reader
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| reviewed family/memo manifest | `cmd/muhan -import-social-manifest`가 private 0600 JSON의 kind/version/world/command/expected revision과 pointer-free aggregate를 검증한다. path-only 또는 `-import-social-manifest-dry-run`은 DB/listener 없이 종료하고, `-import-social-manifest-apply`만 명시적 Postgres import를 호출한다. | CLI/storage race·vet·DB-free subprocess·ARM64 PG apply/replay/rollback PASS. 실제 legacy collector·operator mapping·운영 Supabase 권한은 미완료 |
+| normalized evidence restart/restore | `ReadFamilyLedgerEvidence`, `ReadCharacterMemosEvidence`, `RestoreSocialState`가 row ordering/count/hash, receipt, expected revision/writer fence와 snapshot authority를 대조하며 tamper/orphan/mismatch를 거부하고 evidence로 snapshot을 덮어쓰지 않는다. | ARM64 PG restore/fence/tamper PASS. 보관·PITR·장애 중 재접속과 전체 데이터 복구 훈련은 미완료 |
+
 ## 2026-09-10 패거리 추방·canonical social import
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
