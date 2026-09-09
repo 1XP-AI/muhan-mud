@@ -8,6 +8,12 @@ tick·브라우저/배포 인수는 아직 완료되지 않았다.
 연결했다. daily/HP는 Supabase 권위 상태에 저장하고, descriptor cooldown과 global admission
 cooldown은 runtime에만 둔다. PNOBRD/PNOBR2 수신 거부를 존중하며 첫 commit만 전역 event를
 fan-out하고 replay는 재방송하지 않는다. 전체 C 명령 parity를 완료했다는 뜻은 아니다.
+
+검증 비용도 분리했다. `fast`는 현재 작업 트리의 영향 패키지만 race 검사하며, 깨끗한
+트리의 직전 커밋을 자동 반복하지 않는다(`GO_FAST_COMMIT=1`/`GO_FAST_BASE`는 명시적
+재검증용). `integration`은 ARM64 build 없는 조립 gate, `main`은 기본 브랜치에서만
+ARM64 cross-build를 포함한 최종 Go gate다. 실제 PG/browser/release matrix는 기능 레인에서
+반복하지 않는다.
 실행 기준은 `../docs/porting-research/go-server-execution-plan.md`다.
 문서 아래쪽의 Astra/Terra 표기는 과거 조사 기록이며 현재 실행 정책은 모든 하위
 작업을 Luna max로 배치하는 것이다.

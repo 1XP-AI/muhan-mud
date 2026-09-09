@@ -1,5 +1,34 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 중복 제거 + xterm/시뮬레이션 레인)
+
+검증 경로를 다시 전수 점검해 `fast`가 깨끗한 작업 트리에서 직전 커밋을 암묵적으로
+반복하지 않도록 고쳤다. 현재 변경만 표적 race로 검사하고, 커밋 자체를 다시 볼 때만
+`GO_FAST_COMMIT=1` 또는 `GO_FAST_BASE=<commit>`를 지정한다. `integration`은 전체
+Go race/vet/diff만, `main`은 기본 브랜치에서만 Linux ARM64 cross-build까지 실행한다.
+feature branch에서 `main` CI scope를 선택하면 checkout/setup 전에 즉시 거부하며, release
+matrix는 계속 수동 승인 시에만 실행한다.
+
+병렬 Luna max 레인 결과도 직렬 통합 전 검증했다.
+
+- 메모리 저장소/WebSocket 회귀가 xterm 캐릭터 생성→`CreateInWorld`→월드 입장→첫 `봐`→
+  durable disconnect→동일 캐릭터 재로그인/재입장을 검증한다. draft-only 등록 경로와
+  캐릭터 ID 교체를 감시하며 PostgreSQL 없이 결정론적으로 실행된다.
+- C `load_crt_tlk` 경계를 정적 `TalkCatalog`로 옮겼다. canonical `<name>-<level>` 경로,
+  UTF-8/CP949 decode, key/response와 `ATTACK`/`ACTION`/`CAST`/`GIVE`, first duplicate,
+  malformed/overflow/path traversal fail-closed를 테스트한다. 현재 `resources_utf8`에는
+  주소 가능한 88개 중 CP949 손상 파일 1개가 있어 실제 전체 catalog 연결은 그 자산을
+  정정하기 전까지 fail-closed이며, 아직 parser/connector에 연결하지 않았다.
+- C `update_active`의 비전투 NPC 유지보수 prefix(빈 방 제거, 상태 만료, HP/MP 회복,
+  공격 cooldown, MWAND 방황)를 snapshot-bound proposal/apply와 idempotent receipt로
+  옮겼다. RNG는 첫 commit에서만 사용하고 replay는 재호출하지 않는다. attack/flee/death,
+  scheduler, parser/connector 연결은 아직 남아 있다.
+
+검증: `scripts/run-go-validation.sh fast`, world/session/transport targeted race,
+`go vet ./internal/world ./internal/session ./internal/transport`, 정책·shell·diff 검사
+통과. ARM64 cross-build, disposable PostgreSQL, browser/release matrix는 이번 레인에서
+반복하지 않았다. `src/frp.new`는 사용자 dirty 변경으로 계속 보존한다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (전역 잡담·환호)
 
 원작 `command4.c:broadsend/broadsend2`의 `잡담`/`잡`/`환호`를 Go world/session/

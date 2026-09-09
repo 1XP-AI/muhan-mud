@@ -778,3 +778,27 @@ reducer로 옮겼다. daily/HP는 Supabase receipt에 저장하고 descriptor-lo
 예외는 정책대로 제외했다. 실제 PostgreSQL 17 receipt와 main Linux ARM64 build는 이
 기능 lane에서 반복하지 않고 batch/main 경계에서 한 번 실행한다. 전체 C 명령/ANSI parity,
 NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포 인수는 여전히 미완료다.
+
+## 2026-09-09 검증 중복 제거와 NPC/xterm bounded 후속
+
+검증 비용을 다시 전수 대조해 `fast`의 깨끗한 작업 트리에서 `HEAD^..HEAD`를 자동으로
+재검사하던 경로를 제거했다. `GO_FAST_COMMIT=1` 또는 `GO_FAST_BASE`를 명시한 경우에만
+커밋 범위를 검사하며, `integration`에는 ARM64 cross-build가 없고 `main` 기본 브랜치
+경계에서만 ARM64 build를 수행한다. 이번 기능 레인에서는 해당 고비용 gate, 실제 PG,
+브라우저 및 release matrix를 반복하지 않았다.
+
+- 메모리 WebSocket 회귀 테스트로 원작형 xterm 가입→월드 ID 생성→첫 명령→disconnect
+  저장→동일 캐릭터 재로그인/재입장을 고정했다. `CreateInWorld`만 호출되는지와 캐릭터
+  ID 보존을 검증하며 운영 코드/parser/connector는 변경하지 않았다.
+- `TalkCatalog`가 C `load_crt_tlk`의 canonical file path와 ordered topic pair 및
+  `ATTACK`/`ACTION`/`CAST`/`GIVE` descriptor를 읽고, CP949/EUC-KR fallback, duplicate
+  first-match, malformed/path traversal/overflow를 fail-closed한다. 실제 `resources_utf8`
+  88개 주소 가능 파일 중 1개 CP949 손상 자산 때문에 전체 catalog 연결은 보류했다.
+- `PlanNPCMaintenance`/`ApplyNPCMaintenance`와 `ExecuteNPCMaintenanceReceipt`가 C
+  `update_active`의 빈 방 정리, confused/charmed 만료, HP/MP 회복, 공격 timer, MWAND
+  roll을 snapshot-bound/idempotent receipt로 보존한다. attack/flee/death, scheduler 및
+  connector fan-out은 아직 별도 작업이다.
+
+검증: world/session/transport targeted `go test -race` 및 `go vet` 통과, strict room
+corpus 63건은 기존 예외 정책으로 제외했다. 전체 C parity, actual PG receipt batch,
+Linux ARM64 build, browser IME/mobile, WSS/Ingress와 testnet 배포는 여전히 미완료다.

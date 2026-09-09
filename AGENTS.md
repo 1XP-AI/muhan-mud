@@ -15,6 +15,7 @@
 - 최신 비용 정책: 모든 하위 에이전트는 난도와 무관하게 Luna max (`gpt-5.6-luna`, reasoning `max`)만 사용한다. Astra/Terra 등으로 자동 승격하지 않는다. 과거 목표 본문의 혼합 모델 배정보다 이 사용자 결정이 우선한다. 의존성 계약을 먼저 확정하고 파일 소유권이 겹치지 않는 작업만 병렬화한다. 불필요한 에이전트 생성·중복 검증을 피한다. 메인 세션 모델 변경은 앱 설정에서 별도로 확인하며 변경되지 않은 모델을 Luna라고 보고하지 않는다.
 - 검증은 로컬 우선이다. 자동 push, GitHub Actions 반복 실행, 클라우드 빌드, 운영 전환은 하지 않는다. 별도 사용자 지시의 범위를 따른다.
 - 검증 비용 cadence: 병렬 레인은 담당 파일의 gofmt와 변경 패키지 targeted race 테스트만 실행한다. `scripts/run-go-validation.sh integration`은 조립된 batch의 전체 Go race/vet/diff만 확인하고 ARM64 cross-build는 실행하지 않는다. Linux ARM64 cross-build, 실제 PostgreSQL, 브라우저/차트 검증은 메인 병합 또는 승인된 릴리스 경계에서 batch당 한 번만 실행한다. `scripts/run-go-validation.sh fast`는 레인용, `integration`은 개발 통합용, `main`은 메인 병합용이다. 예전 `merge` 이름은 모호한 고비용 실행을 막기 위해 거부한다. 같은 batch에서 동일한 전체 검증을 하위 에이전트별로 반복하지 않는다.
+- `fast`는 기본적으로 현재 작업 트리만 읽는다. 깨끗한 트리의 직전 커밋을 자동 재실행하지 않으며, 커밋 범위 재검증은 `GO_FAST_COMMIT=1` 또는 `GO_FAST_BASE=<commit>`를 명시한다. 수동 CI `main` scope는 기본 브랜치에서만 ARM64 gate를 허용한다.
 - 공유 Docker의 다른 작업 컨테이너·볼륨·캐시를 삭제하지 않는다. 작업별 고유 Compose 프로젝트와 임시 경로를 사용하고 자신이 만든 리소스만 정리한다.
 - `src/frp.new` 및 기존 사용자 변경은 수정·stage·되돌리기 금지. 완료 작업의 worktree도 병합과 미보존 변경 여부 확인 없이 삭제하지 않는다.
 - push가 요청되면 `private` 원격만 사용한다. 커밋 메시지는 한국어로 작성한다.
