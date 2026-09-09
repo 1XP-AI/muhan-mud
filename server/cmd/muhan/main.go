@@ -44,6 +44,7 @@ func main() {
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
 	helpDir := flag.String("help-dir", os.Getenv("MUD_HELP_DIR"), "directory containing UTF-8 help, spell and policy documents")
 	npcTalkDir := flag.String("npc-talk-dir", os.Getenv("MUD_NPC_TALK_DIR"), "directory containing canonical <name>-<level> NPC talk files (optional)")
+	voteIssueFile := flag.String("vote-issue-file", os.Getenv("MUD_VOTE_ISSUE_FILE"), "explicit legacy post/ISSUE file for the server-owned vote catalog (optional)")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
@@ -59,8 +60,11 @@ func main() {
 		log.Fatal(err)
 	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
+	}
+	if *voteIssueFile != "" && *worldID == "" {
+		log.Fatal("-vote-issue-file requires -world")
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -106,7 +110,7 @@ func main() {
 		return
 	}
 	if *seedWorld != "" || *seedRooms != "" || *seedCanonical {
-		if *seedWorld == "" || *seedRooms == "" || *worldID != "" {
+		if *seedWorld == "" || *seedRooms == "" || *worldID != "" || *voteIssueFile != "" {
 			log.Fatal("world seeding requires -seed-world and -seed-rooms, without -world")
 		}
 		info, err := os.Stat(*seedRooms)
@@ -201,6 +205,19 @@ func main() {
 			talkCatalog = &loaded
 			log.Printf("loaded NPC talk catalog: %d files (%d ignored)", loaded.Len(), len(loaded.IgnoredPaths()))
 		}
+		var voteCatalog world.VoteCatalog
+		if *voteIssueFile != "" {
+			source, err := world.LoadVoteCatalogFile(*voteIssueFile)
+			if err != nil {
+				log.Fatalf("vote ISSUE catalog admission failed: %v", err)
+			}
+			voteCatalog = source.Catalog
+			digest, err := voteCatalog.Digest()
+			if err != nil {
+				log.Fatalf("vote ISSUE catalog digest failed: %v", err)
+			}
+			log.Printf("loaded vote ISSUE catalog: %s (%d options; sha256=%x; digest=%s)", source.Path, voteCatalog.Issue.Number, source.SHA256, digest)
+		}
 		startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
 		writer, _, err := engine.StartWorld(startupCtx, repo, *worldID, "boot-"+rand.Text())
 		startupCancel()
@@ -213,6 +230,7 @@ func main() {
 			PasswordStore: repo,
 			Catalog:       world.TemplateCatalog{FS: os.DirFS(*templates)},
 			TalkCatalog:   talkCatalog,
+			VoteCatalog:   voteCatalog,
 			HelpFS:        os.DirFS(*helpDir),
 			Roll:          func(low, high int) int { return low + mathrand.IntN(high-low+1) },
 			Allocate:      func() (string, error) { return "item-" + rand.Text(), nil },
