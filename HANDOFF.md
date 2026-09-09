@@ -22,6 +22,11 @@ PRDFML 신청을 하나의 `ExecuteGame` receipt로 저장하고, `패거리탈�
 git diff --check PASS
 ```
 
+통합 영속성 harness `TestPostgresBoundedLanesPersistAndReplay`에도 동일 family
+신청 케이스와 replay 검증을 포함했다. 이번 로컬 실행은 전용
+`MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`이 없어 **SKIP**되었으며, 실제 PostgreSQL
+증거로 기록하지 않는다.
+
 전체 명령/interactive continuation, 실제 PostgreSQL·브라우저·IME/mobile, strict room
 corpus 63건, ARM64/release/WSS/Ingress/testnet 인수는 여전히 미완료다. `src/frp.new`와
 예전 dirty worktree는 보존한다.

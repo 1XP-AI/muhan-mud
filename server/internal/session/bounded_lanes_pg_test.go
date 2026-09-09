@@ -88,6 +88,21 @@ func TestPostgresBoundedLanesPersistAndReplay(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:      "family-mutation",
+			state:     func(t *testing.T) []byte { return familyMutationSessionFixture(t, false, false) },
+			commandID: "bounded-family-mutation-1",
+			line:      "패거리가입 청룡",
+			execute: func(ctx context.Context, owners *Ownership, store *storage.Postgres, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
+				return owners.ExecuteFamilyMutationLineWithCatalog(ctx, store, worldID, commandID, lease, line, familyMutationSessionCatalog())
+			},
+			verify: func(t *testing.T, state world.State) {
+				applicant := state.Players["applicant"].Body
+				if applicant.Daily[world.FamilyDailySlot].Max != 2 || applicant.Flags[world.FamilyPendingFlag/8]&(1<<(world.FamilyPendingFlag%8)) == 0 || applicant.Flags[world.FamilyMemberFlag/8]&(1<<(world.FamilyMemberFlag%8)) != 0 {
+					t.Fatalf("family applicant=%+v", applicant)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -111,6 +126,8 @@ func TestPostgresBoundedLanesPersistAndReplay(t *testing.T) {
 				actorID = "actor"
 			case "study":
 				actorID = "a"
+			case "family-mutation":
+				actorID = "applicant"
 			}
 			var owners Ownership
 			lease, err := owners.Acquire(actorID)
