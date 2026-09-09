@@ -176,7 +176,7 @@ workflow/pre-push를 전수 대조했으며 의도된 migration replay 외에 �
 4. 실제 등록표는 `src/global.c:203-558`의 `cmdlist[]`이며 마지막 `@`가 sentinel이다.
    `눌러`/`밀어`의 `cmdfn=0` 두 행은 `special_cmd` 경로를 가리키는 특수 표식이다.
 5. 주문 이름/레벨 표는 `src/global.c:571-635`의 `spllist[]`(활성 주문 56개),
-   전투 주문 계수 표는 `src/global.c:637-665`의 `ospell[]`(활성 행 24개)다.
+   전투 주문 계수 표는 `src/global.c:637-665`의 `ospell[]`(현재 활성 행 20개)다.
 
 다음은 파일을 변경하지 않고 현재 `cmdlist[]`를 집계하는 명령이다. C 주석과
 문자열 내부 escape를 처리하므로, 문서의 수치를 갱신할 때 같은 명령을 다시
