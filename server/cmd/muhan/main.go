@@ -338,7 +338,10 @@ func main() {
 		if err != nil || !info.IsDir() {
 			log.Fatal("seed room directory unavailable")
 		}
-		catalog, err := world.LoadLegacyRoomCatalog(os.DirFS(*seedRooms), world.LegacyRoomCompatibilityPolicy)
+		// Production provisioning must use the reviewed source manifest. The
+		// lower-level loader remains available for synthetic fixtures, but a
+		// server seed must fail closed if the checked-in room tree drifted.
+		catalog, err := world.LoadReviewedLegacyRoomCatalog(os.DirFS(*seedRooms), world.LegacyRoomCompatibilityPolicy)
 		if err != nil {
 			log.Fatal("legacy room catalog admission failed")
 		}

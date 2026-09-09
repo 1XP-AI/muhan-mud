@@ -37,6 +37,11 @@ type FamilyDefinition struct {
 	ID   int16  `json:"id"`
 	Name string `json:"name"`
 	Boss string `json:"boss"`
+	// Fee is the canonical family_gold value from family_list.  The legacy
+	// handlers multiply it by 10,000 when admitting a member and by 20,000
+	// when an active member leaves.  Keeping the source unit here avoids
+	// deriving a fee from a client request or from an unowned player field.
+	Fee int64 `json:"fee"`
 }
 
 // FamilyCatalog is loaded once from the versioned family resource and passed
@@ -52,7 +57,7 @@ func (c FamilyCatalog) Validate() error {
 	}
 	seenNames := make(map[string]bool, len(c.Families))
 	for id, family := range c.Families {
-		if id < 1 || id > FamilyMaxID || family.ID != id || !validFamilyText(family.Name) || !validFamilyText(family.Boss) {
+		if id < 1 || id > FamilyMaxID || family.ID != id || family.Fee < 0 || !validFamilyText(family.Name) || !validFamilyText(family.Boss) {
 			return fmt.Errorf("%w: family %d", ErrFamilyCatalogInvalid, id)
 		}
 		key := strings.ToLower(family.Name)

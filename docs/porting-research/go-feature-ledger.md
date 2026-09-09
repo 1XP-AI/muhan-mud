@@ -1,5 +1,28 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 패거리 원장·승인/탈퇴 및 메모 command 경계
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:가입허가`·활성 `패거리탈퇴` | `FamilyState`/`FamilyMember` canonical ledger와 `FamilyCatalog.Fee`를 도입하고, exact target·PFMBOS/catalog boss·online/visibility·fee/gold bound·member identity를 검증한 뒤 승인 시 `family_gold*10000` 이전, 활성 탈퇴 시 `family_gold*20000` 차감과 원장 제거를 하나의 receipt 전이로 처리 | world/session/transport race 및 vet PASS. Supabase/import에서 실제 `family_member_<n>` 원장을 canonical aggregate로 채우는 운영 단계와 원작 broadcast/interactive continuation은 미완료 |
+| `command12.c:memo` | `메모 <캐릭터명> <내용>`을 canonical recipient ID 아래 append-only `State.Memos`로 저장. offline recipient 허용, online actor 요구, UTF-8/80바이트/control/name/command-ID 경계와 receipt replay를 적용하고 nil pre-migration은 fail-closed | world/session/transport race 및 vet PASS. legacy `player/fal` batch import·운영 Supabase schema/복구·전체 출력 parity는 미완료 |
+
+`src/frp.new` 및 다른 dirty worktree는 이 배치에서 변경하지 않았다. 전체 `go test -race
+./...`는 기존 room body corpus의 검토되지 않은 63건 때문에 계속 실패하며, 이를 새 기능
+실패로 숨기지 않는다.
+
+## 2026-09-10 reviewed room manifest seed gate
+
+`cmd/muhan -seed-world`가 이제 `LoadReviewedLegacyRoomCatalog`만 사용한다. 따라서
+검토된 3,216개 room source manifest(정규 경로 2,341개·비정규 artifact 875개·body
+exception 63개)의 digest가 달라지면 PostgreSQL seed 전에 fail-closed한다. synthetic
+fixture와 unit importer는 기존 `LoadLegacyRoomCatalog`를 계속 사용할 수 있지만, 운영
+provisioning 경로는 drift가 확인되지 않은 room tree를 권위 snapshot으로 만들지 않는다.
+
+`go test -race ./cmd/muhan -count=1`, `go vet ./cmd/muhan ./internal/world`, `git diff
+--check`가 통과했다. 실제 seed/PG 재실행과 63개 body exception의 원본 변환은 별도 G1/G4
+승격 조건으로 남아 있다.
+
 ## 2026-09-10 legacy bank raw→kind-8 operator conversion
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

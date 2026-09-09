@@ -44,6 +44,20 @@ func connectorFamilyMutationCatalog() world.FamilyCatalog {
 	}}
 }
 
+func connectorFamilyApprovalState() world.State {
+	state := connectorFamilyMutationState(false, true)
+	state.Players["applicant"] = world.PlayerState{Body: func() world.LegacyMonster {
+		body := state.Players["applicant"].Body
+		body.Gold = 100000
+		return body
+	}(), Online: true}
+	boss := state.Players["boss"]
+	boss.Body.Gold = 100000
+	state.Players["boss"] = boss
+	state.Family = &world.FamilyState{Members: map[int16][]world.FamilyMember{2: {{ID: "boss", Name: "Boss", Class: 0}}}}
+	return state
+}
+
 func TestWorldConnectorSubmitDispatchesFamilyMutation(t *testing.T) {
 	store := &connectorCommandStore{}
 	connector, connections := boundedLaneConnection(t, store, connectorFamilyMutationState(false, false), "applicant", "boss")
@@ -76,5 +90,19 @@ func TestWorldConnectorFamilyMutationFailsClosedForActiveLeave(t *testing.T) {
 	output, err := connections[0].Submit(context.Background(), "패거리탈퇴")
 	if err != nil || !strings.Contains(output, "아직 구현되지 않은 명령") || store.commits != 0 {
 		t.Fatalf("active leave output=%q err=%v commits=%d", output, err, store.commits)
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesFamilyApprovalAndActiveLeave(t *testing.T) {
+	store := &connectorCommandStore{}
+	connector, connections := boundedLaneConnection(t, store, connectorFamilyApprovalState(), "applicant", "boss")
+	connector.config.FamilyCatalog = world.FamilyCatalog{Families: map[int16]world.FamilyDefinition{2: {ID: 2, Name: "청룡", Boss: "Boss", Fee: 3}}}
+	output, err := connections[1].Submit(context.Background(), "가입허가 Alice")
+	if err != nil || !strings.Contains(output, "가입을 허가") || store.commits != 1 {
+		t.Fatalf("approval output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !saved.Players["applicant"].Online || saved.Players["applicant"].Body.Gold != 130000 || saved.Players["boss"].Body.Gold != 70000 {
+		t.Fatalf("saved=%+v err=%v", saved.Players, err)
 	}
 }

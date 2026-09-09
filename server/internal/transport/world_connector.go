@@ -925,6 +925,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	studyCommand := false
 	saveCommand := false
 	mailCommand := false
+	memoCommand := false
 	boardCommand := false
 	titleCommand := false
 	infoCommand := false
@@ -1180,6 +1181,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandMail:
 		mailCommand = true
 		receipt, err = c.game.owners.ExecuteMailLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandMemo:
+		memoCommand = true
+		receipt, err = c.game.owners.ExecuteMemoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandBoard:
 		boardCommand = true
 		receipt, err = c.game.owners.ExecuteBoardLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -1265,6 +1269,24 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedStudyLine) ||
 		errors.Is(err, session.ErrUnsupportedSaveLine) ||
 		errors.Is(err, session.ErrUnsupportedMailLine) ||
+		errors.Is(err, session.ErrUnsupportedMemoLine) ||
+		errors.Is(err, world.ErrMemoStateUnresolved) ||
+		errors.Is(err, world.ErrMemoActorAbsent) ||
+		errors.Is(err, world.ErrMemoTargetRequired) ||
+		errors.Is(err, world.ErrMemoTargetUnavailable) ||
+		errors.Is(err, world.ErrMemoTargetAmbiguous) ||
+		errors.Is(err, world.ErrMemoTargetOffline) ||
+		errors.Is(err, world.ErrMemoBodyEmpty) ||
+		errors.Is(err, world.ErrMemoBodyInvalidUTF8) ||
+		errors.Is(err, world.ErrMemoBodyControl) ||
+		errors.Is(err, world.ErrMemoBodyTooLong) ||
+		errors.Is(err, world.ErrMemoInvalidID) ||
+		errors.Is(err, world.ErrMemoInvalidTimestamp) ||
+		errors.Is(err, world.ErrMemoInvalidRecord) ||
+		errors.Is(err, world.ErrMemoLimit) ||
+		errors.Is(err, world.ErrMemoStaleProposal) ||
+		errors.Is(err, world.ErrMemoInvalidProposal) ||
+		errors.Is(err, world.ErrMemoTargetNameNonCanonical) ||
 		errors.Is(err, session.ErrUnsupportedBoardLine) ||
 		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
@@ -1421,6 +1443,19 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrFamilyMutationBossCannotWithdraw) ||
 		errors.Is(err, world.ErrFamilyMutationFeeUnavailable) ||
 		errors.Is(err, world.ErrFamilyMutationApprovalUnsupported) ||
+		errors.Is(err, world.ErrFamilyMutationNotBoss) ||
+		errors.Is(err, world.ErrFamilyMutationTargetUnavailable) ||
+		errors.Is(err, world.ErrFamilyMutationTargetAmbiguous) ||
+		errors.Is(err, world.ErrFamilyMutationTargetNotPending) ||
+		errors.Is(err, world.ErrFamilyMutationTargetAlreadyMember) ||
+		errors.Is(err, world.ErrFamilyMutationMemberLedgerMissing) ||
+		errors.Is(err, world.ErrFamilyMutationInsufficientGold) ||
+		errors.Is(err, world.ErrFamilyMutationGoldOverflow) ||
+		errors.Is(err, world.ErrFamilyStateUnresolved) ||
+		errors.Is(err, world.ErrFamilyStateInvalid) ||
+		errors.Is(err, world.ErrFamilyMemberInvalid) ||
+		errors.Is(err, world.ErrFamilyMemberAbsent) ||
+		errors.Is(err, world.ErrFamilyMemberDuplicate) ||
 		errors.Is(err, world.ErrFamilyMutationStaleProposal) ||
 		errors.Is(err, world.ErrFamilyMutationInvalidProposal) ||
 		errors.Is(err, world.ErrMarriageActorAbsent) ||
@@ -2139,6 +2174,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if mailCommand {
 		var result world.MailResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if memoCommand {
+		var result world.MemoResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

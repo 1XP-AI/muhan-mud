@@ -26,8 +26,9 @@ var (
 // FamilyMutationCommand is the parser-owned projection of command11.c's
 // membership aliases. FamilyName is display input only: the reducer resolves
 // it against the immutable server-owned catalog before planning a proposal.
-// TargetName exists solely to identify the intentionally unsupported
-// `가입허가` boundary; it is never used as an authorization source.
+// TargetName identifies the exact target selector for `가입허가`; the world
+// reducer resolves it against online canonical identities and never treats it
+// as an authorization proof.
 type FamilyMutationCommand struct {
 	Action     world.FamilyMutationAction
 	FamilyName string
@@ -63,8 +64,8 @@ func validFamilyMutationLine(line string) bool {
 //
 // The original C command starts an interactive list/selection/yes flow. The
 // bare start is therefore intentionally left outside this parser. `가입허가`
-// is identified as an explicit unsupported action so Execute can return the
-// ledger-boundary error without resolving a target or writing a receipt.
+// is identified as a ledger-gated action; the world reducer either proves the
+// fee/member authority or returns a fail-closed error without a receipt.
 func ParseFamilyMutationLine(line string) (FamilyMutationCommand, bool) {
 	if !validFamilyMutationLine(line) {
 		return FamilyMutationCommand{}, false
@@ -87,8 +88,8 @@ func ParseFamilyMutationLine(line string) (FamilyMutationCommand, bool) {
 	case "가입허가":
 		// boss_family prompts for a target when no argument is given. That
 		// connection-local continuation is outside this bounded adapter; only
-		// the explicit target form is identified so it can fail closed against
-		// the missing fee/member ledgers.
+		// the explicit target form is admitted so the world reducer can resolve
+		// the exact canonical identity and ledger authority.
 		if len(tokens) != 2 {
 			return FamilyMutationCommand{}, false
 		}
@@ -150,10 +151,6 @@ func unsupportedFamilyMutationStart() error {
 	return errors.Join(ErrUnsupportedFamilyMutationLine, ErrFamilyMutationSelectionRequired)
 }
 
-func unsupportedFamilyMutationApproval() error {
-	return errors.Join(ErrUnsupportedFamilyMutationLine, world.ErrFamilyMutationApprovalUnsupported)
-}
-
 // ExecuteFamilyMutationLineWithCatalog connects the admitted family
 // application/cancellation proposal to ExecuteGame's actor-bound durable
 // receipt. The catalog is a value dependency but owns a map; world planning
@@ -169,9 +166,6 @@ func (o *Ownership) ExecuteFamilyMutationLineWithCatalog(ctx context.Context, st
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedFamilyMutationLine
 	}
-	if command.Action == world.FamilyMutationApprove {
-		return storage.WorldReceipt{}, unsupportedFamilyMutationApproval()
-	}
 	request, err := json.Marshal(familyMutationLineRequest{
 		Kind: "family-mutation", Line: line, Action: command.Action,
 		FamilyName: command.FamilyName, TargetName: command.TargetName,
@@ -182,6 +176,9 @@ func (o *Ownership) ExecuteFamilyMutationLineWithCatalog(ctx context.Context, st
 	return o.ExecuteGame(ctx, store, worldID, commandID, lease, request, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
+			if command.Action == world.FamilyMutationApprove {
+				return nil, nil, errors.Join(ErrUnsupportedFamilyMutationLine, err)
+			}
 			return nil, nil, err
 		}
 		var proposal world.FamilyMutationProposal
@@ -190,10 +187,15 @@ func (o *Ownership) ExecuteFamilyMutationLineWithCatalog(ctx context.Context, st
 			proposal, err = state.PlanFamilyJoinByName(actorID, command.FamilyName, catalog)
 		case world.FamilyMutationWithdraw:
 			proposal, err = state.PlanFamilyWithdrawal(actorID, catalog)
+		case world.FamilyMutationApprove:
+			proposal, err = state.PlanFamilyApproval(actorID, command.TargetName, catalog)
 		default:
 			return nil, nil, ErrUnsupportedFamilyMutationLine
 		}
 		if err != nil {
+			if command.Action == world.FamilyMutationApprove {
+				return nil, nil, errors.Join(ErrUnsupportedFamilyMutationLine, err)
+			}
 			return nil, nil, err
 		}
 		next, result, err := state.ApplyFamilyMutation(proposal)

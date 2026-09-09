@@ -31,6 +31,7 @@ const (
 	CommandRead
 	CommandSave
 	CommandMail
+	CommandMemo
 	CommandBoard
 	CommandInfo
 	CommandHelp
@@ -259,6 +260,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMailSendLine(trimmed) {
 		parsed.Kind = CommandMailSend
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsMemoLine(trimmed) {
+		parsed.Kind = CommandMemo
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -574,6 +580,8 @@ func commandKind(first string) CommandKind {
 		return CommandMail
 	case "편지보내기":
 		return CommandMailSend
+	case "메모":
+		return CommandMemo
 	case "게시판":
 		return CommandBoard
 	case "결혼":

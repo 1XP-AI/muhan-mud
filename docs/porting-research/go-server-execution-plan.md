@@ -1,5 +1,38 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 패거리 원장·메모 vertical slice
+
+이번 단계는 파일 기반 C 상태를 추측해 읽지 않고, 검토된 migration aggregate가 있을 때만
+명령을 성공시키는 G2/G3 경계다. `FamilyState`는 `family_member_<n>`의 pointer-free
+identity projection이며 nil이면 승인·활성 탈퇴를 거부한다. `가입허가 <정확한 이름>`은
+online PFMBOS와 immutable catalog boss를 모두 확인하고 `family_gold*10000`을 두목→신청자에게
+이전한 뒤 pending/member flag와 원장을 함께 바꾼다. 활성 `패거리탈퇴`는 동일 snapshot에서
+`family_gold*20000`을 차감하고 canonical member row를 제거한다. stale proposal, replay,
+duplicate identity, overflow, insufficient gold는 모두 commit 전에 닫힌다.
+
+`메모 <정확한 캐릭터명> <내용>`은 online actor가 offline recipient에게 남길 수 있는
+append-only receipt다. `State.Memos`가 nil이면 legacy `player/fal` import가 끝나지 않은
+상태로 간주해 쓰지 않고, import된 nonnil aggregate만 canonical player ID를 key로 사용한다.
+request/receipt에는 비밀번호나 raw path를 저장하지 않는다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run
+'Family|Memo|ParseCommand' -count=1`, 영향 패키지 `go vet`, `git diff --check`,
+`bash scripts/run-go-validation.sh fast` 재실행이 통과했다. 전체 `go test -race ./...`는
+기존 room body 63건 예외 때문에 예상대로 실패한다. 실제 Supabase aggregate import,
+전체 family/social parity, live gold/bank parity, 운영 배포는 다음 승격 조건이다.
+
+## 2026-09-10 reviewed room manifest seed gate
+
+운영 `cmd/muhan -seed-world`는 검토된 source manifest를 통과한 room tree만 읽도록
+`LoadReviewedLegacyRoomCatalog`를 사용한다. checked-in 3,216개 파일의 path class·원본
+SHA-256·issue/consumed metadata digest가 바뀌면 world seed와 PostgreSQL 연결 전에
+실패한다. 낮은 레벨 `LoadLegacyRoomCatalog`는 synthetic fixture·분리된 테스트용으로만
+남겨 두어, 테스트 편의를 위해 운영 drift 검사를 완화하지 않는다.
+
+검증: `go test -race ./cmd/muhan -count=1`, `go vet ./cmd/muhan ./internal/world`,
+`git diff --check` PASS. 실제 ARM64 PostgreSQL seed는 승인된 main/release cadence에서
+실행하고, room body 63건의 원본 변환과 전체 playable world 인수는 아직 미완료다.
+
 ## 2026-09-10 legacy bank raw→kind-8 operator conversion
 
 `cmd/muhan`의 `-convert-bank-raw-root`/`-convert-bank-raw-player`는 locator의 명시적

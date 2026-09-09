@@ -32,6 +32,10 @@ type State struct {
 	BankAccounts map[string]BankAccount
 	// Nil means family-war state has not been imported, not confirmed peace.
 	War *FamilyWar
+	// Nil means legacy family_member_<n> ledgers have not been imported. A
+	// non-nil FamilyState with an empty member slice is an explicit empty
+	// ledger, never an invitation to discover members from player flags.
+	Family *FamilyState
 	// Property special number -> invited character IDs (legacy invite_N, 10 slots).
 	// Nil is unimported; a nonnil empty map explicitly means no invitations.
 	Invitations map[int16][]string
@@ -40,6 +44,11 @@ type State struct {
 	// history aggregate; its maps/slices retain their own nil-vs-empty markers.
 	// Vote reducers never consult the legacy files as a fallback.
 	Votes *VoteState
+	// Nil means the legacy player/fal memo files have not been imported. A
+	// nonnil map is the canonical ordered memo append projection keyed by the
+	// recipient's immutable player ID. Memo writers never consult or construct
+	// a raw player path and never carry credentials.
+	Memos map[string][]CharacterMemo
 	// Nil is pre-migration. Canonical NPC bodies are owned here, not by rooms.
 	NPCs map[string]NPCState
 	// Global C first_active order. Nil is unresolved; [] is known inactive.
@@ -109,6 +118,9 @@ func (s State) Validate() error {
 	if err := s.validateMailboxes(); err != nil {
 		return err
 	}
+	if err := s.validateMemos(); err != nil {
+		return err
+	}
 	if s.Boards != nil {
 		if err := s.Boards.Validate(); err != nil {
 			return fmt.Errorf("invalid board state: %w", err)
@@ -126,6 +138,19 @@ func (s State) Validate() error {
 		for _, entry := range s.Votes.History {
 			if _, ok := s.Players[entry.ActorID]; !ok {
 				return fmt.Errorf("%w: vote history actor absent", ErrVoteStateInvalid)
+			}
+		}
+	}
+	if s.Family != nil {
+		if err := s.Family.Validate(); err != nil {
+			return fmt.Errorf("invalid family state: %w", err)
+		}
+		for familyID, members := range s.Family.Members {
+			for _, member := range members {
+				player, ok := s.Players[member.ID]
+				if !ok || player.Body.Name != member.Name || player.Body.Class != member.Class {
+					return fmt.Errorf("invalid family member identity %q in family %d", member.ID, familyID)
+				}
 			}
 		}
 	}
@@ -467,6 +492,12 @@ func (s State) clone() State {
 			next.Mailboxes[recipientID] = append([]MailMessage{}, messages...)
 		}
 	}
+	if s.Memos != nil {
+		next.Memos = make(map[string][]CharacterMemo, len(s.Memos))
+		for recipientID, records := range s.Memos {
+			next.Memos[recipientID] = copyMemos(records)
+		}
+	}
 	if s.Boards != nil {
 		boards := s.Boards.Clone()
 		next.Boards = &boards
@@ -516,6 +547,10 @@ func (s State) clone() State {
 	if s.War != nil {
 		war := *s.War
 		next.War = &war
+	}
+	if s.Family != nil {
+		family := s.Family.Clone()
+		next.Family = &family
 	}
 	for id, room := range s.Rooms {
 		room.Resource = cloneRoom(room.Resource)

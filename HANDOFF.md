@@ -1,5 +1,37 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 원장·메모 command vertical slice)
+
+이번 배치에서 패거리 승인/활성 탈퇴와 `메모 <캐릭터명> <내용>`을 canonical
+State→session receipt→WorldConnector 경계까지 연결했다. 패거리에는
+`FamilyState`/`FamilyMember` 원장을 추가해 정확한 canonical target·PFMBOS와
+catalog boss 권한·fee/gold overflow·멤버 중복·stale/replay를 검증한다. 활성
+탈퇴는 `family_gold*20000`을 차감하고 원장에서 제거하며, 가입허가는
+`family_gold*10000`을 두목에게서 신청자에게 이전하고 pending→member로 전이한다.
+대화형 bare continuation과 `fm_out`의 미검증 부작용은 계속 fail-closed다.
+
+메모는 canonical recipient ID 아래 append-only aggregate로 저장하고, offline recipient는
+허용하되 actor는 online이어야 한다. UTF-8·80바이트·control 문자·정확한 이름·중복
+command ID를 검증하며, `State.Memos == nil`인 pre-migration snapshot은 receipt 전에
+거부한다. 비밀번호와 raw player path는 State·request·receipt에 포함하지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Family|Memo|ParseCommand' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport ./cmd/muhan) PASS
+bash scripts/run-go-validation.sh fast PASS (재실행; 첫 실행은 기존 시간 출력 flaky test로 실패)
+go test -race ./... EXPECTED FAIL: 기존 room body corpus의 unsupported 63건
+bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable PASS (3/3, real Go + ARM64 PostgreSQL + Chromium)
+git diff --check PASS
+```
+
+이번 변경은 로컬 작업 tree에만 있으며 push/CI/배포를 실행하지 않았다. 실제 Supabase
+import에서 `FamilyState`/`Memos`를 검토된 canonical aggregate로 채우는 단계, 전체
+family/social command parity, legacy room body 63건 변환, live gold/bank parity,
+운영 Supabase·WSS/Ingress·testnet 검증은 남아 있다. 기존 사용자 변경 `src/frp.new`와
+dirty Orca worktree는 삭제하거나 stage하지 않는다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy bank raw 변환 산출물)
 
 `cmd/muhan`에 `-convert-bank-raw-root`, `-convert-bank-raw-player`,
