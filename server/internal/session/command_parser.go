@@ -76,6 +76,8 @@ const (
 	CommandStudy
 	CommandMailSend
 	CommandBoardWrite
+	CommandIgnore
+	CommandSteal
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -165,6 +167,19 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsBoardWriteLine(trimmed) {
 		parsed.Kind = CommandBoardWrite
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// command9.c's ignore list is connection-local, but it still needs to
+	// pass through the shared command classifier so the transport can apply
+	// the authoritative online/PDMINV checks before toggling it.
+	if IsIgnoreLine(trimmed) {
+		parsed.Kind = CommandIgnore
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsStealLine(trimmed) {
+		parsed.Kind = CommandSteal
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -368,6 +383,10 @@ func commandKind(first string) CommandKind {
 		return CommandBoard
 	case "써":
 		return CommandBoardWrite
+	case IgnoreCommandName:
+		return CommandIgnore
+	case "훔쳐":
+		return CommandSteal
 	case "정보":
 		return CommandInfo
 	case "도움말", "?":
@@ -406,7 +425,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList:
+	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore:
 		return true
 	default:
 		return false

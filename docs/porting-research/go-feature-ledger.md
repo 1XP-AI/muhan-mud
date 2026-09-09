@@ -869,3 +869,31 @@ combat strict ordering은 다음 scheduler 통합 범위다. 실제 PG 검증은
 `server/internal/session/mail_board_command_pg_test.go`는 mail read/send/delete와 board
 list/read/write 경계를 하나의 opt-in PostgreSQL 실행으로 묶는다. URL이 없으면 명시적으로
 skip되며 일반 unit/race 성공을 실제 DB 증거로 해석하지 않는다.
+
+## 2026-09-09 직접 관리 병렬 후속: 듣기거부·훔쳐
+
+서로 다른 파일 소유권의 Luna max 두 레인을 병렬 구현하고, 메인 세션에서 공용 parser와
+live connector를 직렬 통합했다.
+
+- `듣기거부`: 원작 `command9.c`의 `first_ignore` 수명을 connection-local
+  `IgnoreList`로 옮겼다. 최신 등록 우선·중복 no-op·원자 toggle·256개 상한·14바이트/12
+  코드포인트 경계를 고정했으며, 연결 종료 시 목록은 버려지고 world/receipt/PostgreSQL에는
+  저장되지 않는다. 대상 추가는 authoritative online exact identity와 `PDMINV`를 다시
+  확인하고, 로그아웃 뒤 삭제는 원작 순서를 유지한다.
+- 직접 메시지(`얘기`/`이야기`)는 target descriptor의 ignore list를 receipt 전에 검사해
+  `is ignoring you` 응답으로 차단한다. 차단된 line은 world commit/event를 만들지 않으며,
+  해제 후에만 기존 deterministic DM receipt와 exact target fan-out을 사용한다.
+- `훔쳐`: 원작 `command6.c`의 도둑/무적 권한, 5초 `LT_STEAL`, stealth reveal, 안전방·정렬·
+  시야·blind gate, chance/RNG, quest/ONEWEV 보호를 snapshot-bound reducer로 옮겼다.
+  성공은 canonical root+nested item subtree와 player-kill timer를 atomic transfer하고,
+  NPC 실패는 enemy 관계를 추가한다. legacy inventory와 아직 미이관 identity는
+  `ErrStealInventoryUnresolved`/fail-closed로 남긴다.
+- receipt의 room reveal/failure text와 player warning은 최초 commit 뒤 한 번만 fan-out하며,
+  replay에서는 RNG·상태 변경·방송을 다시 실행하지 않는다. bounded 대상은 exact canonical
+  이름만 인정하고 C의 prefix/occurrence·전체 ANSI 출력은 후속 differential 범위다.
+
+검증: `go test -race` 대상 world/session/transport와 `go vet` 통과, `scripts/run-go-validation.sh
+fast` 및 `integration` 통과. ARM64 cross-build·실제 PostgreSQL·브라우저/IME·release
+matrix는 cadence 정책에 따라 이번 기능 레인에서 반복하지 않았다. strict room corpus
+63건, 전체 C command/prefix/key/ANSI parity, NPC full cadence, WSS/Ingress와 testnet
+배포는 여전히 미완료다.

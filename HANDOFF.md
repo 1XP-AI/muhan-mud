@@ -1507,3 +1507,35 @@ ARM64 cross-build/browser/release/testnet은 이번 레인에서 반복하지 �
 사용자 소유 dirty binary로 계속 보존한다. 다음 작업은 실제 disposable PG에서 새 send/write
 receipt를 함께 검증하고, 빈 게시글·legacy post/board 이관 차이를 differential 결정하는
 것이다.
+
+## 2026-09-09 `듣기거부`·`훔쳐` 통합 체크포인트
+
+이번 작업은 검증 중복 제거 cadence를 유지하면서 두 개의 독립 Luna max 레인을 병렬 처리하고
+메인에서 parser/connector만 조립했다.
+
+- `server/internal/session/ignore_command.go`, `server/internal/transport/ignore_list.go`:
+  `듣기거부`의 connection-local 목록·정규화·상한·동시성 계약을 추가했다.
+- `server/internal/transport/world_connector_ignore.go`:
+  authoritative online exact target/PDMINV 확인, 목록 출력·toggle, 대상 descriptor의
+  ignore list를 이용한 직접 메시지 차단을 연결했다. ignore는 world/receipt/DB에 저장하지
+  않는다.
+- `server/internal/world/steal.go`, `server/internal/session/steal_command.go`:
+  `훔쳐 <물건> <대상>`의 권한·쿨다운·시야/보호·확률·canonical root subtree transfer,
+  NPC 실패 적대화와 player-kill timer를 typed receipt로 구현했다.
+- `server/internal/transport/world_steal_events.go`:
+  commit 뒤 reveal/failure room event와 player target warning을 한 번만 전송한다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Steal|Ignore|DirectMessage' -count=1)  PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport)  PASS
+scripts/run-go-validation.sh fast  PASS
+scripts/run-go-validation.sh integration  PASS
+git diff --check  PASS
+```
+
+이번 기능 레인에서는 ARM64 cross-build, 실제 PostgreSQL, 브라우저/IME, release matrix를
+반복하지 않았다. 해당 검증은 `main`/`release` 경계에서만 실행한다. strict room corpus
+63건, C 전체 prefix/occurrence/ANSI parity, NPC full cadence, WSS/Ingress와 testnet 배포는
+여전히 남은 인수 조건이다. `src/frp.new`는 사용자 dirty 변경으로 계속 보존한다.

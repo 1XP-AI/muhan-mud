@@ -783,3 +783,21 @@ testnet 배포는 해당 cadence 경계에서만 실행한다.
 room corpus 63건, 전체 C command/prefix/key/ANSI parity, full board/mail editor, NPC full
 cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 cadence 정책에 따라 반복하지 않았고
 아직 전체 인수 조건으로 남아 있다.
+
+## 2026-09-09 직접 관리 병렬 후속: 듣기거부·훔쳐
+
+이번 batch는 기능 파일을 분리한 두 Luna max 레인을 병렬 처리한 뒤 메인 세션에서
+parser·connector를 통합했다.
+
+- `듣기거부`는 `first_ignore`를 connection-local `IgnoreList`로 유지한다. target 추가
+  시 authoritative online exact identity와 PDMINV를 확인하고, 직접 메시지 경로는 대상
+  connection의 목록을 receipt 전에 검사해 차단한다. 목록은 world state·receipt·DB에
+  저장하지 않는다.
+- `훔쳐`는 canonical NPC/player identity와 `ItemCollection` root subtree만 대상으로
+  한다. 권한·5초 cooldown·stealth reveal·시야/정렬/안전방/blind·quest/ONEWEV·RNG와
+  실패 적대화, player-kill timer를 하나의 snapshot-bound receipt로 처리한다.
+- 기능 레인 검증은 영향 패키지 race와 조립 후 `integration`까지로 제한한다. ARM64는
+  `main`에서 한 번, PostgreSQL·브라우저·호환성 matrix는 `release`에서 한 번만 실행한다.
+  이번 batch에서 해당 고비용 검증을 반복하지 않았으며, strict room corpus 63건·전체
+  C prefix/occurrence/ANSI parity·NPC full cadence·IME/mobile·WSS/Ingress·testnet 배포는
+  별도 인수 조건으로 남긴다.

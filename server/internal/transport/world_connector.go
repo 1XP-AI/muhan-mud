@@ -245,6 +245,9 @@ type worldConnection struct {
 	closeAfterSubmit bool
 	infoPending      bool
 	compose          *composeDraft
+	// ignore is command9.c's connection-local first_ignore list. It is never
+	// serialized with the world snapshot or a command receipt.
+	ignore IgnoreList
 }
 
 type composeKind uint8
@@ -529,6 +532,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if parseErr != nil {
 		return "명령을 이해할 수 없습니다.\r\n", nil
 	}
+	if parsed.Kind == session.CommandIgnore {
+		output, handled, ignoreErr := c.submitIgnoreLine(line, before, beforeOK)
+		if handled {
+			return output, ignoreErr
+		}
+	}
+	if parsed.Kind == session.CommandDirectMessage {
+		if output, ignored := c.directMessageIgnored(before, line); ignored {
+			return output, nil
+		}
+	}
 	directional := parsed.Kind == session.CommandDirectional
 	sayText, sayCommand := "", false
 	yellText, yellCommand := "", false
@@ -553,6 +567,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	valueCommand := false
 	repairCommand := false
 	directMessageCommand := false
+	stealCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -587,6 +602,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteDirectionalLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, now, hour, world.SceneOptions{}, c.game.config.Catalog, c.game.config.Roll, c.game.config.Allocate)
 	case session.CommandAttack:
 		receipt, err = c.game.owners.ExecuteAttackLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.Roll, session.AttackOptions{Now: now, Allocate: c.game.config.Allocate})
+	case session.CommandSteal:
+		stealCommand = true
+		receipt, err = c.game.owners.ExecuteStealLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.StealOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -781,6 +799,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedValueLine) ||
 		errors.Is(err, session.ErrUnsupportedRepairLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectMessageLine) ||
+		errors.Is(err, session.ErrUnsupportedStealLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -954,6 +973,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if stealCommand && !receipt.Replayed {
+		var result world.StealResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishSteal(after, *result.Event)
+			}
+		}
+	}
 	if npcTalkCommand && !receipt.Replayed {
 		var result world.NPCTalkResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
@@ -1116,6 +1143,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
+	} else if stealCommand {
+		var result world.StealResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
 	} else if merchantPurchaseCommand {
 		var result world.MerchantPurchaseResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
@@ -1249,6 +1281,10 @@ func (c *worldConnection) Close(ctx context.Context) {
 	// departure cleanup may need a retry, but an abandoned title/body must not
 	// remain attached to that connection while it is sealed.
 	c.clearCompose()
+	// `first_ignore` is descriptor-local in the legacy server. Clear it at the
+	// connection boundary so a closed descriptor cannot retain names while a
+	// cleanup retry is pending.
+	c.ignore.Clear()
 	before, beforeOK := c.game.snapshot(ctx)
 	// Ownership remains reserved on every failure; background worker owns retries.
 	if err := c.game.cleanup.Enqueue(c.lease); err != nil {
