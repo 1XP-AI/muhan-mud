@@ -125,6 +125,19 @@ cross-build는 `merge`에서 batch당 한 번, durable receipt PG 검사는
 통과했다. ARM64 이미지/Helm, browser/IME/mobile, strict room corpus, full parity와
 testnet 배포는 여전히 release/후속 G3~G5 조건이다.
 
+### 2026-09-09 원작 `!` 명령 재실행 경계
+
+`src/command1.c:1439-1445`의 연결별 `lastcommand` 동작을 Go
+`WorldConnector`에 연결했다. `!`은 직전 명령을, `!suffix`는 직전 명령 뒤에 suffix를
+붙인 명령을 다음 parser에 넘긴다. 선행 ASCII 공백 제거와 79바이트 UTF-8 안전
+history budget을 유지하며, 빈 확장은 기존 history를 보존한다. history는 연결 로컬
+상태라서 `State`·Supabase 영속 데이터·receipt에는 저장하지 않는다. 따라서 재접속 시
+history가 남지 않고, 확장된 명령만 기존 parser/reducer/receipt 경계를 통과한다.
+
+session pure TDD와 live connector 회귀가 `go test -race`를 통과했다. full C parser의
+약어 우선순위, alias `$N/$*` 치환 및 `!`와 alias의 상호작용은 별도 원장 항목으로
+남아 있다.
+
 ## 확인된 출발점 (역사적 준비 기록)
 
 - 기존 C 게임 서버가 게임 동작의 기준이다. C의 PostgreSQL 연결 확장은 동결한다.

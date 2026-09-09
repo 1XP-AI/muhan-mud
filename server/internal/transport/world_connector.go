@@ -208,10 +208,14 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 }
 
 type worldConnection struct {
-	mu               sync.Mutex
-	game             *WorldConnector
-	lease            session.SessionLease
-	events           chan string
+	mu     sync.Mutex
+	game   *WorldConnector
+	lease  session.SessionLease
+	events chan string
+	// lastCommand mirrors C's connection-local extr->lastcommand. It is
+	// deliberately excluded from world state and durable receipts: `!` only
+	// expands the next line before the normal command reducer runs.
+	lastCommand      string
 	ready, closed    bool
 	closeAfterSubmit bool
 	infoPending      bool
@@ -258,6 +262,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return text, nil
 	}
+	line, c.lastCommand = session.ExpandHistoryLine(c.lastCommand, line)
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
 	commandID := "command-" + rand.Text()

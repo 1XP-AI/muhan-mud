@@ -2355,6 +2355,15 @@ Go 기능 레인은 담당 패키지의 `gofmt`와 targeted `go test -race`만 �
 브라우저/stack 및 x64·Windows·macOS 호환 matrix를 실행한다. 자동 push/PR workflow는 없으며,
 호환성·차트·실기기 검증을 삭제하지 않고 release 시점으로 이동했다.
 
+## 원작 `!` 명령 재실행
+
+`WorldConnector`는 C `command()`의 연결별 `lastcommand`를 순수 입력 경계로 유지한다.
+`!`은 직전 명령을 재실행하고 `!suffix`는 직전 명령에 suffix를 붙여 기존 parser로
+보낸다. history는 79바이트 UTF-8 안전 예산을 사용하며 `State`, 계정, PostgreSQL
+receipt에는 저장하지 않는다. 따라서 재접속하면 비워지고, 실제 실행·저장은 확장된
+명령의 기존 receipt/replay 규칙을 그대로 따른다. pure session 테스트와 connector
+회귀가 race 검사를 통과했다. 전체 C 약어/alias 치환 parity는 아직 별도 범위다.
+
 ## 2026-09-09 뇌물·숨기기·도망 함정
 
 세 Luna max 병렬 레인을 통합해 `뇌물`, `숨겨`/`숨어`, arrival trap이 있는 `도망`을

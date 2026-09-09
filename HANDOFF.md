@@ -26,6 +26,15 @@ merge`, 정적 정책·migration coverage, ARM64 PostgreSQL 17의 3-lane 저장/
 WSS/Ingress·testnet 배포와 전체 legacy data migration은 아직 남아 있다. 목표 Project
 항목과 issue #1은 전체 인수 조건 전까지 `In Progress`를 유지한다.
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (원작 `!` 재실행)
+
+`src/command1.c`의 연결별 `lastcommand` 경계를 Go `WorldConnector`에 연결했다. `!`은
+직전 명령을, `!suffix`는 직전 명령에 suffix를 붙여 기존 parser/reducer로 전달한다.
+선행 공백과 79바이트 UTF-8 history 예산을 처리하고 빈 확장에서는 이전 history를
+보존한다. history는 연결 로컬 상태이므로 `State`·계정·PostgreSQL receipt에 저장하지
+않으며 재접속 시 초기화된다. session pure TDD와 live connector `go test -race`가
+통과했다. 전체 C 약어 우선순위와 alias `$N/$*` 치환은 아직 남아 있다.
+
 ## 현재 오케스트레이션 체크포인트 — 2026-09-09
 
 개발 속도 최적화를 전수 점검해 검증 cadence를 코드화했다. 병렬 Luna max 레인은 담당
