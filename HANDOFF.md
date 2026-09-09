@@ -1570,3 +1570,24 @@ ARM64 cross-build·실제 PostgreSQL·브라우저/IME·release matrix는 cadenc
 기능 레인에서 반복하지 않았다. strict room corpus 63건, 전체 C command/prefix/key/ANSI
 parity, NPC full cadence, WSS/Ingress와 testnet 배포는 남은 조건이다. `src/frp.new`는
 사용자 소유 dirty binary로 stage/수정하지 않았다.
+
+## 2026-09-09 교란·맹공·혈도봉쇄 통합 체크포인트
+
+세 개의 독립 Luna max 레인을 병렬 실행하고 메인에서 parser·connector·room/target event를
+조립했다. 코드 커밋은 `c5609e3` (`기능: 교란·맹공·혈도봉쇄 경계 연결`)이다.
+
+- `교란`: canonical same-room NPC→player 선택, 권한/PVP·전쟁·안전방·시야, stealth/
+  `LT_ATTCK`, 확률·befuddle·적대 상태를 `PlanCircle`/`ApplyCircle` receipt로 연결했다.
+- `맹공`: fighter/barbarian/invincible 권한, canonical 무기·내구도·명중·damage dice,
+  befuddle·NPC 적대/proficiency와 비치명 HP를 `PlanBash`/`ApplyBash`로 연결했다. lethal
+  `die`/도주와 descriptor charm/전쟁 상태는 fail-closed다.
+- `혈도봉쇄`: NPC-only lookup/visibility/occurrence, reveal·cooldown·`MUNKIL` 순서를
+  고정했다. 원작의 적대 추가·반 HP damage/death/flee 후속은 canonical reducer 조합 전까지
+  `ErrMagicStopCombatSideEffectPending`으로 영수증 없이 거부하며, transport는 세션을
+  끊지 않고 unsupported 응답을 돌려준다.
+
+검증은 새 world/session/transport focused race, `go vet`, `scripts/run-go-validation.sh fast`,
+`scripts/run-go-validation.sh integration`, `git diff --check`를 통과했다. ARM64는 `main`,
+실제 PostgreSQL·브라우저·호환성 matrix는 `release`에서 한 번만 실행한다. strict room corpus,
+전체 C prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet
+배포는 아직 남은 승격 조건이다. `src/frp.new`는 사용자 소유 dirty 변경으로 보존한다.

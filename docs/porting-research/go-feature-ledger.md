@@ -927,3 +927,40 @@ matrix는 cadence 정책에 따라 이번 기능 레인에서 반복하지 않�
 전체 C command/prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와
 testnet 배포는 여전히 남은 인수 조건이며, 사용자 소유 `src/frp.new`만 dirty 상태로
 보존한다.
+
+## 2026-09-09 직접 관리 병렬 후속: 교란·맹공·혈도봉쇄
+
+서로 겹치지 않는 world/session 파일 경계의 Luna max 세 레인을 병렬 처리한 뒤, 메인에서
+중앙 parser·`WorldConnector` dispatch·room/target fan-out을 한 번만 조립했다. 코드 커밋은
+`c5609e3` (`기능: 교란·맹공·혈도봉쇄 경계 연결`)이다.
+
+- **교란**: 원작 `command8.c:circle`의 canonical same-room NPC→player 선택, 권한·PVP/
+  가문전쟁·안전방·시야·`LT_ATTCK`·stealth 해제·확률/지연·`MUNKIL`·적대·`LT_BEFUD`를
+  snapshot-bound proposal/apply와 durable receipt로 옮겼다. 비치명 상태 전이만 허용하고,
+  사망·미해결 charm/war는 fail-closed한다.
+- **맹공**: 원작 `command8.c:bash`의 fighter/barbarian/invincible gate, canonical 대상과
+  무기/내구도, cooldown·stealth·보호 플래그, 명중·damage dice·befuddle·NPC 적대/
+  proficiency 및 비치명 HP를 deterministic receipt로 고정했다. `die` 전이와 descriptor
+  charm/전쟁 상태가 없는 경우 영수증 없이 거부한다.
+- **혈도봉쇄**: 원작 `command7.c:magic_stop`의 NPC-only identity/visibility, occurrence와
+  cooldown·MUNKIL·stealth reveal 경계를 먼저 고정했다. C의 `add_enm_crt`와 반 HP damage/
+  death/flee 후속을 현재 canonical reducer가 표현하지 못하므로, 일반 대상은 RNG·timer/
+  receipt를 만들지 않고 `ErrMagicStopCombatSideEffectPending`으로 fail-closed한다. 이를
+  transport에서 unsupported 응답으로 변환해 세션을 끊지 않는다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world -run 'Circle|Bash|MagicStop' -count=1) PASS
+(cd server && go test -race ./internal/session -run 'Circle|Bash|MagicStop' -count=1) PASS
+(cd server && go test -race ./internal/transport -run 'Circle|Bash|MagicStop' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+scripts/run-go-validation.sh fast PASS
+scripts/run-go-validation.sh integration PASS
+git diff --check PASS
+```
+
+이번 기능 레인에서는 ARM64 cross-build, 실제 PostgreSQL, 브라우저/IME, release matrix,
+strict room corpus 63건, 전체 C prefix/key/ANSI parity, NPC full cadence, WSS/Ingress와
+testnet 배포를 반복하지 않았다. ARM64는 `main`, DB/browser/호환성 검증은 `release` 경계에서
+한 번만 실행한다. `src/frp.new`는 사용자 소유 dirty 변경으로 계속 보존한다.

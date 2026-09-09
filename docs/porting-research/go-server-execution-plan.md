@@ -827,3 +827,25 @@ ANSI parity·NPC full cadence·IME/mobile 실기기·WSS/Ingress·testnet 배포
 코드 커밋 `c194824`에서 세 레인의 world/session 구현과 parser/connector 통합을 완료했다.
 검증은 영향 패키지 race, focused transport 회귀, `fast`, `integration`, `vet`, diff check가
 통과했다. 사용자 소유 `src/frp.new`는 계속 보존한다.
+
+## 2026-09-09 G3 전투 후속: 교란·맹공·혈도봉쇄
+
+파일 소유권이 겹치지 않는 세 Luna max 레인을 병렬 실행하고, 메인 세션에서 공용 parser와
+live connector만 직렬 조립한다.
+
+1. `교란`은 `command8.c:circle`의 same-room canonical identity와 NPC 우선 순서, 권한/
+   PVP·가문전쟁·안전방·시야·stealth·쿨다운·확률·befuddle·적대 경계를 snapshot-bound
+   proposal/apply와 receipt로 고정한다. 사망/미해결 관계는 거부한다.
+2. `맹공`은 `command8.c:bash`의 권한·무기/내구도·명중·damage dice·befuddle·NPC 적대/
+   proficiency·비치명 HP 전이를 고정한다. canonical `die`/`check_for_flee`가 조합되기
+   전에는 lethal 결과를 영수증 없이 거부한다.
+3. `혈도봉쇄`는 `command7.c:magic_stop`의 NPC-only lookup, visibility·occurrence·reveal·
+   cooldown·MUNKIL 순서를 먼저 고정한다. 원본의 적대 추가와 반 HP damage/death/flee
+   후속이 아직 canonical State에 없으므로 일반 대상은 `ErrMagicStopCombatSideEffectPending`
+   으로 fail-closed하고, connector는 세션을 닫지 않고 unsupported 응답을 반환한다.
+
+이번 조립 커밋은 `c5609e3`이다. 검증은 영향 패키지 race와 전체 Go integration만 수행한다.
+ARM64 cross-build는 기본 브랜치 `main`에서 한 번, 실제 PostgreSQL·브라우저·호환성 matrix는
+`release`에서 한 번 실행하며 기능 레인에서 반복하지 않는다. strict room corpus 63건, 전체
+C prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는
+여전히 승격 조건이다.
