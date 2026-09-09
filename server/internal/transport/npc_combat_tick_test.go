@@ -67,6 +67,56 @@ func npcCombatTickFixture(t *testing.T) world.State {
 
 func npcCombatTickRoll(_ int, high int) int { return high }
 
+// npcCombatLethalTickFixture admits the canonical death graph used by the
+// PLAYER branch of creature.c:die: source/respawn floors, family-war state,
+// and an ID-owned wielded item.  The base ordering fixture intentionally
+// omits these domains so ordinary combat remains small and fail-closed.
+func npcCombatLethalTickFixture(t *testing.T) world.State {
+	t.Helper()
+	state := npcCombatTickFixture(t)
+	state.War = &world.FamilyWar{}
+
+	source := state.Rooms[1]
+	source.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	state.Rooms[1] = source
+	state.Rooms[1008] = world.RoomState{
+		Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1008}},
+		Items:    &world.ItemCollection{Items: map[string]world.Item{}},
+	}
+
+	player := state.Players["player-b"]
+	player.Body.Class = 4
+	player.Body.Level = 1
+	player.Body.Stats = [5]byte{10, 10, 10, 10, 10}
+	player.Body.HPMax = 30
+	player.Body.HPCurrent = 1
+	player.Body.MPMax = 8
+	player.Body.MPCurrent = 2
+	player.Body.Experience = 100
+	player.Items = &world.ItemCollection{
+		Items: map[string]world.Item{
+			"weapon": {Object: world.LegacyObject{Name: "sword"}},
+		},
+		Ready: [20]string{19: "weapon"},
+	}
+	state.Players["player-b"] = player
+	state.ActiveNPCIDs = []string{"npc-b"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+type npcCombatTickSpawnCatalog struct{}
+
+func (npcCombatTickSpawnCatalog) Monster(int16) (world.LegacyMonster, error) {
+	return world.LegacyMonster{Name: "소환", Type: 1, Class: 4, Level: 1, HPMax: 10, HPCurrent: 10}, nil
+}
+
+func (npcCombatTickSpawnCatalog) Object(int16) (world.LegacyObject, error) {
+	return world.LegacyObject{Name: "spawned"}, nil
+}
+
 type npcCombatTickStore struct {
 	mu sync.Mutex
 
@@ -127,6 +177,10 @@ func (s *npcCombatTickStore) CommitWorldCommand(_ context.Context, _ string, com
 }
 
 func newNPCCombatTickConnector(t *testing.T, store *npcCombatTickStore, now *int32) *WorldConnector {
+	return newNPCCombatTickConnectorWithDeps(t, store, now, nil, nil)
+}
+
+func newNPCCombatTickConnectorWithDeps(t *testing.T, store *npcCombatTickStore, now *int32, catalog world.SpawnCatalog, allocate func() (string, error)) *WorldConnector {
 	t.Helper()
 	connector, err := NewWorldConnector(WorldConnectorConfig{
 		Store:       store,
@@ -135,7 +189,9 @@ func newNPCCombatTickConnector(t *testing.T, store *npcCombatTickStore, now *int
 		Clock: func() (int32, int) {
 			return *now, 12
 		},
-		Roll: npcCombatTickRoll,
+		Catalog:  catalog,
+		Roll:     npcCombatTickRoll,
+		Allocate: allocate,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -341,27 +397,110 @@ func TestRunNPCCombatPhaseRejectsStaleCommandAndErrorIsAtomic(t *testing.T) {
 	}
 }
 
-func TestRunNPCCombatPhaseRecordsLethalPlayerFailClosed(t *testing.T) {
-	state := npcCombatTickFixture(t)
-	player := state.Players["player-b"]
-	player.Body.HPCurrent = 1
-	state.Players["player-b"] = player
-	state.ActiveNPCIDs = []string{"npc-b"}
+func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
+	state := npcCombatLethalTickFixture(t)
 	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
 	now := int32(100)
-	connector := newNPCCombatTickConnector(t, store, &now)
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-lethal-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return now, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			return high
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	receipt, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-lethal", 5, 100)
 	if err != nil || receipt.Replayed || store.commits != 1 {
 		t.Fatalf("receipt=%+v commits=%d err=%v", receipt, store.commits, err)
 	}
 	summary := decodeNPCCombatTickSummary(t, receipt.Response)
-	if len(summary.Attacks) != 0 || len(summary.FailClosed) != 1 || summary.FailClosed[0].NPCID != "npc-b" || summary.FailClosed[0].PlayerID != "player-b" {
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || summary.Attacks[0].PlayerHP >= 1 ||
+		len(summary.FailClosed) != 0 || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
 		t.Fatalf("summary=%+v", summary)
 	}
+	death := summary.Deaths[0]
+	if death.NPCID != "npc-b" || death.PlayerID != "player-b" || death.SourceRoomID != 1 || death.DestinationRoomID != 1008 ||
+		!death.BroadcastDeath || death.ExperienceAfter >= death.ExperienceBefore || death.DroppedItemCount != 1 || !death.EnemyRemoved {
+		t.Fatalf("death=%+v", death)
+	}
 	saved, err := world.DecodeState(store.snapshot())
-	if err != nil || saved.Players["player-b"].Body.HPCurrent != 1 {
-		t.Fatalf("lethal damage was committed saved=%+v err=%v", saved, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["player-b"].Body.RoomID != 1008 || saved.Players["player-b"].Body.HPCurrent < 1 ||
+		len(saved.Players["player-b"].Items.Items) != 0 || len(saved.Rooms[1].Items.Items) != 1 ||
+		len(saved.NPCs["npc-b"].Enemies) != 0 || !reflect.DeepEqual(saved.ActiveNPCIDs, []string{"npc-b"}) {
+		t.Fatalf("saved lethal state=%+v", saved)
+	}
+	if rollCalls != 3 {
+		t.Fatalf("attack RNG calls=%d, want exactly hit/damage/critical", rollCalls)
+	}
+
+	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-lethal", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 3 {
+		t.Fatalf("replay=%+v commits=%d RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
+	}
+	if !bytes.Equal(replay.Response, receipt.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", receipt.Response, replay.Response)
+	}
+}
+
+func TestRunNPCCombatPhaseLethalDeathFailureRollsBackRespawnAndAllocator(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*world.State)
+		deps   func() (world.SpawnCatalog, func() (string, error))
+	}{
+		{
+			name: "missing respawn floor",
+			mutate: func(state *world.State) {
+				delete(state.Rooms, 1008)
+			},
+			deps: func() (world.SpawnCatalog, func() (string, error)) {
+				return nil, nil
+			},
+		},
+		{
+			name: "allocator error after spawn planning",
+			mutate: func(state *world.State) {
+				respawn := state.Rooms[1008]
+				respawn.Resource.PermanentMonsters[0] = world.LegacyTimer{LastTime: 0, Interval: 1, Misc: 7}
+				state.Rooms[1008] = respawn
+			},
+			deps: func() (world.SpawnCatalog, func() (string, error)) {
+				return npcCombatTickSpawnCatalog{}, func() (string, error) {
+					return "", errors.New("allocator unavailable")
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := npcCombatLethalTickFixture(t)
+			test.mutate(&state)
+			if err := state.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			before := encodeNPCCombatTickState(t, state)
+			catalog, allocate := test.deps()
+			store := &npcCombatTickStore{state: before}
+			now := int32(100)
+			connector := newNPCCombatTickConnectorWithDeps(t, store, &now, catalog, allocate)
+			if _, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-lethal-failure-"+test.name, 5, 100); err == nil {
+				t.Fatal("accepted incomplete lethal continuation")
+			}
+			if store.commits != 0 || !bytes.Equal(before, store.snapshot()) {
+				t.Fatalf("lethal failure was not atomic commits=%d state=%s", store.commits, store.snapshot())
+			}
+		})
 	}
 }
 

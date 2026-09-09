@@ -37,8 +37,9 @@ type npcCombatTickState struct {
 
 var npcCombatTickStates sync.Map // map[*WorldConnector]*npcCombatTickState
 
-// NPCCombatTickAttack is the durable projection of one non-lethal NPC swing.
-// Its order in NPCCombatTickSummary.Attacks is the source-backed action order.
+// NPCCombatTickAttack is the durable projection of one NPC swing.  A lethal
+// swing is followed by NPCCombatTickDeath in the same receipt; its order in
+// NPCCombatTickSummary.Attacks is still the source-backed action order.
 type NPCCombatTickAttack struct {
 	NPCID    string `json:"npc_id"`
 	PlayerID string `json:"player_id"`
@@ -47,6 +48,7 @@ type NPCCombatTickAttack struct {
 	Critical bool   `json:"critical"`
 	Damage   int    `json:"damage"`
 	PlayerHP int    `json:"player_hp"`
+	Lethal   bool   `json:"lethal"`
 }
 
 // NPCCombatTickSkip records a canonical active NPC for which C would not
@@ -59,11 +61,11 @@ type NPCCombatTickSkip struct {
 	Reason string `json:"reason"`
 }
 
-// NPCCombatTickFailClosed records a lethal player result.  The existing
-// PlanNPCCombatRound/ApplyNPCCombatRound reducer deliberately rejects player
-// death because the player-death continuation is not yet composed here.  The
-// tick therefore commits no damage for that swing and records the boundary in
-// its durable summary instead of manufacturing a successful lethal result.
+// NPCCombatTickFailClosed records a lethal player result when the pure
+// PlanNPCCombatTick API is used without a death continuation.  The durable
+// transport opts into NPCCombatTickDeath when canonical respawn/equipment
+// dependencies are supplied; an unresolved continuation remains an atomic
+// command error rather than a partial damage commit.
 type NPCCombatTickFailClosed struct {
 	NPCID    string `json:"npc_id"`
 	PlayerID string `json:"player_id"`
@@ -71,15 +73,49 @@ type NPCCombatTickFailClosed struct {
 	Reason   string `json:"reason"`
 }
 
+// NPCCombatTickDeath is the durable projection of one successful
+// NPC->PLAYER death continuation.  The full equipment graph, XP, room
+// membership, enemy cleanup, and room-1008 admission live in the committed
+// State; these fields make the same facts available without replaying that
+// graph or re-rendering output.
+type NPCCombatTickDeath struct {
+	NPCID                    string `json:"npc_id"`
+	PlayerID                 string `json:"player_id"`
+	SourceRoomID             int16  `json:"source_room_id"`
+	DestinationRoomID        int16  `json:"destination_room_id"`
+	BroadcastDeath           bool   `json:"broadcast_death"`
+	FamilyDefeated           bool   `json:"family_defeated"`
+	DeactivateSourceMonsters bool   `json:"deactivate_source_monsters"`
+	EnemyRemoved             bool   `json:"enemy_removed"`
+	ExperienceBefore         int32  `json:"experience_before"`
+	ExperienceAfter          int32  `json:"experience_after"`
+	DroppedItemCount         int    `json:"dropped_item_count"`
+	Scene                    string `json:"scene,omitempty"`
+}
+
 // NPCCombatTickSummary is stored in the command receipt.  Every slice is
 // appended in deterministic source order; no map iteration contributes to
 // the response.
 type NPCCombatTickSummary struct {
-	Slot       int64                     `json:"slot"`
-	Now        int32                     `json:"now"`
-	Attacks    []NPCCombatTickAttack     `json:"attacks,omitempty"`
-	Skipped    []NPCCombatTickSkip       `json:"skipped,omitempty"`
-	FailClosed []NPCCombatTickFailClosed `json:"fail_closed,omitempty"`
+	Slot              int64                     `json:"slot"`
+	Now               int32                     `json:"now"`
+	Attacks           []NPCCombatTickAttack     `json:"attacks,omitempty"`
+	Skipped           []NPCCombatTickSkip       `json:"skipped,omitempty"`
+	FailClosed        []NPCCombatTickFailClosed `json:"fail_closed,omitempty"`
+	Deaths            []NPCCombatTickDeath      `json:"deaths,omitempty"`
+	StoppedAfterDeath bool                      `json:"stopped_after_death,omitempty"`
+}
+
+// NPCCombatTickOptions controls the optional player-death continuation.  The
+// zero value preserves the original pure combat-round API and records lethal
+// damage as fail-closed.  RunNPCCombatPhase opts in with the connector's
+// canonical catalog/allocator so the entire attack+death candidate is saved
+// by one receipt.
+type NPCCombatTickOptions struct {
+	ContinuePlayerDeath bool
+	View                world.SceneOptions
+	Catalog             world.SpawnCatalog
+	Allocate            func() (string, error)
 }
 
 type npcCombatTickRequest struct {
@@ -208,6 +244,9 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 	if commandID == "" {
 		return storage.WorldReceipt{}, errors.New("missing NPC combat phase command ID")
 	}
+	if g.config.Clock == nil {
+		return storage.WorldReceipt{}, errors.New("NPC combat connector clock is unavailable")
+	}
 	request, err := json.Marshal(npcCombatTickRequest{Kind: "npc-combat-phase", Slot: slot, Now: now})
 	if err != nil {
 		return storage.WorldReceipt{}, err
@@ -219,7 +258,13 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 		if err != nil {
 			return nil, nil, err
 		}
-		next, summary, err := PlanNPCCombatTick(state, slot, now, g.config.Roll)
+		_, hour := g.config.Clock()
+		next, summary, err := PlanNPCCombatTickWithOptions(state, slot, now, g.config.Roll, NPCCombatTickOptions{
+			ContinuePlayerDeath: true,
+			View:                world.SceneOptions{ViewOptions: world.ViewOptions{Hour: hour}},
+			Catalog:             g.config.Catalog,
+			Allocate:            g.config.Allocate,
+		})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -245,6 +290,16 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 // C update_active/attack_crt RNG order; this function only composes rounds and
 // commits their candidates through one durable command receipt.
 func PlanNPCCombatTick(state world.State, slot int64, now int32, roll func(int, int) int) (world.State, NPCCombatTickSummary, error) {
+	return PlanNPCCombatTickWithOptions(state, slot, now, roll, NPCCombatTickOptions{})
+}
+
+// PlanNPCCombatTickWithOptions is the composable form used by the durable
+// transport.  A lethal round is first planned against a high-HP probe using
+// the exact recorded RNG values from the real victim attempt; its actual
+// damage is then restored before PlanNPCPlayerDeath runs.  Thus the attack
+// RNG is consumed exactly once, while the death continuation receives a
+// canonical victim with HP below one.
+func PlanNPCCombatTickWithOptions(state world.State, slot int64, now int32, roll func(int, int) int, options NPCCombatTickOptions) (world.State, NPCCombatTickSummary, error) {
 	if err := state.Validate(); err != nil {
 		return world.State{}, NPCCombatTickSummary{}, err
 	}
@@ -282,35 +337,232 @@ func PlanNPCCombatTick(state world.State, slot int64, now int32, roll func(int, 
 			continue
 		}
 
-		proposal, err := next.PlanNPCCombatRound(npcID, playerID, roll)
+		candidate, attack, lethal, err := planNPCCombatRoundForTick(next, npcID, playerID, roll)
 		if err != nil {
-			// PlanNPCCombatRound intentionally consumes no state on a lethal
-			// result.  Preserve that fail-closed boundary in the receipt while
-			// allowing other independent NPCs in this slot to be considered.
-			if isNPCCombatLethalBoundary(err) {
+			if lethal && !options.ContinuePlayerDeath {
 				summary.FailClosed = append(summary.FailClosed, NPCCombatTickFailClosed{
 					NPCID: npcID, PlayerID: playerID, RoomID: npc.Body.RoomID,
 					Reason: err.Error(),
 				})
-				continue
+				summary.StoppedAfterDeath = true
+				break
 			}
 			return world.State{}, NPCCombatTickSummary{}, fmt.Errorf("NPC %q combat plan: %w", npcID, err)
 		}
-		candidate, result, err := next.ApplyNPCCombatRound(proposal)
-		if err != nil {
-			return world.State{}, NPCCombatTickSummary{}, fmt.Errorf("NPC %q combat apply: %w", npcID, err)
+		if !lethal {
+			next = candidate
+			summary.Attacks = append(summary.Attacks, attack)
+			continue
 		}
-		next = candidate
-		summary.Attacks = append(summary.Attacks, NPCCombatTickAttack{
-			NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
-			Hit: result.Hit, Critical: result.Critical, Damage: result.Damage,
-			PlayerHP: result.PlayerHP,
-		})
+
+		if !options.ContinuePlayerDeath {
+			summary.FailClosed = append(summary.FailClosed, NPCCombatTickFailClosed{
+				NPCID: npcID, PlayerID: playerID, RoomID: npc.Body.RoomID,
+				Reason: "NPC combat player death continuation pending",
+			})
+			summary.StoppedAfterDeath = true
+			break
+		}
+		deathState, death, err := planNPCCombatPlayerDeath(next, candidate, npcID, playerID, now, roll, options)
+		if err != nil {
+			// A death continuation failure (respawn floor, allocator, equipment,
+			// or unresolved identity) is an atomic command error, not a reason
+			// to continue attacking the next NPC with a partially-dead player.
+			return world.State{}, NPCCombatTickSummary{}, fmt.Errorf("NPC %q player death continuation: %w", npcID, err)
+		}
+		next = deathState
+		attack.Lethal = true
+		summary.Attacks = append(summary.Attacks, attack)
+		summary.Deaths = append(summary.Deaths, death)
+		// update_active resets cp to first_active after die().  This command
+		// stops here instead of guessing whether a restarted traversal should
+		// attack another NPC in the same durable slot.
+		summary.StoppedAfterDeath = true
+		break
 	}
 	if err := next.Validate(); err != nil {
 		return world.State{}, NPCCombatTickSummary{}, err
 	}
 	return next, summary, nil
+}
+
+type npcCombatRollCall struct {
+	low, high int
+	value     int
+}
+
+// npcCombatRecordingRoll binds every attack random result to the current
+// command.  PlanNPCCombatRound returns no proposal for lethal damage, so the
+// recorded values are replayed into a high-HP probe instead of calling the
+// caller's RNG a second time and changing the attack sequence.
+type npcCombatRecordingRoll struct {
+	source func(int, int) int
+	calls  []npcCombatRollCall
+}
+
+func (r *npcCombatRecordingRoll) Roll(low, high int) int {
+	value := r.source(low, high)
+	r.calls = append(r.calls, npcCombatRollCall{low: low, high: high, value: value})
+	return value
+}
+
+type npcCombatReplayRoll struct {
+	calls []npcCombatRollCall
+	index int
+	err   error
+}
+
+func (r *npcCombatReplayRoll) Roll(low, high int) int {
+	if r.index >= len(r.calls) {
+		r.err = fmt.Errorf("NPC combat RNG replay requested %d..%d after recorded sequence", low, high)
+		return low - 1
+	}
+	call := r.calls[r.index]
+	r.index++
+	if call.low != low || call.high != high {
+		r.err = fmt.Errorf("NPC combat RNG replay range changed from %d..%d to %d..%d", call.low, call.high, low, high)
+		return low - 1
+	}
+	return call.value
+}
+
+func cloneNPCCombatState(state world.State) (world.State, error) {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return world.State{}, err
+	}
+	return world.DecodeState(raw)
+}
+
+// planNPCCombatRoundForTick preserves the existing non-lethal path exactly.
+// On the one lethal error emitted by PlanNPCCombatRound, it replays the same
+// random values against a temporary 32767-HP victim to recover the source
+// damage and candidate flags, then restores the real victim's post-hit HP.
+// The returned candidate is still uncommitted and is safe to hand to the
+// player-death planner.
+func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll func(int, int) int) (world.State, NPCCombatTickAttack, bool, error) {
+	recorder := &npcCombatRecordingRoll{source: roll}
+	proposal, err := state.PlanNPCCombatRound(npcID, playerID, recorder.Roll)
+	if err == nil {
+		candidate, result, applyErr := state.ApplyNPCCombatRound(proposal)
+		if applyErr != nil {
+			return world.State{}, NPCCombatTickAttack{}, false, fmt.Errorf("NPC %q combat apply: %w", npcID, applyErr)
+		}
+		return candidate, NPCCombatTickAttack{
+			NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
+			Hit: result.Hit, Critical: result.Critical, Damage: result.Damage,
+			PlayerHP: result.PlayerHP,
+		}, false, nil
+	}
+	if !isNPCCombatLethalBoundary(err) {
+		return world.State{}, NPCCombatTickAttack{}, false, err
+	}
+
+	player, ok := state.Players[playerID]
+	if !ok || player.Body.HPCurrent < 1 {
+		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat victim is not alive")
+	}
+	probe, cloneErr := cloneNPCCombatState(state)
+	if cloneErr != nil {
+		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat probe clone: %w", cloneErr)
+	}
+	probePlayer := probe.Players[playerID]
+	probePlayer.Body.HPCurrent = 32767
+	probe.Players[playerID] = probePlayer
+	replay := &npcCombatReplayRoll{calls: recorder.calls}
+	probeProposal, probeErr := probe.PlanNPCCombatRound(npcID, playerID, replay.Roll)
+	if probeErr != nil {
+		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat probe: %w", probeErr)
+	}
+	if replay.err != nil || replay.index != len(recorder.calls) {
+		if replay.err != nil {
+			return world.State{}, NPCCombatTickAttack{}, true, replay.err
+		}
+		return world.State{}, NPCCombatTickAttack{}, true, errors.New("NPC combat RNG replay left unused attack values")
+	}
+	probeCandidate, probeResult, applyErr := probe.ApplyNPCCombatRound(probeProposal)
+	if applyErr != nil {
+		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat probe apply: %w", applyErr)
+	}
+	if !probeResult.Hit || probeResult.Damage < int(player.Body.HPCurrent) {
+		return world.State{}, NPCCombatTickAttack{}, true, errors.New("NPC combat lethal probe did not reproduce lethal damage")
+	}
+	actualAfter := int(player.Body.HPCurrent) - probeResult.Damage
+	if actualAfter >= 1 || actualAfter < -32768 {
+		return world.State{}, NPCCombatTickAttack{}, true, errors.New("NPC combat lethal damage outside player range")
+	}
+	probePlayer = probeCandidate.Players[playerID]
+	probePlayer.Body.HPCurrent = int16(actualAfter)
+	probeCandidate.Players[playerID] = probePlayer
+	if err := probeCandidate.Validate(); err != nil {
+		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat candidate: %w", err)
+	}
+	return probeCandidate, NPCCombatTickAttack{
+		NPCID: probeResult.NPCID, PlayerID: probeResult.PlayerID, RoomID: probeResult.RoomID,
+		Hit: probeResult.Hit, Critical: probeResult.Critical, Damage: probeResult.Damage,
+		PlayerHP: actualAfter, Lethal: true,
+	}, true, nil
+}
+
+func itemCount(items *world.ItemCollection) int {
+	if items == nil {
+		return 0
+	}
+	return len(items.Items)
+}
+
+func npcCombatEnemyRemoved(before, after world.NPCState, playerID string) bool {
+	want := world.EntityRef{Kind: "player", ID: playerID}
+	beforeCount, afterCount := 0, 0
+	for _, relation := range before.Enemies {
+		if relation.Target == want {
+			beforeCount++
+		}
+	}
+	for _, relation := range after.Enemies {
+		if relation.Target == want {
+			afterCount++
+		}
+	}
+	return beforeCount > 0 && afterCount < beforeCount
+}
+
+func planNPCCombatPlayerDeath(state, lethalCandidate world.State, npcID, playerID string, now int32, roll func(int, int) int, options NPCCombatTickOptions) (world.State, NPCCombatTickDeath, error) {
+	beforePlayer, ok := state.Players[playerID]
+	if !ok {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death victim absent before attack")
+	}
+	beforeNPC, ok := state.NPCs[npcID]
+	if !ok {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death attacker absent before attack")
+	}
+	roomID := beforeNPC.Body.RoomID
+	next, result, err := lethalCandidate.PlanNPCPlayerDeath(npcID, playerID, now, options.View, options.Catalog, roll, options.Allocate)
+	if err != nil {
+		return world.State{}, NPCCombatTickDeath{}, err
+	}
+	afterPlayer, ok := next.Players[playerID]
+	if !ok {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death victim absent after continuation")
+	}
+	afterNPC, ok := next.NPCs[npcID]
+	if !ok {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death attacker absent after continuation")
+	}
+	return next, NPCCombatTickDeath{
+		NPCID:                    result.NPCID,
+		PlayerID:                 result.VictimID,
+		SourceRoomID:             roomID,
+		DestinationRoomID:        result.Entry.Room.ID,
+		BroadcastDeath:           result.BroadcastDeath,
+		FamilyDefeated:           result.FamilyDefeated,
+		DeactivateSourceMonsters: result.DeactivateSourceMonsters,
+		EnemyRemoved:             npcCombatEnemyRemoved(beforeNPC, afterNPC, playerID),
+		ExperienceBefore:         beforePlayer.Body.Experience,
+		ExperienceAfter:          afterPlayer.Body.Experience,
+		DroppedItemCount:         itemCount(beforePlayer.Items) - itemCount(afterPlayer.Items),
+		Scene:                    result.Entry.Scene,
+	}, nil
 }
 
 // planNPCCombatPhase is kept as a package-local name for transport tests and
