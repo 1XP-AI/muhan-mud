@@ -1,5 +1,14 @@
 # Go MUD 서버 작업 영역
 
+최신 기능 slice: `command11.c:marriage`의 결혼식장/나이/시야/성별/온라인 canonical
+identity 게이트와 `PRDMAR`·`PMARRI`·`key[2]` 상태를 `PlanMarriage`/`ApplyMarriage`로
+원자화했다. `결혼 <이름>`과 suffix 형태의 신청·pending 취소·상호 수락을 parser→session→
+WorldConnector의 durable receipt로 연결했고, 수락 시 배우자 대상 알림과 원작식 전체
+접속자 공지를 최초 commit에서만 fan-out한다. ARM64 PostgreSQL 17의
+`TestPostgresMarriageRequestAcceptPersistsAndReplays`와 대상 패키지 race/vet가
+통과했다. 이 slice는 divorce/m_send, 전체 social parity 또는 운영 Supabase/WSS를
+완료한 것이 아니다.
+
 최신 G4 검증: `bash scripts/run-go-backup-restore-local.sh --allow-disposable`가 격리된
 ARM64 `postgres:17-alpine`에서 Go schema `pg_dump`/`pg_restore`, receipt replay/request
 conflict, writer epoch fencing과 복원 후 새 command 저장을 PASS했다. 테스트 컨테이너와

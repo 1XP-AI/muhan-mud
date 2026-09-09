@@ -1,5 +1,15 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 결혼 신청·수락 vertical slice
+
+`command11.c:marriage`를 Go parser→session→WorldConnector로 연결했다. 원작 snapshot의
+`PRDMAR`/`PMARRI`와 배우자 `key[2]`를 권위 상태로 유지하면서 결혼식장, 25세, 온라인
+canonical 대상, visibility, 성별, pending/active 게이트를 순수 proposal로 검증한다.
+신청·pending 취소·상호 수락은 `ExecuteGame` receipt로 저장되고, 배우자 event 및
+수락 전역 공지는 첫 커밋에만 전달된다. ARM64 PostgreSQL 17 저장/replay와 영향을 받는
+패키지 race/vet가 통과했다(`22d1e8e`). 이 단계는 `divorce`·`m_send`, 전체 social
+parity와 운영/브라우저/배포 인수를 포함하지 않는다.
+
 ## 2026-09-10 Go PostgreSQL 백업·복구 경계
 
 `scripts/run-go-backup-restore-local.sh`는 격리된 ARM64 `postgres:17-alpine`에서 Go

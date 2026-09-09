@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 결혼 신청·수락 receipt 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:marriage` / `결혼` | 결혼식장·25세·canonical online 대상·visibility·성별·중복 pending/active 게이트와 `PRDMAR`·`PMARRI`·`key[2]` 전이를 `PlanMarriage`/`ApplyMarriage`로 원자 적용. 신청·pending 취소·상호 수락을 parser/session/WorldConnector receipt로 연결하고 배우자 대상 event·수락 전역 broadcast를 첫 commit에서만 fan-out | world/session/transport marriage race·vet, ARM64 PostgreSQL 17 저장·replay PASS. `divorce`·`m_send`, 전체 social 출력 parity, 운영 Supabase·브라우저/배포는 미완료 |
+
+수락 결과의 배우자 ID·canonical 이름은 receipt에 고정되어 재접속·이름 충돌로 알림이
+다른 플레이어에게 전송되지 않는다. 전역 공지는 원작 `broadcast_all`처럼 두 배우자를
+포함하며, replay에서는 중복 전송하지 않는다.
+
 ## 2026-09-10 G4 PostgreSQL 백업·복구 증거
 
 | 원작/운영 경계 | Go 검증 | 남은 조건 |

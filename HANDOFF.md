@@ -1,5 +1,28 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (결혼 신청·수락 영수증)
+
+`command11.c:marriage`의 canonical하게 증명 가능한 경계를 Go에 연결했다.
+`결혼 <이름>`/`<이름> 결혼`은 결혼식장·25세·온라인 canonical 대상·시야·성별·중복
+신청 게이트를 검증하고, 신청/취소/상호 수락을 하나의 `ExecuteGame` receipt로 원자
+저장한다. 원작의 `PRDMAR`/`PMARRI`와 `key[2]` 배우자 값을 기존 player snapshot에
+보존하며, 수락 시 배우자 알림과 전체 접속자 결혼 공지는 첫 커밋 뒤에만 전달한다.
+동일 command ID 재시도는 저장된 결과만 재생한다. 구현 커밋은 `22d1e8e`다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/world ./internal/session ./internal/transport -run 'Marriage|ParseCommand' -count=1) PASS
+(cd server && go test -race ./internal/session -run '^TestPostgresMarriageRequestAcceptPersistsAndReplays$' -count=1 -v) PASS (ARM64 postgres:17-alpine)
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+영향 패키지 전체 race 실행에서 world의 기존 strict room corpus 63건 예외가 재현되어
+실패했지만 session/transport는 통과했다. 이 변경은 신청·취소·수락만 포함하며 이혼
+(`divorce`)과 배우자 대화(`m_send`), 전체 사회/공지 출력 parity는 미완료다. 실제
+Supabase 운영 연결, 브라우저·IME/mobile, WSS/Ingress와 testnet 승격도 남아 있다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (`정보` 후속 페이지 영수증)
 
 `command4.c:info_2`의 `[엔터]` 후속 페이지를 연결 로컬 snapshot 조회에서
