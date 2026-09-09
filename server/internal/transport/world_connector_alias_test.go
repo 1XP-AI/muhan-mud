@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
@@ -31,7 +32,11 @@ func TestWorldConnectorSubmitExpandsStoredAliasBeforeDispatch(t *testing.T) {
 	}
 	store := &connectorCommandStore{state: raw}
 	connector, err := NewWorldConnector(WorldConnectorConfig{
-		Store: store, WorldID: "alias-world", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 1,
+		Store: store, WorldID: "alias-world", Clock: func() (int32, int) { return 100, 12 },
+		WallClock: func() time.Time {
+			return time.Date(2026, time.September, 9, 11, 5, 22, 0, time.FixedZone("PST", -8*60*60))
+		},
+		MaxSessions: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
