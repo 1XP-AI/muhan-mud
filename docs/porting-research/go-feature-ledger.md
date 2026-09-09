@@ -964,3 +964,31 @@ git diff --check PASS
 strict room corpus 63건, 전체 C prefix/key/ANSI parity, NPC full cadence, WSS/Ingress와
 testnet 배포를 반복하지 않았다. ARM64는 `main`, DB/browser/호환성 검증은 `release` 경계에서
 한 번만 실행한다. `src/frp.new`는 사용자 소유 dirty 변경으로 계속 보존한다.
+
+## 2026-09-09 직접 관리 병렬 후속: 물품전달·독살포·적상태
+
+파일 소유권이 겹치지 않는 세 Luna max 레인을 병렬 처리하고, 메인 세션에서 중앙
+parser·`WorldConnector` dispatch·room/target fan-out을 조립했다. 코드 커밋은
+`17c0619` (`기능: 물품전달·독살포·적상태 경계 연결`)이다.
+
+- **물품전달(`줘`)**: 원작 suffix의 item/money source 순서를 bounded parser로 고정하고,
+  canonical same-room player identity를 확인한 뒤 `ItemCollection` 전체 subtree 또는
+  gold를 하나의 snapshot-bound receipt에서 원자적으로 이동한다. target private 응답과
+  observer room event를 분리하며, NPC 수령·legacy inventory·quest/event/nested 보호·
+  capacity/overflow는 `ErrGive*`로 영수증 전에 fail-closed한다.
+- **독살포**: 자객/무적 권한, exact case-insensitive canonical NPC, visibility·stealth
+  reveal·cooldown·`MUNKIL`, 원작 순서의 RNG·poison flag·HP/timer/enemy projection을
+  `PlanPoison`/`ApplyPoison` receipt로 연결한다. enemy/death/flee 후속을 현재 canonical
+  state와 원자 조합할 수 없는 경우 첫 RNG 전에 거절하고, committed room event는 최초
+  실행에서만 fan-out한다.
+- **적 상태(`상태`)**: canonical `room.NPCIDs` 순서의 same-room NPC만 읽어
+  `display_status` 15칸 의미 바와 blind/visibility를 read-only receipt로 반환한다.
+  player/legacy room monster fallback, prefix/occurrence 추측, HPMax 불능 값은 거부한다.
+
+검증: 영향 패키지 및 transport 회귀 `go test -race`, `go vet`,
+`scripts/run-go-validation.sh fast`, `scripts/run-go-validation.sh integration`,
+`git diff --check` 통과. ARM64 cross-build는 `main`, 실제 PostgreSQL·브라우저·차트와
+x64/Windows/macOS 호환 matrix는 승인된 `release` 경계에서 batch당 한 번만 실행하므로
+이번 기능 레인에서는 반복하지 않았다. 전체 C prefix/key/ANSI parity, strict room corpus
+63건, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는 여전히 남은
+인수 조건이다.

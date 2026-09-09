@@ -1,5 +1,29 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (줘·독살포·상태 + 검증 비용 경계)
+
+직접 관리한 Luna max 세 레인을 병렬 완료한 뒤 메인 세션에서 공용 parser와
+`WorldConnector`를 통합했다. 코드 커밋은 `17c0619` (`기능: 물품전달·독살포·적상태 경계 연결`)이다.
+
+- `줘`: 원작 suffix 형식 `<물건|금액냥> <대상> 줘`를 canonical same-room player와
+  `ItemCollection` root subtree/gold 원자 전이로 연결했다. 대상 private 응답과 방 관찰자
+  응답을 분리하고, NPC 수령·legacy inventory·quest/event/nested 보호·capacity/overflow는
+  영수증 전에 fail-closed한다.
+- `독살포`: 자객/무적 권한, exact case-insensitive canonical NPC, 시야·은신 해제·쿨다운·
+  `MUNKIL`, deterministic RNG/poison flag/HP/timer/enemy projection을 receipt에 연결했다.
+  적대 관계·치명 사망·도주 후속이 현재 원자 조합되지 않으면 RNG와 커밋 전에 거절하며,
+  최초 성공의 방 이벤트만 전달하고 replay에서는 재방송하지 않는다.
+- `상태`: 같은 방 canonical NPC의 `display_status` 15칸 의미 바와 blindness/visibility를
+  read-only receipt로 연결했다. player/legacy room monster fallback과 prefix/occurrence
+  추측은 허용하지 않는다.
+
+검증 결과: 영향 패키지 race, transport 회귀, `go vet`,
+`scripts/run-go-validation.sh fast`, `scripts/run-go-validation.sh integration`,
+`git diff --check`가 통과했다. ARM64 cross-build는 기본 브랜치 `main`에서 한 번,
+실제 PostgreSQL·브라우저·x64/Windows/macOS 호환 matrix는 승인된 `release`에서 한 번만
+실행하도록 분리했으므로 이번 기능 레인에서는 반복하지 않았다. `src/frp.new`는 사용자
+소유 dirty 변경으로 수정·stage하지 않았다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (NPC phase ordering + 저장 명령)
 
 이번 병렬 Luna max 후속은 세 레인을 파일 소유권으로 분리해 통합했다.

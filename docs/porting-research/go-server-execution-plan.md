@@ -849,3 +849,29 @@ ARM64 cross-build는 기본 브랜치 `main`에서 한 번, 실제 PostgreSQL·�
 `release`에서 한 번 실행하며 기능 레인에서 반복하지 않는다. strict room corpus 63건, 전체
 C prefix/key/ANSI parity, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet 배포는
 여전히 승격 조건이다.
+
+## 2026-09-09 G3 bounded 후속: 물품전달·독살포·적상태
+
+세 개의 독립 Luna max 레인을 파일 소유권으로 병렬 실행한 뒤, 메인 세션에서 공용
+parser·`WorldConnector`·room/target projection을 한 번 조립했다. 구현 커밋은
+`17c0619`이다.
+
+1. `줘`는 원작의 item/money suffix source 순서를 유지한다. canonical same-room
+   player와 `ItemCollection`을 확인해 item subtree 또는 gold를 원자 전이하고,
+   target private 응답과 observer event를 분리한다. NPC 수령, legacy inventory,
+   보호 quest/event/nested object, capacity/overflow는 영수증 전 fail-closed한다.
+2. `독살포`는 ASSASSIN/INVINCIBLE 권한, canonical NPC exact display-name(대소문자 무시),
+   visibility·stealth reveal·cooldown·MUNKIL·deterministic RNG와 poison/HP/timer/enemy
+   projection을 snapshot-bound receipt로 고정한다. 적대·사망·도주 후속을 현재 상태와
+   원자 조합할 수 없으면 RNG/커밋을 만들지 않는다.
+3. `상태`는 canonical `room.NPCIDs`의 같은 방 NPC만 읽어 C `display_status`의 15칸
+   의미 바와 blindness/visibility를 반환하는 read-only receipt다. player/legacy
+   monster fallback, prefix/occurrence 추측, 불능 HPMax는 허용하지 않는다.
+
+검증은 영향 패키지 race와 transport 회귀, `go vet`, `scripts/run-go-validation.sh fast`,
+`scripts/run-go-validation.sh integration`, `git diff --check`가 통과했다. ARM64
+cross-build는 기본 브랜치 `main`에서 한 번, 실제 PostgreSQL·브라우저·차트 및
+x64/Windows/macOS 호환 matrix는 승인된 `release`에서 한 번만 실행한다. 따라서 이
+기능 레인에서 해당 고비용 검증을 반복하지 않는다. 전체 C prefix/key/ANSI parity,
+strict room corpus 63건, NPC full cadence, IME/mobile 실기기, WSS/Ingress와 testnet
+배포는 여전히 별도 승격 조건이다.
