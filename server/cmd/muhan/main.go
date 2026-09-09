@@ -31,6 +31,14 @@ func main() {
 	seedRooms := flag.String("seed-rooms", "", "directory containing the legacy rooms/rNN/rNNNNN resource tree for -seed-world")
 	seedCanonical := flag.Bool("seed-canonical", false, "convert admitted NPC and item graphs while provisioning -seed-world")
 	seedIfAbsent := flag.Bool("seed-if-absent", false, "skip canonical/legacy seed when the target world already exists")
+	backupWorld := flag.String("backup-world", "", "explicitly export one world snapshot and exit")
+	backupFile := flag.String("backup-file", "", "private destination file for -backup-world")
+	backupOverwrite := flag.Bool("backup-overwrite", false, "allow replacing an existing backup destination")
+	restoreWorld := flag.String("restore-world", "", "explicitly restore one world snapshot and exit")
+	restoreFile := flag.String("restore-file", "", "private source file for -restore-world")
+	restoreExpectedRevision := flag.Int64("restore-expected-revision", -1, "expected target revision for a non-force restore; -1 means unset")
+	restoreAllowCreate := flag.Bool("restore-allow-create", false, "allow restore to create an absent world")
+	restoreForce := flag.Bool("restore-force", false, "explicitly remove receipts and fence the target writer generation")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -40,6 +48,18 @@ func main() {
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
 	npcCombatTickInterval := flag.Duration("npc-combat-tick", time.Second, "NPC combat scheduler cadence; C update_active cadence; whole seconds")
 	flag.Parse()
+	backupRestore, err := validateBackupRestoreFlags(
+		*backupWorld, *backupFile, *backupOverwrite,
+		*restoreWorld, *restoreFile, *restoreExpectedRevision,
+		*restoreAllowCreate, *restoreForce,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if backupRestore.mode != backupRestoreNone &&
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0) {
+		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -67,6 +87,20 @@ func main() {
 		if repo.Migrate(migrationCtx) != nil {
 			log.Fatal("migration failed")
 		}
+		return
+	}
+	if backupRestore.mode != backupRestoreNone {
+		backupCtx, backupCancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := runBackupRestore(backupCtx, repo, backupRestore); err != nil {
+			backupCancel()
+			log.Fatal(err)
+		}
+		backupCancel()
+		world := backupRestore.backupWorld
+		if backupRestore.mode == backupRestoreImport {
+			world = backupRestore.restoreWorld
+		}
+		log.Printf("world %s backup/restore completed without starting a listener", world)
 		return
 	}
 	if *seedWorld != "" || *seedRooms != "" || *seedCanonical {
