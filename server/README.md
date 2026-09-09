@@ -2087,3 +2087,28 @@ creation을 통과했고, Go + PostgreSQL + Chromium 브라우저에서 terminal
 cross-build, web typecheck/test(42/42)도 통과했다. strict room corpus 63개 예외, 전체
 NPC/tick/command parity, IME/mobile 실기기, backup/restore와 testnet 배포 인수는 아직
 미완료다.
+
+## 2026-09-09 레거시 원장·NPC identity·`도망` 후속
+
+레거시 방 로더에 source-backed admission manifest를 추가했다. 경로·원본 SHA-256·
+inspection issue·소비 길이를 정렬된 증거로 고정하고, 검토된 corpus의 3,216개 파일
+(canonical 2,341, 비정규 artifact 875, body exception 63)와 digest가 달라지면
+`LoadReviewedLegacyRoomCatalog`가 fail-closed한다. 비정규 경로는 runtime room으로
+승격하지 않으며, strict `TestRoomBodyCorpus`의 63개 예외를 녹색으로 위장하지 않는다.
+
+영구 NPC는 `NPCPermanentOrigin(room, slot)` identity를 기준으로 due respawn을
+순수 plan/apply한다. 이름으로 점유 여부를 추측하지 않고, active order·allocator·RNG·
+stale/tamper를 검증하며 부분 생성은 저장하지 않는다. transport scheduler 연결은
+별도 후속 경계로 유지한다.
+
+원작 `도망`의 작은 수직 슬라이스도 Go session/transport receipt에 연결했다. 전투
+cooldown, 출구 필터 순서, guard/chance, 추적·은신 해제, destination 제한, paladin
+숙련도 손실과 성공·저지 room event를 검증하며, legacy 관계가 해석되지 않는 trap/NPC
+부수효과는 fail-closed한다.
+
+검증: `go test -race ./... -skip '^TestRoomBodyCorpus$' -count=1`, `go vet ./...`,
+Linux ARM64 cross-build, web typecheck/test(42/42), 실제 PostgreSQL 17 + Go process
+Chromium 가입→월드 입장→재로그인·기존 캐릭터 중복 세션 **2 passed**, infra source
+pin test **2 passed**. 일반 `TestRoomBodyCorpus`는 기존 unsupported body 63건으로
+계속 실패하며, 전체 기능·NPC scheduler·IME/mobile 실기기·backup/restore·WSS/Ingress와
+testnet 배포 인수는 아직 남아 있다.
