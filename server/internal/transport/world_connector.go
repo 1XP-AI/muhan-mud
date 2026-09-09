@@ -571,6 +571,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	teachCommand := false
 	backstabCommand := false
 	drinkCommand := false
+	circleCommand := false
+	bashCommand := false
+	magicStopCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -617,6 +620,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDrink:
 		drinkCommand = true
 		receipt, err = c.game.owners.ExecuteDrinkLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.DrinkOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandCircle:
+		circleCommand = true
+		receipt, err = c.game.owners.ExecuteCircleLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.CircleOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandBash:
+		bashCommand = true
+		receipt, err = c.game.owners.ExecuteBashLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.BashOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandMagicStop:
+		magicStopCommand = true
+		receipt, err = c.game.owners.ExecuteMagicStopLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MagicStopOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -815,6 +827,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedTeachLine) ||
 		errors.Is(err, session.ErrUnsupportedBackstabLine) ||
 		errors.Is(err, session.ErrUnsupportedDrinkLine) ||
+		errors.Is(err, session.ErrUnsupportedCircleLine) ||
+		errors.Is(err, session.ErrUnsupportedBashLine) ||
+		errors.Is(err, session.ErrUnsupportedMagicStopLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -854,7 +869,19 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedDoorLine) ||
 		errors.Is(err, session.ErrUnsupportedDoorKeyLine) ||
 		errors.Is(err, session.ErrUnsupportedWelcomeLine) ||
-		errors.Is(err, session.ErrUnsupportedQuitLine) {
+		errors.Is(err, session.ErrUnsupportedQuitLine) ||
+		// Bounded combat/spell reducers fail closed when a canonical death,
+		// relation, or combat continuation is not yet admitted. Treat those
+		// domain errors as an unsupported command response so a user socket is
+		// not sealed merely because a feature is intentionally gated.
+		errors.Is(err, world.ErrCircleDeathTransitionPending) ||
+		errors.Is(err, world.ErrCircleCharmStateUnresolved) ||
+		errors.Is(err, world.ErrCircleFamilyWarUnresolved) ||
+		errors.Is(err, world.ErrBashDeathTransitionPending) ||
+		errors.Is(err, world.ErrBashCharmStateUnresolved) ||
+		errors.Is(err, world.ErrBashWarStateUnresolved) ||
+		errors.Is(err, world.ErrMagicStopCombatSideEffectPending) ||
+		errors.Is(err, world.ErrMagicStopNPCStateUnresolved) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1017,6 +1044,30 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishDrink(after, *result.Event)
+			}
+		}
+	}
+	if circleCommand && !receipt.Replayed {
+		var result world.CircleResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishCircle(after, *result.Event)
+			}
+		}
+	}
+	if bashCommand && !receipt.Replayed {
+		var result world.BashResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishBash(after, *result.Event)
+			}
+		}
+	}
+	if magicStopCommand && !receipt.Replayed {
+		var result world.MagicStopResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishMagicStop(after, *result.Event)
 			}
 		}
 	}
@@ -1199,6 +1250,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if drinkCommand {
 		var result world.DrinkResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if circleCommand {
+		var result world.CircleResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if bashCommand {
+		var result world.BashResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if magicStopCommand {
+		var result world.MagicStopResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

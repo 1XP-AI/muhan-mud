@@ -81,6 +81,9 @@ const (
 	CommandTeach
 	CommandBackstab
 	CommandDrink
+	CommandCircle
+	CommandBash
+	CommandMagicStop
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -198,6 +201,24 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsDrinkLine(trimmed) {
 		parsed.Kind = CommandDrink
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// These combat/spell adapters have bounded multi-token forms whose first
+	// token is not enough to classify them through the generic single-token
+	// table. Keep the exact line contracts in their owning session files.
+	if IsCircleLine(trimmed) {
+		parsed.Kind = CommandCircle
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsBashLine(trimmed) {
+		parsed.Kind = CommandBash
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsMagicStopLine(trimmed) {
+		parsed.Kind = CommandMagicStop
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
