@@ -36,6 +36,7 @@ func main() {
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
 	helpDir := flag.String("help-dir", os.Getenv("MUD_HELP_DIR"), "directory containing UTF-8 help, spell and policy documents")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
+	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	flag.Parse()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -128,6 +129,9 @@ func main() {
 		if *playerTickInterval <= 0 || *playerTickInterval%time.Second != 0 {
 			log.Fatal("player-tick must be a positive whole number of seconds")
 		}
+		if *roomResourceTickInterval <= 0 || *roomResourceTickInterval%time.Second != 0 {
+			log.Fatal("room-resource-tick must be a positive whole number of seconds")
+		}
 		info, err := os.Stat(*templates)
 		if err != nil || !info.IsDir() {
 			log.Fatal("template directory unavailable")
@@ -156,7 +160,7 @@ func main() {
 		go func() {
 			defer close(workerDone)
 			var workers sync.WaitGroup
-			workers.Add(2)
+			workers.Add(3)
 			go func() {
 				defer workers.Done()
 				if err := connector.RunCleanup(workerCtx); err != nil && workerCtx.Err() == nil {
@@ -167,6 +171,12 @@ func main() {
 				defer workers.Done()
 				if err := connector.RunPlayerVitalScheduler(workerCtx, *playerTickInterval); err != nil {
 					log.Printf("player vital scheduler stopped: %v", err)
+				}
+			}()
+			go func() {
+				defer workers.Done()
+				if err := connector.RunRoomResourceScheduler(workerCtx, *roomResourceTickInterval); err != nil {
+					log.Printf("room resource scheduler stopped: %v", err)
 				}
 			}()
 			workers.Wait()
