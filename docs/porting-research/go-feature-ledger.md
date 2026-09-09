@@ -89,6 +89,22 @@ evidence로 보존한다. `LoadLegacyRoomCatalog`은 C path 규칙을 적용해 
 않는 구조·정책·catalog TDD는 통과했지만, legacy monster/object의 canonical ID 변환,
 PG seed, 전체 room graph 및 runtime admission은 아직 `미구현; G1/G4`다.
 
+## 2026-09-09 시간·수련·상인 선택 bounded lanes 및 cadence 재감사
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command8.c:prt_time` / `시간` | `world.ProjectTime`·`session.ExecuteTimeLine`·`WorldConnector` read-only receipt; game hour와 PST 관측값을 request에 고정 | world/session/transport race·replay 통과; 전체 C clock/local-time parity와 운영 시계 이관은 미완료 |
+| `command7.c:train` / `수련` | `PlanTraining`/`ApplyTraining`의 RTRAIN/class gate, gold/XP progression, PUPDMG release, class transition | source threshold·level100/127 fixture, atomic stale/family fail-closed와 receipt replay 통과; family edit/broadcast recipient projection은 미확정 |
+| `command10.c:selection` / `선택` | canonical `room.NPCIDs`·MPURIT 및 server-owned `MerchantOffers`의 deterministic read-only listing | occurrence/visibility/catalog/legacy-Carry rejection, immutable offer snapshot과 replay 통과; purchase/전체 merchant object migration은 별도 |
+
+세 레인은 파일 소유권을 분리한 Luna max 병렬 작업 후 parser·transport만 메인에서
+조립했다. `fast`는 변경된 world/session/transport만 race하고, `integration`은 조립
+batch에서 전체 Go race/vet/diff를 한 번 실행한다. Linux ARM64 cross-build는 `main`,
+실제 PostgreSQL·브라우저·x64/Windows/macOS matrix는 승인된 `release`에서만 실행한다.
+workflow/pre-push를 전수 대조했으며 의도된 migration replay 외에 같은 고비용 검사를
+기능 레인마다 반복하는 호출은 없다. 이번 배치에서는 ARM64·DB·browser·strict corpus를
+재실행하지 않았다.
+
 ## 상태와 범위
 
 2026-09-08 구현 추적 보충(전체 인수와 구분): Go 터미널 가입·로그인과 PG 초안

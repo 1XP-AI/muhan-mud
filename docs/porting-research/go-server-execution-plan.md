@@ -218,6 +218,24 @@ G0에서 반드시 조사할 범위: 가입·소유권·접속, 방/출구/이�
   `scripts/run-go-validation.sh main`을 한 번 실행한다. 조립 batch gate에 더해 Linux
   ARM64 cross-build를 수행하는 유일한 Go 로컬 경계다. 예전 `merge` 이름은 실수로 이
   비용을 소비하지 않도록 거부한다.
+
+### 2026-09-09 cadence 감사와 신규 bounded lanes
+
+workflow·재사용 경로·matrix·pre-push 호출을 다시 대조한 결과, 자동 push/PR 실행은
+없고 기능 레인에서 ARM64·실제 PostgreSQL·브라우저·호환성 matrix가 중복 실행되는
+경로도 없었다. release job의 migration 2회 적용은 job 재실행 안전성을 검증하는
+의도된 replay라서 제거하지 않는다. 독립 lane은 계속 병렬로 진행하되 각 lane은
+담당 패키지 race만, parser/transport 조립 후에만 integration을 한 번 수행한다.
+
+이번 bounded 구현은 `시간`(고정 PST read receipt), `수련`(원작 XP/gold·class
+전이의 atomic reducer), `선택 <NPC> [occurrence]`(canonical merchant catalog
+read receipt)를 추가했다. 모두 Go world/session/transport와 xterm parser에 연결하고
+동일 command ID replay를 검증했다. family/global broadcast 및 전체 merchant purchase
+원장이 아직 없으므로 해당 가지는 fail-closed이며 전체 G3 인수로 승격하지 않는다.
+
+이번 배치에서 실행한 것은 `fast`, 조립 `integration`, 정책·shell·migration coverage,
+diff 검사다. ARM64 cross-build·실제 DB/browser·release matrix는 각각 `main`/`release`
+경계에서만 실행한다.
 - **영속성 변경 batch**: 해당 batch의 PG receipt 테스트를 하나의 격리 PostgreSQL에서
   한 번만 묶어 실행한다. 현재 bounded receipt batch는
   `TestPostgresBoundedLanesPersistAndReplay`이며, `MUHAN_BOUNDED_LANES_TEST_DATABASE_URL`

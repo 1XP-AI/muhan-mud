@@ -577,6 +577,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	poisonCommand := false
 	giveCommand := false
 	enemyStatusCommand := false
+	timeCommand := false
+	selectionCommand := false
+	trainingCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -641,6 +644,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandEnemyStatus:
 		enemyStatusCommand = true
 		receipt, err = c.game.owners.ExecuteEnemyStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandTrain:
+		trainingCommand = true
+		receipt, err = c.game.owners.ExecuteTrainingLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandSelection:
+		selectionCommand = true
+		receipt, err = c.game.owners.ExecuteSelectionLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.SelectionOptions{Offers: c.game.config.MerchantOffers})
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -807,7 +816,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		titleCommand = true
 		receipt, err = c.game.owners.ExecuteTitleLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandRead:
-		receipt, err = c.game.owners.ExecuteReadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadLineOptions{GameHour: hour, WallClock: c.game.config.WallClock()})
+		timeCommand = true
+		// The connector's clock callback exposes both a monotonic-ish tick and
+		// the already-projected in-game hour.  The legacy command contract uses
+		// the latter (including its 0=>12 display rule), so bind that value into
+		// the durable time receipt rather than re-projecting `now` here.
+		receipt, err = c.game.owners.ExecuteTimeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.TimeCommandOptions{Now: int64(hour), WallClock: c.game.config.WallClock()})
 	case session.CommandInfo:
 		infoCommand = true
 		receipt, err = c.game.owners.ExecuteInfoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -845,6 +859,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedPoisonLine) ||
 		errors.Is(err, session.ErrUnsupportedGiveLine) ||
 		errors.Is(err, session.ErrUnsupportedEnemyStatusLine) ||
+		errors.Is(err, session.ErrUnsupportedTimeLine) ||
+		errors.Is(err, session.ErrUnsupportedSelectionLine) ||
+		errors.Is(err, session.ErrUnsupportedTrainingLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -919,7 +936,25 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrEnemyStatusCanonicalOnly) ||
 		errors.Is(err, world.ErrEnemyStatusTargetRequired) ||
 		errors.Is(err, world.ErrEnemyStatusTargetAbsent) ||
-		errors.Is(err, world.ErrEnemyStatusVitalsUnavailable) {
+		errors.Is(err, world.ErrEnemyStatusVitalsUnavailable) ||
+		errors.Is(err, world.ErrSelectionNPCStateUnresolved) ||
+		errors.Is(err, world.ErrSelectionMerchantOffersUnresolved) ||
+		errors.Is(err, world.ErrSelectionMerchantOffersInvalid) ||
+		errors.Is(err, world.ErrSelectionStaleProposal) ||
+		errors.Is(err, world.ErrTrainingActorAbsent) ||
+		errors.Is(err, world.ErrTrainingRoomAbsent) ||
+		errors.Is(err, world.ErrTrainingRoom) ||
+		errors.Is(err, world.ErrTrainingClass) ||
+		errors.Is(err, world.ErrTrainingBlind) ||
+		errors.Is(err, world.ErrTrainingCaretaker) ||
+		errors.Is(err, world.ErrTrainingExperience) ||
+		errors.Is(err, world.ErrTrainingGold) ||
+		errors.Is(err, world.ErrTrainingFamilyPending) ||
+		errors.Is(err, world.ErrTrainingBroadcastPending) ||
+		errors.Is(err, world.ErrTrainingNumeric) ||
+		errors.Is(err, world.ErrTrainingStaleProposal) ||
+		errors.Is(err, world.ErrTrainingUnsupportedClass) ||
+		errors.Is(err, world.ErrTrainingUnsupportedLevel) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1335,6 +1370,20 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	} else if enemyStatusCommand {
 		if err = json.Unmarshal(receipt.Response, &output); err != nil {
 			// Keep the original receipt error for a malformed response.
+		}
+	} else if timeCommand {
+		if err = json.Unmarshal(receipt.Response, &output); err != nil {
+			// Keep the original receipt error for a malformed response.
+		}
+	} else if selectionCommand {
+		var result world.SelectionResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if trainingCommand {
+		var result world.TrainingResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
 		}
 	} else if merchantPurchaseCommand {
 		var result world.MerchantPurchaseResult

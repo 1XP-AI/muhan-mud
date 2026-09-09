@@ -87,6 +87,17 @@ const (
 	CommandGive
 	CommandPoison
 	CommandEnemyStatus
+	CommandTrain
+	CommandSelection
+)
+
+// Descriptive aliases preserve the original CommandRead value used by the
+// existing parser while allowing new adapters to name the source operation
+// directly. CommandTrain is the terminal-facing spelling for command7.c's
+// `수련` reducer.
+const (
+	CommandTime     CommandKind = CommandRead
+	CommandTraining CommandKind = CommandTrain
 )
 
 var ErrCommandTooManyTokens = errors.New("command has more than seven tokens")
@@ -241,6 +252,16 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsEnemyStatusLine(trimmed) {
 		parsed.Kind = CommandEnemyStatus
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsTrainingLine(trimmed) {
+		parsed.Kind = CommandTrain
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsSelectionLine(trimmed) {
+		parsed.Kind = CommandSelection
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

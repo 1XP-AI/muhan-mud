@@ -1,5 +1,38 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-09 (검증 cadence 전수 감사 + 시간·수련·선택)
+
+검증 호출 그래프를 다시 전수 대조했다. `.github/workflows/ci.yml`는
+`workflow_dispatch`만 사용하고, 기능 레인은 `fast`(영향 Go 패키지 race), 조립 batch는
+`integration`(전체 Go race/vet/diff 1회), 기본 브랜치 병합은 `main`(integration + Linux
+ARM64 cross-build 1회), 승인된 기본 브랜치의 `release`만 PostgreSQL·브라우저·
+x64/Windows/macOS 호환성 matrix를 실행한다. pre-push는 push 전체를 다시 빌드하지 않고
+변경된 migration/stack 계약만 검사한다. release 내부의 migration 2회 실행은 CI 재실행
+안전성을 검증하는 의도된 replay이며, 같은 검사가 기능 레인과 중복 호출되는 경로는
+발견되지 않았다. 따라서 이번 기능 배치에서 ARM64·실제 DB·브라우저·호환성 검사를
+반복하지 않았다.
+
+파일 소유권이 겹치지 않는 Luna max 세 레인을 병렬 완료하고 메인 세션에서 parser와
+`WorldConnector`를 한 번 조립했다.
+
+- `시간`: `command8.c:prt_time`의 게임 시각(`now % 24`)과 고정 PST wall-clock을
+  request에 묶은 read-only receipt/replay를 추가했다. connector는 기존 `Clock`의
+  이미 투영된 game hour를 전달해 `0시→12시` 출력 호환성을 보존한다.
+- `수련`: `command7.c:train`의 RTRAIN/class-bit·blind/caretaker gate, 경험치·금화
+  다중 레벨 상승, PUPDMG 해제와 INVINCIBLE/CARETAKER 전환을 snapshot-bound atomic
+  reducer로 연결했다. family edit와 global broadcast 수신자 원장이 없는 경우
+  영수증 전에 fail-closed하며 `BroadcastPending`으로 남긴다.
+- `선택 <NPC> [occurrence]`: `command10.c:selection`의 canonical same-room NPC와
+  MPURIT merchant catalog를 사용해 deterministic stock 목록을 read-only receipt로
+  반환한다. legacy `Carry` fallback·prefix 추측·catalog 누락은 허용하지 않는다.
+
+이번 변경 검증은 `scripts/run-go-validation.sh fast`, 조립 후
+`scripts/run-go-validation.sh integration`, 정책·shell·migration coverage 및
+`git diff --check`를 통과했다. strict room corpus 63건, ARM64 cross-build, 실제
+PostgreSQL/browser·release matrix, IME/mobile 실기기와 testnet 배포는 cadence/승격
+경계 밖이라 실행하지 않았다. `src/frp.new`는 사용자 소유 dirty 변경으로 계속
+수정·stage·되돌리지 않는다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-09 (줘·독살포·상태 + 검증 비용 경계)
 
 직접 관리한 Luna max 세 레인을 병렬 완료한 뒤 메인 세션에서 공용 parser와
