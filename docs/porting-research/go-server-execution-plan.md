@@ -1,5 +1,18 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `대답`/`/` reply receipt 경계
+
+`command12.c:resend`가 사용하는 연결별 `talksend`를 Go transport의 atomic
+`replyTarget`으로 보존하고, `대답 <메시지>`와 `/ <메시지>`를 parser→session의
+`ExecuteReplyLine` receipt로 연결했다. target ID/name은 서버가 직전 수신 event에서만
+채우며 terminal 요청에는 대상 identity를 허용하지 않는다. canonical direct-message
+reducer로 visibility·ignore·silent·UTF-8/255바이트 검증을 재사용하고, stale 대상은
+commit 전에 거절한다. 최초 commit event만 전송하고 replay에서는 재전송하지 않는다.
+
+session/transport reply·direct-message race와 vet, diff check가 통과했으며 실제 PG
+테스트 훅도 추가했다(이번 실행은 환경 미설정으로 skip). C의 전체 `resend` continuation
+및 descriptor 출력 parity, 운영 DB·브라우저/배포 승격은 미완료다.
+
 ## 2026-09-10 배우자 대화(`사랑말`) receipt·ANSI 경계
 
 원작 parser가 마지막 토큰을 명령으로 취급하는 규칙에 맞춰 `<메시지> 사랑말`을

@@ -172,3 +172,41 @@ func TestPostgresDirectMessagePersistsEventReceiptAndReplays(t *testing.T) {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
 }
+
+func TestPostgresReplyPersistsEventReceiptAndReplays(t *testing.T) {
+	_, store, ctx := serviceCommandPG(t)
+	state := world.State{
+		Version: 1,
+		Rooms:   map[int16]world.RoomState{200: serviceRoomState(200, "광장", [8]byte{}, "a", "b")},
+		Players: map[string]world.PlayerState{
+			"a": {Body: world.LegacyMonster{Name: "Alice", Type: 0, RoomID: 200}, Online: true},
+			"b": {Body: world.LegacyMonster{Name: "Bob", Type: 0, RoomID: 200}, Online: true},
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worldID := fmt.Sprintf("service-reply-%d", time.Now().UnixNano())
+	if err := store.CreateWorld(ctx, worldID, raw); err != nil {
+		t.Fatal(err)
+	}
+	owners := &session.Ownership{}
+	lease := serviceCommandLease(t, owners, "b")
+	first, err := owners.ExecuteReplyLine(ctx, store, worldID, "reply-pg-1", lease, "/ 안녕", "a", "Alice")
+	if err != nil || first.Replayed || first.Revision != 1 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	var result world.DirectMessageResult
+	if err := json.Unmarshal(first.Response, &result); err != nil || result.Event == nil || !strings.Contains(result.Event.Text, "안녕") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	replay, err := owners.ExecuteReplyLine(ctx, store, worldID, "reply-pg-1", lease, "/ 안녕", "a", "Alice")
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	snapshot, err := store.LoadWorld(ctx, worldID)
+	if err != nil || snapshot.Revision != 1 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+}

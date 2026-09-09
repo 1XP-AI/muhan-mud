@@ -1,5 +1,13 @@
 # Go MUD 서버 작업 영역
 
+최신 `대답`/`/` slice: `command12.c:resend`의 연결별 마지막 수신자를 atomic
+`replyTarget`으로 유지하고, `대답 <메시지>`와 `/ <메시지>`를 서버 주입 exact ID로
+`ExecuteReplyLine` receipt에 연결했다. 기존 direct-message visibility·ignore·silent·
+UTF-8/255바이트 검증과 event formatter를 재사용하며 stale 대상은 fail-closed한다.
+최초 commit 뒤에만 상대방 event를 보내고 replay에서는 중복 전송하지 않는다.
+session/transport race·vet·diff 검사가 통과했고 실제 PG 훅은 환경 설정 시 실행된다.
+전체 `resend` parity와 운영 Supabase/WSS/브라우저 검증은 아직 미완료다.
+
 최신 `사랑말` slice: 원작 suffix 문법인 `<메시지> 사랑말`을 canonical 기혼·배우자·
 UTF-8/255바이트 입력 검증과 함께 durable receipt로 연결했다. C `crt_str`의
 PINVIS/PDMINV/PDINVI 가시성, PANSIC/PBRIGH ANSI, `%j` 조사를 proposal에 렌더링해

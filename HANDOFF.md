@@ -1,5 +1,28 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (대답·`/` reply receipt 경계)
+
+`command12.c:resend`의 `대답`/`/`을 연결 로컬 마지막 수신자 경계로 연결했다.
+직접 메시지 event가 수신자의 atomic `talksend` 대체 상태에 정확한 sender ID/name을
+기록하고, 답장 입력은 클라이언트가 대상 ID를 보낼 수 없도록 그 값을 서버에서만
+`ExecuteGame` request에 주입한다. `PlanDirectMessage`의 visibility·ignore·silent·
+UTF-8/255바이트 규칙과 동일한 reducer를 재사용하며, 대상이 stale/logged-out이면
+receipt 전에 fail-closed한다. 최초 commit 뒤에만 event를 전송하고 receipt replay에서는
+재전송하지 않는다.
+
+검증 결과:
+
+```text
+(cd server && go test -race ./internal/session ./internal/transport -run 'Reply|DirectMessage|ParseCommand' -count=1) PASS
+(cd server && go vet ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+실제 PostgreSQL reply 저장/replay 테스트는 `MUHAN_SERVICE_COMMAND_TEST_DATABASE_URL`
+설정 시 실행하도록 추가했지만 이번 로컬 실행에서는 별도 DB를 재기동하지 않았다.
+전체 resend continuation parity·legacy descriptor 순서·운영 Supabase·브라우저/IME/mobile·
+WSS/Ingress·testnet 인수는 남아 있다. 현재 변경은 아직 메인 브랜치에 push하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (배우자 대화 출력·ANSI 경계)
 
 `command11.c:m_send`의 suffix 입력(`<메시지> 사랑말`)을 Go에 연결했다. `PMARRI`,

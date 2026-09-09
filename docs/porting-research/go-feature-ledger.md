@@ -1,5 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `대답`/`/` reply receipt 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command12.c:resend` / `대답`·`/` | 수신 direct-message event의 sender durable ID/name을 연결 로컬 atomic `replyTarget`에 기록. 서버가 주입한 exact target으로 direct-message reducer를 실행하는 `ExecuteReplyLine` receipt를 추가하고, 최초 commit 뒤에만 reply event를 fan-out | session/transport race·vet·diff PASS. 실제 PG 검증 훅 추가(이번 실행 skip). full resend continuation·C descriptor parity·운영 Supabase·브라우저/배포는 미완료 |
+
+답장 대상은 terminal payload에서 선택할 수 없으며, 연결 종료 시 폐기된다. stale 또는
+오프라인 sender는 receipt 전에 fail-closed한다.
+
 ## 2026-09-10 배우자 대화 출력·ANSI receipt 경계
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
@@ -268,7 +269,12 @@ type worldConnection struct {
 	// lastCommand mirrors C's connection-local extr->lastcommand. It is
 	// deliberately excluded from world state and durable receipts: `!` only
 	// expands the next line before the normal command reducer runs.
-	lastCommand      string
+	lastCommand string
+	// replyTarget is the exact incoming direct-message sender used by the
+	// source `대답`/`/` command. It is connection-local and atomic because a
+	// committed event updates another connection while the recipient may be
+	// submitting a line concurrently.
+	replyTarget      atomic.Pointer[replyTarget]
 	lastBroadcastAt  int32
 	ready, closed    bool
 	closeAfterSubmit bool
@@ -283,6 +289,27 @@ type worldConnection struct {
 	// ignore is command9.c's connection-local first_ignore list. It is never
 	// serialized with the world snapshot or a command receipt.
 	ignore IgnoreList
+}
+
+type replyTarget struct {
+	id   string
+	name string
+}
+
+func (c *worldConnection) setReplyTarget(id, name string) {
+	if id == "" || name == "" {
+		c.replyTarget.Store(nil)
+		return
+	}
+	c.replyTarget.Store(&replyTarget{id: id, name: name})
+}
+
+func (c *worldConnection) getReplyTarget() (string, string, bool) {
+	target := c.replyTarget.Load()
+	if target == nil || target.id == "" || target.name == "" {
+		return "", "", false
+	}
+	return target.id, target.name, true
 }
 
 type composeKind uint8
@@ -599,6 +626,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			return output, nil
 		}
 	}
+	replyTargetID, replyTargetName := "", ""
+	replyCommand := false
+	if parsed.Kind == session.CommandReply {
+		var found bool
+		replyTargetID, replyTargetName, found = c.getReplyTarget()
+		if !found {
+			return "누구에게 말을 전하시려구요?\r\n", nil
+		}
+		if output, ignored := c.directMessageIgnoredForTarget(before, line, replyTargetID, replyTargetName); ignored {
+			return output, nil
+		}
+	}
 	directional := parsed.Kind == session.CommandDirectional
 	sayText, sayCommand := "", false
 	yellText, yellCommand := "", false
@@ -857,6 +896,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDirectMessage:
 		directMessageCommand = true
 		receipt, err = c.game.owners.ExecuteDirectMessageLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandReply:
+		replyCommand = true
+		receipt, err = c.game.owners.ExecuteReplyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, replyTargetID, replyTargetName)
 	case session.CommandMerchantPurchase:
 		merchantPurchaseCommand = true
 		receipt, err = c.game.owners.ExecuteMerchantPurchaseLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MerchantPurchaseOptions{Offers: c.game.config.MerchantOffers})
@@ -940,6 +982,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	default:
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
+	if errors.Is(err, session.ErrReplyTargetUnavailable) {
+		return "누구에게 말을 전하시려구요?\r\n", nil
+	}
 	if errors.Is(err, session.ErrUnsupportedLookLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectionalLine) ||
 		errors.Is(err, session.ErrUnsupportedAttackLine) ||
@@ -957,6 +1002,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedValueLine) ||
 		errors.Is(err, session.ErrUnsupportedRepairLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectMessageLine) ||
+		errors.Is(err, session.ErrUnsupportedReplyLine) ||
 		errors.Is(err, session.ErrUnsupportedStealLine) ||
 		errors.Is(err, session.ErrUnsupportedTeachLine) ||
 		errors.Is(err, session.ErrUnsupportedBackstabLine) ||
@@ -1320,7 +1366,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
-	if directMessageCommand && !receipt.Replayed {
+	if (directMessageCommand || replyCommand) && !receipt.Replayed {
 		var result world.DirectMessageResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Event != nil {
 			if after, ok := c.game.snapshot(ctx); ok {
@@ -1634,6 +1680,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
+	} else if replyCommand {
+		var result world.DirectMessageResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
 	} else if stealCommand {
 		var result world.StealResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
@@ -1898,6 +1949,7 @@ func (c *worldConnection) Close(ctx context.Context) {
 	// connection boundary so a closed descriptor cannot retain names while a
 	// cleanup retry is pending.
 	c.ignore.Clear()
+	c.setReplyTarget("", "")
 	if c.passwordChange != nil {
 		// Cancel clears the state machine's expected/replacement hashes before
 		// this connection can become a pending cleanup retry.

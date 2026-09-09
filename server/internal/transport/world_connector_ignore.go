@@ -119,8 +119,33 @@ func (c *worldConnection) directMessageIgnored(state world.State, line string) (
 	if !ok || command.Target == "" || command.Text == "" {
 		return "", false
 	}
-	proposal, err := state.PlanDirectMessage(c.lease.ActorID, command.Target, command.Text)
+	return c.directMessageIgnoredForTarget(state, line, "", command.Target)
+}
+
+// directMessageIgnoredForTarget is the same descriptor-local listener check
+// for `대답`/`/`, whose target was already captured from an incoming event.
+// An empty targetID keeps the original `얘기` path on selector resolution;
+// replies additionally require the exact identity to remain unchanged.
+func (c *worldConnection) directMessageIgnoredForTarget(state world.State, line, targetID, targetName string) (string, bool) {
+	var text string
+	if targetID == "" {
+		command, ok := session.ParseDirectMessageLine(line)
+		if !ok || command.Target == "" || command.Text == "" {
+			return "", false
+		}
+		targetName, text = command.Target, command.Text
+	} else {
+		command, ok := session.ParseReplyLine(line)
+		if !ok || targetName == "" {
+			return "", false
+		}
+		text = command.Text
+	}
+	proposal, err := state.PlanDirectMessage(c.lease.ActorID, targetName, text)
 	if err != nil || !proposal.Delivered {
+		return "", false
+	}
+	if targetID != "" && proposal.TargetID != targetID {
 		return "", false
 	}
 	target := c.liveConnection(proposal.TargetID)

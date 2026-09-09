@@ -57,6 +57,7 @@ const (
 	CommandValue
 	CommandRepair
 	CommandDirectMessage
+	CommandReply
 	CommandMerchantPurchase
 	CommandNPCTalk
 	CommandGroupTalk
@@ -230,6 +231,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMarriageSendLine(trimmed) {
 		parsed.Kind = CommandMarriageSend
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsReplyLine(trimmed) {
+		parsed.Kind = CommandReply
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -546,6 +552,8 @@ func commandKind(first string) CommandKind {
 		return CommandRepair
 	case "얘기", "이야기":
 		return CommandDirectMessage
+	case "대답":
+		return CommandReply
 	case "대화":
 		return CommandNPCTalk
 	case "그룹말", "무리말", "=":

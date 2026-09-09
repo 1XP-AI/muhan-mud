@@ -201,6 +201,10 @@ func (g *WorldConnector) publishDirectMessage(after world.State, event world.Dir
 		if connection.lease.ActorID != event.TargetID || connection.events == nil {
 			continue
 		}
+		// command12.c updates the recipient's descriptor-local `talksend`
+		// before/alongside delivery. Keep the exact durable sender identity so
+		// a later `대답`/`/` cannot resolve a different same-name player.
+		connection.setReplyTarget(event.SenderID, event.SenderName)
 		select {
 		case connection.events <- event.Text:
 		default:
