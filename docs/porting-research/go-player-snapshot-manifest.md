@@ -53,6 +53,56 @@ credential hash는 의도적으로 없다. 운영자는 source와 사람 확인�
 정확한 identity/item mapping과 별도 bcrypt hash를 채운 뒤에만 import해야 한다. raw의
 password field는 변환 결과·review·로그에 복사되지 않는다.
 
+사람이 `player-snapshot-review.json`의 source/name/world와 원본 보관 기록을 대조한 뒤에는
+별도 private `identity-mapping.json`을 작성해 review와 import manifest 사이를 연결한다.
+mapping은 각 `snapshot_file`에 대해 `command_id`, `expected_revision`, canonical
+`account_name`, exact `player_id`, preorder `item_ids`, 그리고 별도 trusted step에서 만든
+Base64 bcrypt hash를 모두 명시해야 한다. `expected_revision`을 생략하거나 평문
+`password` 필드를 추가하면 fail-closed한다. mapping의 account/player/item ID는 raw 파일에서
+추측하지 않으며, CDTO snapshot의 canonical name·graph 개수와 대조한다.
+
+```sh
+# DB 없이 review·mapping·CDTO를 모두 검증하고 import manifest JSON을 생성
+go run ./cmd/muhan \
+  -build-player-snapshot-manifest-review /private/muhan-players/cdto/player-snapshot-review.json \
+  -build-player-snapshot-manifest-mapping /private/muhan-players/cdto/identity-mapping.json \
+  -build-player-snapshot-manifest-output /private/muhan-players/cdto/player-import-manifest.json
+
+# 출력하지 않고 같은 검증만 수행
+go run ./cmd/muhan \
+  -build-player-snapshot-manifest-review /private/muhan-players/cdto/player-snapshot-review.json \
+  -build-player-snapshot-manifest-mapping /private/muhan-players/cdto/identity-mapping.json \
+  -build-player-snapshot-manifest-dry-run
+```
+
+builder는 review와 mapping의 모든 record를 lexical review 순서로 매칭하고, private CDTO의
+canonical SHA-256·round-trip·inventory node 수·snapshot name을 재검증한다. 결과 manifest는
+review와 같은 private `0700` 디렉터리에만 `0600` immutable write할 수 있으며, 이미 다른
+bytes가 있는 출력은 덮어쓰지 않는다. builder 역시 DB나 게임 런타임을 시작하지 않으며, 생성된
+manifest를 실제 `-import-player-snapshot-manifest`로 별도 실행해야 한다. 결과의
+`source_sha256`은 import 대상 canonical CDTO bytes의 digest이고, raw source digest는 review
+evidence에 남는다.
+
+mapping의 최소 형태는 다음과 같다(실제 hash·ID는 운영자가 승인한 값으로 채운다).
+
+```json
+{
+  "version": 1,
+  "world_id": "muhan-01",
+  "records": [
+    {
+      "snapshot_file": "shard-a/alice.raw.cdto",
+      "command_id": "import-player-0001",
+      "expected_revision": 12,
+      "account_name": "Alice",
+      "credential_hash_b64": "<bcrypt-hash-bytes-base64>",
+      "player_id": "legacy-player-0001",
+      "item_ids": ["item-0001", "item-0002"]
+    }
+  ]
+}
+```
+
 ## 파일 보안·구성
 
 - manifest와 각 `snapshot_file`은 심볼릭 링크가 아닌 정규 파일이고 권한이 정확히 `0600`이어야 한다.

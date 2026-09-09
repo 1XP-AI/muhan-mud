@@ -21,6 +21,17 @@ manifest를 거친다.
 제공하며 password/native pointer·player ID·item ID·bcrypt hash는 포함하지 않는다. 따라서
 자동 claim을 하지 않고, 사람이 대조한 뒤 기존 v1 import manifest를 별도로 작성해야 한다.
 
+## 2026-09-10 review→import manifest builder
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| operator mapping 결합 | `-build-player-snapshot-manifest-review` + `-build-player-snapshot-manifest-mapping`이 사람이 승인한 account/player/item ID·expected revision·bcrypt hash를 review 순서와 매칭하고 CDTO digest·canonical wire·name·graph count를 재검증한 뒤 기존 import manifest를 생성 | `cmd/muhan` race/CLI dry-run PASS; 평문 password·누락 expected revision·경로 traversal·중복 identity/item·변경 output은 fail-closed. 실제 운영 mapping 승인·대량 import/복구는 미완료 |
+| DB 경계 분리 | builder는 `-build-player-snapshot-manifest-dry-run` 또는 private `0600` immutable output만 수행하며 DB/listener를 시작하지 않음. 생성물은 별도 `-import-player-snapshot-manifest`에서만 사용 | 운영 Supabase 연결/전체 캐릭터 대조·복구·배포는 미완료 |
+
+mapping schema와 운영 절차는 `docs/porting-research/go-player-snapshot-manifest.md`를
+기준으로 한다. raw source digest는 review evidence로 남고, 생성 import manifest의
+`source_sha256`은 실제 import 대상 canonical CDTO bytes를 가리킨다.
+
 ## 2026-09-10 `PlayerSnapshotV1` operator manifest·read-only inspection
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

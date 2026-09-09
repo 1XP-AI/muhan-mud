@@ -50,6 +50,10 @@ func main() {
 	playerSnapshotRawOutput := flag.String("convert-player-snapshot-cdto-dir", "", "private destination directory for converted CDTO files and review metadata")
 	playerSnapshotRawABI := flag.String("convert-player-snapshot-raw-abi", "", "exact LegacyPlayerSnapshotRawV1ABI contract required for raw conversion")
 	playerSnapshotRawDryRun := flag.Bool("convert-player-snapshot-raw-dry-run", false, "validate raw player files without writing CDTO output")
+	playerSnapshotManifestReview := flag.String("build-player-snapshot-manifest-review", "", "review JSON produced by raw player conversion")
+	playerSnapshotManifestMapping := flag.String("build-player-snapshot-manifest-mapping", "", "private operator identity/item mapping JSON for reviewed player snapshots")
+	playerSnapshotManifestOutput := flag.String("build-player-snapshot-manifest-output", "", "private destination manifest for reviewed player snapshot import")
+	playerSnapshotManifestDryRun := flag.Bool("build-player-snapshot-manifest-dry-run", false, "validate review, mapping, and CDTO files without writing an import manifest or connecting to PostgreSQL")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -82,23 +86,49 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	playerSnapshotManifestBuildOptions, err := validatePlayerSnapshotManifestBuildFlags(*playerSnapshotManifestReview, *playerSnapshotManifestMapping, *playerSnapshotManifestOutput, *playerSnapshotManifestDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if playerSnapshotOptions.ManifestPath != "" && playerSnapshotInspectOptions.Directory != "" {
 		log.Fatal("player snapshot import and inspection modes are mutually exclusive")
 	}
 	if (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") && playerSnapshotRawOptions.SourceDir != "" {
 		log.Fatal("player snapshot import/inspection and raw conversion modes are mutually exclusive")
 	}
+	if playerSnapshotManifestBuildOptions.ReviewPath != "" && (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "") {
+		log.Fatal("player snapshot manifest build mode cannot be combined with import, inspection, or raw conversion modes")
+	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
 	}
 	if (playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "") &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotRawOptions.SourceDir != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("player snapshot import/inspection mode cannot be combined with migrate, seed, or world flags")
 	}
 	if playerSnapshotRawOptions.SourceDir != "" &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("raw player conversion mode cannot be combined with migrate, seed, or world flags")
+	}
+	if playerSnapshotManifestBuildOptions.ReviewPath != "" &&
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		log.Fatal("player snapshot manifest build mode cannot be combined with migrate, seed, or world flags")
+	}
+	if playerSnapshotManifestBuildOptions.ReviewPath != "" {
+		builtBatch, manifestRaw, buildErr := buildPlayerSnapshotImportManifest(playerSnapshotManifestBuildOptions.ReviewPath, playerSnapshotManifestBuildOptions.MappingPath)
+		if buildErr != nil {
+			log.Fatalf("player snapshot manifest build rejected: %v", buildErr)
+		}
+		if playerSnapshotManifestBuildOptions.DryRun {
+			log.Printf("player snapshot manifest build validated: world=%s records=%d; no import manifest or database write performed", builtBatch.WorldID, len(builtBatch.Requests))
+			return
+		}
+		if writeErr := writePlayerSnapshotManifestBuild(playerSnapshotManifestBuildOptions.OutputPath, manifestRaw, playerSnapshotManifestBuildOptions.ReviewPath); writeErr != nil {
+			log.Fatalf("player snapshot manifest build failed: %v", writeErr)
+		}
+		log.Printf("player snapshot import manifest built: world=%s records=%d output=%s; database import still requires a separate explicit command", builtBatch.WorldID, len(builtBatch.Requests), playerSnapshotManifestBuildOptions.OutputPath)
+		return
 	}
 	if playerSnapshotRawOptions.SourceDir != "" {
 		playerSnapshotRawBatch, convertErr := convertPlayerSnapshotRawDirectory(playerSnapshotRawOptions)

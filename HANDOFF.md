@@ -1,5 +1,29 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (review→import manifest builder)
+
+`cmd/muhan`에 `-build-player-snapshot-manifest-review`와
+`-build-player-snapshot-manifest-mapping`을 연결하는 DB-독립 builder를 추가했다. raw 변환이
+만든 `player-snapshot-review.json`과 사람이 승인한 private identity mapping을 review 순서로
+매칭하고, CDTO canonical SHA-256·round-trip·snapshot name·inventory graph count를 다시
+검증한 뒤 기존 `-import-player-snapshot-manifest`가 소비하는 immutable `0600` manifest를
+생성한다. `-build-player-snapshot-manifest-dry-run`은 파일 검증만 수행하며 DB/listener를
+시작하지 않는다. mapping은 exact account/player/item ID·expected revision·Base64 bcrypt
+hash를 모두 요구하고, 평문 password·누락 필드·경로 traversal·중복 identity/item을
+fail-closed한다. 출력은 review와 같은 private `0700` 디렉터리에만 기록되며 다른 bytes로
+덮어쓰지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -run 'PlayerSnapshotManifest(Build|DryRun)|BuildPlayerSnapshot|WritePlayerSnapshotManifest' -count=1) PASS
+(cd server && go vet ./cmd/muhan) PASS
+```
+
+이 단계도 실제 Supabase import를 수행하지 않는다. 운영 raw 수집·사람의 계정/캐릭터 대조·
+mapping 승인·대량 import/복구·전체 command parity·브라우저/IME/mobile·WSS/Ingress·testnet
+승격은 남아 있으며, `src/frp.new`와 예전 dirty worktree는 계속 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (native raw→CDTO review conversion)
 
 `cmd/muhan -convert-player-snapshot-raw-dir`를 추가했다. 명시된

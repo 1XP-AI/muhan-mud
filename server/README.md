@@ -30,6 +30,14 @@ account/player/item manifest가 필요하다. 실제 C raw fixture와 Go/C proje
 item IDs, bcrypt hash를 담지 않으므로 자동 claim/import가 아니다. 같은 output bytes의
 재실행만 허용하고 변경 bytes 덮어쓰기는 거부한다.
 
+사람이 review를 승인한 뒤에는 `-build-player-snapshot-manifest-review`와
+`-build-player-snapshot-manifest-mapping`으로 explicit account/player/item ID·expected
+revision·bcrypt hash를 결합해 기존 import CLI용 manifest를 만들 수 있다. builder는 DB 없이
+CDTO hash·canonical round-trip·graph count·name을 다시 검증하고, `-build-player-snapshot-
+manifest-dry-run`은 출력 없이 검증만 한다. 출력은 review와 같은 private `0700` 디렉터리에
+`0600` immutable 파일로만 생성되며, 평문 password·경로 traversal·누락된 expected revision은
+거부된다. 생성 후에도 DB 변경은 별도 `-import-player-snapshot-manifest` 실행에서만 일어난다.
+
 최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
 caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
 state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.

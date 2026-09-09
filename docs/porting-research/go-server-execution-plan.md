@@ -27,6 +27,15 @@ claim/import가 일어나지 않는다. 실제 manifest import 전에는 사람�
 대조해 bcrypt hash와 explicit IDs를 추가해야 한다. invalid/duplicate name 또는 output
 conflict는 부분 output 없이 fail-closed한다.
 
+같은 경계에 `-build-player-snapshot-manifest-review`와
+`-build-player-snapshot-manifest-mapping`을 연결하는 DB-독립 builder를 추가했다. builder는
+사람이 승인한 identity/item mapping을 review 순서에 맞춰 canonical CDTO의 digest·round-trip·
+graph count·name과 다시 대조하고, `-build-player-snapshot-manifest-output`으로 기존 import
+CLI가 소비하는 immutable `0600` manifest를 만든다. `-build-player-snapshot-manifest-dry-run`
+은 파일만 검증하며 DB나 listener를 시작하지 않는다. mapping의 expected revision, bcrypt
+hash, exact player/item ID가 없거나 평문 password/경로 traversal이 있으면 거부한다. 생성된
+manifest는 별도 명시적 `-import-player-snapshot-manifest` 실행 전에는 DB를 변경하지 않는다.
+
 ## 2026-09-10 PlayerSnapshotV1 operator manifest CLI
 
 `cmd/muhan -import-player-snapshot-manifest`가 검토된 CDTO snapshot 묶음을 명시적으로
