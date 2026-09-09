@@ -359,6 +359,10 @@ func (s State) BuyShopItem(actorID, stockID string, allocate ShopPurchaseItemIDA
 	}
 	next := s.clone()
 	nextPlayer := next.Players[actorID]
+	// command7.c:buy clears PHIDDN immediately before the purchased object is
+	// attached to the player.  A successful durable purchase must therefore
+	// reveal the buyer as part of the same candidate, not in a later event.
+	nextPlayer.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
 	nextPlayer.Body.Gold = int32(goldAfter)
 	nextPlayer.Items = &destination
 	next.Players[actorID] = nextPlayer

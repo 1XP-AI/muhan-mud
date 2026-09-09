@@ -84,6 +84,9 @@ func TestQuoteShopPurchaseUsesCanonicalRoomStorageAndExactStockPrice(t *testing.
 
 func TestBuyShopItemDeepCopiesNestedStockAndDebitsAtomically(t *testing.T) {
 	s := shopTransactionFixture(t)
+	hidden := s.Players["a"]
+	hidden.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	s.Players["a"] = hidden
 	original := s.clone()
 	next, result, err := s.BuyShopItem("a", "stock-sword", sequenceShopAllocator("bought-sword", "bought-gem"))
 	if err != nil {
@@ -98,6 +101,9 @@ func TestBuyShopItemDeepCopiesNestedStockAndDebitsAtomically(t *testing.T) {
 	player := next.Players["a"]
 	if player.Body.Gold != 60 || !containsString(player.Items.Inventory, "bought-sword") || len(player.Items.Items) != 3 {
 		t.Fatalf("player=%+v", player)
+	}
+	if flag(player.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("successful shop purchase did not clear PHIDDN")
 	}
 	if !reflect.DeepEqual(player.Items.Items["bought-sword"].Contents, []string{"bought-gem"}) || player.Items.Items["bought-gem"].Object.Name != "보석" {
 		t.Fatalf("nested purchased graph=%+v", player.Items.Items)
