@@ -1,5 +1,23 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
+
+Orca 관리 목록에는 주 worktree만 남아 있으며, Git에 남은 예전 `orca/workspaces`
+30개는 모두 `objmon/Celduin_sign` 대소문자 충돌로 dirty하여 보존했다. 직접 관리한
+Luna max 레인은 종료 후 주 worktree에서 통합했다. `src/frp.new`는 사용자 변경으로
+계속 제외한다.
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:family_talk` / `패거리말`·`]` | `PlanFamilyTalk`, canonical PFAMIL·PSILNC·FamilyCatalog, deterministic recipient event receipt, parser/session/transport 최초 commit fan-out 및 replay 억제 | targeted race/vet 통과; family notice/war/보상과 전체 C 출력 parity는 미완료 |
+| `command11.c:family`·`add_family`·`out_family` / 가입 신청·취소 | `PlanFamilyJoin`/`PlanFamilyWithdrawal` proposal와 원자 apply, canonical online boss/identity·PFAMIL/PRDFML/PFMBOS 검증 | 승인·활동 회원 탈퇴의 `family_gold`·`family_member_<n>` ledger가 없어 fail-closed; transport 명령 연결은 후속 |
+| `command4.c:info_2` 주문 목록 / `주문` | `SpellCatalog` 56 `spllist` + 20 활성 `ospell`, deterministic 이름 정렬 `SpellList` read-only receipt/replay와 session adapter | offensive/targeted/map/미확인 주문 실행, `[엔터]` continuation·전체 spell effect는 미완료 |
+
+검증 명령 `(cd server && go test -race ./internal/world -run 'FamilyTalk|FamilyMutation|SpellCatalog|SpellList' -count=1)`,
+session/transport targeted race 및 `go vet`가 통과했다. 전체 world는 기존 strict room
+corpus 63개 예외로 실패한다. ARM64/main, 실제 PG/browser·IME/mobile, release,
+WSS/Ingress 및 testnet은 cadence 경계에서만 실행한다.
+
 ## 2026-09-10 정리 후속: 스크롤·초대·패거리 상태
 
 이전 Orca 정리 요청으로 clean worktree 108개를 제거하고 dirty worktree 30개는

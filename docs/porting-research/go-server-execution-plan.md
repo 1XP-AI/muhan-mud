@@ -1,5 +1,25 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
+
+Orca worktree를 재확인한 결과 관리 목록에는 주 worktree만 남았다. 예전 Git
+`orca/workspaces` 30개는 모두 `objmon/Celduin_sign` 대소문자 충돌로 uncommitted 상태라
+삭제하지 않고 보존했다. 완료된 직접 레인은 Luna max 사용 후 중단/종료했으며 주
+worktree에서만 통합한다.
+
+이번 배치의 source-backed 수직 경계는 `패거리말`/`]` family chat의 deterministic
+read-only event receipt, 가입 신청·취소의 canonical identity/boss proof와 원자
+proposal, 그리고 `spllist` 56개·활성 `ospell` 20개의 read-only 주문 catalog/list다.
+수신자 fan-out은 최초 commit 뒤에만 수행하고 receipt replay에서는 억제한다. C의
+family fee/member ledger가 현재 canonical Go State에 없으므로 승인·활동 회원 탈퇴는
+추측하지 않고 fail-closed한다. offensive/targeted/map spell effect도 같은 경계다.
+
+영향 패키지 race, session/transport parser·dispatch, `go vet`, diff 검사를 통과했다.
+직접 world 전체 실행은 기존 strict room corpus 63개 예외로 실패한다. ARM64/main,
+실제 PostgreSQL, 브라우저/IME·모바일, release matrix 및 testnet 배포는 기능 레인마다
+반복하지 않고 cadence 승격 경계에서 한 번만 실행한다. `src/frp.new`는 사용자 변경으로
+수정·stage하지 않는다.
+
 ## 2026-09-10 정리 후속 실행 기록
 
 완료된 Orca 작업의 clean worktree 108개는 제거하고, uncommitted 변경이 있는 30개는

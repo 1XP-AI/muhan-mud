@@ -632,6 +632,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	readScrollCommand := false
 	propertyInviteCommand := false
 	familyCommand := false
+	familyTalkCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -726,6 +727,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandFamilyWho, session.CommandFamilyMember, session.CommandFamilyList:
 		familyCommand = true
 		receipt, err = c.game.owners.ExecuteFamilyLineWithCatalog(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
+	case session.CommandFamilyTalk:
+		familyTalkCommand = true
+		receipt, err = c.game.owners.ExecuteFamilyTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -946,6 +950,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedReadScrollLine) ||
 		errors.Is(err, session.ErrUnsupportedPropertyInviteLine) ||
 		errors.Is(err, session.ErrUnsupportedFamilyLine) ||
+		errors.Is(err, session.ErrUnsupportedFamilyTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedMerchantPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedNPCTalkLine) ||
 		errors.Is(err, session.ErrUnsupportedGroupTalkLine) ||
@@ -1101,7 +1106,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrFamilyActorAbsent) ||
 		errors.Is(err, world.ErrFamilyTargetRequired) ||
 		errors.Is(err, world.ErrFamilyTargetUnavailable) ||
-		errors.Is(err, world.ErrFamilyIdentityUnresolved) {
+		errors.Is(err, world.ErrFamilyIdentityUnresolved) ||
+		errors.Is(err, world.ErrFamilyTalkActorAbsent) ||
+		errors.Is(err, world.ErrFamilyTalkNotMember) ||
+		errors.Is(err, world.ErrFamilyTalkSilent) ||
+		errors.Is(err, world.ErrFamilyTalkMessageEmpty) ||
+		errors.Is(err, world.ErrFamilyTalkMessageInvalid) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1360,6 +1370,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishGroupTalk(after, result.Events)
+			}
+		}
+	}
+	if familyTalkCommand && !receipt.Replayed {
+		var result world.FamilyTalkResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishFamilyTalk(after, result.Events)
 			}
 		}
 	}
@@ -1623,6 +1641,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if groupTalkCommand {
 		var result world.GroupTalkResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if familyTalkCommand {
+		var result world.FamilyTalkResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

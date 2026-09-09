@@ -1,5 +1,41 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-10 (정리 확인 + 패거리말·주문·가입 경계)
+
+정리 상태를 다시 확인했다. Orca가 관리하는 worktree 목록에는 주 worktree만 남아
+있고, 예전 `orca/workspaces` 경로의 Git worktree 30개는 모두 동일한
+`objmon/Celduin_sign` 대소문자 충돌 dirty 상태라 보존했다. 이 변경을 확인 없이
+버리면 원본 파일을 잃을 수 있어 삭제하지 않았다. 직접 하위 레인은 Luna max로
+소유 파일을 마친 뒤 중단/종료했고, 현재 남은 작업은 주 worktree에서만 통합한다.
+
+이번 후속은 다음 경계를 추가했다.
+
+- `패거리말`/`]`: `PFAMIL`·`PSILNC`와 server-owned `FamilyCatalog`를 검증하는
+  read-only family event receipt를 만들고, room order 후 sorted residual online ID로
+  deterministic fan-out한다. 최초 commit에서만 actor를 포함한 recipient 이벤트를
+  전송하고 replay에서는 재방송하지 않는다.
+- 패거리 가입 신청·신청 취소의 canonical online boss/identity와 PFAMIL·PRDFML·
+  PFMBOS 상태를 원자 proposal로 검증한다. 승인과 활동 회원 탈퇴는 C의
+  `family_gold`·`family_member_<n>` 원장이 아직 Go State에 없어 명시적으로
+  fail-closed한다.
+- `주문` 목록의 `spllist` 56개와 활성 `ospell` 20개를 source-backed catalog로
+  검증하고, 이름 정렬 read-only receipt/replay를 연결했다. offensive/targeted/map/
+  미확인 주문은 실행하지 않고 fail-closed한다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run 'FamilyTalk|FamilyMutation|SpellCatalog|SpellList' -count=1) PASS
+(cd server && go test -race ./internal/session ./internal/transport -run 'FamilyTalk|SpellList|ParseCommand' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+전체 world package는 기존 strict room corpus의 알려진 63개 예외로 실패하며, 이는
+이번 변경의 회귀가 아니다. ARM64/main, 실제 PostgreSQL, 브라우저/IME·모바일,
+release matrix, WSS/Ingress 및 testnet 배포는 cadence 승격 경계에서만 실행한다.
+`src/frp.new`는 계속 사용자 소유 dirty 변경으로 수정·stage하지 않는다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-10 (정리·스크롤·초대·패거리 상태)
 
 이전 Orca 정리 요청에 따라 무변경(clean) worktree 108개를 일반 worktree 제거로

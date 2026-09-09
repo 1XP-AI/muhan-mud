@@ -38,6 +38,8 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"패거리누구 Bob", CommandFamilyWho},
 		{"패거리원", CommandFamilyMember},
 		{"모든패거리", CommandFamilyList},
+		{"패거리말 안녕하세요", CommandFamilyTalk},
+		{"] 안녕하세요", CommandFamilyTalk},
 		{"정보", CommandInfo},
 		{"도움말", CommandHelp},
 		{"? 정보", CommandHelp},

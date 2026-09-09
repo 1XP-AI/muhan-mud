@@ -102,6 +102,7 @@ const (
 	CommandFamilyWho
 	CommandFamilyMember
 	CommandFamilyList
+	CommandFamilyTalk
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -205,6 +206,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsPropertyInviteLine(trimmed) {
 		parsed.Kind = CommandPropertyInvite
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsFamilyTalkLine(trimmed) {
+		parsed.Kind = CommandFamilyTalk
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
