@@ -4,6 +4,13 @@
 방향/함정/NPC 이동 receipt를 포함한 로컬 실행 경로가 있지만 전체 게임 명령·전투·
 tick·브라우저/배포 인수는 아직 완료되지 않았다.
 
+최신 slice: `command11.c`의 패거리 가입/탈퇴 중 canonical 상태로 증명 가능한
+`패거리가입 <패거리명>` 신청과 pending `패거리탈퇴` 취소를 parser→session→
+WorldConnector에 연결했다. immutable `FamilyCatalog` exact 이름, 온라인 boss identity와
+PFAMIL/PFMBOS를 검증하고 PRDFML/가족 ID를 원자 `ExecuteGame` receipt로 저장한다. bare
+가입의 목록/선택/예 continuation, `가입허가`의 family_gold/member ledger, active 탈퇴
+비용은 추측하지 않고 fail-closed하며, 전체 family mutation 인수를 뜻하지 않는다.
+
 최신 slice: 원작 `잡담`/`잡`/`환호` 전역 명령을 terminal parser와 durable world receipt로
 연결했다. daily/HP는 Supabase 권위 상태에 저장하고, descriptor cooldown과 global admission
 cooldown은 runtime에만 둔다. PNOBRD/PNOBR2 수신 거부를 존중하며 첫 commit만 전역 event를

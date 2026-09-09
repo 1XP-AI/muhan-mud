@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 패거리 가입/탈퇴 세션·전송 경계
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command11.c:family`·`add_family`·`out_family` / `패거리가입 <이름>`·`패거리탈퇴`·`가입허가` | `ParseFamilyMutationLine`, `ExecuteFamilyMutationLineWithCatalog`, `PlanFamilyJoinByName`/`PlanFamilyWithdrawal`→`ApplyFamilyMutation`을 parser·WorldConnector에 연결. catalog exact-name, 온라인 canonical boss/PFAMIL·PFMBOS·PRDFML을 확인하고 pending 신청/취소만 원자 receipt로 저장 | session/transport race·vet·parser 회귀 PASS. bare 가입 continuation, 승인/활동 탈퇴의 family fee/member ledger는 fail-closed; 전체 family ledger/공지/전쟁/실제 PG는 미완료 |
+
+같은 command ID는 `ExecuteGame`의 저장 응답을 재생해 membership reducer와 side effect를
+중복 실행하지 않는다. `가입허가` 대상은 이름 존재 여부를 권한 증명으로 사용하지 않으며,
+원장 없는 경로에서 사용자 상태를 추측하지 않는다.
+
 ## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
 
 Orca 관리 목록에는 주 worktree만 남아 있으며, Git에 남은 예전 `orca/workspaces`

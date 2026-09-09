@@ -633,6 +633,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	propertyInviteCommand := false
 	familyCommand := false
 	familyTalkCommand := false
+	familyMutationCommand := false
 	merchantPurchaseCommand := false
 	npcTalkCommand := false
 	groupTalkCommand := false
@@ -730,6 +731,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandFamilyTalk:
 		familyTalkCommand = true
 		receipt, err = c.game.owners.ExecuteFamilyTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
+	case session.CommandFamilyMutation:
+		familyMutationCommand = true
+		receipt, err = c.game.owners.ExecuteFamilyMutationLineWithCatalog(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
 	case session.CommandStatus:
 		receipt, err = c.game.owners.ExecuteStatusLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandFollow:
@@ -1111,7 +1115,23 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrFamilyTalkNotMember) ||
 		errors.Is(err, world.ErrFamilyTalkSilent) ||
 		errors.Is(err, world.ErrFamilyTalkMessageEmpty) ||
-		errors.Is(err, world.ErrFamilyTalkMessageInvalid) {
+		errors.Is(err, world.ErrFamilyTalkMessageInvalid) ||
+		errors.Is(err, world.ErrFamilyMutationInvalidAction) ||
+		errors.Is(err, world.ErrFamilyMutationActorAbsent) ||
+		errors.Is(err, world.ErrFamilyMutationIdentityUnresolved) ||
+		errors.Is(err, world.ErrFamilyMutationStateInvalid) ||
+		errors.Is(err, world.ErrFamilyMutationFamilyRequired) ||
+		errors.Is(err, world.ErrFamilyMutationFamilyUnavailable) ||
+		errors.Is(err, world.ErrFamilyMutationBossUnavailable) ||
+		errors.Is(err, world.ErrFamilyMutationBossAmbiguous) ||
+		errors.Is(err, world.ErrFamilyMutationAlreadyMember) ||
+		errors.Is(err, world.ErrFamilyMutationAlreadyPending) ||
+		errors.Is(err, world.ErrFamilyMutationNotPending) ||
+		errors.Is(err, world.ErrFamilyMutationBossCannotWithdraw) ||
+		errors.Is(err, world.ErrFamilyMutationFeeUnavailable) ||
+		errors.Is(err, world.ErrFamilyMutationApprovalUnsupported) ||
+		errors.Is(err, world.ErrFamilyMutationStaleProposal) ||
+		errors.Is(err, world.ErrFamilyMutationInvalidProposal) {
 		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if err != nil {
@@ -1646,6 +1666,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if familyTalkCommand {
 		var result world.FamilyTalkResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if familyMutationCommand {
+		var result world.FamilyMutationResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

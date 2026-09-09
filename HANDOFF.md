@@ -1,5 +1,31 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 오케스트레이션 체크포인트 — 2026-09-10 (패거리 가입/탈퇴 세션·전송 연결)
+
+`command11.c:family`·`add_family`·`out_family`의 보수적인 실행 경계를 메인
+parser→session→WorldConnector에 연결했다. `패거리가입 <패거리명>`은 immutable
+`FamilyCatalog`의 exact 이름과 온라인 canonical boss/PFAMIL·PFMBOS를 증명한 뒤
+PRDFML 신청을 하나의 `ExecuteGame` receipt로 저장하고, `패거리탈퇴`는 pending 신청
+취소만 저장한다. 동일 command ID 재시도는 저장된 응답을 재생하며 reducer를 다시
+실행하지 않는다. bare `패거리가입`의 목록/선택/확인 continuation, `가입허가 [대상]`,
+활동 회원 탈퇴는 family fee/member ledger가 현재 canonical State에 없으므로
+영수증 전에 fail-closed한다. `가입허가` 대상 이름은 권한 증명에 사용하지 않는다.
+
+메인 통합 파일은 `server/internal/session/command_parser.go`와
+`server/internal/transport/world_connector.go`이며, 세션 어댑터·TDD는
+`family_mutation_command.go`와 대응 테스트, transport 회귀는
+`world_connector_family_mutation_test.go`에 있다. 검증:
+
+```text
+(cd server && go test -race ./internal/session ./internal/transport -run 'FamilyMutation|FamilyTalk|FamilyStatus|ParseCommand' -count=1) PASS
+(cd server && go vet ./internal/session ./internal/transport) PASS
+git diff --check PASS
+```
+
+전체 명령/interactive continuation, 실제 PostgreSQL·브라우저·IME/mobile, strict room
+corpus 63건, ARM64/release/WSS/Ingress/testnet 인수는 여전히 미완료다. `src/frp.new`와
+예전 dirty worktree는 보존한다.
+
 ## 최신 오케스트레이션 체크포인트 — 2026-09-10 (정리 확인 + 패거리말·주문·가입 경계)
 
 정리 상태를 다시 확인했다. Orca가 관리하는 worktree 목록에는 주 worktree만 남아

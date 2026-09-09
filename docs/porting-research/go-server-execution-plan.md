@@ -1,5 +1,20 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 패거리 가입/탈퇴 session·transport 연결
+
+`command11.c`의 패거리 mutation 중 canonical Go State로 증명 가능한 부분을
+`ParseFamilyMutationLine`→`ExecuteFamilyMutationLineWithCatalog`→`ExecuteGame` receipt
+경계로 연결했다. `패거리가입 <패거리명>`은 server-owned `FamilyCatalog` exact 이름,
+온라인 boss identity와 PFAMIL/PFMBOS를 검증한 뒤 PRDFML/가족 ID를 원자 적용하고,
+`패거리탈퇴`는 pending 신청 취소만 적용한다. bare 가입의 C 목록/선택/예 continuation,
+`가입허가`의 family_gold·family_member ledger, active 탈퇴 비용은 현재 상태에 authority가
+없어 fail-closed한다. parser와 WebSocket output 경계에도 같은 오류 분류를 연결했고,
+receipt replay에서는 reducer/권한 확인/알림을 다시 실행하지 않는다.
+
+영향 범위 targeted race·vet·diff 검사는 통과했지만, 전체 family mutation/interactive
+continuation, 실제 PostgreSQL·브라우저/IME/mobile 및 배포 승격 검사는 아직 실행하지
+않았다. C/Rust 런타임 의존성은 추가하지 않았다.
+
 ## 2026-09-10 정리 확인 + 패거리말·주문·가입 경계
 
 Orca worktree를 재확인한 결과 관리 목록에는 주 worktree만 남았다. 예전 Git
