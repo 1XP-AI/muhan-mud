@@ -1,5 +1,30 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (PlayerSnapshotV1 operator manifest CLI)
+
+`cmd/muhan -import-player-snapshot-manifest`와
+`-import-player-snapshot-manifest-dry-run`을 추가했다. manifest는 정확한 `0600` 정규
+파일의 JSON v1이며, record별 expected revision·canonical account name·exact player ID·
+item-ID 순서·source SHA-256·Base64 bcrypt hash·private snapshot path를 요구한다.
+모든 record와 snapshot을 PostgreSQL에 연결하기 전에 읽고 CDTO canonical round-trip,
+digest, graph count, duplicate/path/permission/unknown-field을 검증한다. 평문 비밀번호
+필드는 거부하고, dry-run은 DB 환경변수 없이도 성공한다. 실제 모드는 record 순서대로
+`ImportPlayerSnapshot`을 호출하고 각 원자 transaction의 결과를 hash/count만 출력한다.
+동일 command ID 재실행은 기존 receipt replay에 맡긴다.
+
+계약과 운영 예시는 `docs/porting-research/go-player-snapshot-manifest.md`에 있다.
+
+검증:
+
+```text
+(cd server && go test ./cmd/muhan -count=1) PASS
+(cd server && go vet ./cmd/muhan) PASS
+```
+
+이 CLI는 한 snapshot 묶음의 재현 가능한 전달 경계만 완성한다. 운영 Supabase 승인,
+legacy raw player 자동 수집·대량 대조/복구, 전체 command parity, 실제 브라우저/IME/mobile,
+WSS/Ingress·testnet 승격은 여전히 미완료다. `src/frp.new`와 dirty worktree는 보호한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (PostgreSQL PlayerSnapshotV1 import)
 
 `Postgres.ImportPlayerSnapshot`와 `mud_go.character_imports` schema를 추가했다. 호출자가

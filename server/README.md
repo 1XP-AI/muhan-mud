@@ -1,5 +1,14 @@
 # Go MUD 서버 작업 영역
 
+최신 운영자 이관 계약: `cmd/muhan -import-player-snapshot-manifest`는 검토된 CDTO
+snapshot과 exact player/item manifest를 private `0600` JSON manifest로 받아, DB 연결 전에
+모든 source SHA-256·canonical wire·bcrypt hash·graph 개수·중복을 검증한다. `-dry-run`은
+PostgreSQL 없이 같은 검증을 수행하고, 실제 모드는 `ImportPlayerSnapshot` transaction을
+record 순서대로 호출한다. 평문 비밀번호와 raw snapshot은 로그·receipt에 남기지 않는다.
+상세 schema·원자성·재실행 규칙은
+[`docs/porting-research/go-player-snapshot-manifest.md`](../docs/porting-research/go-player-snapshot-manifest.md)를
+참조한다. 이 도구는 운영 대량 이관·전체 parity·배포 인수를 완료한 것이 아니다.
+
 최신 PostgreSQL 이관 경계: `Postgres.ImportPlayerSnapshot`가 검토된 CDTO snapshot과
 caller-owned exact world player ID/item-ID manifest를 받아 account·linked character·world
 state·`mud_go.character_imports` evidence·command receipt를 한 transaction으로 저장한다.

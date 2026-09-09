@@ -1,5 +1,21 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 PlayerSnapshotV1 operator manifest CLI
+
+`cmd/muhan -import-player-snapshot-manifest`가 검토된 CDTO snapshot 묶음을 명시적으로
+Go import 경계에 전달한다. manifest·snapshot은 정확한 `0600` 정규 파일이고,
+`version:1`·world ID·record별 command ID/expected revision/exact player ID/item-ID
+manifest/source SHA-256/bcrypt hash를 요구한다. 모든 파일·CDTO·canonical wire·hash·graph
+개수·중복을 DB 연결 전에 검증하며, `-import-player-snapshot-manifest-dry-run`은 DB 없이
+검증만 한다. 평문 비밀번호와 source payload는 명령행·로그·receipt에 들어가지 않는다.
+실제 실행은 record 배열 순서대로 `ImportPlayerSnapshot` transaction을 호출하고,
+동일 command ID 재실행은 receipt replay를 사용한다. 검토 문서는
+`docs/porting-research/go-player-snapshot-manifest.md`다.
+
+`go test ./cmd/muhan -count=1`와 `go vet ./cmd/muhan`에서 flag/manifest 경계를 검증했다.
+운영 Supabase 대량 이관 실행·전체 record 대조·중간 실패 후 배치 복구 자동화는 아직 남아
+있으며, 이 CLI가 전체 이관 완료를 뜻하지 않는다.
+
 ## 2026-09-10 PlayerSnapshotV1 PostgreSQL import·evidence receipt
 
 `Postgres.ImportPlayerSnapshot`가 검토된 CDTO bytes, account credential hash, caller-owned

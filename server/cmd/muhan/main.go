@@ -39,6 +39,8 @@ func main() {
 	restoreExpectedRevision := flag.Int64("restore-expected-revision", -1, "expected target revision for a non-force restore; -1 means unset")
 	restoreAllowCreate := flag.Bool("restore-allow-create", false, "allow restore to create an absent world")
 	restoreForce := flag.Bool("restore-force", false, "explicitly remove receipts and fence the target writer generation")
+	playerSnapshotManifest := flag.String("import-player-snapshot-manifest", "", "explicitly import reviewed PlayerSnapshotV1 records from a private manifest and exit")
+	playerSnapshotDryRun := flag.Bool("import-player-snapshot-manifest-dry-run", false, "validate a PlayerSnapshotV1 manifest and its private files without connecting to PostgreSQL")
 	worldID := flag.String("world", "", "explicitly take over an existing Go world (no automatic import)")
 	templates := flag.String("templates", "", "directory containing legacy mNN/oNN template tables")
 	gameHour := flag.Int("game-hour", -1, "explicit game hour 0..23 until the persistent game clock is implemented")
@@ -59,12 +61,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	playerSnapshotOptions, err := validatePlayerSnapshotImportFlags(*playerSnapshotManifest, *playerSnapshotDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if backupRestore.mode != backupRestoreNone &&
-		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "") {
 		log.Fatal("backup/restore mode cannot be combined with migrate, seed, or world flags")
+	}
+	if playerSnapshotOptions.ManifestPath != "" &&
+		(*migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "") {
+		log.Fatal("player snapshot import mode cannot be combined with migrate, seed, or world flags")
 	}
 	if *voteIssueFile != "" && *worldID == "" {
 		log.Fatal("-vote-issue-file requires -world")
+	}
+	var playerSnapshotBatch playerSnapshotImportBatch
+	if playerSnapshotOptions.ManifestPath != "" {
+		playerSnapshotBatch, err = readPlayerSnapshotImportManifest(playerSnapshotOptions.ManifestPath)
+		if err != nil {
+			log.Fatalf("player snapshot manifest rejected: %v", err)
+		}
+		if playerSnapshotOptions.DryRun {
+			log.Printf("player snapshot manifest validated: world=%s records=%d; no database connection or write performed", playerSnapshotBatch.WorldID, len(playerSnapshotBatch.Requests))
+			return
+		}
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -107,6 +128,16 @@ func main() {
 			world = backupRestore.restoreWorld
 		}
 		log.Printf("world %s backup/restore completed without starting a listener", world)
+		return
+	}
+	if playerSnapshotOptions.ManifestPath != "" {
+		importCtx, importCancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := runPlayerSnapshotImport(importCtx, repo, playerSnapshotBatch)
+		importCancel()
+		if err != nil {
+			log.Fatalf("player snapshot import failed: %v", err)
+		}
+		log.Printf("player snapshot manifest import completed: world=%s records=%d", playerSnapshotBatch.WorldID, len(playerSnapshotBatch.Requests))
 		return
 	}
 	if *seedWorld != "" || *seedRooms != "" || *seedCanonical {
