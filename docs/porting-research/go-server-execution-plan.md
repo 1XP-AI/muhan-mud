@@ -1,5 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 패거리 탈퇴 전역 알림
+
+활성 `패거리탈퇴` receipt에 원작의 전역 announcement를 추가했다. actor/PNOBRD 정책을
+receipt event에 고정하고 최초 commit 후에만 전송하며 replay에서는 재전송하지 않는다.
+
+영향 world/session/transport race 및 vet만 실행했다. 고비용 PG/browser/ARM64/release는
+반복하지 않는다.
+
 ## 2026-09-10 패거리 가입 알림 receipt
 
 패거리 가입 신청 receipt에 원작의 `>>> <이름>님이 ...` 두목 알림을 추가했다. 알림은

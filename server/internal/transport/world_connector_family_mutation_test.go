@@ -171,6 +171,14 @@ func TestWorldConnectorActiveFamilyWithdrawalConfirmsBeforeReceipt(t *testing.T)
 	if err != nil || !strings.Contains(left, "패거리에서 탈퇴") || store.commits != 1 {
 		t.Fatalf("left=%q err=%v commits=%d", left, err, store.commits)
 	}
+	select {
+	case event := <-connections[1].events:
+		if !strings.Contains(event, "Alice님이 청룡에서 탈퇴") {
+			t.Fatalf("leave broadcast=%q", event)
+		}
+	default:
+		t.Fatal("leave broadcast missing")
+	}
 	saved, err := world.DecodeState(store.state)
 	if err != nil {
 		t.Fatal(err)

@@ -1,5 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 패거리 탈퇴 전역 알림
+
+활성 회원 탈퇴 receipt에 원작의 전역 `### ... 탈퇴` 알림을 추가했다. 알림은 actor ID와
+PNOBRD 수신자 정책을 함께 고정하고 최초 commit 뒤에만 fan-out하며 replay에서는 재전송하지
+않는다. actor의 탈퇴 fee/member ledger 원자 전이는 기존 reducer를 그대로 사용한다.
+
+`go test -race ./internal/world ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 영향 패키지 `go vet`가 통과했다.
+
 ## 2026-09-10 패거리 가입 신청 알림
 
 확인된 `패거리가입` receipt에 원작의 두목 대상 신청 알림을 담고, 첫 commit 뒤에만

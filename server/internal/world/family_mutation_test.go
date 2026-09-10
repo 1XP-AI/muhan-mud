@@ -331,6 +331,28 @@ func TestFamilyMutationExpelRemovesTargetAtomicallyAndNotifiesOnlyTarget(t *test
 	}
 }
 
+func TestFamilyMutationActiveWithdrawalCarriesGlobalLeaveAnnouncement(t *testing.T) {
+	s, catalog := familyMutationExpelFixture(t)
+	proposal, err := s.PlanFamilyWithdrawal("applicant", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposal.Events) != 1 || !proposal.Events[0].Broadcast || proposal.Events[0].ActorID != "applicant" || !strings.Contains(proposal.Events[0].Text, "Alice님이 청룡에서 탈퇴") {
+		t.Fatalf("proposal events=%+v", proposal.Events)
+	}
+	next, result, err := s.ApplyFamilyWithdrawal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 || !result.Events[0].Broadcast || result.Events[0].ActorID != "applicant" {
+		t.Fatalf("result events=%+v", result.Events)
+	}
+	body := next.Players["applicant"].Body
+	if flag(body.Flags[:], FamilyMemberFlag) || body.Daily[FamilyDailySlot].Max != 0 {
+		t.Fatalf("active membership was not removed: %+v", body)
+	}
+}
+
 func TestFamilyMutationExpelFailsClosedForSelfVisibilityLedgerAndDuplicate(t *testing.T) {
 	s, catalog := familyMutationExpelFixture(t)
 	if _, err := s.PlanFamilyExpulsion("boss", "Boss", catalog); !errors.Is(err, ErrFamilyMutationTargetSelf) {

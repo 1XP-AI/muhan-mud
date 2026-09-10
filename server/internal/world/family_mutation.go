@@ -43,6 +43,10 @@ const (
 
 const familyMutationDeactivatedBoss = "*해체*"
 
+// FamilyMutationNoBroadcastFlag is PNOBRD, the ordinary global-chat opt-out
+// honored by the active-member leave announcement.
+const FamilyMutationNoBroadcastFlag uint = 3
+
 var (
 	ErrFamilyMutationInvalidAction       = errors.New("invalid family mutation action")
 	ErrFamilyMutationActorAbsent         = errors.New("online canonical family actor absent")
@@ -171,6 +175,9 @@ type FamilyApplicationProposal = FamilyMutationProposal
 // and name are captured in the receipt so a retry cannot redirect the message
 // to a later occupant of the same display name.
 type FamilyMutationEvent struct {
+	Broadcast     bool   `json:"broadcast,omitempty"`
+	ActorID       string `json:"actor_id,omitempty"`
+	ActorName     string `json:"actor_name,omitempty"`
 	RecipientID   string `json:"recipient_id"`
 	RecipientName string `json:"recipient_name"`
 	Text          string `json:"text"`
@@ -536,8 +543,13 @@ func familyMutationWithdrawPlan(s State, actorID string, catalog FamilyCatalog) 
 			BeforeFlags: beforeFlags, AfterFlags: afterFlags,
 			BeforeGold: actor.Body.Gold, AfterGold: int32(int64(actor.Body.Gold) - amount),
 			Fee: family.Fee, GoldTransferred: amount,
-			Changed: true, Response: fmt.Sprintf("당신은 패거리에서 탈퇴를 하였습니다.\r\n\n당신은 이제 %d냥을 갖고 있습니다.", int64(actor.Body.Gold)-amount),
-			before: snapshot, expectedActor: snapshot.Players[actorID], expectedFamily: familyState,
+			Changed: true,
+			Events: []FamilyMutationEvent{{
+				Broadcast: true, ActorID: actorID, ActorName: actor.Body.Name,
+				Text: fmt.Sprintf("\n### %s님이 %s에서 탈퇴를 하였습니다.\r\n", actor.Body.Name, family.Name),
+			}},
+			Response: fmt.Sprintf("당신은 패거리에서 탈퇴를 하였습니다.\r\n\n당신은 이제 %d냥을 갖고 있습니다.", int64(actor.Body.Gold)-amount),
+			before:   snapshot, expectedActor: snapshot.Players[actorID], expectedFamily: familyState,
 			afterFamily:     func() FamilyState { next, _, _ := familyState.removeMember(family.ID, actorID); return next }(),
 			expectedCatalog: cloneFamilyCatalog(catalog),
 		}, nil

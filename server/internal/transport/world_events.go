@@ -315,6 +315,20 @@ func (g *WorldConnector) publishFamilyMutation(after world.State, events []world
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, event := range events {
+		if event.Broadcast {
+			for connection := range g.connections {
+				player, ok := after.Players[connection.lease.ActorID]
+				if !ok || !player.Online || connection.lease.ActorID == event.ActorID || connection.events == nil || world.PlayerFlagSet(player.Body, world.FamilyMutationNoBroadcastFlag) {
+					continue
+				}
+				select {
+				case connection.events <- event.Text:
+				default:
+					// A slow global recipient cannot block the committed mutation.
+				}
+			}
+			continue
+		}
 		if event.RecipientID == "" || event.RecipientName == "" || event.Text == "" {
 			continue
 		}

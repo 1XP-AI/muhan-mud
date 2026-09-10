@@ -1,5 +1,13 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 탈퇴 전역 알림)
+
+활성 회원 탈퇴 receipt에 전역 탈퇴 알림을 추가했다. actor는 제외하고 PNOBRD를 존중하며
+최초 commit 뒤에만 전송, replay는 재전송하지 않는다.
+
+검증: world/session/transport family race 및 영향 패키지 vet PASS. 이번 변경에서는 전체
+PG/browser/ARM64/release 게이트를 반복하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 가입 알림)
 
 가입 신청 receipt에 원작의 두목 알림을 추가했다. 알림은 canonical boss ID/name에
