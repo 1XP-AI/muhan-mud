@@ -1,5 +1,18 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 전투 강화 2종)
+
+플레이어 self-cast에 성현진(SBLESS)과 수호진(SPROTE)을 연결했다. source 주문
+습득 비트·MP 10·spell-fail 1회·클레릭/팔라딘 레벨 보정·RPMEXT +800과 PBLESS/PPROTE
+flag 및 LT_BLESS/LT_PROTE timer를 canonical receipt에 고정한다. 성공 시 canonical
+ItemCollection에서 전투 수치를 재계산해 성현진은 THAC0, 수호진은 방어력을 갱신하고,
+장비 그래프가 아직 이관되지 않은 캐릭터는 난수·MP를 소비하지 않고 fail-closed한다.
+실패·replay에서는 RNG와 room fan-out을 중복 실행하지 않는다.
+
+검증: go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1,
+영향 패키지 go vet, git diff --check PASS. 전체 통합·ARM64·PostgreSQL·브라우저·
+release 게이트는 승격 cadence에서만 실행한다. src/frp.new 기존 사용자 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 발광)
 
 `발광` self-cast를 연결했다. source SLIGHT/PLIGHT/LT_LIGHT, MP 5, spell-fail 1회와

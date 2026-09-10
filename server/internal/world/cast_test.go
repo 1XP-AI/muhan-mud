@@ -29,6 +29,19 @@ func castTestState(class byte, spell int) State {
 	}
 }
 
+func castCombatTestState(class byte, spell int) State {
+	s := castTestState(class, spell)
+	actor := s.Players["a"]
+	actor.Items = &ItemCollection{Items: map[string]Item{}}
+	stats, err := actor.Items.CombatStats(actor.Body)
+	if err != nil {
+		panic(err)
+	}
+	actor.Body.Armor, actor.Body.Thaco = byte(stats.Armor), byte(stats.Thaco)
+	s.Players["a"] = actor
+	return s
+}
+
 func TestPlanApplyCastHealingSpellsUseSourceOrderAndTimer(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -292,6 +305,66 @@ func TestPlanApplyCastTimedSelfSpellsUseSourceFlagsAndIntervals(t *testing.T) {
 				t.Fatalf("tampered timed receipt err=%v", err)
 			}
 		})
+	}
+}
+
+func TestPlanApplyCastCombatBuffsRefreshCanonicalStats(t *testing.T) {
+	tests := []struct {
+		name         string
+		spell        int
+		spellName    string
+		flag         uint
+		timer        int
+		wantArmor    byte
+		wantThaco    byte
+		wantInterval int32
+	}{
+		// Cleric INT 18 contributes +1200, the class level-band contributes
+		// +120, and the room has no RPMEXT extension.
+		{name: "bless", spell: castBlessSpell, spellName: "성현진", flag: castBlessFlag, timer: castBlessTimer, wantArmor: 100, wantThaco: 20, wantInterval: 2520},
+		{name: "protection", spell: castProtectionSpell, spellName: "수호진", flag: castProtectionFlag, timer: castProtectionTimer, wantArmor: 90, wantThaco: 20, wantInterval: 2520},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := castCombatTestState(castClericClass, tc.spell)
+			calls := 0
+			p, err := s.PlanCast("a", tc.spellName, CastOptions{Now: 100, Roll: func(low, high int) int {
+				calls++
+				if low != 1 || high != 100 {
+					t.Fatalf("spell-fail range=%d..%d", low, high)
+				}
+				return 1
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || !p.Attempted || !p.Succeeded || p.SpellFailed || p.Cost != 10 || p.TimedFlag != tc.flag || p.TimedInterval != tc.wantInterval {
+				t.Fatalf("proposal=%+v calls=%d", p, calls)
+			}
+			next, result, err := s.ApplyCast(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := next.Players["a"].Body
+			if !flag(body.Flags[:], tc.flag) || body.Timers[tc.timer] != (LegacyTimer{LastTime: 100, Interval: tc.wantInterval}) || body.MPCurrent != 20 || body.Armor != tc.wantArmor || body.Thaco != tc.wantThaco {
+				t.Fatalf("body=%+v", body)
+			}
+			if result.Event == nil || !result.Succeeded || result.TimedInterval != tc.wantInterval || !strings.Contains(result.Response, tc.spellName) {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestCastCombatBuffRequiresCanonicalEquipmentBeforeRandom(t *testing.T) {
+	s := castTestState(castClericClass, castBlessSpell)
+	calls := 0
+	_, err := s.PlanCast("a", "성현진", CastOptions{Now: 100, Roll: func(int, int) int {
+		calls++
+		return 1
+	}})
+	if !errors.Is(err, ErrCastSpellUnavailable) || calls != 0 {
+		t.Fatalf("err=%v random calls=%d", err, calls)
 	}
 }
 

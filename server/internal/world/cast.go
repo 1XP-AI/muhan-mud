@@ -27,6 +27,8 @@ const (
 	castMendSpell            = 18 // SMENDW / 원기회복
 	castHealSpell            = 19 // SFHEAL / 완치
 	castLightSpell           = 2  // SLIGHT / 발광
+	castBlessSpell           = 4  // SBLESS / 성현진
+	castProtectionSpell      = 5  // SPROTE / 수호진
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -66,6 +68,10 @@ const (
 	castWaterTimer           = 30
 	castEarthShieldFlag      = 38
 	castEarthShieldTimer     = 31
+	castBlessFlag            = 0
+	castBlessTimer           = 2
+	castProtectionFlag       = 8
+	castProtectionTimer      = 1
 	castCurePoisonFlag       = 16
 	castDiseaseFlag          = 41
 	castRemoveBlindFlag      = 42
@@ -114,7 +120,12 @@ type castSpellSpec struct {
 	RoomExtend   int32
 	MageInterval bool
 	MinInterval  bool
-	CombatGate   bool
+	// Bless/protection add the cleric/paladin level-band term from their
+	// source routines. They also refresh the derived canonical combat value
+	// after setting their flag.
+	ClassIntervalTerm bool
+	CombatStats       bool
+	CombatGate        bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
 	failMask uint16
@@ -242,6 +253,16 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Cost, spec.healKind = 5, castHealTimed
 		spec.Flag, spec.Timer = castLightFlag, castLightTimer
 		spec.IntervalBase, spec.LevelStep, spec.RoomExtend = 300, 300, 600
+		spec.failMask = castAllSpellFailMask
+	case castBlessSpell:
+		spec.Cost, spec.healKind = 10, castHealTimed
+		spec.Flag, spec.Timer = castBlessFlag, castBlessTimer
+		spec.RoomExtend, spec.MinInterval, spec.ClassIntervalTerm, spec.CombatStats = 800, true, true, true
+		spec.failMask = castAllSpellFailMask
+	case castProtectionSpell:
+		spec.Cost, spec.healKind = 10, castHealTimed
+		spec.Flag, spec.Timer = castProtectionFlag, castProtectionTimer
+		spec.RoomExtend, spec.MinInterval, spec.ClassIntervalTerm, spec.CombatStats = 800, true, true, true
 		spec.failMask = castAllSpellFailMask
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
@@ -446,6 +467,9 @@ func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (
 	if spec.MinInterval && interval < 300 {
 		interval = 300
 	}
+	if spec.ClassIntervalTerm && (body.Class == castClericClass || body.Class == castPaladinClass) {
+		interval += 60 * int64((int(body.Level)+3)/4)
+	}
 	if spec.MageInterval && body.Class == castMageClass {
 		interval += int64(60 * ((int(body.Level) + 3) / 4))
 	}
@@ -460,6 +484,43 @@ func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (
 		return 0, fmt.Errorf("cast timed spell interval outside int32")
 	}
 	return int32(interval), nil
+}
+
+// castApplyTimedEffect installs a source timer/flag and, for the two timed
+// combat buffs, refreshes the legacy-derived value from the canonical item
+// graph. The item graph is an explicit admission boundary: a migrated player
+// has an ID collection (possibly empty), while a legacy-only player is kept
+// fail-closed instead of mixing nested legacy objects into a receipt.
+func castApplyTimedEffect(body *LegacyMonster, items *ItemCollection, spec castSpellSpec, now, interval int32) error {
+	if body == nil || spec.Flag >= uint(len(body.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(body.Timers) || now < 0 || interval < 0 {
+		return ErrCastSpellUnavailable
+	}
+	setSettingFlag(body, spec.Flag, true)
+	body.Timers[spec.Timer] = LegacyTimer{LastTime: now, Interval: interval}
+	if !spec.CombatStats {
+		return nil
+	}
+	if items == nil || len(body.Inventory) != 0 {
+		return fmt.Errorf("%w: canonical equipment required", ErrCastSpellUnavailable)
+	}
+	if err := items.Validate(); err != nil {
+		return fmt.Errorf("%w: canonical equipment invalid: %v", ErrCastSpellUnavailable, err)
+	}
+	stats, err := items.CombatStats(*body)
+	if err != nil {
+		return fmt.Errorf("%w: canonical combat stats unavailable: %v", ErrCastSpellUnavailable, err)
+	}
+	switch spec.Flag {
+	case castBlessFlag:
+		// compute_thaco stores before applying PBLESS's local -3 adjustment in
+		// the original C routine; ComputeThaco preserves that observable bug.
+		body.Thaco = byte(stats.Thaco)
+	case castProtectionFlag:
+		body.Armor = byte(stats.Armor)
+	default:
+		return ErrCastSpellUnavailable
+	}
+	return nil
 }
 
 func castCombatActive(s State, actorID string, actor PlayerState) bool {
@@ -699,6 +760,10 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 		return "당신은 천부공을 끌어올리며 완치 주문을 외웁니다.\r\n천상의 기운들이 당신의 몸으로 모이면서 체력을 최상으로 올려 줍니다.\r\n"
 	case castHealTimed:
 		switch spec.Index {
+		case castBlessSpell:
+			return "당신은 조용히 눈을 감으며 성현진을 외웁니다.\r\n성현진을 외우자 머리에서 삼매광이 뿜어져 나와 성스런 기운이 몸을 휘감습니다.\r\n"
+		case castProtectionSpell:
+			return "두손으로 인을 맺은 뒤 수호진의 주문을 외웁니다.\r\n빛의 수호령들이 당신 주위를 둘러싸며 방어의 진을 형성했습니다.\r\n"
 		case castInvisibilitySpell:
 			return "당신은 소명부를 삼키면서 은둔법의 주문을 외웁니다.\r\n몸이 눈부실 정도로 강렬한 빛을 내다가 갑자기 사라졌습니다.\r\n"
 		case castDetectInvisibleSpell:
@@ -822,6 +887,14 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 		p.Response = "지금 싸우고 있잖아요..!!.\r\n"
 		return p, nil
 	}
+	if spec.CombatStats {
+		// Validate the canonical equipment projection before spell_fail so a
+		// legacy-only body cannot consume an unreplayable random draw.
+		probe := actor.Body
+		if err := castApplyTimedEffect(&probe, actor.Items, spec, 0, 0); err != nil {
+			return CastProposal{}, err
+		}
+	}
 	dailyUsed := false
 	dailyAfter := actor.Body.Daily[castDailyHealIndex]
 	if spec.healKind == castHealFull {
@@ -892,11 +965,9 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 	}
 	p.afterBody.Timers[castSpellTimerIndex] = LegacyTimer{LastTime: options.Now, Interval: p.SpellInterval}
 	if spec.healKind == castHealTimed {
-		if spec.Flag >= uint(len(p.afterBody.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(p.afterBody.Timers) {
-			return CastProposal{}, ErrCastSpellUnavailable
+		if err := castApplyTimedEffect(&p.afterBody, actor.Items, spec, options.Now, p.TimedInterval); err != nil {
+			return CastProposal{}, err
 		}
-		setSettingFlag(&p.afterBody, spec.Flag, true)
-		p.afterBody.Timers[spec.Timer] = LegacyTimer{LastTime: options.Now, Interval: p.TimedInterval}
 	}
 	if spec.healKind == castHealFull {
 		p.afterBody.Daily[castDailyHealIndex] = dailyAfter
@@ -1032,8 +1103,9 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 	}
 	after.Timers[castSpellTimerIndex] = LegacyTimer{LastTime: p.Now, Interval: p.SpellInterval}
 	if spec.healKind == castHealTimed {
-		setSettingFlag(&after, spec.Flag, true)
-		after.Timers[spec.Timer] = LegacyTimer{LastTime: p.Now, Interval: p.TimedInterval}
+		if err := castApplyTimedEffect(&after, actor.Items, spec, p.Now, p.TimedInterval); err != nil {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
 	} else if spec.healKind == castHealCleanse {
 		setSettingFlag(&after, spec.Flag, false)
 	}

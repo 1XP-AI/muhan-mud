@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 주문 전투 강화 2종 — canonical combat stat 전이
+
+성현진(SBLESS/PBLESS/LT_BLESS)과 수호진(SPROTE/PPROTE/LT_PROTE)을 player
+self-cast receipt로 연결했다. source MP 10, spell-fail RNG 1회, INT 기반 지속 시간,
+클레릭/팔라딘 레벨 band term, RPMEXT +800을 검증한다. 성공 시 canonical
+ItemCollection.CombatStats를 사용해 성현진은 THAC0, 수호진은 방어력을 flag 반영 후
+갱신한다. 장비 graph가 없는 legacy-only body는 난수·MP를 소비하지 않고 fail-closed하며,
+재생은 RNG와 출력 fan-out을 반복하지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity,
+실제 PostgreSQL, ARM64, browser/IME, release/testnet은 승격 cadence에서 단일 종합 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 `주문` 발광 — canonical light flag/timer 전이
 
 `발광`(SLIGHT/PLIGHT/LT_LIGHT)을 self-cast receipt로 연결했다. source MP 5와 `spell_fail`

@@ -1,5 +1,16 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 주문 전투 강화 2종
+
+성현진·수호진을 self-cast reducer에 추가한다. source SBLESS/SPROTE의 MP·습득
+비트·spell-fail, PBLESS/PPROTE와 LT_BLESS/LT_PROTE, INT/직업/RPMEXT 지속 시간을
+snapshot-bound receipt로 고정한다. 성공 시 flag가 반영된 canonical equipment projection으로
+THAC0 또는 방어력을 재계산하고, 장비 이관 전 상태는 난수·비용 없이 닫는다.
+
+이번 레인은 world/session/transport focused race, 영향 패키지 vet, diff check만 실행했다.
+전체 통합·PostgreSQL·ARM64·browser/IME·release/testnet 검증은 주문 묶음 승격 시 한 번만
+수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 발광
 
 `발광`을 self-cast reducer에 추가해 어두운 방에서도 xterm 탐색이 가능하도록 한다. source
