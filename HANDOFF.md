@@ -10,8 +10,9 @@ snapshot·stale revision을 거부한다. `vote_imports` evidence와 `world_comm
 
 검증: `TestNormalizeVoteStateImportRejectsSensitiveDuplicateAndDigestMismatch`,
 `bash scripts/run-go-social-import-local.sh --allow-disposable` (ARM64
-`postgres:17-alpine` import/replay/foreign aggregate) PASS. 이후 전체 integration도 갱신해야
-한다. raw→manifest builder·운영 원본 대조·Supabase RLS/PITR·브라우저/배포는 미완료다.
+`postgres:17-alpine` import/replay/foreign aggregate),
+`bash scripts/run-go-validation.sh integration`(race/vet/diff) PASS. raw→manifest
+builder·운영 원본 대조·Supabase RLS/PITR·브라우저/배포는 미완료다.
 
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (vote raw collector)
 
