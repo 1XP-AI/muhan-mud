@@ -1,5 +1,33 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy social raw collector)
+
+레거시 `family/family_list`·`family_member_<n>` 원장을 읽는
+`LegacyFamilyFileLocatorV1`/`InspectLegacyFamilyRawFilesV1`와 `player/fal/<name>`을 읽는
+`LegacyMemoFileLocatorV1`/`ParseLegacyMemoFileV1`를 추가했다. 두 collector는 명시된
+absolute root, no-follow descriptor walk, private 0700/0600·euid·nlink=1·크기 bound·교체
+재검사를 적용한다. family는 C sentinel/row 순서와 class/name을 재현하고, memo는 C
+`ctime`/header/body 3-line format·UTF-8·80바이트·timestamp bound를 재현한다. 이름은
+무결성 evidence일 뿐이며, caller가 공급한 immutable character ID mapping 없이는 결과를
+만들지 않는다. locator path/SHA는 migration evidence로만 남고 canonical state·runtime에는
+raw path·password·DB 쓰기가 들어가지 않는다.
+
+검증:
+
+```text
+(cd server && go test -race ./internal/world -run 'Legacy(Family|Memo)' -count=1) PASS
+(cd server && go test -race ./internal/world ./internal/storage ./cmd/muhan -run 'Legacy(Family|Memo)|Social' -count=1) PASS
+(cd server && go vet ./internal/world ./internal/storage ./cmd/muhan) PASS
+(cd server && GOOS=darwin GOARCH=arm64 go test -c ./internal/world) PASS
+(cd server && GOOS=linux GOARCH=amd64 go test -c ./internal/world) PASS
+git diff --check PASS
+```
+
+collector는 기존 social manifest CLI와 분리된 migration-only 입력 단계다. 실제 원본 tree
+대량 수집, operator account/character mapping·timezone 승인, manifest 생성/apply, Supabase
+운영 권한·PITR·전체 social parity는 남아 있다. 이번 배치는 로컬에만 있고 push/CI/배포를
+실행하지 않았다. `src/frp.new`와 미병합/미커밋 변경이 있는 기존 Orca worktree는 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (소셜 manifest CLI·복구 reader)
 
 검토된 `family-ledger-v1`/`character-memos-v1` JSON manifest를 읽는 운영 경계를

@@ -1,5 +1,29 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 레거시 소셜 raw collector 승격 경계
+
+`LocateLegacyFamilyRawFilesV1`는 명시된 root의 `family/family_list`를 먼저 읽어 numeric
+family ID를 확정한 뒤 허용된 `family_member_<n>`만 descriptor로 재검사한다. root/family는
+0700 현재 euid, source는 0600 regular·nlink=1·64KiB이며 symlink·unexpected entry·누락
+member·traversal·sentinel 뒤 trailing row·inode/mtime/ctime 교체는 닫힌다. `InspectLegacyFamilyRawFilesV1`
+은 원작의 `<id> <family> <boss> <fee>`/`16` sentinel과 `<class> <name>`/`0 <family>`
+형식을 파싱하고, operator가 공급한 name→immutable character ID만 적용해
+`FamilyCatalog`, `FamilyState`, `BossIDs`를 만든다. locator path/SHA는 별도 migration
+evidence이며 canonical state나 운영 런타임에는 들어가지 않는다.
+
+`LegacyMemoFileLocatorV1`는 `player/fal/<canonical-name>`을 같은 방식으로 읽고,
+`ParseLegacyMemoFileV1`은 `ctime`/header/body 3-line record를 UTF-8·80-byte·timestamp
+bound와 명시적 sender/recipient ID mapping으로 검증한다. 두 경계 모두 raw payload·credential·
+이름 기반 account claim·DB/runtime 쓰기를 하지 않으며 locator path/SHA는 migration evidence로만
+분리한다. 수집 결과는 사람이 검토한
+`family-ledger-v1`/`character-memos-v1` manifest로 만든 후에만 기존 explicit social import에
+제출한다.
+
+검증: `go test -race ./internal/world -run 'Legacy(Family|Memo)' -count=1`, 영향 패키지
+`go test -race`/`go vet`, Linux amd64와 Darwin/Linux ARM64 cross-compile, `git diff --check`
+PASS. 실제 legacy tree 대량 수집, operator ID mapping, timezone 선택, manifest 생성/apply,
+Supabase 운영 권한과 recovery/PITR는 아직 남아 있다.
+
 ## 2026-09-10 소셜 manifest·복구 승격 경계
 
 운영자가 검토한 `family-ledger-v1` 또는 `character-memos-v1` JSON만

@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 레거시 소셜 파일 수집 경계
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `family/family_list` + `family_member_<n>` 수집 | `LocateLegacyFamilyRawFilesV1`가 명시적 absolute root 아래 `family` 디렉터리를 descriptor-anchored no-follow로 열고 0700/euid·0600/regular/nlink=1·64KiB bound·directory entry set·open/read/re-walk 교체를 검증한다. `InspectLegacyFamilyRawFilesV1`은 C의 family-list/member sentinel과 class/name 범위를 재현해 `FamilyCatalog`/`FamilyState`/`BossIDs`로 변환한다. | `go test -race ./internal/world -run 'LegacyFamily'`, `go vet`, Darwin/Linux ARM64 cross-compile PASS. 실제 원본 tree 수집·대량 누락/중복 대조·operator ID mapping과 manifest apply는 미완료 |
+| `player/fal/<name>` 메모 수집 | `LegacyMemoFileLocatorV1`가 canonical recipient name만 받아 `player/fal`을 no-follow로 읽고 0700/euid·0600/regular/nlink=1·4MiB·재검사/rewalk를 적용한다. `ParseLegacyMemoFileV1`은 `ctime` 3-line record, UTF-8/80-byte body, timestamp bound와 명시적 sender/recipient ID mapping을 검증해 pointer-free `CharacterMemo`를 만든다. | `go test -race ./internal/world -run 'LegacyMemo'`, `go vet`, Darwin/Linux ARM64 cross-compile PASS. 운영 timezone·원본 대량 수집·sender mapping review·memo manifest apply는 미완료 |
+
+두 collector는 migration-only이며 raw payload를 gameplay state에 넣거나 password·이름 기반
+계정 claim·DB/runtime 쓰기를 수행하지 않는다. locator metadata/path와 SHA-256은 별도
+migration evidence로만 남고 canonical aggregate에는 들어가지 않는다. 수집 결과는 사람이 승인한 canonical ID mapping과 `family-ledger-v1`/
+`character-memos-v1` manifest로 넘긴 뒤에만 기존 `cmd/muhan -import-social-manifest-apply`
+경계를 사용할 수 있다.
+
 ## 2026-09-10 소셜 aggregate manifest·복구 reader
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
