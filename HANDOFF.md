@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 실명)
+
+플레이어 self-cast 실명(SBLIND)을 연결했다. source MP 15·SUB_DM 이상 직업 gate·spell-fail
+경계를 receipt에 고정하고, 성공 시 PBLIND를 켜며 PINVIS를 해제한다. global LT_SPELL과 MP
+차감은 원자 반영하고, 실패·replay에서는 난수와 room fan-out을 중복하지 않는다.
+
+검증: go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1,
+영향 패키지 go vet, git diff --check PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release
+게이트는 승격 cadence에서만 실행한다. src/frp.new 기존 사용자 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 저주해소)
 
 플레이어 self-cast 저주해소(SREMOV)를 연결했다. source MP 18·습득 비트·spell-fail 1회와

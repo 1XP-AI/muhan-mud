@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 주문 실명 — canonical 상태 전이
+
+실명(SBLIND/PBLIND)을 player self-cast receipt로 연결했다. source MP 15, SUB_DM 이상
+직업 gate, spell-fail 경계를 검증하고 성공 시 PBLIND를 켜고 PINVIS를 해제한다. global
+LT_SPELL·MP 전이는 원자 적용하며 실패·replay에서는 난수·출력 fan-out을 반복하지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet 및 전체 spell parity는 승격 cadence에서 단일 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 주문 저주해소 — canonical 장착 아이템 정화
 
 저주해소(SREMOV/PFEARS/OCURSE)를 player self-cast receipt로 연결했다. source MP 18과

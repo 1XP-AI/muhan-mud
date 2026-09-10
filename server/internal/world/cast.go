@@ -30,6 +30,7 @@ const (
 	castBlessSpell           = 4  // SBLESS / 성현진
 	castProtectionSpell      = 5  // SPROTE / 수호진
 	castRemoveCurseSpell     = 42 // SREMOV / 저주해소
+	castBlindSpell           = 53 // SBLIND / 실명
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -87,6 +88,7 @@ const (
 	castHealFull
 	castHealTimed
 	castHealCleanse
+	castHealFlag
 )
 
 var (
@@ -124,10 +126,11 @@ type castSpellSpec struct {
 	// Bless/protection add the cleric/paladin level-band term from their
 	// source routines. They also refresh the derived canonical combat value
 	// after setting their flag.
-	ClassIntervalTerm bool
-	CombatStats       bool
-	ClearCursedReady  bool
-	CombatGate        bool
+	ClassIntervalTerm  bool
+	CombatStats        bool
+	ClearCursedReady   bool
+	RevealInvisibility bool
+	CombatGate         bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
 	failMask uint16
@@ -140,6 +143,7 @@ const (
 	castAnyClass = iota
 	castClericInvincible
 	castClericPaladinInvincible
+	castSubDMGate
 )
 
 const castAllSpellFailMask uint16 = 1<<castAssassinClass | 1<<castBarbarianClass | 1<<castClericClass | 1<<castFighterClass | 1<<castMageClass | 1<<castPaladinClass | 1<<7 | 1<<8
@@ -270,6 +274,11 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Cost, spec.healKind = 18, castHealCleanse
 		spec.Flag, spec.Timer, spec.ClearCursedReady = fleeFearFlag, -1, true
 		spec.failMask = castAllSpellFailMask
+	case castBlindSpell:
+		spec.Cost, spec.healKind = 15, castHealFlag
+		spec.Flag, spec.Timer, spec.RevealInvisibility = castBlindFlag, -1, true
+		spec.failMask = castAllSpellFailMask
+		spec.classGate = castSubDMGate
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
@@ -288,6 +297,7 @@ const (
 	castMageClass      = 5
 	castPaladinClass   = 6
 	castInvincible     = 9
+	castSubDMClass     = 11
 )
 
 type CastOptions struct {
@@ -444,6 +454,8 @@ func castClassAllowed(body LegacyMonster, spec castSpellSpec) bool {
 		return body.Class == castClericClass || body.Class >= castInvincible
 	case castClericPaladinInvincible:
 		return body.Class == castClericClass || body.Class == castPaladinClass || body.Class >= castInvincible
+	case castSubDMGate:
+		return body.Class >= castSubDMClass
 	default:
 		return false
 	}
@@ -746,6 +758,9 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 	}
 	after.MPCurrent -= spec.Cost
 	setSettingFlag(&after, castHiddenFlag, false)
+	if spec.RevealInvisibility {
+		setSettingFlag(&after, castInvisibilityFlag, false)
+	}
 	switch spec.healKind {
 	case castHealVigor, castHealMend:
 		heal, err := castHealingAmount(body, room, spec.healKind, effectRolls)
@@ -775,6 +790,12 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 			return LegacyMonster{}, 0, ErrCastSpellUnavailable
 		}
 		setSettingFlag(&after, spec.Flag, false)
+		return after, 0, nil
+	case castHealFlag:
+		if spec.Flag >= uint(len(after.Flags)*8) || spec.Timer != -1 {
+			return LegacyMonster{}, 0, ErrCastSpellUnavailable
+		}
+		setSettingFlag(&after, spec.Flag, true)
 		return after, 0, nil
 	default:
 		return LegacyMonster{}, 0, ErrCastSpellUnavailable
@@ -827,6 +848,11 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 		default:
 			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 		}
+	case castHealFlag:
+		if spec.Index == castBlindSpell {
+			return "당신은 두손가락을 독수리 발톱모양으로 하고서 실명 주문을 걸었습니다.\r\n검은 안개가 눈을 찔러 앞이 보이지 않습니다.\r\n"
+		}
+		return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 	default:
 		return ""
 	}
@@ -840,7 +866,7 @@ func castRoomText(actorName string, spec castSpellSpec) string {
 		return fmt.Sprintf("\n%s이 기공팔식의 자세를 취하며 원기회복의 주문을 외웁니다.\r\n지기의 뜨거운 기운이 그에게 흘러가는 것이 느껴집니다.\r\n", actorName)
 	case castHealFull:
 		return fmt.Sprintf("\n%s이 천부공 자세를 취하면서 완치주문을 외웠습니다.\r\n천상의 기운들이 그에게로 모이는 것이 느껴집니다.\r\n", actorName)
-	case castHealTimed, castHealCleanse:
+	case castHealTimed, castHealCleanse, castHealFlag:
 		return fmt.Sprintf("\n%s이 %s 주문을 외웁니다.\r\n", actorName, spec.Name)
 	default:
 		return ""
@@ -1139,6 +1165,10 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 				return State{}, CastResult{}, ErrCastInvalidProposal
 			}
 		} else if p.afterItemsSet || p.CursedItemsCleared != 0 {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
+	} else if spec.healKind == castHealFlag {
+		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer != -1 || spec.ClearCursedReady {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 	} else if spec.healKind == castHealFull {
