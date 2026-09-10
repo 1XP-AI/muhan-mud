@@ -324,3 +324,56 @@ func TestCastInvisibilityCombatGateClearsHiddenWithoutRolling(t *testing.T) {
 		t.Fatalf("body=%+v result=%+v", body, result)
 	}
 }
+
+func TestPlanApplyCastCleansingSelfSpells(t *testing.T) {
+	tests := []struct {
+		name       string
+		class      byte
+		spell      int
+		spellName  string
+		flag       uint
+		initial    bool
+		want       bool
+		wantCost   int16
+		wantGlobal int32
+	}{
+		{name: "cure poison", class: castMageClass, spell: castCurePoisonSpell, spellName: "해독", flag: castCurePoisonFlag, initial: true, want: false, wantCost: 6, wantGlobal: 3},
+		{name: "remove disease", class: castClericClass, spell: castDiseaseSpell, spellName: "치료", flag: castDiseaseFlag, initial: true, want: false, wantCost: 12, wantGlobal: 3},
+		// rm_blind is admitted for the canonical class gate; magic1.c's PBLIND
+		// gate is tested separately, so a visible caster has no flag to clear.
+		{name: "remove blindness", class: castPaladinClass, spell: castRemoveBlindSpell, spellName: "개안술", flag: castRemoveBlindFlag, initial: false, want: false, wantCost: 12, wantGlobal: 5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := castTestState(tc.class, tc.spell)
+			actor := s.Players["a"]
+			setSettingFlag(&actor.Body, tc.flag, tc.initial)
+			s.Players["a"] = actor
+			calls := 0
+			p, err := s.PlanCast("a", tc.spellName, CastOptions{Now: 100, Roll: func(low, high int) int {
+				calls++
+				if low != 1 || high != 100 {
+					t.Fatalf("spell-fail range=%d..%d", low, high)
+				}
+				return 1
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || !p.Attempted || !p.Succeeded || p.SpellFailed || p.TimedFlag != 0 || p.TimedInterval != 0 || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.MPDelta != -int32(tc.wantCost) {
+				t.Fatalf("proposal=%+v calls=%d", p, calls)
+			}
+			next, result, err := s.ApplyCast(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := next.Players["a"].Body
+			if flag(body.Flags[:], tc.flag) != tc.want || body.MPCurrent != 30-tc.wantCost || body.Timers[castSpellTimerIndex] != (LegacyTimer{LastTime: 100, Interval: tc.wantGlobal}) {
+				t.Fatalf("body=%+v", body)
+			}
+			if result.Event == nil || !strings.Contains(result.Response, tc.spellName) || result.TimedFlag != 0 || result.TimedInterval != 0 {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}

@@ -1,5 +1,15 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 정화 3종
+
+`해독`·`치료`·`개안술`을 player self-cast reducer에 추가한다. source spell bit, PPOISN/
+PDISEA/PBLIND flag, MP/직업 gate와 `spell_fail` RNG 1회를 receipt에 고정하고, 성공 시
+global LT_SPELL과 정화 전이를 함께 커밋한다. 실패는 MP만 차감하며, PBLIND 선행 입력 gate와
+replay 무중복 fan-out을 유지한다.
+
+이번 레인은 world focused race와 diff/vet만 실행한다. 전체 통합·PostgreSQL·ARM64·browser/
+IME·release/testnet 검증은 주문 묶음 승격 시 한 번만 수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 지속 버프 7종
 
 `부양술`·`방열진`·`비상술`·`보마진`·`방한진`·`수생술`·`지방호`를 self-cast receipt로

@@ -1,7 +1,7 @@
 package world
 
 // This file is the player-facing slice of magic1.c:cast. It admits the
-// self-target healing and timed utility spells whose state transition is
+// self-target healing, cleansing and timed utility spells whose state transition is
 // represented by the canonical player body. Other spells remain visible in
 // the spell catalog but fail closed at this boundary until their target,
 // combat, room or item contracts are migrated.
@@ -26,6 +26,7 @@ const (
 	castVigorSpell           = 0  // SVIGOR / 회복
 	castMendSpell            = 18 // SMENDW / 원기회복
 	castHealSpell            = 19 // SFHEAL / 완치
+	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
 	castDetectMagicSpell     = 10 // SDMAGI / 주문감지술
@@ -36,6 +37,8 @@ const (
 	castResistColdSpell      = 43 // SRCOLD / 방한진
 	castWaterSpell           = 44 // SBRWAT / 수생술
 	castEarthShieldSpell     = 45 // SSSHLD / 지방호
+	castDiseaseSpell         = 48 // SRMDIS / 치료
+	castRemoveBlindSpell     = 49 // SRMBLD / 개안술
 	castKnowAlignmentSpell   = 41 // SKNOWA / 선악감지
 )
 
@@ -62,6 +65,9 @@ const (
 	castWaterTimer           = 30
 	castEarthShieldFlag      = 38
 	castEarthShieldTimer     = 31
+	castCurePoisonFlag       = 16
+	castDiseaseFlag          = 41
+	castRemoveBlindFlag      = 42
 )
 
 const (
@@ -70,6 +76,7 @@ const (
 	castHealMend
 	castHealFull
 	castHealTimed
+	castHealCleanse
 )
 
 var (
@@ -114,6 +121,7 @@ type castSpellSpec struct {
 
 const (
 	castAnyClass = iota
+	castClericInvincible
 	castClericPaladinInvincible
 )
 
@@ -212,6 +220,20 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Flag, spec.Timer = castEarthShieldFlag, castEarthShieldTimer
 		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
 		spec.failMask = castAllSpellFailMask
+	case castCurePoisonSpell:
+		spec.Cost, spec.healKind = 6, castHealCleanse
+		spec.Flag, spec.Timer = castCurePoisonFlag, -1
+		spec.failMask = castAllSpellFailMask
+	case castDiseaseSpell:
+		spec.Cost, spec.healKind = 12, castHealCleanse
+		spec.Flag, spec.Timer = castDiseaseFlag, -1
+		spec.failMask = castAllSpellFailMask
+		spec.classGate = castClericInvincible
+	case castRemoveBlindSpell:
+		spec.Cost, spec.healKind = 12, castHealCleanse
+		spec.Flag, spec.Timer = castRemoveBlindFlag, -1
+		spec.failMask = castAllSpellFailMask
+		spec.classGate = castClericPaladinInvincible
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
@@ -375,10 +397,16 @@ func castCooldownResponse(wait int64) string {
 }
 
 func castClassAllowed(body LegacyMonster, spec castSpellSpec) bool {
-	if spec.classGate == castAnyClass {
+	switch spec.classGate {
+	case castAnyClass:
 		return true
+	case castClericInvincible:
+		return body.Class == castClericClass || body.Class >= castInvincible
+	case castClericPaladinInvincible:
+		return body.Class == castClericClass || body.Class == castPaladinClass || body.Class >= castInvincible
+	default:
+		return false
 	}
-	return body.Class == castClericClass || body.Class == castPaladinClass || body.Class >= castInvincible
 }
 
 func castSpellInterval(class byte) int32 {
@@ -630,6 +658,12 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 		// Timed utility spells only consume mana here. PlanCast/ApplyCast write
 		// the spell-specific flag and timer after this pure body transition.
 		return after, 0, nil
+	case castHealCleanse:
+		if spec.Flag >= uint(len(after.Flags)*8) {
+			return LegacyMonster{}, 0, ErrCastSpellUnavailable
+		}
+		setSettingFlag(&after, spec.Flag, false)
+		return after, 0, nil
 	default:
 		return LegacyMonster{}, 0, ErrCastSpellUnavailable
 	}
@@ -662,6 +696,17 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 		default:
 			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 		}
+	case castHealCleanse:
+		switch spec.Index {
+		case castCurePoisonSpell:
+			return "당신은 오른손으로 혈도를 짚으면서 해독 주문을 외웁니다.\r\n당신 몸에 남아 있는 독이 모두 빠져나갔습니다.\r\n"
+		case castDiseaseSpell:
+			return "당신은 생사과를 먹으며 치료 주문을 외웁니다.\r\n병마에 시달리던 당신의 몸이 활기를 띄기 시작합니다.\r\n"
+		case castRemoveBlindSpell:
+			return "당신의 이마에 개안부를 붙히며 개안술 주문을 외웁니다.\r\n감겼던 눈이 움찔거리다가 갑자기 눈앞이 밝아집니다.\r\n"
+		default:
+			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
+		}
 	default:
 		return ""
 	}
@@ -675,7 +720,7 @@ func castRoomText(actorName string, spec castSpellSpec) string {
 		return fmt.Sprintf("\n%s이 기공팔식의 자세를 취하며 원기회복의 주문을 외웁니다.\r\n지기의 뜨거운 기운이 그에게 흘러가는 것이 느껴집니다.\r\n", actorName)
 	case castHealFull:
 		return fmt.Sprintf("\n%s이 천부공 자세를 취하면서 완치주문을 외웠습니다.\r\n천상의 기운들이 그에게로 모이는 것이 느껴집니다.\r\n", actorName)
-	case castHealTimed:
+	case castHealTimed, castHealCleanse:
 		return fmt.Sprintf("\n%s이 %s 주문을 외웁니다.\r\n", actorName, spec.Name)
 	default:
 		return ""
@@ -945,6 +990,10 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		if err != nil || p.TimedInterval != expectedInterval || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(actor.Body.Timers) {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
+	} else if spec.healKind == castHealCleanse {
+		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer != -1 {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
 	} else if spec.healKind == castHealFull {
 		if p.TimedFlag != 0 || p.TimedInterval != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
@@ -969,6 +1018,8 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 	if spec.healKind == castHealTimed {
 		setSettingFlag(&after, spec.Flag, true)
 		after.Timers[spec.Timer] = LegacyTimer{LastTime: p.Now, Interval: p.TimedInterval}
+	} else if spec.healKind == castHealCleanse {
+		setSettingFlag(&after, spec.Flag, false)
 	}
 	if spec.healKind == castHealFull {
 		daily, allowed, err := castDailyUse(actor.Body.Daily[castDailyHealIndex], p.Now)

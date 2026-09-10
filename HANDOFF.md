@@ -1,5 +1,18 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 정화 3종)
+
+플레이어 self-cast에 `해독`·`치료`·`개안술`을 연결했다. source의 SCUREP/SRMDIS/SRMBLD
+습득 비트, PPOISN/PDISEA/PBLIND 정화 flag, MP 비용·직업 gate와 `spell_fail` 1회 RNG를
+receipt로 고정한다. 성공 시 상태 flag와 global LT_SPELL을 원자 반영하고, 실패는 MP만 차감하며
+replay에서 RNG·room fan-out을 다시 실행하지 않는다. `magic1.c`의 PBLIND 선행 gate는 기존
+입력 경계대로 유지된다.
+
+검증: `go test -race ./internal/world -run 'Cast' -count=1` PASS. 영향 패키지 vet와
+`git diff --check`는 주문 묶음 커밋 직전에 한 번 실행하며, 전체 통합·ARM64·PostgreSQL·
+브라우저·release 게이트는 승격 cadence에서만 실행한다. `src/frp.new` 기존 사용자 변경은
+보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 지속 버프 7종)
 
 플레이어 self-cast에 `부양술`·`방열진`·`비상술`·`보마진`·`방한진`·`수생술`·`지방호`를

@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 `주문` 자기 대상 정화 3종 — canonical flag 전이
+
+`해독`(SCUREP/PPOISN), `치료`(SRMDIS/PDISEA), `개안술`(SRMBLD/PBLIND)을 self-cast
+receipt로 연결했다. source MP 비용(6/12), 직업 gate(치료는 클레릭·상위, 개안술은 클레릭·
+팔라딘·상위), 습득 비트와 `spell_fail` 1회 RNG를 검증하고, 성공 시 대상 상태 flag를 지운다.
+global LT_SPELL과 MP 차감은 원자 반영되며, 실패·replay에서는 대상 상태와 RNG 소비가 중복되지
+않는다. 원작 `cast()`의 PBLIND 선행 gate도 유지한다.
+
+검증: world focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity, 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet은 승격 cadence에서 단일 종합 게이트로 수행한다.
+
 ## 2026-09-10 플레이어 `주문` 자기 대상 지속 버프 7종 — canonical flag/timer 전이
 
 `부양술`(SLEVIT/PLEVIT/LT_LEVIT), `방열진`(SRFIRE/PRFIRE/LT_RFIRE), `비상술`
