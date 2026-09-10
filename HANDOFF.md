@@ -1,5 +1,16 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 은둔법)
+
+`은둔법`을 NPC CAST receipt 전이에 추가했다. 원작 SINVIS/PINVIS/LT_INVIS와 MP 15,
+Mage 보정·`RPMEXT` +600을 유지하고, 성공 시 actor PINVIS/timer와 NPC MP를 원자적으로
+반영한다. NPC가 이미 적대 중이면 거부하며, 실패 시 actor 상태는 보존된다. room/actor
+출력은 receipt에만 남겨 replay에서 중복 전송하지 않는다.
+
+검증: `go test -race ./internal/world -run 'NPCTalkCast(Detection|TimedUtility)' -count=1`,
+`go vet ./internal/world`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·
+release 게이트는 반복하지 않았다. `src/frp.new`는 기존 사용자 변경으로 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 감지 3종)
 
 `은둔감지술`, `주문감지술`, `선악감지`를 기존 NPC CAST receipt 전이에 연결했다. 각각

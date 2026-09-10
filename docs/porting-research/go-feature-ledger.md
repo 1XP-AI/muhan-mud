@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` 은둔 계열 — `은둔법`
+
+`은둔법`(SINVIS/PINVIS/LT_INVIS)을 감지 계열과 같은 canonical NPC talk receipt
+경계에 추가했다. NPC의 spell bit·MP·`spell_fail`을 확인하고, Mage 지능 보정과
+`RPMEXT` +600을 source 계산대로 적용한다. 성공 시 actor의 PINVIS/timer와 NPC MP를
+원자 반영하며, 실패·replay에서는 actor 상태와 출력이 중복 변경되지 않는다.
+
+검증: 기존 감지/지속 버프와 함께 world focused race 테스트 및 vet를 통과했다.
+전체 spell parity·PostgreSQL·ARM64·browser·release는 승격 cadence에서만 실행한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 감지 계열 3종 — canonical 상태 전이
 
 `은둔감지술`(SDINVI/PDINVI/LT_DINVI), `주문감지술`(SDMAGI/PDMAGI/LT_DMAGI),

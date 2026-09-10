@@ -18,6 +18,7 @@ const (
 	npcTalkBlessSpell           = 4  // SBLESS / 성현진
 	npcTalkProtectionSpell      = 5  // SPROTE / 수호진
 	npcTalkCurePoisonSpell      = 3  // SCUREP / 해독
+	npcTalkInvisibilitySpell    = 7  // SINVIS / 은둔법
 	npcTalkDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
 	npcTalkDetectMagicSpell     = 10 // SDMAGI / 주문감지술
 	npcTalkDiseaseSpell         = 48 // SRMDIS / 치료
@@ -32,6 +33,7 @@ const (
 	npcTalkEarthShieldSpell     = 45 // SSSHLD / 지방호
 	npcTalkBlessFlag            = 0  // PBLESS
 	npcTalkProtectionFlag       = 8  // PPROTE
+	npcTalkInvisibilityFlag     = 2  // PINVIS
 	npcTalkDetectMagicFlag      = 20 // PDMAGI
 	npcTalkDetectInvisibleFlag  = 21 // PDINVI
 	npcTalkPoisonFlag           = 16 // PPOISN
@@ -47,6 +49,7 @@ const (
 	npcTalkEarthShieldFlag      = 38 // PSSHLD
 	npcTalkProtectionTimer      = 1  // LT_PROTE
 	npcTalkBlessTimer           = 2  // LT_BLESS
+	npcTalkInvisibilityTimer    = 0  // LT_INVIS
 	npcTalkDetectInvisibleTimer = 17 // LT_DINVI
 	npcTalkDetectMagicTimer     = 18 // LT_DMAGI
 	npcTalkKnowAlignmentTimer   = 27 // LT_KNOWA
@@ -163,6 +166,13 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
+		}, nil
+	case "은둔법":
+		if len(legacyInfoSpellNames) <= npcTalkInvisibilitySpell || legacyInfoSpellNames[npcTalkInvisibilitySpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkInvisibilitySpell, Flag: npcTalkInvisibilityFlag, Timer: npcTalkInvisibilityTimer, Cost: 15, RoomExtend: 600, ClassIntervalMage: true,
 		}, nil
 	case "은둔감지술":
 		if len(legacyInfoSpellNames) <= npcTalkDetectInvisibleSpell || legacyInfoSpellNames[npcTalkDetectInvisibleSpell] != name {
@@ -789,6 +799,9 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkKnowAlignmentFlag:
 		roomText = fmt.Sprintf("\n%s%s %s에게 선악감지 주문을 외웁니다.\n그는 선악을 감지할 수 있는 식별력이 높아졌습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신에게 선악감지 주문을 외웁니다.\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\n", npc.Name, npcSubject)
+	case npcTalkInvisibilityFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 소명부를 먹이고 은둔법의 주문을 겁니다.\n%s의 몸이 빛을 내다가 갑자기 사라졌습니다.\n", npc.Name, npcSubject, target.Name, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 소명부를 먹이고 은둔법의 주문을 겁니다.\n당신의 몸이 빛을 내다가 갑자기 사라졌습니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)

@@ -35,6 +35,7 @@ func TestNPCTalkCastDetectionSpellsUseCanonicalFlagsAndSourceIntervals(t *testin
 		interval  int32
 		roomBonus string
 	}{
+		{spell: "은둔법", flag: npcTalkInvisibilityFlag, timer: npcTalkInvisibilityTimer, cost: 15, interval: 1920, roomBonus: "사라졌습니다"},
 		{spell: "은둔감지술", flag: npcTalkDetectInvisibleFlag, timer: npcTalkDetectInvisibleTimer, cost: 10, interval: 1920, roomBonus: "푸른광안"},
 		{spell: "주문감지술", flag: npcTalkDetectMagicFlag, timer: npcTalkDetectMagicTimer, cost: 10, interval: 1920, roomBonus: "은빛광안"},
 		{spell: "선악감지", flag: npcTalkKnowAlignmentFlag, timer: npcTalkKnowAlignmentTimer, cost: 6, interval: 2000, roomBonus: "선악"},

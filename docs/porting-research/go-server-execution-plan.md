@@ -1,5 +1,12 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): NPC CAST 은둔법
+
+`은둔법`을 기존 NPC CAST receipt 경계에 연결했다. PINVIS/LT_INVIS, MP 15, Mage
+보정과 방 강화값을 고정하고 성공·실패·replay를 동일한 결정론적 reducer로 처리한다.
+이번 묶음은 world focused race와 vet만 실행했으며, 전체 호환성 게이트는 승격 시점에
+한 번만 수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): NPC CAST 감지 계열 3종
 
 `은둔감지술`, `주문감지술`, `선악감지`를 NPC talk의 snapshot-bound CAST reducer에
