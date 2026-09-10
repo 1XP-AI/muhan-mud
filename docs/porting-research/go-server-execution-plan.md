@@ -1,5 +1,19 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 레거시 투표 raw collector 승격 경계
+
+`LocateLegacyVoteFileV1`는 명시된 absolute root의 `player/vote/<canonical-name>_v`만
+descriptor-anchored no-follow로 읽는다. root/player/vote 디렉터리는 현재 euid의 0700,
+파일은 0600 regular·nlink=1·64KiB 이하이어야 하며, symlink·예상 밖 entry·비정규 이름은
+거부한다. fd read 전후 stat과 fresh tree rewalk를 함께 사용해 경로/파일 교체를 감지한다.
+`LocateLegacyVoteRawFilesV1`는 `_v` 파일을 lexical order로 수집하고 재열거 결과가 다르면
+전체 batch를 폐기한다. 결과는 owned raw bytes와 SHA-256/제한 filesystem metadata만 가지며,
+ISSUE 선택지 검증·identity mapping·VoteState/DB import은 다음 검토 manifest 단계의 책임이다.
+
+검증: `go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1` PASS.
+실제 `player/vote` tree 대량 수집, ISSUE digest/choice validation, operator name→character
+ID mapping, Supabase receipt/import, 운영 보관·복구는 아직 남아 있다.
+
 ## 2026-09-10 레거시 소셜 raw collector 승격 경계
 
 `LocateLegacyFamilyRawFilesV1`는 명시된 root의 `family/family_list`를 먼저 읽어 numeric

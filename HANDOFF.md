@@ -1,5 +1,18 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (vote raw collector)
+
+`server/internal/world/legacy_vote_file_locator_v1.go`에 레거시
+`player/vote/<name>_v` 수집기를 추가했다. 명시적 absolute root, descriptor-anchored
+no-follow walk, 0700/euid 디렉터리·0600 regular/nlink=1 파일, 64KiB bound, canonical
+이름, fd 전후 stat와 fresh rewalk, `_v` 외 entry 및 batch 변경 감지를 적용한다.
+`LocateLegacyVoteRawFilesV1`는 lexical order의 owned bytes/SHA-256/제한 metadata만 반환하며
+계정·character claim·VoteState·DB/runtime 쓰기는 하지 않는다. ISSUE 길이/선택지와 명시적
+name→ID mapping은 기존 `vote_import.go` 및 후속 검토 manifest에서 처리한다.
+
+검증: `(cd server && go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1)` PASS.
+아직 실제 원본 대량 수집·operator mapping·manifest/apply·운영 Supabase 권한은 미완료다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (bank snapshot review→import manifest)
 
 은행 raw→kind-8 변환 review와 `Postgres.ImportBankSnapshot` 사이를 잇는 DB-free CLI를

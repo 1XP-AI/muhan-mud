@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 레거시 투표 raw 파일 수집 경계
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `player/vote/<name>_v` 안전 수집 | `LocateLegacyVoteFileV1`가 명시적 absolute root 아래 `player/vote`를 descriptor-anchored no-follow로 열고 0700/euid 디렉터리·0600 regular/nlink=1 파일·64KiB bound·canonical name을 확인한다. fd 전후 stat과 fresh rewalk로 교체를 닫고, `LocateLegacyVoteRawFilesV1`는 `_v` 외 entry를 거부한 뒤 lexical batch와 재열거 결과를 대조한다. 반환값은 raw bytes와 SHA-256/제한 metadata뿐이다. | `go test -race ./internal/world -run 'LegacyVoteFileLocator'`, `go vet`, Linux ARM64/Darwin compile 전제의 코드 경계가 추가됐다. ISSUE 길이·선택지·이름→character ID mapping·manifest/import/apply·운영 원본 대량 대조는 미완료 |
+
+이 경계는 기존 `ReadLegacyVoteFiles`의 일반 `fs.FS` 편의 API를 대체하지 않는다. 운영 이관은
+명시적 root 수집 결과를 사람이 검토한 manifest로 만들고 `ImportLegacyVotes`에 제출해야 하며,
+locator는 State·계정·credential·DB·runtime을 직접 변경하지 않는다.
+
 ## 2026-09-10 레거시 소셜 파일 수집 경계
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
