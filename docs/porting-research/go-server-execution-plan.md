@@ -10,7 +10,9 @@ descriptor-anchored no-follow로 읽는다. root/player/vote 디렉터리는 현
 전체 batch를 폐기한다. 결과는 owned raw bytes와 SHA-256/제한 filesystem metadata만 가지며,
 ISSUE 선택지 검증·identity mapping·VoteState/DB import은 다음 검토 manifest 단계의 책임이다.
 
-검증: `go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1` PASS.
+검증: `go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1`,
+`bash scripts/run-go-validation.sh integration`, `go vet ./internal/world`, Linux ARM64/Darwin
+ARM64 compile, `git diff --check` PASS.
 실제 `player/vote` tree 대량 수집, ISSUE digest/choice validation, operator name→character
 ID mapping, Supabase receipt/import, 운영 보관·복구는 아직 남아 있다.
 

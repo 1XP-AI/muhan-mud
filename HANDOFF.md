@@ -10,8 +10,10 @@ no-follow walk, 0700/euid 디렉터리·0600 regular/nlink=1 파일, 64KiB bound
 계정·character claim·VoteState·DB/runtime 쓰기는 하지 않는다. ISSUE 길이/선택지와 명시적
 name→ID mapping은 기존 `vote_import.go` 및 후속 검토 manifest에서 처리한다.
 
-검증: `(cd server && go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1)` PASS.
-아직 실제 원본 대량 수집·operator mapping·manifest/apply·운영 Supabase 권한은 미완료다.
+검증: `(cd server && go test -race ./internal/world -run 'LegacyVoteFileLocator' -count=1)` PASS,
+`bash scripts/run-go-validation.sh integration` PASS. 전체 world corpus에서 기존 방 본문
+63건 예외는 별도 skip 대상이다. 아직 실제 원본 대량 수집·operator mapping·manifest/apply·
+운영 Supabase 권한은 미완료다.
 
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (bank snapshot review→import manifest)
 
