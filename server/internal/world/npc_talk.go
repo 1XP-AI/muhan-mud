@@ -120,6 +120,7 @@ type npcTalkCastSpec struct {
 	ClassIntervalTerm bool
 	ClassIntervalMage bool
 	TargetFullHeal    bool
+	SkipSpellFail     bool
 }
 
 type npcTalkCastClassGate uint8
@@ -174,7 +175,7 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
 		}
 		return npcTalkCastSpec{
-			Name: name, Spell: npcTalkHealSpell, Timer: -2, Cost: 20, ClassGate: npcTalkCastClericPaladinOrInvincible, TargetFullHeal: true,
+			Name: name, Spell: npcTalkHealSpell, Timer: -2, Cost: 20, ClassGate: npcTalkCastClericPaladinOrInvincible, TargetFullHeal: true, SkipSpellFail: true,
 		}, nil
 	case "은둔법":
 		if len(legacyInfoSpellNames) <= npcTalkInvisibilitySpell || legacyInfoSpellNames[npcTalkInvisibilitySpell] != name {
@@ -916,8 +917,10 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 		// bit gate leaves mpcur unchanged after talk_action.
 		return nil
 	}
-	if _, err := npcTalkSpellChance(npc.Body); err != nil {
-		return err
+	if !spec.SkipSpellFail {
+		if _, err := npcTalkSpellChance(npc.Body); err != nil {
+			return err
+		}
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
@@ -925,9 +928,6 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 		if err != nil {
 			return err
 		}
-	}
-	if options == nil || options.Roll == nil {
-		return ErrNPCTalkCastRandomUnavailable
 	}
 	if spec.Timer >= 0 {
 		proposal.CastNow = options.Now
@@ -939,20 +939,23 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	if err != nil {
 		return err
 	}
-	roll, err := npcTalkCastRoll(options)
-	if err != nil {
-		return err
-	}
-	chance, err := npcTalkSpellChance(npc.Body)
-	if err != nil {
-		return err
+	roll, chance := 0, 100
+	if !spec.SkipSpellFail {
+		roll, err = npcTalkCastRoll(options)
+		if err != nil {
+			return err
+		}
+		chance, err = npcTalkSpellChance(npc.Body)
+		if err != nil {
+			return err
+		}
 	}
 	proposal.CastAttempted = true
 	proposal.CastRoll = roll
 	proposal.CastChance = chance
 	proposal.CastInterval = interval
 	proposal.castNPCAfter.MPCurrent -= spec.Cost
-	if roll > chance {
+	if !spec.SkipSpellFail && roll > chance {
 		proposal.CastFailed = true
 		return nil
 	}
@@ -1061,12 +1064,15 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 		}
 		return spec, nil
 	}
-	if !known || int16(npc.Body.MPCurrent) < spec.Cost || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
+	if !known || int16(npc.Body.MPCurrent) < spec.Cost || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) || (!spec.SkipSpellFail && (proposal.CastRoll < 1 || proposal.CastRoll > 100)) {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast gate changed")
 	}
-	chance, err := npcTalkSpellChance(npc.Body)
-	if err != nil {
-		return npcTalkCastSpec{}, err
+	chance := 100
+	if !spec.SkipSpellFail {
+		chance, err = npcTalkSpellChance(npc.Body)
+		if err != nil {
+			return npcTalkCastSpec{}, err
+		}
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
@@ -1075,7 +1081,14 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 			return npcTalkCastSpec{}, err
 		}
 	}
-	if proposal.CastChance != chance || proposal.CastInterval != interval || proposal.CastSucceeded == proposal.CastFailed || proposal.CastSucceeded != (proposal.CastRoll <= chance) || proposal.CastFailed != (proposal.CastRoll > chance) {
+	if proposal.CastChance != chance || proposal.CastInterval != interval || proposal.CastSucceeded == proposal.CastFailed {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast outcome changed")
+	}
+	if spec.SkipSpellFail {
+		if proposal.CastRoll != 0 || !proposal.CastSucceeded || proposal.CastFailed {
+			return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast no-fail outcome changed")
+		}
+	} else if proposal.CastSucceeded != (proposal.CastRoll <= chance) || proposal.CastFailed != (proposal.CastRoll > chance) {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast outcome changed")
 	}
 	expectedNPC := npc.Body

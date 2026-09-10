@@ -3,9 +3,9 @@
 ## 2026-09-10 NPC 대화 `CAST` 완치 — canonical HP 전이
 
 `완치`(SFHEAL)를 NPC talk receipt 경계에 연결했다. 원작의 클레릭·팔라딘·상위 직업
-게이트, MP 20, `spell_fail` RNG 1회를 검증하고 성공 시 canonical actor의 HP를 HPMax로
-설정한다. 실패·직업 게이트에서는 대상 HP를 바꾸지 않으며, 성공·실패 출력은 receipt에
-고정해 replay에서 중복 실행하지 않는다.
+게이트와 MP 20을 검증하고, 원작의 `heal` 루틴에 `spell_fail`이 없는 점을 반영해 RNG 없이
+성공 시 canonical actor의 HP를 HPMax로 설정한다. MP 부족·직업 게이트에서는 대상 HP를
+바꾸지 않으며, 성공 출력은 receipt에 고정해 replay에서 중복 실행하지 않는다.
 
 검증: `go test -race ./internal/world -run 'NPCTalkCast(Heal|Detection|TimedUtility)' -count=1`,
 영향 패키지 vet, diff check PASS. 전체 spell parity·PostgreSQL·ARM64·browser·release는

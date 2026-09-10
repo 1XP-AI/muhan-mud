@@ -30,17 +30,12 @@ func TestNPCTalkCastHealRestoresTargetHPAndChargesMana(t *testing.T) {
 	s := npcTalkHealState(t)
 	catalog := npcTalkCastCatalog(t, "완치")
 	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{
-		Roll: func(low, high int) int {
-			if low != 1 || high != 100 {
-				t.Fatalf("roll bounds=%d..%d", low, high)
-			}
-			return 1
-		},
+		Roll: func(int, int) int { t.Fatal("완치 does not call spell_fail"); return 1 },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !proposal.CastAttempted || !proposal.CastSucceeded || proposal.CastFailed || proposal.CastInterval != 0 || proposal.CastNow != 0 {
+	if !proposal.CastAttempted || !proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 100 || proposal.CastInterval != 0 || proposal.CastNow != 0 {
 		t.Fatalf("proposal=%+v", proposal)
 	}
 	next, result, err := s.ApplyNPCTalk(proposal, catalog)
@@ -55,10 +50,13 @@ func TestNPCTalkCastHealRestoresTargetHPAndChargesMana(t *testing.T) {
 	}
 }
 
-func TestNPCTalkCastHealFailureKeepsHPAndConsumesMana(t *testing.T) {
+func TestNPCTalkCastHealWithoutEnoughManaKeepsTarget(t *testing.T) {
 	s := npcTalkHealState(t)
+	npc := s.NPCs["guide-one"]
+	npc.Body.MPCurrent = 10
+	s.NPCs["guide-one"] = npc
 	catalog := npcTalkCastCatalog(t, "완치")
-	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{Roll: func(int, int) int { return 100 }})
+	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +64,7 @@ func TestNPCTalkCastHealFailureKeepsHPAndConsumesMana(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.SpellAttempted || result.SpellSucceeded || !result.SpellFailed || next.Players["a"].Body.HPCurrent != 12 || next.NPCs["guide-one"].Body.MPCurrent != 10 {
+	if result.SpellAttempted || result.SpellSucceeded || result.SpellFailed || next.Players["a"].Body.HPCurrent != 12 || next.NPCs["guide-one"].Body.MPCurrent != 10 {
 		t.Fatalf("result=%+v actor=%+v npc=%+v", result, next.Players["a"].Body, next.NPCs["guide-one"].Body)
 	}
 }

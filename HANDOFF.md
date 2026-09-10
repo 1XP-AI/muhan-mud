@@ -3,9 +3,9 @@
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 완치)
 
 `완치`(SFHEAL)를 NPC CAST receipt 전이에 추가했다. 원작의 클레릭·팔라딘·상위 직업
-게이트와 MP 20, `spell_fail` 결과를 유지하고, 성공 시 대상 HP를 HPMax로 올리며 실패 시
-대상 HP를 보존한다. 대상은 talk_action이 선택한 canonical player로 고정하고, room/actor
-출력은 commit receipt에만 남긴다.
+게이트와 MP 20을 유지하고, 원작처럼 `spell_fail`을 호출하지 않아 성공 시 대상 HP를
+HPMax로 올린다. MP 부족·직업 게이트에서는 대상 HP를 보존하며, 대상은 talk_action이
+선택한 canonical player로 고정하고 room/actor 출력은 commit receipt에만 남긴다.
 
 검증: `go test -race ./internal/world -run 'NPCTalkCast(Heal|Detection|TimedUtility)' -count=1`,
 `go vet ./internal/world`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·

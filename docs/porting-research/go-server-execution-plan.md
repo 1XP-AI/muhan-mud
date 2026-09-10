@@ -3,8 +3,9 @@
 ## 최신 구현 체크포인트 (2026-09-10): NPC CAST 완치
 
 `완치`(SFHEAL)를 NPC talk의 snapshot-bound CAST reducer에 추가했다. source 직업 게이트와
-MP 20을 확인하고 성공 시 canonical target HP를 HPMax로 원자 반영한다. `spell_fail` 1회와
-room/actor projection은 receipt에 고정하며, 실패·재생에서는 대상 HP를 재변경하지 않는다.
+MP 20을 확인하고, 원작 `heal`이 실패 난수를 소비하지 않는 계약을 보존해 성공 시
+canonical target HP를 HPMax로 원자 반영한다. room/actor projection은 receipt에 고정하며,
+MP 부족·직업 게이트와 재생에서는 대상 HP를 재변경하지 않는다.
 이 레인은 world focused race/vet/diff만 실행하고, 전체 호환성 게이트는 승격 cadence에서
 한 번만 수행한다.
 
