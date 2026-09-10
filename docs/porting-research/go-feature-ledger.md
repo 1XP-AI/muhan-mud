@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 패거리 가입 신청 알림
+
+확인된 `패거리가입` receipt에 원작의 두목 대상 신청 알림을 담고, 첫 commit 뒤에만
+정확한 canonical boss connection으로 전달하도록 연결했다. receipt replay에서는 알림을
+재전송하지 않으며, 수신자 ID/name은 reducer가 캡처한 값과 post-commit snapshot을 다시
+대조한다.
+
+`go test -race ./internal/world ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 영향 패키지 `go vet`가 통과했다.
+
 ## 2026-09-10 `패거리탈퇴` 원작 confirmation 연결
 
 활성 패거리원의 bare `패거리탈퇴`를 xterm connection-local 확인 단계로 연결했다.

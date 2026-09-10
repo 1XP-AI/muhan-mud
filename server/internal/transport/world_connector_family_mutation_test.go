@@ -110,6 +110,14 @@ func TestWorldConnectorBareFamilyApplicationUsesLocalSelectionBeforeOneReceipt(t
 	if err != nil || confirmed != world.FamilyApplicationResponse || store.commits != 1 {
 		t.Fatalf("confirmed=%q err=%v commits=%d", confirmed, err, store.commits)
 	}
+	select {
+	case event := <-connections[1].events:
+		if !strings.Contains(event, "Alice님이 당신의 패거리에 가입하기를 원합니다") {
+			t.Fatalf("boss event=%q", event)
+		}
+	default:
+		t.Fatal("boss application notification missing")
+	}
 	saved, err := world.DecodeState(store.state)
 	if err != nil {
 		t.Fatal(err)

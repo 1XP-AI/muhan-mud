@@ -49,7 +49,7 @@ func TestFamilyMutationJoinApplicationSetsPendingAndResolvesCanonicalBoss(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proposal.Action != FamilyMutationApply || proposal.ActorID != "applicant" || proposal.BossID != "boss" || proposal.BossName != "Boss" || proposal.FamilyID != 2 || proposal.FamilyName != "청룡" || !proposal.Changed || !proposal.BossNotificationPending {
+	if proposal.Action != FamilyMutationApply || proposal.ActorID != "applicant" || proposal.BossID != "boss" || proposal.BossName != "Boss" || proposal.FamilyID != 2 || proposal.FamilyName != "청룡" || !proposal.Changed || !proposal.BossNotificationPending || len(proposal.Events) != 1 || proposal.Events[0].RecipientID != "boss" || proposal.Events[0].RecipientName != "Boss" || !strings.Contains(proposal.Events[0].Text, "Alice님이 당신의 패거리에 가입하기를 원합니다") {
 		t.Fatalf("proposal=%+v", proposal)
 	}
 	if proposal.BeforeFamilyID != 0 || proposal.AfterFamilyID != 2 || proposal.BeforeFlags != s.Players["applicant"].Body.Flags || !flag(proposal.AfterFlags[:], FamilyPendingFlag) || flag(proposal.AfterFlags[:], FamilyMemberFlag) {

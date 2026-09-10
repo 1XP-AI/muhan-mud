@@ -1,5 +1,14 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 패거리 가입 알림 receipt
+
+패거리 가입 신청 receipt에 원작의 `>>> <이름>님이 ...` 두목 알림을 추가했다. 알림은
+canonical recipient ID/name으로 저장되고 최초 commit 뒤에만 전송되며, replay에서는
+중복 전송하지 않는다. 이는 interactive selection/confirmation과 같은 family mutation
+경계에 속한다.
+
+영향 world/session/transport race 및 vet만 실행했으며 고비용 게이트는 반복하지 않았다.
+
 ## 2026-09-10 `패거리탈퇴` confirmation gate
 
 활성 패거리원의 bare `패거리탈퇴`를 connection-local `예/아니오` 확인으로 연결했다.

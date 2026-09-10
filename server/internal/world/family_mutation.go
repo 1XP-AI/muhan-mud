@@ -467,6 +467,10 @@ func familyMutationJoinPlan(s State, actorID string, familyID int16, catalog Fam
 		BeforeFamilyID: 0, AfterFamilyID: family.ID,
 		BeforeFlags: beforeFlags, AfterFlags: afterFlags,
 		Changed: true, BossNotificationPending: true,
+		Events: []FamilyMutationEvent{{
+			RecipientID: bossID, RecipientName: boss.Body.Name,
+			Text: fmt.Sprintf("\n>>> %s님이 당신의 패거리에 가입하기를 원합니다.\r\n", actor.Body.Name),
+		}},
 		Response: FamilyApplicationResponse,
 		before:   snapshot, expectedActor: snapshot.Players[actorID], expectedBoss: snapshot.Players[bossID], expectedCatalog: cloneFamilyCatalog(catalog),
 	}, nil
