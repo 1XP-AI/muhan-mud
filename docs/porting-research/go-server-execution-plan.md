@@ -1,5 +1,17 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 Go + PostgreSQL 브라우저 수직 경로 검증
+
+기능 묶음 종료 시점의 단일 브라우저 게이트로
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`를 실행했다.
+격리된 PostgreSQL 17과 실제 Go 프로세스·웹 xterm을 사용해 캐릭터 생성/월드 입장/명령/
+재로그인, 사전 이관 캐릭터의 중복 세션 거부, 모바일 viewport 변경 뒤 xterm 포커스·입력을
+검증했고 `3 passed (17.7s)`였다. 작업별 컨테이너는 종료 시 자신이 만든 것만 제거했다.
+
+이 검증은 로컬 브라우저·DB 계약 증거다. 운영 Supabase 권한/RLS, WSS/Ingress, testnet
+배포·도메인 실사용 증거는 여전히 별도 release 조건이며, 다음 기능 레인에서 브라우저
+게이트를 무조건 반복하지 않는다.
+
 ## 2026-09-10 투표 raw→manifest builder·CLI 승격 경계
 
 collector와 canonical import 사이에 DB 없는 `cmd/muhan` builder를 연결했다.

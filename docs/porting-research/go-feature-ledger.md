@@ -1,5 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 Go + PostgreSQL 브라우저 수직 경로
+
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`를 한 번
+실행해 실제 Go 서버와 웹 xterm의 캐릭터 생성→월드 입장→명령→재로그인, canonical
+캐릭터 중복 세션 거부, 모바일 viewport 포커스·입력을 검증했다. `3 passed (17.7s)`이며
+작업별 PostgreSQL 컨테이너는 종료 시 자신이 만든 것만 제거했다. 로컬 수직 경로는
+증명했지만 운영 Supabase/RLS·WSS/Ingress·testnet은 미완료다. 브라우저 게이트는 관련
+코드 변경 또는 release cadence에서만 재실행한다.
+
 ## 2026-09-10 투표 raw→manifest builder·CLI 경계
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

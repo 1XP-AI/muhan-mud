@@ -1,5 +1,20 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 검증 체크포인트 — 2026-09-10 (Go + PostgreSQL 브라우저 수직 경로)
+
+반복 실행하지 않던 실제 브라우저 게이트를 이번 기능 묶음의 종료 시점에 한 번 실행했다.
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`가 작업별
+PostgreSQL 17 컨테이너를 만들고 Go 서버·웹 xterm을 연결해 다음 3개를 모두 통과했다.
+
+- 브라우저에서 원작 방식 캐릭터 생성 → 월드 입장 → 명령 실행 → 재로그인
+- 사전 이관 canonical 캐릭터 1회 입장 및 중복 세션 거부
+- 모바일 viewport 변경 뒤 xterm 포커스·입력 유지
+
+결과: `3 passed (17.7s)`, 종료 시 자신이 만든 PostgreSQL 컨테이너만 제거됐다. 운영
+Supabase 권한/RLS, WSS/Ingress와 testnet 배포 증거는 아직 없으므로 이번 결과를 운영
+승격으로 해석하지 않는다. 다음 기능 레인에서는 이 브라우저 게이트를 반복하지 않고,
+코드 변경이 실제 브라우저 계약에 영향을 줄 때만 release cadence에서 재실행한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (vote raw→manifest builder)
 
 레거시 `player/vote/<name>_v` collector와 canonical PostgreSQL import 사이에 DB 없는
