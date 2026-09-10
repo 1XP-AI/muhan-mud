@@ -68,6 +68,7 @@ dsn="postgresql://postgres:${password}@127.0.0.1:${port}/${database}?sslmode=dis
 	cd "$server_dir"
 	MUHAN_SOCIAL_IMPORT_TEST_DATABASE_URL="$dsn" go test -race ./cmd/muhan -run '^TestSocialManifestApplyAgainstPostgres$' -count=1
 	MUHAN_SOCIAL_IMPORT_TEST_DATABASE_URL="$dsn" go test -race ./internal/storage -run '^TestPostgres(SocialAggregatesAndReplays|SocialImportRollsBackSnapshotAndEvidence|SocialEvidenceReadAndRestore|SocialRestoreHonorsWriterFence)$' -count=1
+	MUHAN_VOTE_IMPORT_TEST_DATABASE_URL="$dsn" go test -race ./internal/storage -run '^TestPostgresImportsVoteStateAndReplays$' -count=1
 )
 
-echo "Go social import/restore checks passed on ARM64 postgres:17-alpine"
+echo "Go social/vote import/restore checks passed on ARM64 postgres:17-alpine"

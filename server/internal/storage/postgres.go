@@ -157,8 +157,19 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   body text NOT NULL CHECK(length(body) BETWEEN 1 AND 80),
   created_at timestamptz NOT NULL,
   command_id text NOT NULL,
-  PRIMARY KEY(world_id,recipient_id,memo_position),
+ PRIMARY KEY(world_id,recipient_id,memo_position),
   UNIQUE(world_id,memo_id)
+ );
+ CREATE TABLE IF NOT EXISTS mud_go.vote_imports (
+  world_id text NOT NULL REFERENCES mud_go.worlds(id),
+  command_id text NOT NULL CHECK(length(command_id) BETWEEN 1 AND 128),
+  catalog_digest bytea NOT NULL CHECK(octet_length(catalog_digest)=32),
+  aggregate_sha256 bytea NOT NULL CHECK(octet_length(aggregate_sha256)=32),
+  ballot_count integer NOT NULL CHECK(ballot_count BETWEEN 0 AND 1000000),
+  history_count integer NOT NULL CHECK(history_count BETWEEN 0 AND 1000000),
+  imported_revision bigint NOT NULL CHECK(imported_revision>0),
+  PRIMARY KEY(world_id,command_id),
+  UNIQUE(world_id,aggregate_sha256)
  );`)
 	return err
 }

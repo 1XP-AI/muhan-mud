@@ -1,5 +1,19 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 투표 canonical 원장 PostgreSQL 승격 경계
+
+`Postgres.ImportVoteState`를 추가해 검토된 pointer-free `VoteState`를 world snapshot에
+원자적으로 설치한다. 입력은 immutable player ID keyed ballot/history, 명시적 ISSUE
+`CatalogDigest`, world/command/expected revision뿐이며 raw path·bytes·credential·이름 기반
+claim은 받지 않는다. `mud_go.vote_imports` evidence row와 `world_commands` receipt를 같은
+transaction으로 기록하고, 같은 command/aggregate만 replay한다. 이미 `State.Votes`가
+non-nil인 snapshot, foreign actor, digest 불일치, stale revision은 fail-closed한다.
+
+검증: 단위 normalization, `scripts/run-go-social-import-local.sh --allow-disposable`의
+ARM64 `postgres:17-alpine` import/replay/foreign-aggregate test, `go vet`, 전체 integration
+PASS. raw collector→operator manifest builder, 실제 대량 원본/ID 승인, Supabase RLS·운영
+복구/PITR와 브라우저/배포는 아직 남아 있다.
+
 ## 2026-09-10 레거시 투표 raw collector 승격 경계
 
 `LocateLegacyVoteFileV1`는 명시된 absolute root의 `player/vote/<canonical-name>_v`만

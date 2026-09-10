@@ -1,5 +1,18 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (vote canonical PostgreSQL import)
+
+`Postgres.ImportVoteState`와 `mud_go.vote_imports`를 추가했다. 명시적 ISSUE
+`CatalogDigest`와 immutable player-ID keyed `VoteState`만 받아 unresolved world snapshot에
+원자적으로 설치하며, raw path/bytes·credential·이름 기반 claim·foreign actor·이미 import된
+snapshot·stale revision을 거부한다. `vote_imports` evidence와 `world_commands` receipt를
+같은 transaction에 기록하고 같은 command/aggregate만 replay한다.
+
+검증: `TestNormalizeVoteStateImportRejectsSensitiveDuplicateAndDigestMismatch`,
+`bash scripts/run-go-social-import-local.sh --allow-disposable` (ARM64
+`postgres:17-alpine` import/replay/foreign aggregate) PASS. 이후 전체 integration도 갱신해야
+한다. raw→manifest builder·운영 원본 대조·Supabase RLS/PITR·브라우저/배포는 미완료다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (vote raw collector)
 
 `server/internal/world/legacy_vote_file_locator_v1.go`에 레거시

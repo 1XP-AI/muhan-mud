@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 투표 canonical 원장 PostgreSQL 경계
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| canonical ballot import | `Postgres.ImportVoteState`가 명시적 `CatalogDigest`와 immutable player-ID keyed `VoteState`를 검증하고, unresolved world snapshot에만 원자적으로 설치한다. `vote_imports`와 `world_commands`를 함께 기록하며 동일 command/aggregate만 replay한다. raw path·bytes·credential·이름 기반 claim은 거부한다. | `TestNormalizeVoteStateImportRejectsSensitiveDuplicateAndDigestMismatch`, ARM64 `postgres:17-alpine` import/replay/foreign-aggregate guard, 전체 local integration PASS. 실제 raw→manifest builder/operator mapping·대량 원본·Supabase RLS/운영 복구는 미완료 |
+
+이 경계는 투표 파일을 직접 읽지 않는다. `LocateLegacyVoteRawFilesV1` 결과와 ISSUE digest를
+사람이 검토한 manifest로 결합한 뒤에만 `ImportVoteState`에 제출해야 하며, 운영 전환 전에는
+재접속·백업 복원·중복/누락 대조를 별도 증거로 확보한다.
+
 ## 2026-09-10 레거시 투표 raw 파일 수집 경계
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
