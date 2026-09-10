@@ -29,6 +29,7 @@ const (
 	CommandBank
 	CommandQuit
 	CommandRead
+	CommandCast
 	CommandSave
 	CommandMail
 	CommandMemo
@@ -208,6 +209,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsReadScrollLine(trimmed) {
 		parsed.Kind = CommandReadScroll
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsCastLine(trimmed) {
+		parsed.Kind = CommandCast
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

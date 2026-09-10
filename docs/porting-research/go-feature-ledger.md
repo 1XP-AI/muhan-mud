@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 `주문` 자기 대상 회복 — session/transport 연결
+
+원작 `magic1.c:cast`의 self-target 입력 경계를 Go session parser에 추가하고, `주문` prompt와
+`회복`(SVIGOR)·`원기회복`(SMENDW)·`완치`(SFHEAL)를 world reducer로 연결했다. source의
+MP 비용, 습득/직업/일일 한도/주문 timer, `spell_fail`, INT·신앙·레벨·`RPMEXT` 주사위
+순서를 proposal/result receipt에 고정한다. 성공·실패·게이트(주문 이후 PHIDDN 해제 포함)는
+원자적으로 적용하며, retry/replay는 RNG·상태·room event를 재실행하지 않는다. 대상 인자를
+붙인 주문과 미이관 주문은 fail-closed한다.
+
+검증: world/session/transport focused race 테스트와 영향 패키지 vet, diff check PASS.
+전체 spell parity·실제 PostgreSQL·ARM64·browser/IME·release/testnet은 승격 cadence에서
+단일 종합 게이트로 검증한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 회복 묶음 — canonical HP 전이
 
 `회복`(SVIGOR)·`원기회복`(SMENDW)의 대상 플레이어 분기를 NPC talk reducer에 연결했다.

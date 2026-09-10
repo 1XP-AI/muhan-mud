@@ -1,5 +1,18 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` self-cast 경계
+
+`command_parser`와 world connector가 원작 `주문` 입력을 self-target Go reducer로 전달한다.
+현재 admit 범위는 `회복`·`원기회복`·`완치`이며, prompt/unknown/ambiguous/blind/silent/
+no-magic/cooldown/mana/class/learned/daily gate를 결정론적 receipt로 남긴다. source의
+cooldown 후 숨김 해제, 주문별 MP·timer·직업 및 RNG 순서를 proposal에 고정하고, Apply 단계는
+호스트 RNG를 호출하지 않는다. room event는 성공 receipt에서만 한 번 fan-out하며 대상 주문은
+계약이 준비될 때까지 거부한다.
+
+이번 레인은 world/session/transport focused race, 영향 패키지 vet, diff check만 실행했다.
+전체 통합·PostgreSQL·ARM64·browser/IME·release/testnet 검증은 기능 묶음 승격 시 한 번만
+수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): NPC CAST 회복 묶음
 
 `회복`·`원기회복`을 NPC talk의 snapshot-bound CAST reducer에 추가했다. source 대상 분기의

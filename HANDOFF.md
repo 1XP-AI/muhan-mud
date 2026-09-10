@@ -1,5 +1,19 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 회복)
+
+웹 xterm에서 원작처럼 `주문`, `주문 회복`, `주문 원기회복`, `주문 완치`를 직접 입력할
+수 있도록 Go session/transport 경계를 연결했다. `회복`·`원기회복`·`완치`의 source MP,
+습득·직업·일일 한도·주문 재사용 시간, 회복 주사위 순서와 `spell_fail`을 snapshot-bound
+receipt로 고정한다. 성공·실패·게이트 응답은 Supabase/Postgres 권위 상태에 원자 반영하고,
+재생은 RNG와 room fan-out을 반복하지 않는다. 대상 인자를 붙인 주문은 아직 self-only
+경계를 넘지 않도록 receipt 전에 거부한다. 원작 `cast()`의 cooldown 이후 PHIDDN 해제도
+게이트 실패까지 포함해 보존한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1`,
+영향 패키지 `go vet`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·
+release 게이트는 승격 cadence에서 한 번만 실행하며 `src/frp.new` 기존 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 회복 묶음)
 
 `회복`(SVIGOR)과 `원기회복`(SMENDW)을 NPC CAST receipt에 추가했다. 원작 대상 분기의

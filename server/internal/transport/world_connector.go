@@ -993,6 +993,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	useCommand := false
 	changeClassCommand := false
 	readScrollCommand := false
+	castCommand := false
 	propertyInviteCommand := false
 	familyCommand := false
 	familyTalkCommand := false
@@ -1090,6 +1091,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandReadScroll:
 		readScrollCommand = true
 		receipt, err = c.game.owners.ExecuteReadScrollLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadScrollOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandCast:
+		castCommand = true
+		receipt, err = c.game.owners.ExecuteCastLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.CastOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandPropertyInvite:
 		propertyInviteCommand = true
 		receipt, err = c.game.owners.ExecutePropertyInviteLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -1342,6 +1346,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedUseLine) ||
 		errors.Is(err, session.ErrUnsupportedChangeClassLine) ||
 		errors.Is(err, session.ErrUnsupportedReadScrollLine) ||
+		errors.Is(err, session.ErrUnsupportedCastLine) ||
 		errors.Is(err, session.ErrUnsupportedPropertyInviteLine) ||
 		errors.Is(err, session.ErrUnsupportedFamilyLine) ||
 		errors.Is(err, session.ErrUnsupportedFamilyTalkLine) ||
@@ -1499,6 +1504,12 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrReadScrollUnsupported) ||
 		errors.Is(err, world.ErrReadScrollSpellUnavailable) ||
 		errors.Is(err, world.ErrReadScrollRandom) ||
+		errors.Is(err, world.ErrCastActorAbsent) ||
+		errors.Is(err, world.ErrCastSpellUnavailable) ||
+		errors.Is(err, world.ErrCastSpellAmbiguous) ||
+		errors.Is(err, world.ErrCastRandom) ||
+		errors.Is(err, world.ErrCastStaleProposal) ||
+		errors.Is(err, world.ErrCastInvalidProposal) ||
 		errors.Is(err, world.ErrPropertyInvitationsUnmigrated) ||
 		errors.Is(err, world.ErrPropertyInviteActorAbsent) ||
 		errors.Is(err, world.ErrPropertyInviteNotHome) ||
@@ -1841,6 +1852,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			}
 		}
 	}
+	if castCommand && !receipt.Replayed {
+		var result world.CastResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+			if after, ok := c.game.snapshot(ctx); ok {
+				publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
+			}
+		}
+	}
 	if giveCommand && !receipt.Replayed {
 		var result world.GiveResult
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
@@ -2123,6 +2142,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if readScrollCommand {
 		var result world.ScrollResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if castCommand {
+		var result world.CastResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
