@@ -1,5 +1,14 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): NPC CAST 지속 버프 6종
+
+NPC 주제 대화의 `CAST` receipt에 `부양술`, `방열진`, `비상술`, `보마진`, `방한진`, `지방호`를
+추가했다. source spell bit와 대상 flag/timer/MP 차감을 명시적인 spec으로 고정하고,
+`RPMEXT` 및 주문별 지속 시간 차이를 reducer에서 계산한다. RNG는 계획 시 한 번만 소비하고
+결과·room/actor 메시지는 commit receipt에 보존한다. 따라서 retry/replay는 RNG나 출력 fan-out을
+재실행하지 않는다. 전체 spell catalog와 운영 DB·ARM64·브라우저·testnet 인수는 이후 승격
+cadence의 단일 종합 게이트에서 검증한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 정화·수생술 canonical effects
 
 `TalkCatalog`에서 source `SCUREP`/`SRMDIS`/`SRMBLD`에 해당하는 `해독`·`치료`·`개안술`을

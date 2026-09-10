@@ -13,23 +13,42 @@ const (
 	// These are the stable bit positions from src/mtype.h.  The Go NPC body
 	// still carries the source flag bytes, so the talk reducer deliberately
 	// reads those bytes instead of introducing a second flag authority.
-	npcTalkFlag            = 23 // MTALKS
-	npcTalkAggressiveFlag  = 26 // MTLKAG (the source spelling is MTLKAG)
-	npcTalkBlessSpell      = 4  // SBLESS / 성현진
-	npcTalkProtectionSpell = 5  // SPROTE / 수호진
-	npcTalkCurePoisonSpell = 3  // SCUREP / 해독
-	npcTalkDiseaseSpell    = 48 // SRMDIS / 치료
-	npcTalkBlindSpell      = 49 // SRMBLD / 개안술
-	npcTalkWaterSpell      = 44 // SBRWAT / 수생술
-	npcTalkBlessFlag       = 0  // PBLESS
-	npcTalkProtectionFlag  = 8  // PPROTE
-	npcTalkPoisonFlag      = 16 // PPOISN
-	npcTalkDiseaseFlag     = 41 // PDISEA
-	npcTalkBlindFlag       = 42 // PBLIND
-	npcTalkWaterFlag       = 37 // PBRWAT
-	npcTalkProtectionTimer = 1  // LT_PROTE
-	npcTalkBlessTimer      = 2  // LT_BLESS
-	npcTalkRoomMagicExtend = 32 // RPMEXT
+	npcTalkFlag             = 23 // MTALKS
+	npcTalkAggressiveFlag   = 26 // MTLKAG (the source spelling is MTLKAG)
+	npcTalkBlessSpell       = 4  // SBLESS / 성현진
+	npcTalkProtectionSpell  = 5  // SPROTE / 수호진
+	npcTalkCurePoisonSpell  = 3  // SCUREP / 해독
+	npcTalkDiseaseSpell     = 48 // SRMDIS / 치료
+	npcTalkBlindSpell       = 49 // SRMBLD / 개안술
+	npcTalkLevitateSpell    = 21 // SLEVIT / 부양술
+	npcTalkResistFireSpell  = 22 // SRFIRE / 방열진
+	npcTalkFlySpell         = 23 // SFLYSP / 비상술
+	npcTalkResistMagicSpell = 24 // SRMAGI / 보마진
+	npcTalkWaterSpell       = 44 // SBRWAT / 수생술
+	npcTalkResistColdSpell  = 43 // SRCOLD / 방한진
+	npcTalkEarthShieldSpell = 45 // SSSHLD / 지방호
+	npcTalkBlessFlag        = 0  // PBLESS
+	npcTalkProtectionFlag   = 8  // PPROTE
+	npcTalkPoisonFlag       = 16 // PPOISN
+	npcTalkDiseaseFlag      = 41 // PDISEA
+	npcTalkBlindFlag        = 42 // PBLIND
+	npcTalkLevitateFlag     = 25 // PLEVIT
+	npcTalkResistFireFlag   = 30 // PRFIRE
+	npcTalkFlyFlag          = 31 // PFLYSP
+	npcTalkResistMagicFlag  = 32 // PRMAGI
+	npcTalkWaterFlag        = 37 // PBRWAT
+	npcTalkResistColdFlag   = 36 // PRCOLD
+	npcTalkEarthShieldFlag  = 38 // PSSHLD
+	npcTalkProtectionTimer  = 1  // LT_PROTE
+	npcTalkBlessTimer       = 2  // LT_BLESS
+	npcTalkLevitateTimer    = 21 // LT_LEVIT
+	npcTalkResistFireTimer  = 23 // LT_RFIRE
+	npcTalkFlyTimer         = 24 // LT_FLYSP
+	npcTalkResistMagicTimer = 25 // LT_RMAGI
+	npcTalkResistColdTimer  = 29 // LT_RCOLD
+	npcTalkWaterTimer       = 30 // LT_BRWAT
+	npcTalkEarthShieldTimer = 31 // LT_SSHLD
+	npcTalkRoomMagicExtend  = 32 // RPMEXT
 
 	maxNPCTalkTextBytes = 1023
 )
@@ -75,6 +94,11 @@ type npcTalkCastSpec struct {
 	Timer     int
 	Cost      int16
 	ClassGate npcTalkCastClassGate
+	// IntervalBase and RoomExtend preserve spell-specific source intervals.
+	// Most timed utility spells use 1200/+800; levitate uses 2400/+800 and
+	// fly uses 1200/+600. Zero values select the common 1200/+800 defaults.
+	IntervalBase int32
+	RoomExtend   int32
 	// CombatStats is only required for bless/protection, whose target armor or
 	// thaco is recomputed by the source reducer. Other timed body effects keep
 	// the canonical equipment graph out of the cast boundary.
@@ -149,6 +173,48 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkBlindSpell, Flag: npcTalkBlindFlag, Timer: -1, Cost: 12, ClassGate: npcTalkCastClericPaladinOrInvincible,
+		}, nil
+	case "부양술":
+		if len(legacyInfoSpellNames) <= npcTalkLevitateSpell || legacyInfoSpellNames[npcTalkLevitateSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkLevitateSpell, Flag: npcTalkLevitateFlag, Timer: npcTalkLevitateTimer, Cost: 10, IntervalBase: 2400,
+		}, nil
+	case "방열진":
+		if len(legacyInfoSpellNames) <= npcTalkResistFireSpell || legacyInfoSpellNames[npcTalkResistFireSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkResistFireSpell, Flag: npcTalkResistFireFlag, Timer: npcTalkResistFireTimer, Cost: 12,
+		}, nil
+	case "비상술":
+		if len(legacyInfoSpellNames) <= npcTalkFlySpell || legacyInfoSpellNames[npcTalkFlySpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkFlySpell, Flag: npcTalkFlyFlag, Timer: npcTalkFlyTimer, Cost: 15, RoomExtend: 600,
+		}, nil
+	case "보마진":
+		if len(legacyInfoSpellNames) <= npcTalkResistMagicSpell || legacyInfoSpellNames[npcTalkResistMagicSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkResistMagicSpell, Flag: npcTalkResistMagicFlag, Timer: npcTalkResistMagicTimer, Cost: 12,
+		}, nil
+	case "방한진":
+		if len(legacyInfoSpellNames) <= npcTalkResistColdSpell || legacyInfoSpellNames[npcTalkResistColdSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkResistColdSpell, Flag: npcTalkResistColdFlag, Timer: npcTalkResistColdTimer, Cost: 12,
+		}, nil
+	case "지방호":
+		if len(legacyInfoSpellNames) <= npcTalkEarthShieldSpell || legacyInfoSpellNames[npcTalkEarthShieldSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkEarthShieldSpell, Flag: npcTalkEarthShieldFlag, Timer: npcTalkEarthShieldTimer, Cost: 12,
 		}, nil
 	default:
 		// Keep the historical action-level error visible to callers that
@@ -546,18 +612,30 @@ func npcTalkCastRoll(options *NPCTalkEffectOptions) (value int, err error) {
 }
 
 func npcTalkCastIntervalWithClassTerm(caster LegacyMonster, room RoomState, classTerm bool) (int32, error) {
+	return npcTalkCastIntervalForSpec(caster, room, npcTalkCastSpec{ClassIntervalTerm: classTerm})
+}
+
+func npcTalkCastIntervalForSpec(caster LegacyMonster, room RoomState, spec npcTalkCastSpec) (int32, error) {
 	if caster.Stats[3] > 63 {
 		return 0, fmt.Errorf("NPC talk cast intelligence outside legacy table")
 	}
-	interval := int64(1200) + int64(legacyStatBonus[caster.Stats[3]])*600
-	if interval < 300 {
+	base := spec.IntervalBase
+	if base == 0 {
+		base = 1200
+	}
+	interval := int64(base) + int64(legacyStatBonus[caster.Stats[3]])*600
+	if spec.IntervalBase == 0 && interval < 300 {
 		interval = 300
 	}
-	if classTerm && (caster.Class == clericClass || caster.Class == paladinClass) {
+	if spec.ClassIntervalTerm && (caster.Class == clericClass || caster.Class == paladinClass) {
 		interval += 60 * int64((int(caster.Level)+3)/4)
 	}
 	if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
-		interval += 800
+		extend := spec.RoomExtend
+		if extend == 0 {
+			extend = 800
+		}
+		interval += int64(extend)
 	}
 	if interval < 0 || interval > int64(^uint32(0)>>1) {
 		return 0, fmt.Errorf("NPC talk cast interval outside int32")
@@ -575,6 +653,9 @@ func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, inter
 		body.Flags[spec.Flag/8] &^= 1 << (spec.Flag % 8)
 		target.Body = body
 		return target, nil
+	}
+	if spec.Timer >= len(target.Body.Timers) || spec.Flag >= uint(len(target.Body.Flags)*8) {
+		return PlayerState{}, fmt.Errorf("%w: spell timer or flag outside legacy state", ErrNPCTalkCastSpellUnavailable)
 	}
 	if target.Items == nil || len(target.Body.Inventory) != 0 {
 		if !spec.CombatStats {
@@ -646,6 +727,24 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkWaterFlag:
 		roomText = fmt.Sprintf("\n%s%s %s에게 수생부를 먹이며 주문을 외웠습니다.\n그의 가슴이 평소보다 두배나 커져 물속에서 오랫동안\n견딜수 있을 것 같습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신에게 수생부를 먹이며 주문을 외웠습니다.\n당신의 가슴이 평소보다 두배나 커져 물속에서 오랫동안\n견딜 수 있을 것 같습니다.\n", npc.Name, npcSubject)
+	case npcTalkLevitateFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 부양부적을 붙히며 주문을 외웁니다.\n주문을 외우자 그의 몸이 살짝 떠오릅니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 부양부적을 붙히며 주문을 외웁니다.\n당신의 몸이 살짝 떠오르기 시작 합니다.\n", npc.Name, npcSubject)
+	case npcTalkResistFireFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 방열부적을 붙이며 주문을 외웁니다.\n오행중 수의 수호령들이 나타나 그의 주위에 진을 형성합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 방열부적을 붙이며 주문을 외웁니다.\n오행중 수의 수호령들이 나타나 당신 주위에 진을 형성합니다.\n", npc.Name, npcSubject)
+	case npcTalkFlyFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 비상부를 붙히며 주문을 외웠습니다.\n그의 몸이 하늘로 떠오르며 날기 시작합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 비상부를 붙히며 주문을 외웠습니다.\n당신의 몸이 하늘로 떠오르며 날기 시작합니다.\n", npc.Name, npcSubject)
+	case npcTalkResistMagicFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 몸에 보마부를 그리며 주문을 외웠습니다.\n갑자기 금의 수호령들이 올라와 보마진을 형성합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 보마부를 그리며 주문을 외웠습니다.\n금의 수호령들이 올라와 보마진을 형성합니다.\n", npc.Name, npcSubject)
+	case npcTalkResistColdFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 입에 불타오르는 부적을 집어넣으며 방한진 주문을 외웁니다.\n그의 주위에 오행의 수호령들이 진을 형성합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 입에 불타오르는 부적을 집어넣으며 방한진 주문을 외웁니다.\n당신의 주위에 오행의 수호령들이 진을 형성합니다.\n", npc.Name, npcSubject)
+	case npcTalkEarthShieldFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 토흙을 뿌리며 지방호 주문을 외웁니다.\n땅에서 오행중 토의 수호령들이 올라와 그의 주위에 진을 형성합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 토흙을 뿌리며 지방호 주문을 외웁니다.\n땅에서 오행중 토의 수호령들이 올라와 당신 주위에 진을 형성합니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
@@ -741,7 +840,7 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
-		interval, err = npcTalkCastIntervalWithClassTerm(npc.Body, room, spec.ClassIntervalTerm)
+		interval, err = npcTalkCastIntervalForSpec(npc.Body, room, spec)
 		if err != nil {
 			return err
 		}
@@ -890,7 +989,7 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
-		interval, err = npcTalkCastIntervalWithClassTerm(npc.Body, room, spec.ClassIntervalTerm)
+		interval, err = npcTalkCastIntervalForSpec(npc.Body, room, spec)
 		if err != nil {
 			return npcTalkCastSpec{}, err
 		}

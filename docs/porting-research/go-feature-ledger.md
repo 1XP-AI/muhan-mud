@@ -1,5 +1,19 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` 지속 버프 6종 — canonical 상태 전이
+
+`command8.c:talk_action`의 비공격 주문 `부양술`(SLEVIT/PLEVIT/LT_LEVIT), `방열진`
+(SRFIRE/PRFIRE/LT_RFIRE), `비상술`(SFLYSP/PFLYSP/LT_FLYSP), `보마진`
+(SRMAGI/PRMAGI/LT_RMAGI), `방한진`(SRCOLD/PRCOLD/LT_RCOLD), `지방호`
+(SSSHLD/PSSHLD/LT_SSHLD)를 동일한 snapshot-bound receipt로 연결했다. 주문별 MP 비용과
+`spell_fail` RNG 1회를 기록하고 성공 시 대상 flag/timer를 원자 적용한다. 지속 시간은
+원작의 부양술 2400초, 공통 1200초와 `RPMEXT` 가산(비상술 +600, 나머지 +800)을 보존하며,
+대상 inventory/equipment가 없는 효과 주문도 허용한다. room/actor 투영은 receipt에만 저장해
+재생 시 재방송하지 않는다.
+
+검증: world/session/transport NPCTalk focused race, 영향 패키지 vet, diff check PASS.
+전체 spell parity·PostgreSQL·ARM64·browser·release 검사는 승격 cadence에서만 수행한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 정화·수생술 — canonical 상태 전이
 
 `command8.c:talk_action`의 비공격 주문 중 `해독`(SCUREP/PPOISN), `치료`(SRMDIS/PDISEA),

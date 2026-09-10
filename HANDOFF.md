@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 지속 버프 6종)
+
+`command8.c:talk_action`의 비공격 `CAST` 중 `부양술`, `방열진`, `비상술`, `보마진`,
+`방한진`, `지방호`를 기존 receipt 경계에 연결했다. 각 주문의 source spell bit,
+player effect flag, timer slot, MP 비용을 canonical 상태 전이로 고정했고, NPC 지식·도력·
+적대 관계와 `spell_fail` 1회 RNG를 계획 단계에서 검증한다. 지속 시간은 원작의 주문별
+기본값과 `RPMEXT` 방 강화값(비상술 +600, 나머지 +800, 부양술 기본 2400)을 유지한다.
+대상 inventory/equipment가 없는 이관 캐릭터도 효과 주문을 사용할 수 있으며, 성공 상태와
+room/actor 출력은 commit receipt로만 재생한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release 게이트는 반복하지 않고 승격 cadence에서 실행한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 정화·수생술)
 
 talk catalog의 비공격 `해독·치료·개안술`과 지속 버프 `수생술`을 canonical NPC 대화
