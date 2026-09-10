@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` 감지 계열 3종 — canonical 상태 전이
+
+`은둔감지술`(SDINVI/PDINVI/LT_DINVI), `주문감지술`(SDMAGI/PDMAGI/LT_DMAGI),
+`선악감지`(SKNOWA/PKNOWA/LT_KNOWA)를 기존 NPC talk receipt 경계에 연결했다. 원작의
+NPC spell bit·MP·`spell_fail` RNG를 검증하고, 감지 주문의 지능/직업 보정과 `RPMEXT`
+가산을 source slot에 맞게 계산한다. 성공 시 actor flag/timer와 NPC MP를 원자 반영하고,
+실패는 NPC MP만 차감한다. room/actor 출력은 receipt에 고정해 replay에서 재방송하지 않는다.
+
+검증: `go test -race ./internal/world -run 'NPCTalkCast(Detection|TimedUtility)' -count=1`
+PASS. 전체 spell parity·PostgreSQL·ARM64·browser·release 게이트는 승격 cadence에서만 수행한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 지속 버프 6종 — canonical 상태 전이
 
 `command8.c:talk_action`의 비공격 주문 `부양술`(SLEVIT/PLEVIT/LT_LEVIT), `방열진`

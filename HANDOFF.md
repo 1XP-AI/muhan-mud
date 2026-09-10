@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 감지 3종)
+
+`은둔감지술`, `주문감지술`, `선악감지`를 기존 NPC CAST receipt 전이에 연결했다. 각각
+PDINVI/PDMAGI/PKNOWA와 원작 timer slot을 사용하며, NPC spell bit·MP·`spell_fail`을
+검증한다. 감지 계열의 Mage 보정과 방 강화값(+600 또는 +800)을 보존하고, 성공 시 actor
+상태와 NPC MP를 함께 반영한다. 실패 시 actor는 변하지 않고 MP만 차감되며, 출력은 receipt
+재생에서 중복 fan-out하지 않는다.
+
+검증: `go test -race ./internal/world -run 'NPCTalkCast(Detection|TimedUtility)' -count=1`
+PASS. 이번 기능에서는 전체 통합·ARM64·PostgreSQL·브라우저·release 게이트를 반복하지 않았다.
+`src/frp.new`는 기존 사용자 변경으로 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 지속 버프 6종)
 
 `command8.c:talk_action`의 비공격 `CAST` 중 `부양술`, `방열진`, `비상술`, `보마진`,

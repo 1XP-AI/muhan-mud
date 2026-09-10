@@ -1,5 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): NPC CAST 감지 계열 3종
+
+`은둔감지술`, `주문감지술`, `선악감지`를 NPC talk의 snapshot-bound CAST reducer에
+추가했다. source spell/flag/timer/MP 계약과 감지 주문별 Mage 보정·`RPMEXT` 가산을
+고정하고, 성공 상태·실패 비용·room/actor projection을 receipt에 저장한다. 이 묶음은
+world focused race 테스트만 실행했으며, 반복적인 전체 PG/ARM64/browser/release 검사는
+승격 cadence에서 한 번만 수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): NPC CAST 지속 버프 6종
 
 NPC 주제 대화의 `CAST` receipt에 `부양술`, `방열진`, `비상술`, `보마진`, `방한진`, `지방호`를

@@ -13,42 +13,52 @@ const (
 	// These are the stable bit positions from src/mtype.h.  The Go NPC body
 	// still carries the source flag bytes, so the talk reducer deliberately
 	// reads those bytes instead of introducing a second flag authority.
-	npcTalkFlag             = 23 // MTALKS
-	npcTalkAggressiveFlag   = 26 // MTLKAG (the source spelling is MTLKAG)
-	npcTalkBlessSpell       = 4  // SBLESS / 성현진
-	npcTalkProtectionSpell  = 5  // SPROTE / 수호진
-	npcTalkCurePoisonSpell  = 3  // SCUREP / 해독
-	npcTalkDiseaseSpell     = 48 // SRMDIS / 치료
-	npcTalkBlindSpell       = 49 // SRMBLD / 개안술
-	npcTalkLevitateSpell    = 21 // SLEVIT / 부양술
-	npcTalkResistFireSpell  = 22 // SRFIRE / 방열진
-	npcTalkFlySpell         = 23 // SFLYSP / 비상술
-	npcTalkResistMagicSpell = 24 // SRMAGI / 보마진
-	npcTalkWaterSpell       = 44 // SBRWAT / 수생술
-	npcTalkResistColdSpell  = 43 // SRCOLD / 방한진
-	npcTalkEarthShieldSpell = 45 // SSSHLD / 지방호
-	npcTalkBlessFlag        = 0  // PBLESS
-	npcTalkProtectionFlag   = 8  // PPROTE
-	npcTalkPoisonFlag       = 16 // PPOISN
-	npcTalkDiseaseFlag      = 41 // PDISEA
-	npcTalkBlindFlag        = 42 // PBLIND
-	npcTalkLevitateFlag     = 25 // PLEVIT
-	npcTalkResistFireFlag   = 30 // PRFIRE
-	npcTalkFlyFlag          = 31 // PFLYSP
-	npcTalkResistMagicFlag  = 32 // PRMAGI
-	npcTalkWaterFlag        = 37 // PBRWAT
-	npcTalkResistColdFlag   = 36 // PRCOLD
-	npcTalkEarthShieldFlag  = 38 // PSSHLD
-	npcTalkProtectionTimer  = 1  // LT_PROTE
-	npcTalkBlessTimer       = 2  // LT_BLESS
-	npcTalkLevitateTimer    = 21 // LT_LEVIT
-	npcTalkResistFireTimer  = 23 // LT_RFIRE
-	npcTalkFlyTimer         = 24 // LT_FLYSP
-	npcTalkResistMagicTimer = 25 // LT_RMAGI
-	npcTalkResistColdTimer  = 29 // LT_RCOLD
-	npcTalkWaterTimer       = 30 // LT_BRWAT
-	npcTalkEarthShieldTimer = 31 // LT_SSHLD
-	npcTalkRoomMagicExtend  = 32 // RPMEXT
+	npcTalkFlag                 = 23 // MTALKS
+	npcTalkAggressiveFlag       = 26 // MTLKAG (the source spelling is MTLKAG)
+	npcTalkBlessSpell           = 4  // SBLESS / 성현진
+	npcTalkProtectionSpell      = 5  // SPROTE / 수호진
+	npcTalkCurePoisonSpell      = 3  // SCUREP / 해독
+	npcTalkDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
+	npcTalkDetectMagicSpell     = 10 // SDMAGI / 주문감지술
+	npcTalkDiseaseSpell         = 48 // SRMDIS / 치료
+	npcTalkBlindSpell           = 49 // SRMBLD / 개안술
+	npcTalkLevitateSpell        = 21 // SLEVIT / 부양술
+	npcTalkResistFireSpell      = 22 // SRFIRE / 방열진
+	npcTalkFlySpell             = 23 // SFLYSP / 비상술
+	npcTalkResistMagicSpell     = 24 // SRMAGI / 보마진
+	npcTalkKnowAlignmentSpell   = 41 // SKNOWA / 선악감지
+	npcTalkWaterSpell           = 44 // SBRWAT / 수생술
+	npcTalkResistColdSpell      = 43 // SRCOLD / 방한진
+	npcTalkEarthShieldSpell     = 45 // SSSHLD / 지방호
+	npcTalkBlessFlag            = 0  // PBLESS
+	npcTalkProtectionFlag       = 8  // PPROTE
+	npcTalkDetectMagicFlag      = 20 // PDMAGI
+	npcTalkDetectInvisibleFlag  = 21 // PDINVI
+	npcTalkPoisonFlag           = 16 // PPOISN
+	npcTalkDiseaseFlag          = 41 // PDISEA
+	npcTalkBlindFlag            = 42 // PBLIND
+	npcTalkLevitateFlag         = 25 // PLEVIT
+	npcTalkResistFireFlag       = 30 // PRFIRE
+	npcTalkFlyFlag              = 31 // PFLYSP
+	npcTalkResistMagicFlag      = 32 // PRMAGI
+	npcTalkKnowAlignmentFlag    = 33 // PKNOWA
+	npcTalkWaterFlag            = 37 // PBRWAT
+	npcTalkResistColdFlag       = 36 // PRCOLD
+	npcTalkEarthShieldFlag      = 38 // PSSHLD
+	npcTalkProtectionTimer      = 1  // LT_PROTE
+	npcTalkBlessTimer           = 2  // LT_BLESS
+	npcTalkDetectInvisibleTimer = 17 // LT_DINVI
+	npcTalkDetectMagicTimer     = 18 // LT_DMAGI
+	npcTalkKnowAlignmentTimer   = 27 // LT_KNOWA
+	npcTalkLevitateTimer        = 21 // LT_LEVIT
+	npcTalkResistFireTimer      = 23 // LT_RFIRE
+	npcTalkFlyTimer             = 24 // LT_FLYSP
+	npcTalkResistMagicTimer     = 25 // LT_RMAGI
+	npcTalkResistColdTimer      = 29 // LT_RCOLD
+	npcTalkWaterTimer           = 30 // LT_BRWAT
+	npcTalkEarthShieldTimer     = 31 // LT_SSHLD
+	npcTalkRoomMagicExtend      = 32 // RPMEXT
+	npcTalkMageClass            = 5  // MAGE
 
 	maxNPCTalkTextBytes = 1023
 )
@@ -104,6 +114,7 @@ type npcTalkCastSpec struct {
 	// the canonical equipment graph out of the cast boundary.
 	CombatStats       bool
 	ClassIntervalTerm bool
+	ClassIntervalMage bool
 }
 
 type npcTalkCastClassGate uint8
@@ -153,6 +164,20 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
 		}, nil
+	case "은둔감지술":
+		if len(legacyInfoSpellNames) <= npcTalkDetectInvisibleSpell || legacyInfoSpellNames[npcTalkDetectInvisibleSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkDetectInvisibleSpell, Flag: npcTalkDetectInvisibleFlag, Timer: npcTalkDetectInvisibleTimer, Cost: 10, RoomExtend: 600, ClassIntervalMage: true,
+		}, nil
+	case "주문감지술":
+		if len(legacyInfoSpellNames) <= npcTalkDetectMagicSpell || legacyInfoSpellNames[npcTalkDetectMagicSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkDetectMagicSpell, Flag: npcTalkDetectMagicFlag, Timer: npcTalkDetectMagicTimer, Cost: 10, RoomExtend: 600, ClassIntervalMage: true,
+		}, nil
 	case "수생술":
 		if len(legacyInfoSpellNames) <= npcTalkWaterSpell || legacyInfoSpellNames[npcTalkWaterSpell] != name {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
@@ -201,6 +226,13 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkResistMagicSpell, Flag: npcTalkResistMagicFlag, Timer: npcTalkResistMagicTimer, Cost: 12,
+		}, nil
+	case "선악감지":
+		if len(legacyInfoSpellNames) <= npcTalkKnowAlignmentSpell || legacyInfoSpellNames[npcTalkKnowAlignmentSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkKnowAlignmentSpell, Flag: npcTalkKnowAlignmentFlag, Timer: npcTalkKnowAlignmentTimer, Cost: 6,
 		}, nil
 	case "방한진":
 		if len(legacyInfoSpellNames) <= npcTalkResistColdSpell || legacyInfoSpellNames[npcTalkResistColdSpell] != name {
@@ -630,6 +662,9 @@ func npcTalkCastIntervalForSpec(caster LegacyMonster, room RoomState, spec npcTa
 	if spec.ClassIntervalTerm && (caster.Class == clericClass || caster.Class == paladinClass) {
 		interval += 60 * int64((int(caster.Level)+3)/4)
 	}
+	if spec.ClassIntervalMage && caster.Class == npcTalkMageClass {
+		interval += 60 * int64((int(caster.Level)+3)/4)
+	}
 	if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
 		extend := spec.RoomExtend
 		if extend == 0 {
@@ -745,6 +780,15 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkEarthShieldFlag:
 		roomText = fmt.Sprintf("\n%s%s %s에게 토흙을 뿌리며 지방호 주문을 외웁니다.\n땅에서 오행중 토의 수호령들이 올라와 그의 주위에 진을 형성합니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신에게 토흙을 뿌리며 지방호 주문을 외웁니다.\n땅에서 오행중 토의 수호령들이 올라와 당신 주위에 진을 형성합니다.\n", npc.Name, npcSubject)
+	case npcTalkDetectInvisibleFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 인당혈을 찍으며 은둔감지술을 외웁니다.\n그의 눈에서 푸른광안이 떠오릅니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 인당혈을 찍으며 은둔감지술을 외웁니다.\n당신의 눈에서 푸른광안이 떠오릅니다.\n", npc.Name, npcSubject)
+	case npcTalkDetectMagicFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 백회혈을 찍으며 주문감지술을 외웁니다.\n그의 눈에서 은빛광안이 떠오릅니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 백회혈을 찍으며 주문감지술을 외웁니다.\n당신의 눈에서 은빛광안이 떠오릅니다.\n", npc.Name, npcSubject)
+	case npcTalkKnowAlignmentFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 선악감지 주문을 외웁니다.\n그는 선악을 감지할 수 있는 식별력이 높아졌습니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 선악감지 주문을 외웁니다.\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
