@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` 회복 묶음 — canonical HP 전이
+
+`회복`(SVIGOR)·`원기회복`(SMENDW)의 대상 플레이어 분기를 NPC talk reducer에 연결했다.
+원작 주문의 MP 비용(2/4), INT·신앙 보너스, 클레릭/팔라딘 레벨 보너스, 1d6/2d6 및
+`RPMEXT` 추가 주사위를 source 순서로 계산한다. `회복`은 Barbarian/Fighter, `원기회복`은
+Assassin/Barbarian/Fighter만 `spell_fail`을 호출하며, 그 외 직업은 실패 RNG 없이 진행한다.
+모든 효과 주사위와 HP delta는 proposal/result에 보존하고 성공·실패·재생을 원자 검증한다.
+
+검증: world NPC talk focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity·
+PostgreSQL·ARM64·browser·release는 승격 cadence에서만 실행한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 완치 — canonical HP 전이
 
 `완치`(SFHEAL)를 NPC talk receipt 경계에 연결했다. 원작의 클레릭·팔라딘·상위 직업

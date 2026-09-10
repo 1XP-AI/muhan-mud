@@ -1,5 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): NPC CAST 회복 묶음
+
+`회복`·`원기회복`을 NPC talk의 snapshot-bound CAST reducer에 추가했다. source 대상 분기의
+회복량·직업별 `spell_fail` 조건·`RPMEXT` 주사위 순서를 명시하고, 계획 시 효과 RNG와 HP
+delta를 receipt에 고정한다. 성공은 대상 HP와 NPC MP를 원자 반영하고, 실패·재생에서는
+효과 RNG를 재호출하지 않는다. 이 레인은 world focused race/vet/diff만 실행하며 전체
+호환성 게이트는 조립 승격 cadence에서 한 번만 수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): NPC CAST 완치
 
 `완치`(SFHEAL)를 NPC talk의 snapshot-bound CAST reducer에 추가했다. source 직업 게이트와

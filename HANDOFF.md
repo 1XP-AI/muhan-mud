@@ -1,5 +1,16 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 회복 묶음)
+
+`회복`(SVIGOR)과 `원기회복`(SMENDW)을 NPC CAST receipt에 추가했다. 원작 대상 분기의
+INT/신앙 보너스, 직업별 회복 주사위, `RPMEXT` 방 보너스와 Barbarian/Fighter/Assassin
+실패 직업 규칙을 유지한다. 계획 단계에서 효과 RNG를 순서대로 receipt에 고정하고 성공 시
+HP delta·NPC MP를 원자 반영하며, 실패·재생에서는 회복 난수를 다시 소비하지 않는다.
+
+검증: `go test -race ./internal/world -run 'NPCTalk' -count=1`, `go vet ./internal/world`,
+`git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release 게이트는 승격
+cadence에서만 실행하고 `src/frp.new` 기존 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` 완치)
 
 `완치`(SFHEAL)를 NPC CAST receipt 전이에 추가했다. 원작의 클레릭·팔라딘·상위 직업

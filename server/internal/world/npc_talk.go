@@ -18,7 +18,9 @@ const (
 	npcTalkBlessSpell           = 4  // SBLESS / 성현진
 	npcTalkProtectionSpell      = 5  // SPROTE / 수호진
 	npcTalkCurePoisonSpell      = 3  // SCUREP / 해독
+	npcTalkVigorSpell           = 0  // SVIGOR / 회복
 	npcTalkHealSpell            = 19 // SFHEAL / 완치
+	npcTalkMendSpell            = 18 // SMENDW / 원기회복
 	npcTalkInvisibilitySpell    = 7  // SINVIS / 은둔법
 	npcTalkDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
 	npcTalkDetectMagicSpell     = 10 // SDMAGI / 주문감지술
@@ -63,6 +65,9 @@ const (
 	npcTalkEarthShieldTimer     = 31 // LT_SSHLD
 	npcTalkRoomMagicExtend      = 32 // RPMEXT
 	npcTalkMageClass            = 5  // MAGE
+	npcTalkAssassinClass        = 1  // ASSASSIN
+	npcTalkBarbarianClass       = 2  // BARBARIAN
+	npcTalkFighterClass         = 4  // FIGHTER
 
 	maxNPCTalkTextBytes = 1023
 )
@@ -116,12 +121,22 @@ type npcTalkCastSpec struct {
 	// CombatStats is only required for bless/protection, whose target armor or
 	// thaco is recomputed by the source reducer. Other timed body effects keep
 	// the canonical equipment graph out of the cast boundary.
-	CombatStats       bool
-	ClassIntervalTerm bool
-	ClassIntervalMage bool
-	TargetFullHeal    bool
-	SkipSpellFail     bool
+	CombatStats        bool
+	ClassIntervalTerm  bool
+	ClassIntervalMage  bool
+	TargetFullHeal     bool
+	SkipSpellFail      bool
+	HealKind           npcTalkCastHealKind
+	SpellFailClassMask uint16
 }
+
+type npcTalkCastHealKind uint8
+
+const (
+	npcTalkCastNoHeal npcTalkCastHealKind = iota
+	npcTalkCastVigorHeal
+	npcTalkCastMendHeal
+)
 
 type npcTalkCastClassGate uint8
 
@@ -149,6 +164,14 @@ func npcTalkCastClassAllowed(class byte, gate npcTalkCastClassGate) bool {
 
 func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 	switch name {
+	case "회복":
+		if len(legacyInfoSpellNames) <= npcTalkVigorSpell || legacyInfoSpellNames[npcTalkVigorSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkVigorSpell, Timer: -2, Cost: 2, HealKind: npcTalkCastVigorHeal,
+			SpellFailClassMask: 1<<npcTalkBarbarianClass | 1<<npcTalkFighterClass,
+		}, nil
 	case "성현진":
 		if len(legacyInfoSpellNames) <= npcTalkBlessSpell || legacyInfoSpellNames[npcTalkBlessSpell] != name {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
@@ -169,6 +192,14 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
+		}, nil
+	case "원기회복":
+		if len(legacyInfoSpellNames) <= npcTalkMendSpell || legacyInfoSpellNames[npcTalkMendSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkMendSpell, Timer: -2, Cost: 4, HealKind: npcTalkCastMendHeal,
+			SpellFailClassMask: 1<<npcTalkAssassinClass | 1<<npcTalkBarbarianClass | 1<<npcTalkFighterClass,
 		}, nil
 	case "완치":
 		if len(legacyInfoSpellNames) <= npcTalkHealSpell || legacyInfoSpellNames[npcTalkHealSpell] != name {
@@ -326,6 +357,8 @@ type NPCTalkResult struct {
 	SpellRoll        int           `json:"spell_roll,omitempty"`
 	SpellChance      int           `json:"spell_chance,omitempty"`
 	SpellInterval    int32         `json:"spell_interval,omitempty"`
+	SpellEffectRolls []int         `json:"spell_effect_rolls,omitempty"`
+	SpellHPDelta     int32         `json:"spell_hp_delta,omitempty"`
 	GiveObjectID     int16         `json:"give_object_id,omitempty"`
 	GiveItemID       string        `json:"give_item_id,omitempty"`
 	GiveItemName     string        `json:"give_item_name,omitempty"`
@@ -378,6 +411,8 @@ type NPCTalkProposal struct {
 	CastRoll          int
 	CastChance        int
 	CastInterval      int32
+	CastEffectRolls   []int
+	CastHPDelta       int32
 	GiveObjectID      int16
 	GiveItemID        string
 	GiveItemName      string
@@ -702,10 +737,213 @@ func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
 	return npcTalkCastIntervalWithClassTerm(caster, room, true)
 }
 
-func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, interval int32) (PlayerState, error) {
+func npcTalkCastSpellFailRequired(spec npcTalkCastSpec, class byte) bool {
+	if spec.SkipSpellFail {
+		return false
+	}
+	if spec.SpellFailClassMask == 0 || class >= 16 {
+		return spec.SpellFailClassMask == 0
+	}
+	return spec.SpellFailClassMask&(1<<class) != 0
+}
+
+func npcTalkCastEffectRoll(options *NPCTalkEffectOptions, low, high int) (value int, err error) {
+	if options == nil || options.Roll == nil {
+		return 0, ErrNPCTalkCastRandomUnavailable
+	}
+	if low < 1 || high < low {
+		return 0, fmt.Errorf("NPC talk cast effect bounds outside legacy range")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			value = 0
+			err = fmt.Errorf("%w: effect random source panicked: %v", ErrNPCTalkCastRandomUnavailable, recovered)
+		}
+	}()
+	value = options.Roll(low, high)
+	if value < low || value > high {
+		return 0, fmt.Errorf("NPC talk cast effect random value outside %d..%d", low, high)
+	}
+	return value, nil
+}
+
+func npcTalkCastHealingRollBounds(caster LegacyMonster, spec npcTalkCastSpec, room RoomState) ([][2]int, error) {
+	if caster.Stats[3] > 63 || caster.Stats[4] > 63 {
+		return nil, fmt.Errorf("NPC talk cast healing stat outside legacy table")
+	}
+	levelBand := (int(caster.Level) + 3) / 4
+	bounds := make([][2]int, 0, 5)
+	appendRoll := func(low, high int) {
+		bounds = append(bounds, [2]int{low, high})
+	}
+	switch spec.HealKind {
+	case npcTalkCastVigorHeal:
+		if caster.Class == clericClass {
+			appendRoll(1, 1+levelBand/2)
+		}
+		if caster.Class == paladinClass {
+			appendRoll(1, 1+levelBand/4)
+		}
+		appendRoll(1, 6)
+		if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+			appendRoll(1, 3)
+		}
+	case npcTalkCastMendHeal:
+		if caster.Class == clericClass {
+			appendRoll(1, 1+levelBand/2)
+		}
+		if caster.Class == paladinClass {
+			appendRoll(1, 1+levelBand/3)
+		}
+		appendRoll(1, 6)
+		appendRoll(1, 6)
+		if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+			appendRoll(1, 6)
+		}
+	default:
+		return nil, fmt.Errorf("NPC talk cast healing kind unavailable")
+	}
+	return bounds, nil
+}
+
+func npcTalkCastHealingRolls(caster LegacyMonster, spec npcTalkCastSpec, room RoomState, options *NPCTalkEffectOptions) ([]int, error) {
+	bounds, err := npcTalkCastHealingRollBounds(caster, spec, room)
+	if err != nil {
+		return nil, err
+	}
+	rolls := make([]int, 0, len(bounds))
+	for _, bound := range bounds {
+		value, rollErr := npcTalkCastEffectRoll(options, bound[0], bound[1])
+		if rollErr != nil {
+			return nil, rollErr
+		}
+		rolls = append(rolls, value)
+	}
+	return rolls, nil
+}
+
+func npcTalkCastHealingAmount(caster LegacyMonster, spec npcTalkCastSpec, room RoomState, rolls []int) (int32, error) {
+	bounds, err := npcTalkCastHealingRollBounds(caster, spec, room)
+	if err != nil {
+		return 0, err
+	}
+	if len(rolls) != len(bounds) {
+		return 0, fmt.Errorf("NPC talk cast healing roll count changed")
+	}
+	cursor := 0
+	nextRoll := func() (int64, error) {
+		bound := bounds[cursor]
+		value := rolls[cursor]
+		cursor++
+		if value < bound[0] || value > bound[1] {
+			return 0, fmt.Errorf("NPC talk cast healing roll outside %d..%d", bound[0], bound[1])
+		}
+		return int64(value), nil
+	}
+	intBonus := legacyStatBonus[caster.Stats[3]]
+	pietyBonus := legacyStatBonus[caster.Stats[4]]
+	heal := int64(intBonus)
+	if pietyBonus > intBonus {
+		heal = int64(pietyBonus)
+	}
+	levelBand := (int(caster.Level) + 3) / 4
+	switch spec.HealKind {
+	case npcTalkCastVigorHeal:
+		if caster.Class == clericClass {
+			heal += int64(levelBand)
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+		if caster.Class == paladinClass {
+			heal += int64(levelBand / 2)
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+		value, rollErr := nextRoll()
+		if rollErr != nil {
+			return 0, rollErr
+		}
+		heal += value
+		if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+			value, rollErr = nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+	case npcTalkCastMendHeal:
+		if caster.Class == clericClass {
+			heal += int64(levelBand * 2)
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+		if caster.Class == paladinClass {
+			heal += int64(levelBand)
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+		for i := 0; i < 2; i++ {
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value
+		}
+		if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+			value, rollErr := nextRoll()
+			if rollErr != nil {
+				return 0, rollErr
+			}
+			heal += value + 1
+		}
+	default:
+		return 0, fmt.Errorf("NPC talk cast healing kind unavailable")
+	}
+	if cursor != len(bounds) {
+		return 0, fmt.Errorf("NPC talk cast healing roll order changed")
+	}
+	if heal < 1 {
+		heal = 1
+	}
+	if heal > int64(^uint32(0)>>1) {
+		return 0, fmt.Errorf("NPC talk cast healing amount outside int32")
+	}
+	return int32(heal), nil
+}
+
+func npcTalkCastTargetAfter(target PlayerState, caster LegacyMonster, room RoomState, spec npcTalkCastSpec, now, interval int32, effectRolls []int) (PlayerState, error) {
 	if spec.TargetFullHeal {
 		body := target.Body
 		body.HPCurrent = body.HPMax
+		target.Body = body
+		return target, nil
+	}
+	if spec.HealKind != npcTalkCastNoHeal {
+		heal, err := npcTalkCastHealingAmount(caster, spec, room, effectRolls)
+		if err != nil {
+			return PlayerState{}, err
+		}
+		value := int64(target.Body.HPCurrent) + int64(heal)
+		if value > int64(target.Body.HPMax) {
+			value = int64(target.Body.HPMax)
+		}
+		if value < -32768 || value > 32767 {
+			return PlayerState{}, fmt.Errorf("NPC talk cast healing target HP outside int16")
+		}
+		body := target.Body
+		body.HPCurrent = int16(value)
 		target.Body = body
 		return target, nil
 	}
@@ -775,6 +1013,24 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	if spec.Spell == npcTalkHealSpell {
 		roomText = fmt.Sprintf("\n%s%s %s에게 완치부적을 먹이며 주문을 외웁니다.\n갑자기 그의 몸에서 심한 진동이 일어나면서 체력이 회복되는 것이 느껴집니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신에게 완치부적을 먹이며 주문을 외웁니다.\n갑자기 당신의 몸에서 심한 진동이 일어나면서 체력이 회복되는 것이 느껴집니다.\n", npc.Name, npcSubject)
+		event.RoomText += roomText
+		event.ActorText += actorText
+		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
+		event.ActorMessages = append(event.ActorMessages, actorText)
+		return
+	}
+	if spec.Spell == npcTalkVigorSpell {
+		roomText = fmt.Sprintf("\n%s%s %s에게 회복을 기원하는 주문을 외웁니다.\n빛의 정기가 그의 몸으로 스며들고 있습니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 회복을 기원하는 주문을 외웁니다.\n빛의 정기가 당신의 몸으로 스며들고 있습니다.\n", npc.Name, npcSubject)
+		event.RoomText += roomText
+		event.ActorText += actorText
+		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
+		event.ActorMessages = append(event.ActorMessages, actorText)
+		return
+	}
+	if spec.Spell == npcTalkMendSpell {
+		roomText = fmt.Sprintf("\n%s%s %s에게 원기회복의 주문을 겁니다.\n그에게 뜨거운 지기의 기운이 흘러가는 것이 느껴집니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 원기회복의 주문을 겁니다.\n당신의 몸안에서 지기의 뜨거운 기운과 체력이 많이 향상되는 것이 느껴집니다.\n", npc.Name, npcSubject)
 		event.RoomText += roomText
 		event.ActorText += actorText
 		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
@@ -917,7 +1173,8 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 		// bit gate leaves mpcur unchanged after talk_action.
 		return nil
 	}
-	if !spec.SkipSpellFail {
+	spellFailRequired := npcTalkCastSpellFailRequired(spec, npc.Body.Class)
+	if spellFailRequired {
 		if _, err := npcTalkSpellChance(npc.Body); err != nil {
 			return err
 		}
@@ -929,18 +1186,25 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 			return err
 		}
 	}
+	now := int32(0)
+	if options != nil {
+		now = options.Now
+	}
 	if spec.Timer >= 0 {
-		proposal.CastNow = options.Now
+		proposal.CastNow = now
 	}
 	// Validate the full target/equipment boundary before consuming a random
 	// draw. A cast that cannot recompute canonical combat stats must not produce
 	// an otherwise unreplayable attempt.
-	preview, err := npcTalkCastTargetAfter(actor, spec, options.Now, interval)
-	if err != nil {
-		return err
+	var preview PlayerState
+	if spec.HealKind == npcTalkCastNoHeal {
+		preview, err = npcTalkCastTargetAfter(actor, npc.Body, room, spec, now, interval, nil)
+		if err != nil {
+			return err
+		}
 	}
 	roll, chance := 0, 100
-	if !spec.SkipSpellFail {
+	if spellFailRequired {
 		roll, err = npcTalkCastRoll(options)
 		if err != nil {
 			return err
@@ -955,11 +1219,22 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	proposal.CastChance = chance
 	proposal.CastInterval = interval
 	proposal.castNPCAfter.MPCurrent -= spec.Cost
-	if !spec.SkipSpellFail && roll > chance {
+	if spellFailRequired && roll > chance {
 		proposal.CastFailed = true
 		return nil
 	}
 	proposal.CastSucceeded = true
+	if spec.HealKind != npcTalkCastNoHeal {
+		proposal.CastEffectRolls, err = npcTalkCastHealingRolls(npc.Body, spec, room, options)
+		if err != nil {
+			return err
+		}
+		preview, err = npcTalkCastTargetAfter(actor, npc.Body, room, spec, now, interval, proposal.CastEffectRolls)
+		if err != nil {
+			return err
+		}
+	}
+	proposal.CastHPDelta = int32(preview.Body.HPCurrent) - int32(actor.Body.HPCurrent)
 	proposal.castTargetAfter = preview
 	return nil
 }
@@ -1049,7 +1324,7 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast target changed")
 	}
 	if proposal.CastRefused {
-		if !npcEnemyContains(npc.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}) || proposal.CastAttempted || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+		if !npcEnemyContains(npc.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}) || proposal.CastAttempted || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || len(proposal.CastEffectRolls) != 0 || proposal.CastHPDelta != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
 			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast refusal proposal")
 		}
 		return spec, nil
@@ -1059,16 +1334,17 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	}
 	known := flag(npc.Body.Spells[:], uint(spec.Spell))
 	if !proposal.CastAttempted {
-		if (int16(npc.Body.MPCurrent) >= spec.Cost && known && npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate)) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+		if (int16(npc.Body.MPCurrent) >= spec.Cost && known && npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate)) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || len(proposal.CastEffectRolls) != 0 || proposal.CastHPDelta != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
 			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast no-attempt proposal")
 		}
 		return spec, nil
 	}
-	if !known || int16(npc.Body.MPCurrent) < spec.Cost || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) || (!spec.SkipSpellFail && (proposal.CastRoll < 1 || proposal.CastRoll > 100)) {
+	spellFailRequired := npcTalkCastSpellFailRequired(spec, npc.Body.Class)
+	if !known || int16(npc.Body.MPCurrent) < spec.Cost || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) || (spellFailRequired && (proposal.CastRoll < 1 || proposal.CastRoll > 100)) || (!spellFailRequired && proposal.CastRoll != 0) {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast gate changed")
 	}
 	chance := 100
-	if !spec.SkipSpellFail {
+	if spellFailRequired {
 		chance, err = npcTalkSpellChance(npc.Body)
 		if err != nil {
 			return npcTalkCastSpec{}, err
@@ -1084,7 +1360,7 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	if proposal.CastChance != chance || proposal.CastInterval != interval || proposal.CastSucceeded == proposal.CastFailed {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast outcome changed")
 	}
-	if spec.SkipSpellFail {
+	if !spellFailRequired {
 		if proposal.CastRoll != 0 || !proposal.CastSucceeded || proposal.CastFailed {
 			return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast no-fail outcome changed")
 		}
@@ -1095,10 +1371,15 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	expectedNPC.MPCurrent -= spec.Cost
 	expectedTarget := actor
 	if proposal.CastSucceeded {
-		expectedTarget, err = npcTalkCastTargetAfter(actor, spec, proposal.CastNow, interval)
+		expectedTarget, err = npcTalkCastTargetAfter(actor, npc.Body, room, spec, proposal.CastNow, interval, proposal.CastEffectRolls)
 		if err != nil {
 			return npcTalkCastSpec{}, err
 		}
+		if proposal.CastHPDelta != int32(expectedTarget.Body.HPCurrent)-int32(actor.Body.HPCurrent) {
+			return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast HP delta changed")
+		}
+	} else if len(proposal.CastEffectRolls) != 0 || proposal.CastHPDelta != 0 {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast failed effect changed")
 	}
 	if !reflect.DeepEqual(proposal.castNPCAfter, expectedNPC) || !reflect.DeepEqual(proposal.castTargetAfter, expectedTarget) {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast state projection changed")
@@ -1478,6 +1759,8 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 		result.SpellRoll = proposal.CastRoll
 		result.SpellChance = proposal.CastChance
 		result.SpellInterval = proposal.CastInterval
+		result.SpellEffectRolls = append([]int(nil), proposal.CastEffectRolls...)
+		result.SpellHPDelta = proposal.CastHPDelta
 	}
 	if proposal.TopicEntry.Action.Kind == TalkActionGive {
 		action := proposal.TopicEntry.Action
