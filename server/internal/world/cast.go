@@ -26,6 +26,7 @@ const (
 	castVigorSpell           = 0  // SVIGOR / 회복
 	castMendSpell            = 18 // SMENDW / 원기회복
 	castHealSpell            = 19 // SFHEAL / 완치
+	castLightSpell           = 2  // SLIGHT / 발광
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -68,6 +69,8 @@ const (
 	castCurePoisonFlag       = 16
 	castDiseaseFlag          = 41
 	castRemoveBlindFlag      = 42
+	castLightFlag            = 17
+	castLightTimer           = 13
 )
 
 const (
@@ -107,6 +110,7 @@ type castSpellSpec struct {
 	// Timed spell intervals are derived from the caster's intelligence and
 	// optional mage/room terms in the original spell routine.
 	IntervalBase int32
+	LevelStep    int32
 	RoomExtend   int32
 	MageInterval bool
 	MinInterval  bool
@@ -234,6 +238,11 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Flag, spec.Timer = castRemoveBlindFlag, -1
 		spec.failMask = castAllSpellFailMask
 		spec.classGate = castClericPaladinInvincible
+	case castLightSpell:
+		spec.Cost, spec.healKind = 5, castHealTimed
+		spec.Flag, spec.Timer = castLightFlag, castLightTimer
+		spec.IntervalBase, spec.LevelStep, spec.RoomExtend = 300, 300, 600
+		spec.failMask = castAllSpellFailMask
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
@@ -428,7 +437,12 @@ func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (
 	if base == 0 {
 		base = 1200
 	}
-	interval := int64(base) + int64(legacyStatBonus[body.Stats[3]])*600
+	interval := int64(base)
+	if spec.LevelStep != 0 {
+		interval += int64((int(body.Level)+3)/4) * int64(spec.LevelStep)
+	} else {
+		interval += int64(legacyStatBonus[body.Stats[3]]) * 600
+	}
 	if spec.MinInterval && interval < 300 {
 		interval = 300
 	}
@@ -693,6 +707,8 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 			return "당신은 됴화잎을 눈에 비비며 주문감지술을 외웁니다.\r\n당신의 눈에서 은빛광안이 떠오르며 주술에 관한 안목이 넓어졌습니다.\r\n"
 		case castKnowAlignmentSpell:
 			return "당신은 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
+		case castLightSpell:
+			return "당신의 왼손에 발광 주문을 걸었습니다.\r\n왼손에서 황금빛이 뿜어져 나와 주위를 밝혀 줍니다.\r\n"
 		default:
 			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 		}

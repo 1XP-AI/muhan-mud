@@ -1,5 +1,15 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 `주문` 발광 — canonical light flag/timer 전이
+
+`발광`(SLIGHT/PLIGHT/LT_LIGHT)을 self-cast receipt로 연결했다. source MP 5와 `spell_fail`
+RNG 1회, 레벨 band 기반 interval `300 + band×300`, `RPMEXT` +600을 명시적으로 계산한다.
+성공 시 PLIGHT/LT_LIGHT와 global LT_SPELL을 원자 반영해 현재 장면의 어두운 방 판정이
+canonical 상태를 사용하고, 실패·재생에서는 RNG·출력을 다시 소비하지 않는다.
+
+검증: world focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity, 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet은 승격 cadence에서 단일 종합 게이트로 수행한다.
+
 ## 2026-09-10 플레이어 `주문` 자기 대상 정화 3종 — canonical flag 전이
 
 `해독`(SCUREP/PPOISN), `치료`(SRMDIS/PDISEA), `개안술`(SRMBLD/PBLIND)을 self-cast

@@ -1,5 +1,16 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 발광)
+
+`발광` self-cast를 연결했다. source SLIGHT/PLIGHT/LT_LIGHT, MP 5, spell-fail 1회와
+레벨별 지속 시간(300 + level band×300, `RPMEXT` +600)을 canonical body receipt에 고정한다.
+성공 시 global LT_SPELL과 빛 flag/timer를 원자 반영해 `CurrentScene`의 어두운 방 조명이
+즉시 권위 상태를 읽고, 실패·replay에서는 비용·RNG·fan-out이 중복되지 않는다.
+
+검증: `go test -race ./internal/world -run 'Cast' -count=1` PASS. 영향 패키지 vet와
+`git diff --check`는 주문 묶음 커밋 시 한 번 실행하며, 전체 통합·ARM64·PostgreSQL·브라우저·
+release 게이트는 승격 cadence에서만 실행한다. `src/frp.new` 기존 사용자 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 정화 3종)
 
 플레이어 self-cast에 `해독`·`치료`·`개안술`을 연결했다. source의 SCUREP/SRMDIS/SRMBLD

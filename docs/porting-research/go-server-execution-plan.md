@@ -1,5 +1,14 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 발광
+
+`발광`을 self-cast reducer에 추가해 어두운 방에서도 xterm 탐색이 가능하도록 한다. source
+SLIGHT/PLIGHT/LT_LIGHT와 MP 5, `spell_fail` RNG 1회, 레벨 band 지속 시간 및 `RPMEXT` +600을
+receipt에 고정하고, 성공 시 global 주문 timer와 빛 상태를 함께 커밋한다.
+
+이번 레인은 world focused race와 diff/vet만 실행한다. 전체 통합·PostgreSQL·ARM64·browser/
+IME·release/testnet 검증은 주문 묶음 승격 시 한 번만 수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 정화 3종
 
 `해독`·`치료`·`개안술`을 player self-cast reducer에 추가한다. source spell bit, PPOISN/

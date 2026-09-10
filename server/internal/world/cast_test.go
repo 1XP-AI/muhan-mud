@@ -241,6 +241,7 @@ func TestPlanApplyCastTimedSelfSpellsUseSourceFlagsAndIntervals(t *testing.T) {
 		wantRolls    int
 	}{
 		// INT 18 has bonus 2; a level-8 mage adds 120 seconds and RPMEXT adds 600.
+		{name: "light mage", class: castMageClass, spell: castLightSpell, spellName: "발광", flag: castLightFlag, timer: castLightTimer, wantInterval: 1500, wantCost: 5, wantGlobal: 3, wantRolls: 1},
 		{name: "invisibility mage", class: castMageClass, spell: castInvisibilitySpell, spellName: "은둔법", flag: castInvisibilityFlag, timer: castInvisibilityTimer, wantInterval: 3120, wantCost: 15, wantGlobal: 3, wantRolls: 1},
 		{name: "detect invisible mage", class: castMageClass, spell: castDetectInvisibleSpell, spellName: "은둔감지술", flag: castDetectInvisibleFlag, timer: castDetectInvisibleTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
 		{name: "detect magic mage", class: castMageClass, spell: castDetectMagicSpell, spellName: "주문감지술", flag: castDetectMagicFlag, timer: castDetectMagicTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
