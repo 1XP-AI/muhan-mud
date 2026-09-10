@@ -1,12 +1,13 @@
 # Muhan MUD 포팅 핸드오프
 
-## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST 해독`)
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST 해독·치료·개안술`)
 
-talk catalog의 `CAST 해독`을 canonical NPC 대화 reducer에 연결했다. NPC의 `SCUREP`
-습득·도력·적대 관계와 actor의 PPOISN 상태를 확인한 뒤 `spell_fail` RNG 1회를 receipt에
-고정하고, 성공 시 actor 독 플래그를 제거하며 NPC 도력 6을 차감한다. 실패 시 도력만
-차감하고 독 플래그는 보존한다. inventory가 이 효과의 권위가 아니므로 미이관 actor도
-안전하게 처리하며, receipt replay는 RNG·상태 변경·room fan-out을 반복하지 않는다.
+talk catalog의 비공격 정화 주문 `CAST 해독·치료·개안술`을 canonical NPC 대화 reducer에
+연결했다. NPC의 주문 bit·직업 gate·도력·적대 관계와 actor의 PPOISN/PDISEA/PBLIND 상태를
+확인한 뒤 `spell_fail` RNG 1회를 receipt에 고정하고, 성공 시 해당 상태 플래그를 제거하며
+NPC 도력 6 또는 12를 차감한다. 실패 시 도력만 차감하고 대상 상태는 보존한다. 정화 효과는
+inventory가 권위가 아니므로 미이관 actor도 처리하며, receipt replay는 RNG·상태 변경·room
+fan-out을 반복하지 않는다.
 
 검증: `go test -race ./internal/world ./internal/transport -run 'NPCTalk' -count=1` PASS.
 이 기능은 기존 session/transport CAST 경로를 재사용하므로 별도 parser 변경은 없다.

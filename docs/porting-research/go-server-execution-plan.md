@@ -1,12 +1,13 @@
 # Go 게임 서버 전환 실행 계획
 
-## 2026-09-10 NPC 대화 `CAST 해독` canonical effect
+## 2026-09-10 NPC 대화 `CAST 해독·치료·개안술` canonical effects
 
-`TalkCatalog`에서 source `SCUREP`에 해당하는 `해독`만 추가로 admit한다. NPC의 canonical
-spell bit/MP와 actor의 same-room identity를 먼저 검증하고, `spell_fail` 1..100 결과를
-receipt에 고정한다. 성공 시 actor PPOISN을 제거하고 NPC MP 6을 차감하며, 실패 시 MP만
-차감한다. 이 효과는 inventory graph가 없어도 적용할 수 있고, 지원되지 않는 주문/대상은
-기존처럼 영수증 전에 fail-closed한다. actor/room 출력은 receipt commit 이후에만 fan-out한다.
+`TalkCatalog`에서 source `SCUREP`/`SRMDIS`/`SRMBLD`에 해당하는 `해독`·`치료`·`개안술`을
+추가로 admit한다. NPC의 canonical spell bit/직업 gate/MP와 actor의 same-room identity를
+검증하고, `spell_fail` 1..100 결과를 receipt에 고정한다. 성공 시 actor PPOISN/PDISEA/PBLIND
+중 해당 상태를 제거하고 NPC MP 6 또는 12를 차감하며, 실패 시 MP만 차감한다. 이 효과는
+inventory graph가 없어도 적용할 수 있고, 지원되지 않는 주문/대상은 기존처럼 영수증 전에
+fail-closed한다. actor/room 출력은 receipt commit 이후에만 fan-out한다.
 
 검증은 world/transport NPCTalk focused race로 제한한다. 반복적인 ARM64·PostgreSQL·browser/
 release 검사는 기능 묶음 승격 cadence에서만 실행한다.

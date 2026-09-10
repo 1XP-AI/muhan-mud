@@ -103,3 +103,85 @@ func TestNPCTalkCastCurePoisonWithMissingInventoryStillAdmits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func npcTalkCleansingState(t *testing.T, spell string, flagBit uint) State {
+	t.Helper()
+	s := npcTalkFixture(t)
+	actor := s.Players["a"]
+	actor.Body.Flags[flagBit/8] |= 1 << (flagBit % 8)
+	s.Players["a"] = actor
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 5
+	npc.Body.Class = 3 // CLERIC satisfies both source removal-spell gates.
+	npc.Body.Stats[3] = 10
+	npc.Body.MPMax, npc.Body.MPCurrent = 24, 24
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	index := npcTalkDiseaseSpell
+	if spell == "개안술" {
+		index = npcTalkBlindSpell
+	}
+	npc.Body.Spells[index/8] |= 1 << (index % 8)
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestNPCTalkCastCleansingSpellsClearCanonicalTargetFlags(t *testing.T) {
+	for _, tc := range []struct {
+		spell string
+		flag  uint
+	}{
+		{spell: "치료", flag: npcTalkDiseaseFlag},
+		{spell: "개안술", flag: npcTalkBlindFlag},
+	} {
+		t.Run(tc.spell, func(t *testing.T) {
+			s := npcTalkCleansingState(t, tc.spell, tc.flag)
+			catalog := npcTalkCastCatalog(t, tc.spell)
+			proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{Roll: func(int, int) int { return 1 }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if proposal.CastSpellName != tc.spell || !proposal.CastAttempted || !proposal.CastSucceeded || proposal.CastInterval != 0 || proposal.CastNow != 0 {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			next, result, err := s.ApplyNPCTalk(proposal, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextActor := next.Players["a"]
+			if flag(nextActor.Body.Flags[:], tc.flag) || next.NPCs["guide-one"].Body.MPCurrent != 12 {
+				t.Fatalf("result=%+v actor=%+v npc=%+v", result, nextActor.Body, next.NPCs["guide-one"].Body)
+			}
+			if tc.spell == "치료" && !strings.Contains(result.Response, "치료") {
+				t.Fatalf("treatment response=%q", result.Response)
+			}
+			if tc.spell == "개안술" && !strings.Contains(result.Response, "개안부") {
+				t.Fatalf("blindness response=%q", result.Response)
+			}
+		})
+	}
+}
+
+func TestNPCTalkCastCleansingClassGateRejectsWithoutRNG(t *testing.T) {
+	s := npcTalkCleansingState(t, "치료", npcTalkDiseaseFlag)
+	npc := s.NPCs["guide-one"]
+	npc.Body.Class = 4 // FIGHTER is below the source CLERIC gate.
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	catalog := npcTalkCastCatalog(t, "치료")
+	calls := 0
+	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{Roll: func(int, int) int { calls++; return 1 }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || proposal.CastAttempted || proposal.CastSucceeded || proposal.CastFailed || !strings.Contains(proposal.Response, "주문을 걸어줄 수 없다고") {
+		t.Fatalf("class-gated proposal=%+v calls=%d", proposal, calls)
+	}
+	if _, _, err := s.ApplyNPCTalk(proposal, catalog); err != nil {
+		t.Fatal(err)
+	}
+}

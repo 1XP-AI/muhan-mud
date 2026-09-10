@@ -18,9 +18,13 @@ const (
 	npcTalkBlessSpell      = 4  // SBLESS / 성현진
 	npcTalkProtectionSpell = 5  // SPROTE / 수호진
 	npcTalkCurePoisonSpell = 3  // SCUREP / 해독
+	npcTalkDiseaseSpell    = 48 // SRMDIS / 치료
+	npcTalkBlindSpell      = 49 // SRMBLD / 개안술
 	npcTalkBlessFlag       = 0  // PBLESS
 	npcTalkProtectionFlag  = 8  // PPROTE
 	npcTalkPoisonFlag      = 16 // PPOISN
+	npcTalkDiseaseFlag     = 41 // PDISEA
+	npcTalkBlindFlag       = 42 // PBLIND
 	npcTalkProtectionTimer = 1  // LT_PROTE
 	npcTalkBlessTimer      = 2  // LT_BLESS
 	npcTalkRoomMagicExtend = 32 // RPMEXT
@@ -63,11 +67,33 @@ type NPCTalkEffectOptions struct {
 }
 
 type npcTalkCastSpec struct {
-	Name  string
-	Spell int
-	Flag  uint
-	Timer int
-	Cost  int16
+	Name      string
+	Spell     int
+	Flag      uint
+	Timer     int
+	Cost      int16
+	ClassGate npcTalkCastClassGate
+}
+
+type npcTalkCastClassGate uint8
+
+const (
+	npcTalkCastAnyClass npcTalkCastClassGate = iota
+	npcTalkCastClericOrInvincible
+	npcTalkCastClericPaladinOrInvincible
+)
+
+func npcTalkCastClassAllowed(class byte, gate npcTalkCastClassGate) bool {
+	switch gate {
+	case npcTalkCastAnyClass:
+		return true
+	case npcTalkCastClericOrInvincible:
+		return class == 3 || class >= 9 // CLERIC or INVINCIBLE+
+	case npcTalkCastClericPaladinOrInvincible:
+		return class == 3 || class == 6 || class >= 9 // CLERIC/PALADIN or INVINCIBLE+
+	default:
+		return false
+	}
 }
 
 func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
@@ -92,6 +118,20 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
+		}, nil
+	case "치료":
+		if len(legacyInfoSpellNames) <= npcTalkDiseaseSpell || legacyInfoSpellNames[npcTalkDiseaseSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkDiseaseSpell, Flag: npcTalkDiseaseFlag, Timer: -1, Cost: 12, ClassGate: npcTalkCastClericOrInvincible,
+		}, nil
+	case "개안술":
+		if len(legacyInfoSpellNames) <= npcTalkBlindSpell || legacyInfoSpellNames[npcTalkBlindSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkBlindSpell, Flag: npcTalkBlindFlag, Timer: -1, Cost: 12, ClassGate: npcTalkCastClericPaladinOrInvincible,
 		}, nil
 	default:
 		// Keep the historical action-level error visible to callers that
@@ -565,6 +605,12 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkPoisonFlag:
 		roomText = fmt.Sprintf("\n%s%s %s의 혈도를 짚으면서 해독 주문을 외웁니다.\n그의 손가락 끝으로 검은 독기운이 빠져나오는 것이 보입니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 혈도를 짚으면서 해독 주문을 외웁니다.\n당신의 손가락 끝으로 독기운이 빠져나가는 것이 느껴집니다.\n", npc.Name, npcSubject)
+	case npcTalkDiseaseFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 혈도를 누르고 내공의 힘을 통해 치료를 시작합니다.\n그의 몸에 막혀 있던 혈이 풀리면서 차츰 활기를 띄기 시작합니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 혈도를 누르고 내공의 힘을 통해 치료를 시작합니다.\n당신의 몸에 막혀 있던 혈이 풀리면서 차츰 활기를 띄기 시작합니다.\n", npc.Name, npcSubject)
+	case npcTalkBlindFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 이마에 개안부를 붙히고서 개안술 주문을 외웁니다.\n그의 감겼던 눈이 움찔거리다가 갑자기 확 뜹니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 이마에 개안부를 붙히고서 주문을 외웁니다.\n감겼던 당신의 눈이 움찔거리다가 갑자기 밝아집니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
@@ -650,7 +696,7 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 		proposal.CastRefused = true
 		return nil
 	}
-	if int16(npc.Body.MPCurrent) < spec.Cost || !flag(npc.Body.Spells[:], uint(spec.Spell)) {
+	if int16(npc.Body.MPCurrent) < spec.Cost || !flag(npc.Body.Spells[:], uint(spec.Spell)) || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) {
 		// Admitted spells print the generic apology when the NPC's MP or spell
 		// bit gate leaves mpcur unchanged after talk_action.
 		return nil
@@ -795,12 +841,12 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	}
 	known := flag(npc.Body.Spells[:], uint(spec.Spell))
 	if !proposal.CastAttempted {
-		if (int16(npc.Body.MPCurrent) >= spec.Cost && known) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+		if (int16(npc.Body.MPCurrent) >= spec.Cost && known && npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate)) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
 			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast no-attempt proposal")
 		}
 		return spec, nil
 	}
-	if !known || int16(npc.Body.MPCurrent) < spec.Cost || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
+	if !known || int16(npc.Body.MPCurrent) < spec.Cost || !npcTalkCastClassAllowed(npc.Body.Class, spec.ClassGate) || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast gate changed")
 	}
 	chance, err := npcTalkSpellChance(npc.Body)
