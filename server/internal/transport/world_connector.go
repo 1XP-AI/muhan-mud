@@ -1221,7 +1221,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteMerchantPurchaseLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.MerchantPurchaseOptions{Offers: c.game.config.MerchantOffers})
 	case session.CommandNPCTalk:
 		npcTalkCommand = true
-		receipt, err = c.game.owners.ExecuteNPCTalkLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.NPCTalkOptions{Catalog: c.game.config.TalkCatalog, Now: now, Roll: c.game.config.Roll})
+		receipt, err = c.game.owners.ExecuteNPCTalkLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.NPCTalkOptions{Catalog: c.game.config.TalkCatalog, Now: now, Roll: c.game.config.Roll, ObjectCatalog: c.game.config.Catalog, Allocate: c.game.config.Allocate})
 	case session.CommandGroupTalk:
 		groupTalkCommand = true
 		receipt, err = c.game.owners.ExecuteGroupTalkLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)

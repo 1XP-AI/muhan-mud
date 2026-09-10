@@ -35,22 +35,30 @@ var (
 	ErrNPCTalkTopicsUnavailable = errors.New("canonical NPC talk topics unavailable")
 	// ErrNPCTalkActionUnavailable is returned when a catalog record contains a
 	// C talk_action side effect whose world reducer has not been admitted yet.
-	// ATTACK is handled as a deterministic enemy-edge transition below; the
-	// ACTION/GIVE and CAST forms outside the admitted canonical spell pair still
-	// fail closed before Apply.
+	// ATTACK, ACTION, and the item-giving form of GIVE are handled as
+	// deterministic transitions below; CAST remains closed to the admitted
+	// canonical spell pair.
 	ErrNPCTalkActionUnavailable         = errors.New("NPC talk action unavailable")
 	ErrNPCTalkTargetAbsent              = errors.New("NPC talk target absent")
 	ErrNPCTalkCastSpellUnavailable      = errors.New("NPC talk cast spell unavailable")
 	ErrNPCTalkCastRandomUnavailable     = errors.New("NPC talk cast random source unavailable")
 	ErrNPCTalkCastProjectionUnavailable = errors.New("NPC talk cast projection requires receipt")
+	ErrNPCTalkGiveObjectUnavailable     = errors.New("NPC talk give object unavailable")
+	ErrNPCTalkGiveInventoryUnavailable  = errors.New("NPC talk give inventory unavailable")
+	ErrNPCTalkGiveAllocatorUnavailable  = errors.New("NPC talk give allocator unavailable")
+	ErrNPCTalkGiveRandomUnavailable     = errors.New("NPC talk give random source unavailable")
+	ErrNPCTalkGiveProjectionUnavailable = errors.New("NPC talk give projection requires receipt")
 )
 
-// NPCTalkEffectOptions contains host-owned values needed by an admitted
-// CAST action. The random draw is recorded in NPCTalkProposal and is never
-// requested again by ApplyNPCTalk, so a retry/replay is deterministic.
+// NPCTalkEffectOptions contains host-owned values needed by admitted catalog
+// side effects. Random draws and freshly allocated item IDs are recorded in
+// NPCTalkProposal and are never requested again by ApplyNPCTalk, so a
+// retry/replay is deterministic.
 type NPCTalkEffectOptions struct {
-	Now  int32
-	Roll func(int, int) int
+	Now           int32
+	Roll          func(int, int) int
+	ObjectCatalog SpawnCatalog
+	Allocate      func() (string, error)
 }
 
 type npcTalkCastSpec struct {
@@ -134,6 +142,16 @@ type NPCTalkResult struct {
 	SpellRoll        int           `json:"spell_roll,omitempty"`
 	SpellChance      int           `json:"spell_chance,omitempty"`
 	SpellInterval    int32         `json:"spell_interval,omitempty"`
+	GiveObjectID     int16         `json:"give_object_id,omitempty"`
+	GiveItemID       string        `json:"give_item_id,omitempty"`
+	GiveItemName     string        `json:"give_item_name,omitempty"`
+	GiveAttempted    bool          `json:"give_attempted,omitempty"`
+	GiveGranted      bool          `json:"give_granted,omitempty"`
+	GiveRejected     bool          `json:"give_rejected,omitempty"`
+	GiveQuest        byte          `json:"give_quest,omitempty"`
+	GiveQuestXP      int32         `json:"give_quest_xp,omitempty"`
+	GiveRoll         int           `json:"give_roll,omitempty"`
+	GiveEnchanted    bool          `json:"give_enchanted,omitempty"`
 	Event            *NPCTalkEvent `json:"event,omitempty"`
 }
 
@@ -176,6 +194,18 @@ type NPCTalkProposal struct {
 	CastRoll          int
 	CastChance        int
 	CastInterval      int32
+	GiveObjectID      int16
+	GiveItemID        string
+	GiveItemName      string
+	GiveAttempted     bool
+	GiveGranted       bool
+	GiveRejected      bool
+	GiveQuest         byte
+	GiveQuestXP       int32
+	GiveRoll          int
+	GiveEnchanted     bool
+	GiveRejectText    string
+	GiveObject        LegacyObject
 
 	before           State
 	castNPCBefore    LegacyMonster
@@ -184,6 +214,8 @@ type NPCTalkProposal struct {
 	castTargetAfter  PlayerState
 	actionNPCBefore  LegacyMonster
 	actionNPCAfter   LegacyMonster
+	giveTargetBefore PlayerState
+	giveTargetAfter  PlayerState
 }
 
 // ValidateNPCTalkName checks a client-selected display-name token before it
@@ -860,7 +892,7 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 		proposal.TopicCatalogFound = true
 		proposal.TopicFound = found
 		proposal.TopicEntry = entry
-		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionAction && entry.Action.Kind != TalkActionCast {
+		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionAction && entry.Action.Kind != TalkActionCast && entry.Action.Kind != TalkActionGive {
 			return NPCTalkProposal{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 		}
 	}
@@ -885,6 +917,11 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 			return NPCTalkProposal{}, err
 		}
 	}
+	if proposal.TopicCatalogFound && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionGive {
+		if err := s.planNPCTalkGive(&proposal, actor, s.NPCs[targetID], effectOptions); err != nil {
+			return NPCTalkProposal{}, err
+		}
+	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc.Body, "")
 	if proposal.TopicCatalogFound {
 		if proposal.TopicFound {
@@ -900,6 +937,9 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 				if err := appendNPCTalkActionEvent(&event, npc.Body, actor, proposal.Action); err != nil {
 					return NPCTalkProposal{}, err
 				}
+			}
+			if proposal.TopicEntry.Action.Kind == TalkActionGive {
+				appendNPCTalkGiveEvent(&event, npc.Body, actor.Body, proposal.GiveObject, proposal.GiveGranted, proposal.GiveRejectText, proposal.GiveQuestXP)
 			}
 		} else {
 			event = buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc.Body, topic)
@@ -994,7 +1034,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			if proposal.TopicEntry.Key != proposal.Topic || !validNPCTalkText(proposal.TopicEntry.Response) {
 				return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic proposal")
 			}
-			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack && proposal.TopicEntry.Action.Kind != TalkActionAction && proposal.TopicEntry.Action.Kind != TalkActionCast {
+			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack && proposal.TopicEntry.Action.Kind != TalkActionAction && proposal.TopicEntry.Action.Kind != TalkActionCast && proposal.TopicEntry.Action.Kind != TalkActionGive {
 				return State{}, NPCTalkResult{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, proposal.TopicEntry.Action.Kind.String())
 			}
 		} else if proposal.TopicEntry != (TalkTopic{}) {
@@ -1032,6 +1072,11 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			return State{}, NPCTalkResult{}, err
 		}
 	}
+	if mtalksTopic && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionGive {
+		if err := validateNPCTalkGiveProposal(proposal, actor, currentNPC); err != nil {
+			return State{}, NPCTalkResult{}, err
+		}
+	}
 	expected := buildNPCTalkEvent(actor.Body, proposal.ActorID, targetID, npc, "")
 	if mtalksTopic {
 		if proposal.TopicFound {
@@ -1043,6 +1088,9 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 				if err := appendNPCTalkActionEvent(&expected, npc, actor, proposal.Action); err != nil {
 					return State{}, NPCTalkResult{}, err
 				}
+			}
+			if proposal.TopicEntry.Action.Kind == TalkActionGive {
+				appendNPCTalkGiveEvent(&expected, npc, actor.Body, proposal.GiveObject, proposal.GiveGranted, proposal.GiveRejectText, proposal.GiveQuestXP)
 			}
 		} else {
 			expected = buildNPCTalkTopicMissEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic)
@@ -1071,6 +1119,19 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 		nextNPC := next.NPCs[targetID]
 		nextNPC.Body = proposal.actionNPCAfter
 		next.NPCs[targetID] = nextNPC
+	}
+	if proposal.TopicEntry.Action.Kind == TalkActionGive && proposal.GiveGranted {
+		// Keep the clone-owned connection-local fields from nextActor, while
+		// replacing only the item graph and quest/proficiency body values fixed
+		// during planning.
+		nextActor.Body = proposal.giveTargetAfter.Body
+		if proposal.giveTargetAfter.Items == nil {
+			return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk give target inventory disappeared")
+		}
+		nextActor.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
+		items := proposal.giveTargetAfter.Items.clone()
+		nextActor.Items = &items
+		next.Players[proposal.ActorID] = nextActor
 	}
 	if addEnemy {
 		nextNPC := next.NPCs[targetID]
@@ -1117,6 +1178,20 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 		result.SpellRoll = proposal.CastRoll
 		result.SpellChance = proposal.CastChance
 		result.SpellInterval = proposal.CastInterval
+	}
+	if proposal.TopicEntry.Action.Kind == TalkActionGive {
+		action := proposal.TopicEntry.Action
+		result.Action = &action
+		result.GiveObjectID = proposal.GiveObjectID
+		result.GiveItemID = proposal.GiveItemID
+		result.GiveItemName = proposal.GiveItemName
+		result.GiveAttempted = proposal.GiveAttempted
+		result.GiveGranted = proposal.GiveGranted
+		result.GiveRejected = proposal.GiveRejected
+		result.GiveQuest = proposal.GiveQuest
+		result.GiveQuestXP = proposal.GiveQuestXP
+		result.GiveRoll = proposal.GiveRoll
+		result.GiveEnchanted = proposal.GiveEnchanted
 	}
 	return next, result, nil
 }
@@ -1171,6 +1246,12 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string, catalogs ...Tal
 			return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
 		}
 		if found {
+			if entry.Action.Kind == TalkActionGive {
+				// The gift graph, allocator IDs, enchant draw, and quest outcome
+				// are receipt-bound. A post-state projection cannot recover those
+				// facts without replaying an external catalog/RNG dependency.
+				return NPCTalkEvent{}, false, ErrNPCTalkGiveProjectionUnavailable
+			}
 			if entry.Action.Kind == TalkActionCast {
 				// CAST includes an RNG outcome and a caster/target mutation that
 				// is intentionally carried by the durable receipt. Reconstructing

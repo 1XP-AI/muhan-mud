@@ -1,5 +1,22 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `GIVE` — canonical object graph 지급
+
+`command8.c:talk_action`의 `GIVE <object-number>`를 server-owned `SpawnCatalog`와
+item-ID allocator 경계에 연결했다. object 번호·이름·무게·quest를 검증하고 `ORENCH`는
+계획 단계에서 결정론적 1회 RNG를 소비한다. 대상 actor의 canonical `ItemCollection`이
+무게/용량 gate를 통과하면 새 ID로 object subtree를 materialize하고, quest bit·`quest_exp`·
+`add_prof`를 같은 snapshot-bound receipt에 반영한다. 성공·quest 보상·room/actor 출력
+순서를 receipt에 저장하며 replay에서는 catalog/allocator/RNG를 재호출하지 않는다.
+
+용량 초과와 이미 완료한 quest는 원작의 topic 응답 뒤 actor 거절 메시지만 남기는 durable
+rejection으로 처리한다. object catalog, canonical inventory, allocator, malformed tree는
+receipt 전에 fail-closed한다. post-state만으로 gift ID/난수/거절 순서를 재구성할 수 없으므로
+`RoomNPCTalkEvent`는 receipt projection을 요구한다.
+
+검증: world/session/transport NPCTalk focused race, 영향 패키지 vet, diff check 통과.
+ARM64·실제 PostgreSQL·browser/IME·release matrix·testnet은 승격 cadence에서만 실행한다.
+
 ## 2026-09-10 NPC 대화 `ACTION` — canonical 감정표현 연결
 
 `TalkCatalog`의 `ACTION` 중 이미 `action.c`와 대조된 닫힌 Go 감정표현 alias만
@@ -7,8 +24,8 @@ snapshot-bound NPC action으로 admit했다. `PLAYER` 대상은 대화한 canoni
 고정하고, 대상 없는 표현은 원작처럼 NPC descriptor만 제외한 room broadcast로 투영한다.
 NPC의 `MHIDDN`은 action 호출 순서대로 해제하며 `PSILNC`인 NPC는 topic 응답만 남기고
 action projection을 억제한다. room/actor 메시지와 action target ID는 receipt에 저장하고
-replay에서는 재선택·재전송하지 않는다. 알 수 없는 alias/target과 `GIVE`는 계속
-fail-closed한다.
+replay에서는 재선택·재전송하지 않는다. 알 수 없는 alias/target은 계속 fail-closed하며,
+`GIVE`는 별도 object catalog/allocator 경계를 통해 연결되어 있다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`,
 `git diff --check` PASS. 고비용 PostgreSQL/browser/ARM64/release 게이트와 알려진 전체
@@ -21,8 +38,8 @@ admit했다. NPC의 spell bit·MP·적대 관계와 canonical target equipment�
 검증하고, `spell_fail`과 동일한 class/지식 확률표의 RNG 1회를 receipt에 기록한다. 성공은
 NPC MP 10 차감과 플레이어 효과 bit/timer 및 해당 전투 수치 재계산을 원자 적용하고, 실패는
 MP만 차감한다. receipt event는 최초 commit 뒤에만 room/actor cast projection을 전송하며,
-post-state에서 outcome을 추측하는 `RoomNPCTalkEvent`는 fail-closed한다. 다른 CAST 주문,
-ACTION/GIVE, 운영 원본 대량 대조·PG/browser/release 검증은 아직 미완료다.
+post-state에서 outcome을 추측하는 `RoomNPCTalkEvent`는 fail-closed한다. 다른 CAST 주문과
+운영 원본 대량 대조·PG/browser/release 검증은 아직 미완료다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk' -count=1`, 영향 패키지 `go vet` PASS. 전체 세 패키지 실행은 기존 strict room corpus 63건과 family broadcast 회귀로 실패했다.
 
@@ -31,8 +48,8 @@ ACTION/GIVE, 운영 원본 대량 대조·PG/browser/release 검증은 아직 �
 `TalkCatalog`의 exact topic이 `ATTACK` action을 가질 때 `PlanNPCTalkProposal`/`ApplyNPCTalk`가
 원작의 질문·응답 뒤 공격 메시지와 NPC→플레이어 enemy 관계를 하나의 결정론적 receipt
 event로 저장한다. actor/room 메시지 순서를 보존하고 replay에서는 재전송하지 않는다.
-`성현진`·`수호진` CAST는 canonical effect boundary를 통과했으며, `ACTION`·`GIVE`와 그 밖의
-CAST는 미확인 side effect라 계속 fail-closed한다.
+`성현진`·`수호진` CAST와 `ACTION`·`GIVE`는 canonical effect boundary를 통과했으며, 그
+밖의 CAST는 미확인 side effect라 계속 fail-closed한다.
 
 world/session/transport NPCTalk focused race 및 영향 패키지 vet가 통과했다. 실제
 PostgreSQL/browser/ARM64/release 검사는 관련 계약이 승격되는 cadence에서만 실행한다.

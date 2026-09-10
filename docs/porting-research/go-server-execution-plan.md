@@ -1,5 +1,19 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 NPC 대화 `GIVE` canonical 지급 경계
+
+원작 `talk_action`의 `GIVE`를 xterm에서 사용하는 Go NPC talk receipt에 연결했다.
+`TalkCatalog`의 object 번호는 server-owned `SpawnCatalog`에서만 해석하고, canonical
+player `ItemCollection`에 새 ID로 object subtree를 추가한다. object weight/용량을 먼저
+확인하고 `ORENCH` RNG, quest 중복·`quest_exp`·proficiency를 원작 순서로 고정한다.
+성공하면 actor/room 출력과 item ID를 receipt에 저장하고, 용량 초과·quest 중복은 topic
+응답과 actor 거절 메시지만 원자 커밋한다. catalog·allocator·canonical inventory가
+없거나 object tree가 손상되면 변경 전에 거부한다. 재시도는 receipt를 재사용하며
+allocator/RNG를 다시 호출하지 않는다.
+
+이번 레인은 영향 패키지 focused race/vet와 diff만 실행했다. PostgreSQL/browser/ARM64/
+release 게이트는 기능 묶음 승격 시 한 번만 실행한다.
+
 ## 2026-09-10 NPC 대화 `ACTION` canonical 감정표현 경계
 
 원작 `talk_action`의 `ACTION` 중 Go `action.c` 감정표현 표에 존재하는 exact alias만
@@ -27,8 +41,8 @@ ARM64/release 게이트는 승격 cadence에서 한 번만 실행한다.
 
 talk file의 exact topic action `ATTACK`을 snapshot-bound NPC talk reducer에 연결한다.
 질문·응답과 NPC의 공격 알림을 동일 event 순서로 남기고, NPC enemy edge를 원자적으로
-추가해 다음 combat tick이 권위 상태를 사용하게 한다. `ACTION`·`GIVE`와 미지원 `CAST`는
-해당 world reducer 계약이 준비될 때까지 receipt 전에 fail-closed한다.
+추가해 다음 combat tick이 권위 상태를 사용하게 한다. 미지원 `CAST`는 해당 world
+reducer 계약이 준비될 때까지 receipt 전에 fail-closed한다.
 
 검증은 world/session/transport NPCTalk focused race와 vet만 수행한다. PG/browser/
 ARM64/release 게이트는 승격 cadence에서 한 번만 실행한다.

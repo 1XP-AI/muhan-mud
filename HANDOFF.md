@@ -1,12 +1,28 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `GIVE`)
+
+원작 `talk_action`의 `GIVE` topic을 canonical Go item graph로 연결했다. 서버 소유
+object catalog에서 object 번호를 읽고, `ORENCH` 난수와 새 item ID를 계획 단계에서
+한 번만 소비해 receipt에 고정한다. 대상 플레이어의 canonical inventory 용량·무게와
+quest 중복을 원작 순서로 확인하며, 성공 시 전체 subtree·quest bit·경험치·proficiency를
+원자적으로 반영한다. 용량 초과·이미 완료한 quest는 topic 응답과 거절 메시지만 커밋하고,
+catalog/allocator/RNG가 없거나 malformed object면 receipt 전에 fail-closed한다.
+
+직접 actor/room 출력 순서, post-state hidden 해제, allocator/RNG 재호출 없는 replay와
+room fan-out을 검증했다. `RoomNPCTalkEvent`는 gift graph/난수 결과를 복원할 수 없어
+receipt event만 허용한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`, `git diff --check` PASS. 고비용 PostgreSQL/browser/ARM64/release 게이트는 이 기능 레인에서 반복하지 않았다. `src/frp.new`는 기존 사용자 dirty 변경으로 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `ACTION`)
 
 원작 `talk_action`의 `ACTION` 중 canonical Go 감정표현 alias를 NPC topic에 연결했다.
 `PLAYER` 대상은 대화한 player ID로 고정하고, 대상 없는 action은 actor도 받는 room
 projection으로 보낸다. action 호출 순서의 NPC `MHIDDN` 해제, NPC `PSILNC` 시 topic 응답만
 남기는 억제를 receipt에 고정했으며, room/actor 순서와 replay 무중복 fan-out을 검증했다.
-알 수 없는 action/target과 `GIVE`는 계속 fail-closed한다.
+알 수 없는 action/target은 계속 fail-closed하며, `GIVE`는 별도 object catalog/allocator
+경계를 통해 연결되어 있다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`,
 `git diff --check` PASS. 고비용 PostgreSQL/browser/ARM64/release와 전체 corpus 검사는
@@ -18,7 +34,7 @@ talk catalog의 `CAST` action 중 원작 canonical 주문 `성현진`/`수호진
 연결했다. NPC의 주문 습득 비트·도력·기존 적대 관계를 먼저 확인하고, 통과한 경우에만
 결정론적 spell-fail RNG(1..100)를 한 번 소비한다. 성공 시 NPC 도력 10 차감, 플레이어
 효과 비트·타이머·전투 수치를 하나의 receipt에 저장하고, 실패 시 도력만 차감한다.
-`ACTION`·`GIVE`·미지원/비정상 CAST는 계속 fail-closed하며, receipt event만 성공 주문의
+`ACTION`·미지원/비정상 CAST는 계속 fail-closed하며, receipt event만 성공 주문의
 room/actor 투영을 재생한다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk' -count=1` 및 영향 패키지 `go vet` PASS. 전체 세 패키지 실행은 기존 strict room corpus 63건과 별도 family broadcast 회귀로 실패해 이번 기능 증거로 사용하지 않았다. PostgreSQL/browser/ARM64/release 검사는 cadence에 따라 반복하지 않았다.
@@ -28,7 +44,7 @@ room/actor 투영을 재생한다.
 talk catalog의 `ATTACK` topic action을 Go world reducer에 연결했다. 원작처럼
 질문·응답 뒤 NPC가 플레이어를 공격하는 room/actor 메시지를 receipt event에 순서대로
 기록하고, NPC enemy 관계를 같은 원자 전이에 추가한다. receipt replay는 RNG나 이벤트를
-재실행하지 않으며 `ACTION`·`GIVE`와 미지원 `CAST`는 fail-closed로 유지한다.
+재실행하지 않으며 미지원 `CAST`는 fail-closed로 유지한다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|NPCTalkTopic|WorldConnectorSubmitDispatchesNPCTalk' -count=1` 및 영향 패키지 `go vet` PASS. 기능 레인에서는 PG/browser/ARM64/release 게이트를 반복하지 않았다.
 
