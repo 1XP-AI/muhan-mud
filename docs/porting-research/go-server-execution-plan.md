@@ -1,5 +1,23 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 방향 전환 — 2026-09-10: 엔진 중심 포팅과 AI GM
+
+게임 기능을 단순히 Go 명령으로 늘리는 데서 멈추지 않고, Go `engine`을 콘텐츠의
+권위 계층으로 확장한다. 맵·방·출구·몬스터 템플릿·스폰 규칙·시나리오·이벤트는
+engine typed proposal로 만들고, 정적 검증·결정론적 shadow 시뮬레이션·정책 gate·
+Supabase PostgreSQL revision 발행을 통과한 것만 published head가 된다. AI agent는
+GM으로서 `inspect/draft/validate/simulate/publish/rollback` 도구만 호출하며 DB/SQL,
+플레이어 XP·금화·identity를 직접 변경하지 않는다. 콘텐츠 revision과 live world
+state는 분리하고, C 원본은 reviewed manifest/source digest를 가진 `legacy-import`
+proposal로만 포팅한다.
+
+현재 `server/internal/engine/content.go`에 schema v1 proposal, typed map/room/
+monster/spawn/scenario/event payload, canonical digest, AI provenance, quota·참조·
+level/time 검증과 additive/mutating/destructive risk 분류를 추가했다. 이는 운영
+발행이 아니라 E0 순수 계약이며, 실제 DB head·materializer·event scheduler·AI tool
+호출은 후속 단계다. 상세 실행·스키마·인수 기준은
+[`go-engine-ai-gm-plan.md`](go-engine-ai-gm-plan.md)를 따른다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 주문 공포·봉합구
 
 공포·봉합구를 self-cast reducer에 추가한다. 공포는 source SFEARS의 지속시간 주사위→
@@ -795,6 +813,11 @@ visibility·ordered projection을 보수적으로 적용한다.
 레거시 무한대전 MUD의 게임 기능을 독립 실행 가능한 Go 서버로 이전한다. 웹은 새롬 데이터맨 느낌의 중앙 xterm 단일 화면으로 만들고, 별도 웹 회원가입 없이 원작처럼 터미널 안에서 캐릭터를 생성하고 게임 이름/비밀번호로 로그인한다. 터미널 입력 포커스와 한글·모바일 입력 편의성을 검증한다. 게임 계정과 영속 상태는 Supabase PostgreSQL에 저장한다. C와 Rust는 기존 동작 비교·이관 검증 자산으로만 보존하고 Go 운영 런타임에서는 의존하지 않는다. TDD, 결정론적 동작 비교, 실제 DB 통합 테스트, 브라우저 플레이와 장애 복구 검증으로 전체 기능 목록을 단계적으로 완성한다. 검증은 로컬 우선으로 수행하고, 승인된 배포 절차로 testnet-1xp Helm 배포 및 실사용 검증까지 완료한다. 비용 정책에 따라 모든 하위 작업은 Luna max만 배치하고 독립 작업만 필요한 만큼 병렬화한다. 다른 모델로 자동 승격하지 않는다. 테스트 통과를 절대적 무결성으로 과장하지 않으며, 누락 기능·미검증 항목·실패 증거를 계속 기록한다.
 
 사용자가 이전 목표를 삭제한 뒤 새 Go 목표를 생성했으며 실행 지시가 확인됐다. 이전 목표의 완료를 주장하지 않는다.
+
+엔진 중심 확장 목표: Go `engine`이 맵·몬스터·시나리오·이벤트 콘텐츠의 권위 계층이
+되고, AI agent GM은 typed engine 도구로만 새 지역·레벨링·스폰·운영을 제안한다.
+정적 검증·결정론적 shadow·정책 gate를 통과한 content revision만 published head가
+되며, 상세 단계는 [`go-engine-ai-gm-plan.md`](go-engine-ai-gm-plan.md)에 기록한다.
 
 ## 최신 구현 상태 (전체 인수 전)
 

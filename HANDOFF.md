@@ -1,5 +1,22 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 방향 전환 체크포인트 — 2026-09-10 (엔진 중심 포팅·AI GM E0)
+
+Go `engine`을 명령 receipt 조정기에서 콘텐츠 권위 계층으로 확장하는 방향을 확정했다.
+맵/방/출구, 몬스터 템플릿, 스폰 규칙, 시나리오, 이벤트를 typed proposal로 만들고
+정적 검증→결정론적 shadow→정책 gate→Supabase PostgreSQL revision 발행을 거친 뒤에만
+published head와 runtime scheduler가 읽는다. AI agent는 GM 도구를 통해 관찰·초안·검증·
+시뮬레이션·발행·rollback만 수행하며 임의 SQL이나 플레이어 XP/금화/identity를 직접
+변경하지 않는다. 콘텐츠 revision과 `mud_go.worlds.state` live snapshot은 분리한다.
+
+`server/internal/engine/content.go`에 schema v1 envelope, typed entity payload,
+AI provenance(prompt digest/model), canonical digest, bounded validator와
+additive/mutating/destructive 위험 분류를 추가하고 순수 TDD를 통과시켰다.
+검증: `go test -race ./internal/engine -run 'Content' -count=1`,
+`go vet ./internal/engine`, `git diff --check` PASS. 아직 DB migration, materializer,
+scenario/event scheduler, AI 모델 호출, 자동 발행, testnet 배포는 미완료다.
+상세 계획은 [`docs/porting-research/go-engine-ai-gm-plan.md`](docs/porting-research/go-engine-ai-gm-plan.md)다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 공포·봉합구)
 
 플레이어 self-cast 공포(SFEARS)와 봉합구(SSILNC)를 연결했다. 공포는 source의 지속시간
