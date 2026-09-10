@@ -14,9 +14,10 @@
 원자 커밋·재생을 조정한다. `world.LegacyRoomCatalog`, `TemplateCatalog`,
 `SpawnCatalog`, canonical NPC/room tick은 이미 입력과 규칙을 분리하고 있다. 그러나
 콘텐츠 revision/head, 시나리오·이벤트 모델, AI GM typed tool API는 아직 없었다.
-이번 배치에서 그 계약의 첫 버전을 `server/internal/engine/content.go`에 추가했다.
-이는 운영 발행이나 AI 호출을 완료했다는 뜻이 아니며, 이후 구현이 따라야 할 순수
-계약이다.
+이번 배치에서 그 계약의 첫 버전을 `server/internal/engine/content.go`에 추가하고,
+`content_catalog.go`에 proposal을 revision-zero 카탈로그에서 다음 immutable head로
+materialize하는 순수 함수를 추가했다. 이는 운영 발행이나 AI 호출을 완료했다는 뜻이
+아니며, 이후 DB publisher와 tool adapter가 따라야 할 순수 계약이다.
 
 ## 권위와 데이터 경계
 
@@ -198,8 +199,8 @@ E0~E4는 기존 Go 기능 포팅과 병렬로 진행할 수 있지만, published
 
 ## 이번 배치 결과와 다음 한정 작업
 
-완료한 것은 engine content contract의 순수 기반과 테스트다. 아직 하지 않은 것은
-DB migration, content materializer, AI 모델 호출, 자동 발행, testnet 배포다.
-다음 작업은 E0를 기준으로 `ContentCatalog` materializer와 legacy room/template
-importer를 작은 실패 테스트부터 추가하는 것이다. 그 뒤에만 scenario/event scheduler
-와 AI tool adapter를 연결한다.
+완료한 것은 engine content contract와 순수 `ContentCatalog` materializer의 테스트다.
+아직 하지 않은 것은 DB migration/head publisher, legacy room/template importer, AI
+모델 호출, 자동 발행, scenario/event scheduler, testnet 배포다. 다음 작업은 E0/E1
+계약을 기준으로 reviewed legacy room/template importer를 작은 실패 테스트부터
+추가하는 것이다. 그 뒤에만 scenario/event scheduler와 AI tool adapter를 연결한다.

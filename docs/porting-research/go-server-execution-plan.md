@@ -13,10 +13,21 @@ proposal로만 포팅한다.
 
 현재 `server/internal/engine/content.go`에 schema v1 proposal, typed map/room/
 monster/spawn/scenario/event payload, canonical digest, AI provenance, quota·참조·
-level/time 검증과 additive/mutating/destructive risk 분류를 추가했다. 이는 운영
-발행이 아니라 E0 순수 계약이며, 실제 DB head·materializer·event scheduler·AI tool
-호출은 후속 단계다. 상세 실행·스키마·인수 기준은
+level/time 검증과 additive/mutating/destructive risk 분류를 추가했다. 이어
+`content_catalog.go`에 proposal을 revision-zero/기존 head에 원자 materialize하는
+DB-free graph 경계를 추가했다. 이는 운영 발행이 아니라 E0/E1 순수 계약이며, 실제
+DB head·legacy importer·event scheduler·AI tool 호출은 후속 단계다. 상세 실행·스키마·인수 기준은
 [`go-engine-ai-gm-plan.md`](go-engine-ai-gm-plan.md)를 따른다.
+
+## 최신 엔진 구현 체크포인트 — 2026-09-10 (E0/E1 순수 materializer)
+
+`ContentCatalog`은 validated typed proposal을 정확한 content head에 적용하고
+map/room/monster/spawn/scenario/event의 전체 참조 그래프·digest를 검증한다. 실패 시
+원본 catalog를 변경하지 않으며 `ContentApplyReceipt`에 proposal/catalog digest와
+새 revision을 남긴다. 검증: `go test -race ./internal/engine -run 'Content' -count=1`,
+`go vet ./internal/engine`, `git diff --check` PASS. PostgreSQL publisher/head,
+legacy importer, scenario/event tick, AI GM adapter, ARM64·실제 PostgreSQL·브라우저·
+testnet은 아직 승격 조건이다.
 
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 주문 공포·봉합구
 

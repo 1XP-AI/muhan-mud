@@ -11,10 +11,12 @@ published head와 runtime scheduler가 읽는다. AI agent는 GM 도구를 통�
 
 `server/internal/engine/content.go`에 schema v1 envelope, typed entity payload,
 AI provenance(prompt digest/model), canonical digest, bounded validator와
-additive/mutating/destructive 위험 분류를 추가하고 순수 TDD를 통과시켰다.
+additive/mutating/destructive 위험 분류를 추가하고, `content_catalog.go`에
+proposal→revision head 원자 materializer를 추가해 순수 TDD를 통과시켰다.
 검증: `go test -race ./internal/engine -run 'Content' -count=1`,
-`go vet ./internal/engine`, `git diff --check` PASS. 아직 DB migration, materializer,
-scenario/event scheduler, AI 모델 호출, 자동 발행, testnet 배포는 미완료다.
+`go vet ./internal/engine`, `git diff --check` PASS. 아직 DB migration/head publisher,
+legacy importer, scenario/event scheduler, AI 모델 호출, 자동 발행, testnet 배포는
+미완료다.
 상세 계획은 [`docs/porting-research/go-engine-ai-gm-plan.md`](docs/porting-research/go-engine-ai-gm-plan.md)다.
 
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 공포·봉합구)
