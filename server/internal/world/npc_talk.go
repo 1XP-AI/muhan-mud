@@ -15,11 +15,12 @@ const (
 	// reads those bytes instead of introducing a second flag authority.
 	npcTalkFlag            = 23 // MTALKS
 	npcTalkAggressiveFlag  = 26 // MTLKAG (the source spelling is MTLKAG)
-	npcTalkCastMP          = 10
 	npcTalkBlessSpell      = 4  // SBLESS / 성현진
 	npcTalkProtectionSpell = 5  // SPROTE / 수호진
+	npcTalkCurePoisonSpell = 3  // SCUREP / 해독
 	npcTalkBlessFlag       = 0  // PBLESS
 	npcTalkProtectionFlag  = 8  // PPROTE
+	npcTalkPoisonFlag      = 16 // PPOISN
 	npcTalkProtectionTimer = 1  // LT_PROTE
 	npcTalkBlessTimer      = 2  // LT_BLESS
 	npcTalkRoomMagicExtend = 32 // RPMEXT
@@ -37,7 +38,7 @@ var (
 	// C talk_action side effect whose world reducer has not been admitted yet.
 	// ATTACK, ACTION, and the item-giving form of GIVE are handled as
 	// deterministic transitions below; CAST remains closed to the admitted
-	// canonical spell pair.
+	// canonical spell set.
 	ErrNPCTalkActionUnavailable         = errors.New("NPC talk action unavailable")
 	ErrNPCTalkTargetAbsent              = errors.New("NPC talk target absent")
 	ErrNPCTalkCastSpellUnavailable      = errors.New("NPC talk cast spell unavailable")
@@ -66,6 +67,7 @@ type npcTalkCastSpec struct {
 	Spell int
 	Flag  uint
 	Timer int
+	Cost  int16
 }
 
 func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
@@ -75,14 +77,21 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
 		}
 		return npcTalkCastSpec{
-			Name: name, Spell: npcTalkBlessSpell, Flag: npcTalkBlessFlag, Timer: npcTalkBlessTimer,
+			Name: name, Spell: npcTalkBlessSpell, Flag: npcTalkBlessFlag, Timer: npcTalkBlessTimer, Cost: 10,
 		}, nil
 	case "수호진":
 		if len(legacyInfoSpellNames) <= npcTalkProtectionSpell || legacyInfoSpellNames[npcTalkProtectionSpell] != name {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
 		}
 		return npcTalkCastSpec{
-			Name: name, Spell: npcTalkProtectionSpell, Flag: npcTalkProtectionFlag, Timer: npcTalkProtectionTimer,
+			Name: name, Spell: npcTalkProtectionSpell, Flag: npcTalkProtectionFlag, Timer: npcTalkProtectionTimer, Cost: 10,
+		}, nil
+	case "해독":
+		if len(legacyInfoSpellNames) <= npcTalkCurePoisonSpell || legacyInfoSpellNames[npcTalkCurePoisonSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
 		}, nil
 	default:
 		// Keep the historical action-level error visible to callers that
@@ -500,6 +509,12 @@ func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
 }
 
 func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, interval int32) (PlayerState, error) {
+	if spec.Timer < 0 {
+		body := target.Body
+		body.Flags[spec.Flag/8] &^= 1 << (spec.Flag % 8)
+		target.Body = body
+		return target, nil
+	}
 	if target.Items == nil || len(target.Body.Inventory) != 0 {
 		return PlayerState{}, fmt.Errorf("%w: canonical target equipment required", ErrNPCTalkCastSpellUnavailable)
 	}
@@ -547,6 +562,9 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkBlessFlag:
 		roomText = fmt.Sprintf("\n%s%s %s의 머리에 한쪽손을 얹으며 성현진을 \n외웁니다.\n그의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 머리에 한쪽손을 얹으며 성현진을 외웁니다.\n당신의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n", npc.Name, npcSubject)
+	case npcTalkPoisonFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 혈도를 짚으면서 해독 주문을 외웁니다.\n그의 손가락 끝으로 검은 독기운이 빠져나오는 것이 보입니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 혈도를 짚으면서 해독 주문을 외웁니다.\n당신의 손가락 끝으로 독기운이 빠져나가는 것이 느껴집니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
@@ -632,22 +650,27 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 		proposal.CastRefused = true
 		return nil
 	}
-	if npc.Body.MPCurrent < npcTalkCastMP || !flag(npc.Body.Spells[:], uint(spec.Spell)) {
-		// bless/protection print the generic apology when the NPC's MP or spell
+	if int16(npc.Body.MPCurrent) < spec.Cost || !flag(npc.Body.Spells[:], uint(spec.Spell)) {
+		// Admitted spells print the generic apology when the NPC's MP or spell
 		// bit gate leaves mpcur unchanged after talk_action.
 		return nil
 	}
 	if _, err := npcTalkSpellChance(npc.Body); err != nil {
 		return err
 	}
-	interval, err := npcTalkCastInterval(npc.Body, room)
-	if err != nil {
-		return err
+	interval := int32(0)
+	if spec.Timer >= 0 {
+		interval, err = npcTalkCastInterval(npc.Body, room)
+		if err != nil {
+			return err
+		}
 	}
 	if options == nil || options.Roll == nil {
 		return ErrNPCTalkCastRandomUnavailable
 	}
-	proposal.CastNow = options.Now
+	if spec.Timer >= 0 {
+		proposal.CastNow = options.Now
+	}
 	// Validate the full target/equipment boundary before consuming a random
 	// draw. A cast that cannot recompute canonical combat stats must not produce
 	// an otherwise unreplayable attempt.
@@ -667,7 +690,7 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	proposal.CastRoll = roll
 	proposal.CastChance = chance
 	proposal.CastInterval = interval
-	proposal.castNPCAfter.MPCurrent -= npcTalkCastMP
+	proposal.castNPCAfter.MPCurrent -= spec.Cost
 	if roll > chance {
 		proposal.CastFailed = true
 		return nil
@@ -772,27 +795,30 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	}
 	known := flag(npc.Body.Spells[:], uint(spec.Spell))
 	if !proposal.CastAttempted {
-		if (npc.Body.MPCurrent >= npcTalkCastMP && known) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+		if (int16(npc.Body.MPCurrent) >= spec.Cost && known) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
 			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast no-attempt proposal")
 		}
 		return spec, nil
 	}
-	if !known || npc.Body.MPCurrent < npcTalkCastMP || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
+	if !known || int16(npc.Body.MPCurrent) < spec.Cost || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast gate changed")
 	}
 	chance, err := npcTalkSpellChance(npc.Body)
 	if err != nil {
 		return npcTalkCastSpec{}, err
 	}
-	interval, err := npcTalkCastInterval(npc.Body, room)
-	if err != nil {
-		return npcTalkCastSpec{}, err
+	interval := int32(0)
+	if spec.Timer >= 0 {
+		interval, err = npcTalkCastInterval(npc.Body, room)
+		if err != nil {
+			return npcTalkCastSpec{}, err
+		}
 	}
 	if proposal.CastChance != chance || proposal.CastInterval != interval || proposal.CastSucceeded == proposal.CastFailed || proposal.CastSucceeded != (proposal.CastRoll <= chance) || proposal.CastFailed != (proposal.CastRoll > chance) {
 		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast outcome changed")
 	}
 	expectedNPC := npc.Body
-	expectedNPC.MPCurrent -= npcTalkCastMP
+	expectedNPC.MPCurrent -= spec.Cost
 	expectedTarget := actor
 	if proposal.CastSucceeded {
 		expectedTarget, err = npcTalkCastTargetAfter(actor, spec, proposal.CastNow, interval)

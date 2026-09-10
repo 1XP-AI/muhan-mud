@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -109,6 +110,33 @@ func npcTalkCastConnectorStore(t *testing.T) *npcTalkReplayStore {
 	npc.Body.Stats[3] = 10
 	npc.Body.MPMax, npc.Body.MPCurrent = 30, 30
 	npc.Body.Spells[4/8] |= 1 << (4 % 8)
+	state.NPCs["guide"] = npc
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store.state, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func npcTalkCurePoisonConnectorStore(t *testing.T) *npcTalkReplayStore {
+	t.Helper()
+	store := npcTalkTopicConnectorStore(t)
+	state, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := state.Players["a"]
+	actor.Body.Flags[16/8] |= 1 << (16 % 8) // PPOISN
+	state.Players["a"] = actor
+	npc := state.NPCs["guide"]
+	npc.Body.Level = 5
+	npc.Body.Class = 3
+	npc.Body.Stats[3] = 10
+	npc.Body.MPMax, npc.Body.MPCurrent = 12, 12
+	npc.Body.Spells[3/8] |= 1 << (3 % 8) // SCUREP
 	state.NPCs["guide"] = npc
 	if err := state.Validate(); err != nil {
 		t.Fatal(err)
@@ -389,6 +417,50 @@ func TestWorldConnectorSubmitDispatchesNPCTalkCastAndPersistsEffect(t *testing.T
 	}
 	if saved.NPCs["guide"].Body.MPCurrent != 20 || saved.Players["a"].Body.Flags[0]&1 == 0 || saved.Players["a"].Body.Timers[2].Interval != 1320 {
 		t.Fatalf("saved cast state npc=%+v actor=%+v", saved.NPCs["guide"].Body, saved.Players["a"].Body)
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesNPCTalkCurePoisonAndSkipsReplayFanout(t *testing.T) {
+	store := npcTalkCurePoisonConnectorStore(t)
+	catalog := npcTalkTransportCatalogAtLevel(t, 5, "quest CAST 해독 PLAYER\ncanonical answer\n")
+	_, actor, observer := npcTalkConnectorConnectionsWithCatalog(t, store, &catalog)
+
+	output, err := actor.Submit(context.Background(), "대화 Guide quest")
+	if err != nil || !strings.Contains(output, "해독 주문") || store.commits != 1 {
+		t.Fatalf("actor output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	wantEvents := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"canonical answer\"라고 이야기합니다.\r\n",
+		"\nGuide가 Alice의 혈도를 짚으면서 해독 주문을 외웁니다.\n그의 손가락 끝으로 검은 독기운이 빠져나오는 것이 보입니다.\n",
+	}
+	for i, want := range wantEvents {
+		select {
+		case got := <-observer.events:
+			if got != want {
+				t.Fatalf("observer cure event[%d]=%q want=%q", i, got, want)
+			}
+		default:
+			t.Fatalf("observer cure event[%d] missing", i)
+		}
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedActor := saved.Players["a"]
+	if saved.NPCs["guide"].Body.MPCurrent != 6 || savedActor.Body.Flags[16/8]&(1<<(16%8)) != 0 {
+		t.Fatalf("saved cure state npc=%+v actor=%+v", saved.NPCs["guide"].Body, savedActor.Body)
+	}
+	firstCommits := store.commits
+	replayed, err := actor.Submit(context.Background(), "대화 Guide quest")
+	if err != nil || replayed != output || store.commits != firstCommits {
+		t.Fatalf("replay output=%q err=%v commits=%d", replayed, err, store.commits)
+	}
+	select {
+	case got := <-observer.events:
+		t.Fatalf("replay fanned out cure event=%q", got)
+	default:
 	}
 }
 

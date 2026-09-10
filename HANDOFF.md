@@ -1,5 +1,19 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST 해독`)
+
+talk catalog의 `CAST 해독`을 canonical NPC 대화 reducer에 연결했다. NPC의 `SCUREP`
+습득·도력·적대 관계와 actor의 PPOISN 상태를 확인한 뒤 `spell_fail` RNG 1회를 receipt에
+고정하고, 성공 시 actor 독 플래그를 제거하며 NPC 도력 6을 차감한다. 실패 시 도력만
+차감하고 독 플래그는 보존한다. inventory가 이 효과의 권위가 아니므로 미이관 actor도
+안전하게 처리하며, receipt replay는 RNG·상태 변경·room fan-out을 반복하지 않는다.
+
+검증: `go test -race ./internal/world ./internal/transport -run 'NPCTalk' -count=1` PASS.
+이 기능은 기존 session/transport CAST 경로를 재사용하므로 별도 parser 변경은 없다.
+영향 패키지 vet와 diff check는 커밋 시 한 번 수행하며, PostgreSQL/browser/ARM64/release
+게이트는 기능 묶음 승격 cadence에서만 실행한다. `src/frp.new`는 기존 사용자 dirty 변경으로
+보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `GIVE`)
 
 원작 `talk_action`의 `GIVE` topic을 canonical Go item graph로 연결했다. 서버 소유

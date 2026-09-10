@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST 해독` — canonical 독 제거
+
+`command8.c:talk_action`의 비공격 주문 중 `해독`을 `SCUREP`/PPOISN canonical body
+전이로 연결했다. NPC의 주문 비트·도력·적대 관계를 확인하고 `spell_fail` RNG 1회를
+계획 단계에서 기록한다. 성공은 actor의 독 플래그 제거와 NPC MP 6 차감을 원자 적용하며,
+실패는 MP만 차감한다. 이 주문은 target inventory/equipment가 필요하지 않아 미이관
+inventory actor도 effect를 안전하게 받을 수 있다. room/actor projection은 receipt에
+저장하고 replay에서는 재실행하지 않는다.
+
+검증: world/transport NPCTalk focused race PASS. session parser는 기존 CAST 경계를
+재사용했다. PostgreSQL/browser/ARM64/release 및 전체 spell parity는 승격 cadence에서만
+실행한다.
+
 ## 2026-09-10 NPC 대화 `GIVE` — canonical object graph 지급
 
 `command8.c:talk_action`의 `GIVE <object-number>`를 server-owned `SpawnCatalog`와

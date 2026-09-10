@@ -1,5 +1,16 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 NPC 대화 `CAST 해독` canonical effect
+
+`TalkCatalog`에서 source `SCUREP`에 해당하는 `해독`만 추가로 admit한다. NPC의 canonical
+spell bit/MP와 actor의 same-room identity를 먼저 검증하고, `spell_fail` 1..100 결과를
+receipt에 고정한다. 성공 시 actor PPOISN을 제거하고 NPC MP 6을 차감하며, 실패 시 MP만
+차감한다. 이 효과는 inventory graph가 없어도 적용할 수 있고, 지원되지 않는 주문/대상은
+기존처럼 영수증 전에 fail-closed한다. actor/room 출력은 receipt commit 이후에만 fan-out한다.
+
+검증은 world/transport NPCTalk focused race로 제한한다. 반복적인 ARM64·PostgreSQL·browser/
+release 검사는 기능 묶음 승격 cadence에서만 실행한다.
+
 ## 2026-09-10 NPC 대화 `GIVE` canonical 지급 경계
 
 원작 `talk_action`의 `GIVE`를 xterm에서 사용하는 Go NPC talk receipt에 연결했다.
