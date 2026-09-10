@@ -27,8 +27,8 @@ var (
 	ErrNPCTalkTopicsUnavailable = errors.New("canonical NPC talk topics unavailable")
 	// ErrNPCTalkActionUnavailable is returned when a catalog record contains a
 	// C talk_action side effect whose world reducer has not been admitted yet.
-	// Returning an error before Apply preserves the source action boundary
-	// without pretending that ATTACK/ACTION/CAST/GIVE happened.
+	// ATTACK is handled as a deterministic enemy-edge transition below; the
+	// remaining ACTION/CAST/GIVE forms still fail closed before Apply.
 	ErrNPCTalkActionUnavailable = errors.New("NPC talk action unavailable")
 	ErrNPCTalkTargetAbsent      = errors.New("NPC talk target absent")
 )
@@ -269,13 +269,13 @@ func buildNPCTalkEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMon
 // catalog response. The question is sent only to room observers (the C
 // broadcast uses the actor fd as its exclusion), while the NPC response is
 // projected to both observers and the actor with the actor-specific wording.
-func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMonster, topic, response string) NPCTalkEvent {
+func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc LegacyMonster, topic, response string, actions ...TalkAction) NPCTalkEvent {
 	actorDisplay := actor.Name + "님"
 	npcSubject := legacySubjectParticle(npc.Name)
 	question := fmt.Sprintf("\n%s이 %s에게 \"%s\"에 관해 물어봅니다.\r\n", actorDisplay, npc.Name, topic)
 	roomResponse := fmt.Sprintf("\n%s%s %s에게 \"%s\"라고 이야기합니다.\r\n", npc.Name, npcSubject, actorDisplay, response)
 	actorResponse := fmt.Sprintf("\n%s%s 당신에게 \"%s\"라고 이야기합니다.\r\n", npc.Name, npcSubject, response)
-	return NPCTalkEvent{
+	event := NPCTalkEvent{
 		RoomID:         actor.RoomID,
 		ActorID:        actorID,
 		ActorName:      actor.Name,
@@ -291,6 +291,16 @@ func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc Lega
 		},
 		ActorMessages: []string{actorResponse},
 	}
+	if len(actions) != 0 && actions[0].Kind == TalkActionAttack {
+		actorDisplayParticle := valueObjectParticle(actor.Name + "님")
+		roomAttack := fmt.Sprintf("\n%s%s %s님%s 공격합니다.\n", npc.Name, npcSubject, actor.Name, actorDisplayParticle)
+		actorAttack := fmt.Sprintf("\n%s%s 당신을 공격합니다.\n", npc.Name, npcSubject)
+		event.RoomText += roomAttack
+		event.ActorText += actorAttack
+		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomAttack, ExcludeActorID: actorID})
+		event.ActorMessages = append(event.ActorMessages, actorAttack)
+	}
+	return event
 }
 
 // buildNPCTalkTopicMissEvent is the loaded-file/no-exact-key branch from
@@ -421,20 +431,25 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 		proposal.TopicCatalogFound = true
 		proposal.TopicFound = found
 		proposal.TopicEntry = entry
-		if found && entry.Action.Kind != TalkActionNone {
+		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack {
 			return NPCTalkProposal{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 		}
 	}
 	proposal.TargetName = npc.Body.Name
 	proposal.ClearHidden = true
 	proposal.AddEnemy = flag(npc.Body.Flags[:], npcTalkAggressiveFlag) && (!proposal.TopicCatalogFound || !proposal.TopicFound)
+	if proposal.TopicCatalogFound && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionAttack {
+		// command8.c's talk_action(ATTACK) adds the player to the NPC's enemy
+		// list even when the NPC is not globally MTLKAG-aggressive.
+		proposal.AddEnemy = true
+	}
 	if proposal.AddEnemy && npc.Enemies == nil {
 		return NPCTalkProposal{}, fmt.Errorf("NPC talk enemy relations unresolved")
 	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc.Body, "")
 	if proposal.TopicCatalogFound {
 		if proposal.TopicFound {
-			event = buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc.Body, topic, proposal.TopicEntry.Response)
+			event = buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc.Body, topic, proposal.TopicEntry.Response, proposal.TopicEntry.Action)
 		} else {
 			event = buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc.Body, topic)
 		}
@@ -528,7 +543,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			if proposal.TopicEntry.Key != proposal.Topic || !validNPCTalkText(proposal.TopicEntry.Response) {
 				return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic proposal")
 			}
-			if proposal.TopicEntry.Action.Kind != TalkActionNone {
+			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack {
 				return State{}, NPCTalkResult{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, proposal.TopicEntry.Action.Kind.String())
 			}
 		} else if proposal.TopicEntry != (TalkTopic{}) {
@@ -549,7 +564,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 	currentNPC := s.NPCs[targetID]
 	addEnemy := flag(npc.Flags[:], npcTalkAggressiveFlag)
 	if mtalksTopic && proposal.TopicFound {
-		addEnemy = false
+		addEnemy = proposal.TopicEntry.Action.Kind == TalkActionAttack
 	}
 	if addEnemy != proposal.AddEnemy || (addEnemy && currentNPC.Enemies == nil) {
 		return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk enemy relation changed")
@@ -557,7 +572,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 	expected := buildNPCTalkEvent(actor.Body, proposal.ActorID, targetID, npc, "")
 	if mtalksTopic {
 		if proposal.TopicFound {
-			expected = buildNPCTalkTopicEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic, proposal.TopicEntry.Response)
+			expected = buildNPCTalkTopicEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic, proposal.TopicEntry.Response, proposal.TopicEntry.Action)
 		} else {
 			expected = buildNPCTalkTopicMissEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic)
 		}
@@ -651,10 +666,10 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string, catalogs ...Tal
 			return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
 		}
 		if found {
-			if entry.Action.Kind != TalkActionNone {
+			if entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack {
 				return NPCTalkEvent{}, false, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 			}
-			return buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc, topic, entry.Response), true, nil
+			return buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc, topic, entry.Response, entry.Action), true, nil
 		}
 		return buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc, topic), true, nil
 	}

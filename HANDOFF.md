@@ -1,5 +1,14 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 ATTACK 액션)
+
+talk catalog의 `ATTACK` topic action을 Go world reducer에 연결했다. 원작처럼
+질문·응답 뒤 NPC가 플레이어를 공격하는 room/actor 메시지를 receipt event에 순서대로
+기록하고, NPC enemy 관계를 같은 원자 전이에 추가한다. receipt replay는 RNG나 이벤트를
+재실행하지 않으며 `ACTION`·`CAST`·`GIVE`는 아직 fail-closed로 유지한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|NPCTalkTopic|WorldConnectorSubmitDispatchesNPCTalk' -count=1` 및 영향 패키지 `go vet` PASS. 기능 레인에서는 PG/browser/ARM64/release 게이트를 반복하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (`직업전환` xterm 확인)
 
 bare `직업전환`을 원작처럼 xterm connection-local `예/아니오` 흐름으로 연결했다.

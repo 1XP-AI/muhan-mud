@@ -1,5 +1,15 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 NPC 대화 `ATTACK` 액션 경계
+
+talk file의 exact topic action `ATTACK`을 snapshot-bound NPC talk reducer에 연결한다.
+질문·응답과 NPC의 공격 알림을 동일 event 순서로 남기고, NPC enemy edge를 원자적으로
+추가해 다음 combat tick이 권위 상태를 사용하게 한다. `ACTION`·`CAST`·`GIVE`는 해당
+world reducer 계약이 준비될 때까지 receipt 전에 fail-closed한다.
+
+검증은 world/session/transport NPCTalk focused race와 vet만 수행한다. PG/browser/
+ARM64/release 게이트는 승격 cadence에서 한 번만 실행한다.
+
 ## 2026-09-10 `직업전환` xterm 확인 경계
 
 원작의 bare `직업전환`을 connection-local prompt로 연결한다. 서버 소유 world

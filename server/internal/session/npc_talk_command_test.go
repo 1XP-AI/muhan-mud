@@ -184,7 +184,7 @@ func TestExecuteNPCTalkLineRejectsUnsupportedTopicActionAtomically(t *testing.T)
 		t.Fatal(err)
 	}
 	store := &departureStore{state: raw}
-	catalog := npcTalkSessionCatalog(t, "quest ATTACK\ncanonical answer\n")
+	catalog := npcTalkSessionCatalog(t, "quest ACTION smile PLAYER\ncanonical answer\n")
 	var owners Ownership
 	lease, err := owners.Acquire("a")
 	if err != nil {

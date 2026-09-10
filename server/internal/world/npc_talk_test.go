@@ -215,7 +215,6 @@ func TestNPCTalkTopicActionsFailClosedWithoutStateMutation(t *testing.T) {
 		name string
 		line string
 	}{
-		{name: "attack", line: "quest ATTACK"},
 		{name: "action", line: "quest ACTION smile PLAYER"},
 		{name: "cast", line: "quest CAST cure PLAYER"},
 		{name: "give", line: "quest GIVE 107"},
@@ -235,6 +234,54 @@ func TestNPCTalkTopicActionsFailClosedWithoutStateMutation(t *testing.T) {
 				t.Fatal("unsupported topic action mutated state")
 			}
 		})
+	}
+}
+
+func TestNPCTalkTopicAttackAddsEnemyAndProjectsAction(t *testing.T) {
+	s := npcTalkFixture(t)
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 7
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	catalog := npcTalkTopicCatalog(t, "quest ATTACK", "응답")
+	proposal, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog)
+	if err != nil || !proposal.TopicFound || proposal.TopicEntry.Action.Kind != TalkActionAttack || !proposal.AddEnemy {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantResponse := "\nGuide가 당신에게 \"응답\"라고 이야기합니다.\r\n\nGuide가 당신을 공격합니다.\n"
+	if !result.Broadcast || !result.EnemyAdded || result.Response != wantResponse || result.Event == nil {
+		t.Fatalf("result=%+v", result)
+	}
+	wantRoom := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"응답\"라고 이야기합니다.\r\n",
+		"\nGuide가 Alice님을 공격합니다.\n",
+	}
+	if len(result.Event.RoomMessages) != len(wantRoom) || len(result.Event.ActorMessages) != 2 {
+		t.Fatalf("event=%+v", result.Event)
+	}
+	for i, want := range wantRoom {
+		if result.Event.RoomMessages[i].Text != want || result.Event.RoomMessages[i].ExcludeActorID != "a" {
+			t.Fatalf("room message[%d]=%+v want=%q", i, result.Event.RoomMessages[i], want)
+		}
+	}
+	if result.Event.ActorMessages[0] != "\nGuide가 당신에게 \"응답\"라고 이야기합니다.\r\n" || result.Event.ActorMessages[1] != "\nGuide가 당신을 공격합니다.\n" || result.Event.ActorText != wantResponse || result.Event.RoomText != strings.Join(wantRoom, "") {
+		t.Fatalf("event projection=%+v", result.Event)
+	}
+	enemies := next.NPCs["guide-one"].Enemies
+	if len(enemies) != 1 || enemies[0].Target != (EntityRef{Kind: "player", ID: "a"}) {
+		t.Fatalf("enemy relation=%+v", enemies)
+	}
+	projected, ok, err := next.RoomNPCTalkEvent("a", "guide-one", "quest", catalog)
+	if err != nil || !ok || !reflect.DeepEqual(projected, *result.Event) {
+		t.Fatalf("projected=%+v ok=%v err=%v want=%+v", projected, ok, err, result.Event)
 	}
 }
 

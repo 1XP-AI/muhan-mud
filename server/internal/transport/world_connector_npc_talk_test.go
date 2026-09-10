@@ -236,6 +236,37 @@ func TestWorldConnectorSubmitDispatchesNPCTalkTopicFromInjectedCatalog(t *testin
 	}
 }
 
+func TestWorldConnectorSubmitDispatchesNPCTalkAttackAction(t *testing.T) {
+	store := npcTalkTopicConnectorStore(t)
+	catalog := npcTalkTransportCatalog(t, "quest ATTACK\ncanonical answer\n")
+	_, actor, observer := npcTalkConnectorConnectionsWithCatalog(t, store, &catalog)
+
+	output, err := actor.Submit(context.Background(), "대화 Guide quest")
+	wantOutput := "\nGuide가 당신에게 \"canonical answer\"라고 이야기합니다.\r\n\nGuide가 당신을 공격합니다.\n"
+	if err != nil || output != wantOutput || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	wantEvents := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"canonical answer\"라고 이야기합니다.\r\n",
+		"\nGuide가 Alice님을 공격합니다.\n",
+	}
+	for i, want := range wantEvents {
+		select {
+		case got := <-observer.events:
+			if got != want {
+				t.Fatalf("observer action event[%d]=%q want=%q", i, got, want)
+			}
+		default:
+			t.Fatalf("observer action event[%d] missing", i)
+		}
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || len(saved.NPCs["guide"].Enemies) != 1 || saved.NPCs["guide"].Enemies[0].Target != (world.EntityRef{Kind: "player", ID: "a"}) {
+		t.Fatalf("saved NPC=%+v err=%v", saved.NPCs["guide"], err)
+	}
+}
+
 func TestWorldConnectorSubmitNPCTalkTopicFailsClosedWithoutCatalog(t *testing.T) {
 	store := npcTalkTopicConnectorStore(t)
 	_, actor, _ := npcTalkConnectorConnections(t, store)
