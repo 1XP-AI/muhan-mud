@@ -123,3 +123,59 @@ func familyApplicationErrorResponse(err error, family world.FamilyDefinition) st
 		return "아직 구현되지 않은 명령입니다.\r\n"
 	}
 }
+
+func (c *worldConnection) submitFamilyWithdrawalContinuation(ctx context.Context, draft *composeDraft, line string) (string, error) {
+	if draft == nil || draft.kind != composeFamilyWithdrawal {
+		return "명령을 처리할 수 없습니다.\r\n", nil
+	}
+	if strings.TrimSpace(line) != "예" {
+		c.clearCompose()
+		return session.FamilyWithdrawalCancelResponse, nil
+	}
+	receipt, err := c.game.owners.ExecuteFamilyMutationLineWithCatalog(
+		ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease,
+		"패거리탈퇴", c.game.config.FamilyCatalog,
+	)
+	if err != nil {
+		if familyWithdrawalDomainError(err) {
+			c.clearCompose()
+			return familyWithdrawalErrorResponse(err), nil
+		}
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", err
+		}
+		return "탈퇴 신청을 저장하지 못했습니다. 다시 시도해 주세요.\r\n", nil
+	}
+	var result world.FamilyMutationResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "탈퇴 신청을 저장하지 못했습니다. 다시 시도해 주세요.\r\n", nil
+	}
+	c.clearCompose()
+	return result.Response, nil
+}
+
+func familyWithdrawalDomainError(err error) bool {
+	return familyApplicationDomainError(err) ||
+		errors.Is(err, world.ErrFamilyMutationFeeUnavailable) ||
+		errors.Is(err, world.ErrFamilyMutationMemberLedgerMissing) ||
+		errors.Is(err, world.ErrFamilyMutationInsufficientGold) ||
+		errors.Is(err, world.ErrFamilyMutationGoldOverflow) ||
+		errors.Is(err, world.ErrFamilyMutationBossCannotWithdraw) ||
+		errors.Is(err, world.ErrFamilyMutationNotPending)
+}
+
+func familyWithdrawalErrorResponse(err error) string {
+	switch {
+	case errors.Is(err, world.ErrFamilyMutationBossCannotWithdraw):
+		return "패거리의 두목은 탈퇴를 할수 없습니다.\r\n"
+	case errors.Is(err, world.ErrFamilyMutationInsufficientGold):
+		return "당신이 가진 돈으로는 패거리탈퇴비를 낼수 없습니다.\r\n패거리를 탈퇴하지 않았습니다."
+	case errors.Is(err, world.ErrFamilyMutationNotPending):
+		return "당신은 어떤 패거리에도 가입이 되어 있지 않습니다.\r\n"
+	case errors.Is(err, world.ErrFamilyMutationFeeUnavailable), errors.Is(err, world.ErrFamilyMutationMemberLedgerMissing):
+		return "아직 구현되지 않은 명령입니다.\r\n"
+	default:
+		return "아직 구현되지 않은 명령입니다.\r\n"
+	}
+}

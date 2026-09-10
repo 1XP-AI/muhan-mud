@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `패거리탈퇴` 원작 confirmation 연결
+
+활성 패거리원의 bare `패거리탈퇴`를 xterm connection-local 확인 단계로 연결했다.
+`예` 전에는 상태·영수증을 변경하지 않고, 확인 시에만 기존 family fee/member ledger를
+검증하는 원자 reducer를 호출한다. `아니오`는 즉시 취소하며, pending 신청 취소 경로와
+두목/미이관 ledger fail-closed 경계는 기존 계약을 유지한다. 저장 오류에서는 같은 command
+ID를 보존해 재시도한다.
+
+`go test -race ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 `go vet ./internal/session ./internal/transport`가 통과했다.
+
 ## 2026-09-10 `패거리가입` 원작 continuation 연결
 
 bare `패거리가입`을 웹 xterm의 connection-local selection/confirmation 흐름으로

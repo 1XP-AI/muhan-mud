@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (`패거리탈퇴` confirmation)
+
+활성 패거리원의 bare `패거리탈퇴`를 xterm 안의 `예/아니오` 확인 흐름으로 연결했다.
+확인 전에는 상태·receipt를 변경하지 않으며, `예`일 때만 기존 fee/member ledger 원자
+reducer를 실행한다. pending 신청 취소와 미이관 ledger fail-closed는 유지한다.
+
+검증: `go test -race ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 `go vet ./internal/session ./internal/transport` PASS. 이번 변경에서는 전체 PG/browser/
+ARM64/release 게이트를 반복하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (`패거리가입` continuation)
 
 bare `패거리가입`을 xterm 안의 원작형 목록→이름 선택→`예/아니오` 확인 흐름으로

@@ -32,6 +32,8 @@ const (
 	FamilyApplicationConfirmPrompt   = "%s에 가입을 하시겠습니까? (예/아니오) "
 	FamilyApplicationInvalidChoice   = "\n잘못된 선택입니다.\r\n"
 	FamilyApplicationCancelResponse  = "\n가입 신청을 취소합니다."
+	FamilyWithdrawalConfirmPrompt    = "당신은 지금 현재의 패거리를 탈퇴하실 생각입니까? (예/아니오) "
+	FamilyWithdrawalCancelResponse   = "패거리를 탈퇴하지 않았습니다."
 )
 
 // FamilyMutationCommand is the parser-owned projection of command11.c's

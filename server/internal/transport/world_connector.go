@@ -349,6 +349,7 @@ const (
 	composeMailSend composeKind = iota + 1
 	composeBoardWrite
 	composeFamilyApplication
+	composeFamilyWithdrawal
 )
 
 type composeDraft struct {
@@ -480,6 +481,33 @@ func (c *worldConnection) submitComposeLine(ctx context.Context, line string) (s
 		c.lastCommand = strings.TrimLeft(line, " ")
 		return list + session.FamilyApplicationSelectionPrompt, true, nil
 	}
+	if _, ok := session.ParseFamilyWithdrawalLine(line); ok {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		actor, exists := state.Players[c.lease.ActorID]
+		if !exists || !actor.Online || actor.Body.Type != 0 {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		// Pending applications retain the already-admitted one-step cancel
+		// receipt. Only an active member enters the original confirmation flow.
+		if !world.PlayerFlagSet(actor.Body, world.FamilyMemberFlag) {
+			return "", false, nil
+		}
+		if world.PlayerFlagSet(actor.Body, world.FamilyBossFlag) {
+			return "패거리의 두목은 탈퇴를 할수 없습니다.\r\n", true, nil
+		}
+		if err := c.game.config.FamilyCatalog.Validate(); err != nil {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		if _, err := state.PlanFamilyWithdrawal(c.lease.ActorID, c.game.config.FamilyCatalog); err != nil {
+			return familyWithdrawalErrorResponse(err), true, nil
+		}
+		c.compose = &composeDraft{kind: composeFamilyWithdrawal, commandID: "family-withdraw-" + rand.Text()}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return session.FamilyWithdrawalConfirmPrompt, true, nil
+	}
 	return "", false, nil
 }
 
@@ -499,6 +527,8 @@ func (c *worldConnection) submitComposeContinuation(ctx context.Context, line st
 		return c.submitBoardWriteContinuation(ctx, draft, line)
 	case composeFamilyApplication:
 		return c.submitFamilyApplicationContinuation(ctx, draft, line)
+	case composeFamilyWithdrawal:
+		return c.submitFamilyWithdrawalContinuation(ctx, draft, line)
 	default:
 		c.clearCompose()
 		return "명령을 처리할 수 없습니다.\r\n", nil

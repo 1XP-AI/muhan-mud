@@ -1,5 +1,15 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `패거리탈퇴` confirmation gate
+
+활성 패거리원의 bare `패거리탈퇴`를 connection-local `예/아니오` 확인으로 연결했다.
+확인 전에는 영수증을 만들지 않고, `예`일 때만 fee/member ledger 검증과 원자 탈퇴
+reducer를 실행한다. pending 신청 취소와 두목/미이관 ledger의 fail-closed 동작은
+그대로 보존한다. 저장이 불확실하면 동일 command ID로 재시도한다.
+
+영향 session/transport race 및 vet만 실행했다. 고비용 PG/browser/ARM64/release 검증은
+해당 계약이 승격되는 cadence에서 한 번만 수행한다.
+
 ## 2026-09-10 `패거리가입` interactive gate
 
 원작의 bare `패거리가입`을 xterm connection-local continuation으로 연결했다.

@@ -141,6 +141,38 @@ func TestWorldConnectorBareFamilyApplicationCancelAndInvalidChoiceAreReceiptFree
 	}
 }
 
+func TestWorldConnectorActiveFamilyWithdrawalConfirmsBeforeReceipt(t *testing.T) {
+	store := &connectorCommandStore{}
+	connector, connections := boundedLaneConnection(t, store, connectorFamilyExpulsionState(), "applicant", "boss")
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+
+	prompt, err := connections[0].Submit(context.Background(), "패거리탈퇴")
+	if err != nil || prompt != session.FamilyWithdrawalConfirmPrompt || store.commits != 0 {
+		t.Fatalf("prompt=%q err=%v commits=%d", prompt, err, store.commits)
+	}
+	cancel, err := connections[0].Submit(context.Background(), "아니오")
+	if err != nil || cancel != session.FamilyWithdrawalCancelResponse || store.commits != 0 {
+		t.Fatalf("cancel=%q err=%v commits=%d", cancel, err, store.commits)
+	}
+
+	prompt, err = connections[0].Submit(context.Background(), "패거리탈퇴")
+	if err != nil || prompt != session.FamilyWithdrawalConfirmPrompt || store.commits != 0 {
+		t.Fatalf("second prompt=%q err=%v commits=%d", prompt, err, store.commits)
+	}
+	left, err := connections[0].Submit(context.Background(), "예")
+	if err != nil || !strings.Contains(left, "패거리에서 탈퇴") || store.commits != 1 {
+		t.Fatalf("left=%q err=%v commits=%d", left, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applicant := saved.Players["applicant"].Body
+	if world.PlayerFlagSet(applicant, world.FamilyMemberFlag) || applicant.Daily[world.FamilyDailySlot].Max != 0 {
+		t.Fatalf("active membership was not removed: %+v", applicant)
+	}
+}
+
 func TestWorldConnectorFamilyMutationFailsClosedForActiveLeave(t *testing.T) {
 	store := &connectorCommandStore{}
 	connector, connections := boundedLaneConnection(t, store, connectorFamilyMutationState(true, false), "applicant", "boss")
