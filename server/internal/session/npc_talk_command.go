@@ -47,6 +47,10 @@ type npcTalkLineRequest struct {
 // the pointed-to value while a command is being planned/applied.
 type NPCTalkOptions struct {
 	Catalog *world.TalkCatalog
+	// Now and Roll are used only by admitted catalog CAST actions. Roll is
+	// captured into the durable world receipt; it is never called on replay.
+	Now  int32
+	Roll func(int, int) int
 }
 
 // ParseNPCTalkLine accepts only the exact global alias 대화. The parser keeps
@@ -189,7 +193,7 @@ func (o *Ownership) ExecuteNPCTalkLineWithOptions(ctx context.Context, store eng
 		if catalog == nil {
 			proposal, err = s.PlanNPCTalkProposal(actorID, command.NPCName, command.NPCOccurrence, command.Topic)
 		} else {
-			proposal, err = s.PlanNPCTalkProposal(actorID, command.NPCName, command.NPCOccurrence, command.Topic, *catalog)
+			proposal, err = s.PlanNPCTalkProposalWithEffectOptions(actorID, command.NPCName, command.NPCOccurrence, command.Topic, *catalog, world.NPCTalkEffectOptions{Now: options.Now, Roll: options.Roll})
 		}
 		if err != nil {
 			return nil, nil, err

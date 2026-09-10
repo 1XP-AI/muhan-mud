@@ -1,11 +1,22 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 NPC 대화 `CAST` canonical 주문 경계
+
+talk catalog의 `CAST` 중 원작 `성현진`·`수호진`만 snapshot-bound effect로 admit한다.
+NPC spell bit/도력/적대 관계와 플레이어 canonical equipment를 확인한 뒤 `spell_fail`과
+동일한 RNG 1회를 receipt에 고정하고, 성공 효과와 NPC MP 차감을 원자 저장한다. 성공
+room/actor 투영은 최초 commit 뒤 receipt event로만 전송하며, 미지원 주문·대상·상태는
+fail-closed한다.
+
+검증은 world/session/transport NPCTalk focused race와 vet만 수행하고, PG/browser/
+ARM64/release 게이트는 승격 cadence에서 한 번만 실행한다.
+
 ## 2026-09-10 NPC 대화 `ATTACK` 액션 경계
 
 talk file의 exact topic action `ATTACK`을 snapshot-bound NPC talk reducer에 연결한다.
 질문·응답과 NPC의 공격 알림을 동일 event 순서로 남기고, NPC enemy edge를 원자적으로
-추가해 다음 combat tick이 권위 상태를 사용하게 한다. `ACTION`·`CAST`·`GIVE`는 해당
-world reducer 계약이 준비될 때까지 receipt 전에 fail-closed한다.
+추가해 다음 combat tick이 권위 상태를 사용하게 한다. `ACTION`·`GIVE`와 미지원 `CAST`는
+해당 world reducer 계약이 준비될 때까지 receipt 전에 fail-closed한다.
 
 검증은 world/session/transport NPCTalk focused race와 vet만 수행한다. PG/browser/
 ARM64/release 게이트는 승격 cadence에서 한 번만 실행한다.

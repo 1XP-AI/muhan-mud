@@ -1,11 +1,22 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` — 성현진·수호진)
+
+talk catalog의 `CAST` action 중 원작 canonical 주문 `성현진`/`수호진`만 Go world reducer에
+연결했다. NPC의 주문 습득 비트·도력·기존 적대 관계를 먼저 확인하고, 통과한 경우에만
+결정론적 spell-fail RNG(1..100)를 한 번 소비한다. 성공 시 NPC 도력 10 차감, 플레이어
+효과 비트·타이머·전투 수치를 하나의 receipt에 저장하고, 실패 시 도력만 차감한다.
+`ACTION`·`GIVE`·미지원/비정상 CAST는 계속 fail-closed하며, receipt event만 성공 주문의
+room/actor 투영을 재생한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk' -count=1` 및 영향 패키지 `go vet` PASS. 전체 세 패키지 실행은 기존 strict room corpus 63건과 별도 family broadcast 회귀로 실패해 이번 기능 증거로 사용하지 않았다. PostgreSQL/browser/ARM64/release 검사는 cadence에 따라 반복하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 ATTACK 액션)
 
 talk catalog의 `ATTACK` topic action을 Go world reducer에 연결했다. 원작처럼
 질문·응답 뒤 NPC가 플레이어를 공격하는 room/actor 메시지를 receipt event에 순서대로
 기록하고, NPC enemy 관계를 같은 원자 전이에 추가한다. receipt replay는 RNG나 이벤트를
-재실행하지 않으며 `ACTION`·`CAST`·`GIVE`는 아직 fail-closed로 유지한다.
+재실행하지 않으며 `ACTION`·`GIVE`와 미지원 `CAST`는 fail-closed로 유지한다.
 
 검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|NPCTalkTopic|WorldConnectorSubmitDispatchesNPCTalk' -count=1` 및 영향 패키지 `go vet` PASS. 기능 레인에서는 PG/browser/ARM64/release 게이트를 반복하지 않았다.
 

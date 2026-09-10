@@ -1,11 +1,24 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` — 성현진·수호진
+
+`TalkCatalog`의 `CAST` action 중 source `spllist`와 일치하는 `성현진`(SBLESS)·`수호진`(SPROTE)만
+admit했다. NPC의 spell bit·MP·적대 관계와 canonical target equipment를 snapshot-bound로
+검증하고, `spell_fail`과 동일한 class/지식 확률표의 RNG 1회를 receipt에 기록한다. 성공은
+NPC MP 10 차감과 플레이어 효과 bit/timer 및 해당 전투 수치 재계산을 원자 적용하고, 실패는
+MP만 차감한다. receipt event는 최초 commit 뒤에만 room/actor cast projection을 전송하며,
+post-state에서 outcome을 추측하는 `RoomNPCTalkEvent`는 fail-closed한다. 다른 CAST 주문,
+ACTION/GIVE, 운영 원본 대량 대조·PG/browser/release 검증은 아직 미완료다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk' -count=1`, 영향 패키지 `go vet` PASS. 전체 세 패키지 실행은 기존 strict room corpus 63건과 family broadcast 회귀로 실패했다.
+
 ## 2026-09-10 NPC 대화 `ATTACK` 액션
 
 `TalkCatalog`의 exact topic이 `ATTACK` action을 가질 때 `PlanNPCTalkProposal`/`ApplyNPCTalk`가
 원작의 질문·응답 뒤 공격 메시지와 NPC→플레이어 enemy 관계를 하나의 결정론적 receipt
 event로 저장한다. actor/room 메시지 순서를 보존하고 replay에서는 재전송하지 않는다.
-`ACTION`·`CAST`·`GIVE`는 미확인 side effect라 계속 fail-closed한다.
+`성현진`·`수호진` CAST는 canonical effect boundary를 통과했으며, `ACTION`·`GIVE`와 그 밖의
+CAST는 미확인 side effect라 계속 fail-closed한다.
 
 world/session/transport NPCTalk focused race 및 영향 패키지 vet가 통과했다. 실제
 PostgreSQL/browser/ARM64/release 검사는 관련 계약이 승격되는 cadence에서만 실행한다.
@@ -806,7 +819,7 @@ dispatch 후보를 모두 적었다. 모든 행에 공통으로 적용되는 G0 
 | NPC/tick/리젠/시간 | `update.c`, `main.c`, `room.c`, `creature.c`, `files2.c` | 20s user, random interval, active, 150s time, 20,000s moonstone, 4,000/5,000s invasion, timed exit/shutdown | `tests/unit/update_schedule_test.c`, `tests/unit/room_time_test.c` | 미구현; tick clock/RNG contract 필요 |
 | 아이템 graph·인벤토리·장비 | `mstruct.h:130-242`, `command2.c`, `command3.c`, `object.c`, `files1.c`, `files3.c` | ordered recursive children, carry/weight, ready↔inventory normalization, wear restrictions, shots/flags, use/burn/repair | `tests/unit/object_v1_test.c`, `object_graph_v1_test.c`, `creature_v1_test.c`, `files1_decoder_test.c`, `files1_serializer_test.c`, `creature_object_layout_contract_test.py` | 미구현; codec tests are not gameplay acceptance |
 | 주문·spell list·realm | `global.c:spllist/ospell`, `magic1.c`–`magic8.c`, `command9.c` | known spell/realm, MP cost, level/class/room restriction, duration/timer, combat vs utility, failure and dispel | direct magic tests 없음; `tests/unit/creature_v1_test.c` only serializes spell bytes | 미구현; G3 fixture 필요 |
-| NPC 대화/talk files | `files3.c:256-342`, `command8.c:817-1039`, `mstruct.h:ttag`, `docs/crt_talk` | key→response/action/CAST/GIVE/ATTACK, bounded text and deterministic side effects | Go exact topic/no-topic receipt와 `ATTACK` enemy/event 경계는 구현·focused race 검증; `ACTION`/`CAST`/`GIVE`, 원본 대량 대조·전체 출력 parity는 미완료 |
+| NPC 대화/talk files | `files3.c:256-342`, `command8.c:817-1039`, `mstruct.h:ttag`, `docs/crt_talk` | key→response/action/CAST/GIVE/ATTACK, bounded text and deterministic side effects | Go exact topic/no-topic receipt와 `ATTACK`, `CAST(성현진·수호진)` effect/event 경계는 구현·focused race 검증; `ACTION`/`GIVE`·그 밖의 CAST, 원본 대량 대조·전체 출력 parity는 미완료 |
 | shop/buy/sell/trade/repair/forge | `command7.c`, `command10.c`, `command8.c`, `docs/rom_stor` | shop storage room/price, item ownership/value, trade quest outputs, repair/forge choices and costs | no direct shop/forge command tests; object/file codec tests are indirect only | 미구현 |
 | bank/inventory transfer | `bank.c`, `bank_store.c`, `bank_money_*`, `docs/porting-research/bank-live-capture-gap-20260907.md` | bank object graph and gold before/after, retry/conflict/legacy fallback, room requirement | `tests/unit/bank_store_test.c`, `bank_legacy_abi_test.c`, `bank_evidence_test.c`, `bank_snapshot_v1_test.c`, `bank_transfer_snapshot_v1_test.c`, `bank_money_*_test.c`; Go raw-bank ABI/graph tests, descriptor locator, kind-8 codec·raw conversion·`ImportBankSnapshot` receipt/replay/rollback tests; live gameplay route remains separate | **부분 구현**; raw locator·변환·artifact 검사·operator-owned PG import/evidence까지 완료, 대량 수집·계정 대조·라이브 graph/gold parity는 미구현 |
 | 우편·게시판·메모·공지 | `post.c`, `board.c`, `command11.c`, `command12.c`, `docs/dm.doc` | append/read/delete ordering, board index/file bounds, room/permission requirements, durable text | no direct handler tests; `tests/stack-e2e/*` covers onboarding/evidence, not in-game board | 미구현 |

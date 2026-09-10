@@ -200,3 +200,75 @@ func TestExecuteNPCTalkLineRejectsUnsupportedTopicActionAtomically(t *testing.T)
 		t.Fatalf("unsupported action mutated durable state: commits=%d", store.commits)
 	}
 }
+
+func TestExecuteNPCTalkLineWithOptionsPersistsCanonicalCastAndReplays(t *testing.T) {
+	s, err := world.DecodeState(npcTalkCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := s.Players["a"]
+	actor.Body.Level = 1
+	actor.Body.Class = 4
+	actor.Body.Stats = [5]byte{10, 10, 10, 10, 10}
+	actor.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	stats, err := actor.Items.CombatStats(actor.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor.Body.Armor, actor.Body.Thaco = byte(stats.Armor), byte(stats.Thaco)
+	actor.Body.Flags = [8]byte{}
+	s.Players["a"] = actor
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 5
+	npc.Body.Class = 3
+	npc.Body.Stats[3] = 10
+	npc.Body.MPMax, npc.Body.MPCurrent = 30, 30
+	npc.Body.Flags[23/8] |= 1 << (23 % 8)
+	npc.Body.Spells[4/8] |= 1 << (4 % 8)
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	catalog, err := world.LoadTalkCatalog(fstest.MapFS{
+		"Guide-5": &fstest.MapFile{Data: []byte("quest CAST 성현진 PLAYER\n응답\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	options := NPCTalkOptions{Catalog: &catalog, Now: 1000, Roll: func(int, int) int { return 1 }}
+	first, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-cast", lease, "대화 Guide quest", options)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.NPCTalkResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.SpellName != "성현진" || !result.SpellAttempted || !result.SpellSucceeded || result.SpellRoll != 1 || result.SpellInterval != 1320 {
+		t.Fatalf("cast result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.NPCs["guide-one"].Body.MPCurrent != 20 || saved.Players["a"].Body.Flags[0]&1 == 0 {
+		t.Fatalf("saved cast state=%+v/%+v", saved.NPCs["guide-one"].Body, saved.Players["a"].Body)
+	}
+	replay, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-cast", lease, "대화 Guide quest", options)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}

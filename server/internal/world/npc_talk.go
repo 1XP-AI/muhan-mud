@@ -13,8 +13,16 @@ const (
 	// These are the stable bit positions from src/mtype.h.  The Go NPC body
 	// still carries the source flag bytes, so the talk reducer deliberately
 	// reads those bytes instead of introducing a second flag authority.
-	npcTalkFlag           = 23 // MTALKS
-	npcTalkAggressiveFlag = 26 // MTLKAG (the source spelling is MTLKAG)
+	npcTalkFlag            = 23 // MTALKS
+	npcTalkAggressiveFlag  = 26 // MTLKAG (the source spelling is MTLKAG)
+	npcTalkCastMP          = 10
+	npcTalkBlessSpell      = 4  // SBLESS / 성현진
+	npcTalkProtectionSpell = 5  // SPROTE / 수호진
+	npcTalkBlessFlag       = 0  // PBLESS
+	npcTalkProtectionFlag  = 8  // PPROTE
+	npcTalkProtectionTimer = 1  // LT_PROTE
+	npcTalkBlessTimer      = 2  // LT_BLESS
+	npcTalkRoomMagicExtend = 32 // RPMEXT
 
 	maxNPCTalkTextBytes = 1023
 )
@@ -28,10 +36,53 @@ var (
 	// ErrNPCTalkActionUnavailable is returned when a catalog record contains a
 	// C talk_action side effect whose world reducer has not been admitted yet.
 	// ATTACK is handled as a deterministic enemy-edge transition below; the
-	// remaining ACTION/CAST/GIVE forms still fail closed before Apply.
-	ErrNPCTalkActionUnavailable = errors.New("NPC talk action unavailable")
-	ErrNPCTalkTargetAbsent      = errors.New("NPC talk target absent")
+	// ACTION/GIVE and CAST forms outside the admitted canonical spell pair still
+	// fail closed before Apply.
+	ErrNPCTalkActionUnavailable         = errors.New("NPC talk action unavailable")
+	ErrNPCTalkTargetAbsent              = errors.New("NPC talk target absent")
+	ErrNPCTalkCastSpellUnavailable      = errors.New("NPC talk cast spell unavailable")
+	ErrNPCTalkCastRandomUnavailable     = errors.New("NPC talk cast random source unavailable")
+	ErrNPCTalkCastProjectionUnavailable = errors.New("NPC talk cast projection requires receipt")
 )
+
+// NPCTalkEffectOptions contains host-owned values needed by an admitted
+// CAST action. The random draw is recorded in NPCTalkProposal and is never
+// requested again by ApplyNPCTalk, so a retry/replay is deterministic.
+type NPCTalkEffectOptions struct {
+	Now  int32
+	Roll func(int, int) int
+}
+
+type npcTalkCastSpec struct {
+	Name  string
+	Spell int
+	Flag  uint
+	Timer int
+}
+
+func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
+	switch name {
+	case "성현진":
+		if len(legacyInfoSpellNames) <= npcTalkBlessSpell || legacyInfoSpellNames[npcTalkBlessSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkBlessSpell, Flag: npcTalkBlessFlag, Timer: npcTalkBlessTimer,
+		}, nil
+	case "수호진":
+		if len(legacyInfoSpellNames) <= npcTalkProtectionSpell || legacyInfoSpellNames[npcTalkProtectionSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkProtectionSpell, Flag: npcTalkProtectionFlag, Timer: npcTalkProtectionTimer,
+		}, nil
+	default:
+		// Keep the historical action-level error visible to callers that
+		// already fail-closed every non-admitted CAST, while exposing the more
+		// specific spell boundary to new callers.
+		return npcTalkCastSpec{}, fmt.Errorf("%w: %w: %s", ErrNPCTalkActionUnavailable, ErrNPCTalkCastSpellUnavailable, name)
+	}
+}
 
 // NPCTalkRoomMessage is one ordered room projection. ExcludeActorID is kept
 // per message even though the current bounded slice uses the same exclusion
@@ -65,14 +116,23 @@ type NPCTalkEvent struct {
 // projection. Target identity is included for audit/replay; it is resolved by
 // the world reducer and is never accepted from the terminal as authority.
 type NPCTalkResult struct {
-	Response   string        `json:"response"`
-	Broadcast  bool          `json:"broadcast"`
-	TargetID   string        `json:"target_id,omitempty"`
-	TargetName string        `json:"target_name,omitempty"`
-	Occurrence int           `json:"occurrence,omitempty"`
-	Topic      string        `json:"topic,omitempty"`
-	EnemyAdded bool          `json:"enemy_added,omitempty"`
-	Event      *NPCTalkEvent `json:"event,omitempty"`
+	Response       string        `json:"response"`
+	Broadcast      bool          `json:"broadcast"`
+	TargetID       string        `json:"target_id,omitempty"`
+	TargetName     string        `json:"target_name,omitempty"`
+	Occurrence     int           `json:"occurrence,omitempty"`
+	Topic          string        `json:"topic,omitempty"`
+	EnemyAdded     bool          `json:"enemy_added,omitempty"`
+	Action         *TalkAction   `json:"action,omitempty"`
+	SpellName      string        `json:"spell_name,omitempty"`
+	SpellTargetID  string        `json:"spell_target_id,omitempty"`
+	SpellAttempted bool          `json:"spell_attempted,omitempty"`
+	SpellSucceeded bool          `json:"spell_succeeded,omitempty"`
+	SpellFailed    bool          `json:"spell_failed,omitempty"`
+	SpellRoll      int           `json:"spell_roll,omitempty"`
+	SpellChance    int           `json:"spell_chance,omitempty"`
+	SpellInterval  int32         `json:"spell_interval,omitempty"`
+	Event          *NPCTalkEvent `json:"event,omitempty"`
 }
 
 // NPCTalkProposal is the pure candidate for PlanNPCTalkProposal/ApplyNPCTalk.
@@ -100,8 +160,23 @@ type NPCTalkProposal struct {
 	TopicCatalogFound bool
 	TopicFound        bool
 	TopicEntry        TalkTopic
+	CastAction        TalkAction
+	CastTargetID      string
+	CastSpellName     string
+	CastAttempted     bool
+	CastSucceeded     bool
+	CastFailed        bool
+	CastRefused       bool
+	CastNow           int32
+	CastRoll          int
+	CastChance        int
+	CastInterval      int32
 
-	before State
+	before           State
+	castNPCBefore    LegacyMonster
+	castNPCAfter     LegacyMonster
+	castTargetBefore PlayerState
+	castTargetAfter  PlayerState
 }
 
 // ValidateNPCTalkName checks a client-selected display-name token before it
@@ -303,6 +378,101 @@ func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc Lega
 	return event
 }
 
+func npcTalkCastRoll(options *NPCTalkEffectOptions) (value int, err error) {
+	if options == nil || options.Roll == nil {
+		return 0, ErrNPCTalkCastRandomUnavailable
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			value = 0
+			err = fmt.Errorf("%w: random source panicked: %v", ErrNPCTalkCastRandomUnavailable, recovered)
+		}
+	}()
+	value = options.Roll(1, 100)
+	if value < 1 || value > 100 {
+		return 0, fmt.Errorf("NPC talk cast random value outside 1..100")
+	}
+	return value, nil
+}
+
+func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
+	if caster.Stats[3] > 63 {
+		return 0, fmt.Errorf("NPC talk cast intelligence outside legacy table")
+	}
+	interval := int64(1200) + int64(legacyStatBonus[caster.Stats[3]])*600
+	if interval < 300 {
+		interval = 300
+	}
+	if caster.Class == 3 || caster.Class == 6 { // CLERIC or PALADIN
+		interval += 60 * int64((int(caster.Level)+3)/4)
+	}
+	if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+		interval += 800
+	}
+	if interval < 0 || interval > int64(^uint32(0)>>1) {
+		return 0, fmt.Errorf("NPC talk cast interval outside int32")
+	}
+	return int32(interval), nil
+}
+
+func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, interval int32) (PlayerState, error) {
+	if target.Items == nil || len(target.Body.Inventory) != 0 {
+		return PlayerState{}, fmt.Errorf("%w: canonical target equipment required", ErrNPCTalkCastSpellUnavailable)
+	}
+	if err := target.Items.Validate(); err != nil {
+		return PlayerState{}, fmt.Errorf("%w: target equipment invalid: %v", ErrNPCTalkCastSpellUnavailable, err)
+	}
+	body := target.Body
+	body.Flags[spec.Flag/8] |= 1 << (spec.Flag % 8)
+	body.Timers[spec.Timer] = LegacyTimer{LastTime: now, Interval: interval}
+	stats, err := target.Items.CombatStats(body)
+	if err != nil {
+		return PlayerState{}, fmt.Errorf("%w: target combat stats unavailable: %v", ErrNPCTalkCastSpellUnavailable, err)
+	}
+	if spec.Flag == npcTalkBlessFlag {
+		body.Thaco = byte(stats.Thaco)
+	} else {
+		body.Armor = byte(stats.Armor)
+	}
+	target.Body = body
+	return target, nil
+}
+
+func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec npcTalkCastSpec, attempted, succeeded, failed, refused bool) {
+	if event == nil {
+		return
+	}
+	npcSubject := legacySubjectParticle(npc.Name)
+	if refused {
+		text := fmt.Sprintf("\n%s%s 당신에게 어떤 주문을 거는것을 거부했습니다.\n", npc.Name, npcSubject)
+		event.ActorText += text
+		event.ActorMessages = append(event.ActorMessages, text)
+		return
+	}
+	if !attempted {
+		text := fmt.Sprintf("\n%s%s 지금은 당신에게 주문을 걸어줄 수 없다고 사과합니다.\n", npc.Name, npcSubject)
+		event.ActorText += text
+		event.ActorMessages = append(event.ActorMessages, text)
+		return
+	}
+	if failed || !succeeded {
+		return
+	}
+	var roomText, actorText string
+	switch spec.Flag {
+	case npcTalkBlessFlag:
+		roomText = fmt.Sprintf("\n%s%s %s의 머리에 한쪽손을 얹으며 성현진을 \n외웁니다.\n그의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 머리에 한쪽손을 얹으며 성현진을 외웁니다.\n당신의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n", npc.Name, npcSubject)
+	default:
+		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
+	}
+	event.RoomText += roomText
+	event.ActorText += actorText
+	event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
+	event.ActorMessages = append(event.ActorMessages, actorText)
+}
+
 // buildNPCTalkTopicMissEvent is the loaded-file/no-exact-key branch from
 // command8.c. It deliberately remains a response projection rather than an
 // action: the caller may add the existing MTLKAG enemy edge atomically.
@@ -352,6 +522,143 @@ func unpackNPCTalkCatalog(catalogs []TalkCatalog) (*TalkCatalog, error) {
 	return &catalog, nil
 }
 
+func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc NPCState, room RoomState, options *NPCTalkEffectOptions) error {
+	if proposal == nil || proposal.TopicEntry.Action.Kind != TalkActionCast {
+		return nil
+	}
+	action := proposal.TopicEntry.Action
+	if action.Target != "" && action.Target != "PLAYER" {
+		return fmt.Errorf("%w: unsupported target %q", ErrNPCTalkCastSpellUnavailable, action.Target)
+	}
+	spec, err := npcTalkCastSpecFor(action.Name)
+	if err != nil {
+		return err
+	}
+	proposal.CastAction = action
+	proposal.CastTargetID = proposal.ActorID
+	proposal.CastSpellName = spec.Name
+	proposal.castNPCBefore = npc.Body
+	proposal.castNPCAfter = npc.Body
+	proposal.castTargetBefore = actor
+	proposal.castTargetAfter = actor
+	if npcEnemyContains(npc.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}) {
+		// talk_action refuses a non-offensive spell once the NPC already has the
+		// player on its enemy list. The topic response is still a committed talk
+		// event, and only the actor receives this refusal text.
+		proposal.CastRefused = true
+		return nil
+	}
+	if npc.Body.MPCurrent < npcTalkCastMP || !flag(npc.Body.Spells[:], uint(spec.Spell)) {
+		// bless/protection print the generic apology when the NPC's MP or spell
+		// bit gate leaves mpcur unchanged after talk_action.
+		return nil
+	}
+	if _, err := npcTalkSpellChance(npc.Body); err != nil {
+		return err
+	}
+	interval, err := npcTalkCastInterval(npc.Body, room)
+	if err != nil {
+		return err
+	}
+	if options == nil || options.Roll == nil {
+		return ErrNPCTalkCastRandomUnavailable
+	}
+	proposal.CastNow = options.Now
+	// Validate the full target/equipment boundary before consuming a random
+	// draw. A cast that cannot recompute canonical combat stats must not produce
+	// an otherwise unreplayable attempt.
+	preview, err := npcTalkCastTargetAfter(actor, spec, options.Now, interval)
+	if err != nil {
+		return err
+	}
+	roll, err := npcTalkCastRoll(options)
+	if err != nil {
+		return err
+	}
+	chance, err := npcTalkSpellChance(npc.Body)
+	if err != nil {
+		return err
+	}
+	proposal.CastAttempted = true
+	proposal.CastRoll = roll
+	proposal.CastChance = chance
+	proposal.CastInterval = interval
+	proposal.castNPCAfter.MPCurrent -= npcTalkCastMP
+	if roll > chance {
+		proposal.CastFailed = true
+		return nil
+	}
+	proposal.CastSucceeded = true
+	proposal.castTargetAfter = preview
+	return nil
+}
+
+func npcTalkSpellChance(body LegacyMonster) (int, error) {
+	// spell_fail in magic8.c uses the same class/INT table as readscroll and
+	// consumes one 1..100 draw even for the DM/default success branch.
+	return readScrollSpellChance(body)
+}
+
+func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, npc NPCState, room RoomState) (npcTalkCastSpec, error) {
+	action := proposal.TopicEntry.Action
+	if action.Kind != TalkActionCast || proposal.CastAction != action || proposal.CastTargetID != proposal.ActorID {
+		return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast action proposal")
+	}
+	if action.Target != "" && action.Target != "PLAYER" {
+		return npcTalkCastSpec{}, fmt.Errorf("%w: unsupported target %q", ErrNPCTalkCastSpellUnavailable, action.Target)
+	}
+	spec, err := npcTalkCastSpecFor(action.Name)
+	if err != nil {
+		return npcTalkCastSpec{}, err
+	}
+	if proposal.CastSpellName != spec.Name || !reflect.DeepEqual(proposal.castNPCBefore, npc.Body) || !reflect.DeepEqual(proposal.castTargetBefore, actor) {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast target changed")
+	}
+	if proposal.CastRefused {
+		if !npcEnemyContains(npc.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}) || proposal.CastAttempted || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast refusal proposal")
+		}
+		return spec, nil
+	}
+	if npcEnemyContains(npc.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}) {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast refusal changed")
+	}
+	known := flag(npc.Body.Spells[:], uint(spec.Spell))
+	if !proposal.CastAttempted {
+		if (npc.Body.MPCurrent >= npcTalkCastMP && known) || proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 0 || proposal.CastChance != 0 || proposal.CastInterval != 0 || proposal.CastNow != 0 || !reflect.DeepEqual(proposal.castNPCAfter, npc.Body) || !reflect.DeepEqual(proposal.castTargetAfter, actor) {
+			return npcTalkCastSpec{}, fmt.Errorf("invalid NPC talk cast no-attempt proposal")
+		}
+		return spec, nil
+	}
+	if !known || npc.Body.MPCurrent < npcTalkCastMP || proposal.CastRoll < 1 || proposal.CastRoll > 100 {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast gate changed")
+	}
+	chance, err := npcTalkSpellChance(npc.Body)
+	if err != nil {
+		return npcTalkCastSpec{}, err
+	}
+	interval, err := npcTalkCastInterval(npc.Body, room)
+	if err != nil {
+		return npcTalkCastSpec{}, err
+	}
+	if proposal.CastChance != chance || proposal.CastInterval != interval || proposal.CastSucceeded == proposal.CastFailed || proposal.CastSucceeded != (proposal.CastRoll <= chance) || proposal.CastFailed != (proposal.CastRoll > chance) {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast outcome changed")
+	}
+	expectedNPC := npc.Body
+	expectedNPC.MPCurrent -= npcTalkCastMP
+	expectedTarget := actor
+	if proposal.CastSucceeded {
+		expectedTarget, err = npcTalkCastTargetAfter(actor, spec, proposal.CastNow, interval)
+		if err != nil {
+			return npcTalkCastSpec{}, err
+		}
+	}
+	if !reflect.DeepEqual(proposal.castNPCAfter, expectedNPC) || !reflect.DeepEqual(proposal.castTargetAfter, expectedTarget) {
+		return npcTalkCastSpec{}, fmt.Errorf("NPC talk cast state projection changed")
+	}
+	return spec, nil
+}
+
 // PlanNPCTalkProposal is the source-backed no-topic command8.c:talk boundary.
 // A topic branch receives its immutable TalkCatalog explicitly. A non-MTALKS
 // NPC follows C's `cmnd->num == 2 || !MTALKS` branch and gives its existing
@@ -365,14 +672,21 @@ func (s State) PlanNPCTalkProposal(actorID, targetName string, occurrence int, t
 	if err != nil {
 		return NPCTalkProposal{}, err
 	}
-	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, catalog)
+	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, catalog, nil)
 }
 
 func (s State) PlanNPCTalkProposalWithCatalog(actorID, targetName string, occurrence int, topic string, catalog TalkCatalog) (NPCTalkProposal, error) {
-	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, &catalog)
+	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, &catalog, nil)
 }
 
-func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, topic string, catalog *TalkCatalog) (NPCTalkProposal, error) {
+// PlanNPCTalkProposalWithEffectOptions is the explicit host-injection form
+// for catalog actions that need a clock or deterministic RNG. Plain topic
+// callers keep the older API and therefore cannot accidentally execute CAST.
+func (s State) PlanNPCTalkProposalWithEffectOptions(actorID, targetName string, occurrence int, topic string, catalog TalkCatalog, options NPCTalkEffectOptions) (NPCTalkProposal, error) {
+	return s.planNPCTalkProposal(actorID, targetName, occurrence, topic, &catalog, &options)
+}
+
+func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, topic string, catalog *TalkCatalog, effectOptions *NPCTalkEffectOptions) (NPCTalkProposal, error) {
 	if err := s.Validate(); err != nil {
 		return NPCTalkProposal{}, err
 	}
@@ -431,7 +745,7 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 		proposal.TopicCatalogFound = true
 		proposal.TopicFound = found
 		proposal.TopicEntry = entry
-		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack {
+		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionCast {
 			return NPCTalkProposal{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 		}
 	}
@@ -446,10 +760,22 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 	if proposal.AddEnemy && npc.Enemies == nil {
 		return NPCTalkProposal{}, fmt.Errorf("NPC talk enemy relations unresolved")
 	}
+	if proposal.TopicCatalogFound && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionCast {
+		if err := s.planNPCTalkCast(&proposal, actor, s.NPCs[targetID], s.Rooms[actor.Body.RoomID], effectOptions); err != nil {
+			return NPCTalkProposal{}, err
+		}
+	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc.Body, "")
 	if proposal.TopicCatalogFound {
 		if proposal.TopicFound {
 			event = buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc.Body, topic, proposal.TopicEntry.Response, proposal.TopicEntry.Action)
+			if proposal.TopicEntry.Action.Kind == TalkActionCast {
+				castSpec, specErr := npcTalkCastSpecFor(proposal.CastSpellName)
+				if specErr != nil {
+					return NPCTalkProposal{}, specErr
+				}
+				appendNPCTalkCastEvent(&event, npc.Body, actor.Body, castSpec, proposal.CastAttempted, proposal.CastSucceeded, proposal.CastFailed, proposal.CastRefused)
+			}
 		} else {
 			event = buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc.Body, topic)
 		}
@@ -543,7 +869,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			if proposal.TopicEntry.Key != proposal.Topic || !validNPCTalkText(proposal.TopicEntry.Response) {
 				return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic proposal")
 			}
-			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack {
+			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack && proposal.TopicEntry.Action.Kind != TalkActionCast {
 				return State{}, NPCTalkResult{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, proposal.TopicEntry.Action.Kind.String())
 			}
 		} else if proposal.TopicEntry != (TalkTopic{}) {
@@ -569,10 +895,20 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 	if addEnemy != proposal.AddEnemy || (addEnemy && currentNPC.Enemies == nil) {
 		return State{}, NPCTalkResult{}, fmt.Errorf("NPC talk enemy relation changed")
 	}
+	var castSpec npcTalkCastSpec
+	if mtalksTopic && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionCast {
+		castSpec, err = validateNPCTalkCastProposal(proposal, actor, currentNPC, room)
+		if err != nil {
+			return State{}, NPCTalkResult{}, err
+		}
+	}
 	expected := buildNPCTalkEvent(actor.Body, proposal.ActorID, targetID, npc, "")
 	if mtalksTopic {
 		if proposal.TopicFound {
 			expected = buildNPCTalkTopicEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic, proposal.TopicEntry.Response, proposal.TopicEntry.Action)
+			if proposal.TopicEntry.Action.Kind == TalkActionCast {
+				appendNPCTalkCastEvent(&expected, npc, actor.Body, castSpec, proposal.CastAttempted, proposal.CastSucceeded, proposal.CastFailed, proposal.CastRefused)
+			}
 		} else {
 			expected = buildNPCTalkTopicMissEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic)
 		}
@@ -584,7 +920,18 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 	next := s.clone()
 	nextActor := next.Players[proposal.ActorID]
 	nextActor.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
+	if proposal.TopicEntry.Action.Kind == TalkActionCast && proposal.CastSucceeded {
+		// Keep the clone-owned item graph and connection-local player slices;
+		// only the spell-mutated body crosses the proposal boundary.
+		nextActor.Body = proposal.castTargetAfter.Body
+		nextActor.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
+	}
 	next.Players[proposal.ActorID] = nextActor
+	if proposal.TopicEntry.Action.Kind == TalkActionCast && (proposal.CastAttempted || proposal.CastRefused) {
+		nextNPC := next.NPCs[targetID]
+		nextNPC.Body = proposal.castNPCAfter
+		next.NPCs[targetID] = nextNPC
+	}
 	if addEnemy {
 		nextNPC := next.NPCs[targetID]
 		ref := EntityRef{Kind: "player", ID: proposal.ActorID}
@@ -612,6 +959,18 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 		Topic:      proposal.Topic,
 		EnemyAdded: addEnemy && !npcEnemyContains(currentNPC.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}),
 		Event:      &expected,
+	}
+	if proposal.TopicEntry.Action.Kind == TalkActionCast {
+		action := proposal.CastAction
+		result.Action = &action
+		result.SpellName = proposal.CastSpellName
+		result.SpellTargetID = proposal.CastTargetID
+		result.SpellAttempted = proposal.CastAttempted
+		result.SpellSucceeded = proposal.CastSucceeded
+		result.SpellFailed = proposal.CastFailed
+		result.SpellRoll = proposal.CastRoll
+		result.SpellChance = proposal.CastChance
+		result.SpellInterval = proposal.CastInterval
 	}
 	return next, result, nil
 }
@@ -666,6 +1025,13 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string, catalogs ...Tal
 			return NPCTalkEvent{}, false, ErrNPCTalkTopicsUnavailable
 		}
 		if found {
+			if entry.Action.Kind == TalkActionCast {
+				// CAST includes an RNG outcome and a caster/target mutation that
+				// is intentionally carried by the durable receipt. Reconstructing
+				// it from the post-state would be ambiguous when the same effect
+				// already existed, so callers must use the committed receipt event.
+				return NPCTalkEvent{}, false, ErrNPCTalkCastProjectionUnavailable
+			}
 			if entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack {
 				return NPCTalkEvent{}, false, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 			}

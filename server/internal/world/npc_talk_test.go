@@ -285,6 +285,146 @@ func TestNPCTalkTopicAttackAddsEnemyAndProjectsAction(t *testing.T) {
 	}
 }
 
+func npcTalkCastState(t *testing.T, spell string) State {
+	t.Helper()
+	s := npcTalkFixture(t)
+	actor := s.Players["a"]
+	actor.Body.Level = 1
+	actor.Body.Class = 4 // FIGHTER: valid thaco table, no spell gate needed
+	actor.Body.Stats = [5]byte{10, 10, 10, 10, 10}
+	actor.Items = &ItemCollection{Items: map[string]Item{}}
+	stats, err := actor.Items.CombatStats(actor.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor.Body.Armor, actor.Body.Thaco = byte(stats.Armor), byte(stats.Thaco)
+	actor.Body.Flags = [8]byte{}
+	s.Players["a"] = actor
+
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 5
+	npc.Body.Class = 3 // CLERIC: interval includes the source level-band term
+	npc.Body.Stats[3] = 10
+	npc.Body.MPMax, npc.Body.MPCurrent = 30, 30
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	index := npcTalkBlessSpell
+	if spell == "수호진" {
+		index = npcTalkProtectionSpell
+	}
+	npc.Body.Spells[index/8] |= 1 << (index % 8)
+	s.NPCs["guide-one"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func npcTalkCastCatalog(t *testing.T, spell string) TalkCatalog {
+	t.Helper()
+	catalog, err := LoadTalkCatalog(fstest.MapFS{
+		"Guide-5": &fstest.MapFile{Data: []byte("quest CAST " + spell + " PLAYER\n응답\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func TestNPCTalkCastBlessAndProtectionPersistDeterministicEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		spell     string
+		flag      uint
+		wantArmor int8
+	}{
+		{name: "bless", spell: "성현진", flag: npcTalkBlessFlag, wantArmor: 100},
+		{name: "protection", spell: "수호진", flag: npcTalkProtectionFlag, wantArmor: 90},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcTalkCastState(t, tc.spell)
+			catalog := npcTalkCastCatalog(t, tc.spell)
+			proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{
+				Now: 1000,
+				Roll: func(low, high int) int {
+					if low != 1 || high != 100 {
+						t.Fatalf("roll bounds=%d..%d", low, high)
+					}
+					return 1
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.CastAttempted || !proposal.CastSucceeded || proposal.CastFailed || proposal.CastRoll != 1 || proposal.CastChance != 75 || proposal.CastInterval != 1320 {
+				t.Fatalf("cast proposal=%+v", proposal)
+			}
+			next, result, err := s.ApplyNPCTalk(proposal, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Action == nil || result.Action.Kind != TalkActionCast || result.SpellName != tc.spell || result.SpellTargetID != "a" || !result.SpellAttempted || !result.SpellSucceeded || result.SpellFailed || result.SpellInterval != 1320 {
+				t.Fatalf("cast result=%+v", result)
+			}
+			if result.Event == nil || !strings.Contains(result.Event.RoomText, tc.spell) || (tc.spell == "성현진" && !strings.Contains(result.Response, tc.spell)) || (tc.spell == "수호진" && !strings.Contains(result.Response, "수호인")) {
+				t.Fatalf("cast event=%+v response=%q", result.Event, result.Response)
+			}
+			actor := next.Players["a"]
+			if !flag(actor.Body.Flags[:], tc.flag) || actor.Body.Timers[map[uint]int{npcTalkBlessFlag: npcTalkBlessTimer, npcTalkProtectionFlag: npcTalkProtectionTimer}[tc.flag]] != (LegacyTimer{LastTime: 1000, Interval: 1320}) {
+				t.Fatalf("target effect body=%+v", actor.Body)
+			}
+			if int8(actor.Body.Armor) != tc.wantArmor || next.NPCs["guide-one"].Body.MPCurrent != 20 {
+				t.Fatalf("target/caster state actor=%+v npc=%+v", actor.Body, next.NPCs["guide-one"].Body)
+			}
+			if _, _, err := next.RoomNPCTalkEvent("a", "guide-one", "quest", catalog); !errors.Is(err, ErrNPCTalkCastProjectionUnavailable) {
+				t.Fatalf("cast post-state projection err=%v", err)
+			}
+		})
+	}
+}
+
+func TestNPCTalkCastFailureConsumesNPCPowerWithoutTargetMutation(t *testing.T) {
+	s := npcTalkCastState(t, "성현진")
+	catalog := npcTalkCastCatalog(t, "성현진")
+	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{Now: 1000, Roll: func(int, int) int { return 100 }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.SpellAttempted || result.SpellSucceeded || !result.SpellFailed || result.SpellRoll != 100 || result.SpellChance != 75 || next.NPCs["guide-one"].Body.MPCurrent != 20 {
+		t.Fatalf("failure result=%+v npc=%+v", result, next.NPCs["guide-one"].Body)
+	}
+	actor := next.Players["a"]
+	if flag(actor.Body.Flags[:], npcTalkBlessFlag) || actor.Body.Timers[npcTalkBlessTimer] != (LegacyTimer{}) {
+		t.Fatalf("failed cast changed target=%+v", actor.Body)
+	}
+}
+
+func TestNPCTalkCastRefusalKeepsStateAndExplainsToActor(t *testing.T) {
+	s := npcTalkCastState(t, "성현진")
+	npc := s.NPCs["guide-one"]
+	npc.Enemies = []NPCEnemy{{Target: EntityRef{Kind: "player", ID: "a"}}}
+	s.NPCs["guide-one"] = npc
+	catalog := npcTalkCastCatalog(t, "성현진")
+	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := next.Players["a"]
+	if !proposal.CastRefused || result.SpellAttempted || result.SpellSucceeded || result.SpellFailed || next.NPCs["guide-one"].Body.MPCurrent != 30 || flag(actor.Body.Flags[:], npcTalkBlessFlag) {
+		t.Fatalf("refusal proposal/result/state=%+v/%+v/%+v", proposal, result, next)
+	}
+	if !strings.Contains(result.Response, "거부했습니다") || result.Event == nil || strings.Contains(result.Event.RoomText, "거부했습니다") {
+		t.Fatalf("refusal projection=%+v", result.Event)
+	}
+}
+
 func TestNPCTalkTopicCatalogMissFailsClosedWithoutChangingNoTopicContract(t *testing.T) {
 	s := npcTalkFixture(t)
 	npc := s.NPCs["guide-one"]

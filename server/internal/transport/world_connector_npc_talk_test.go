@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"testing/fstest"
 
@@ -83,10 +84,57 @@ func npcTalkTopicConnectorStore(t *testing.T) *npcTalkReplayStore {
 	return store
 }
 
+func npcTalkCastConnectorStore(t *testing.T) *npcTalkReplayStore {
+	t.Helper()
+	store := npcTalkTopicConnectorStore(t)
+	state, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := state.Players["a"]
+	actor.Body.Level = 1
+	actor.Body.Class = 4
+	actor.Body.Stats = [5]byte{10, 10, 10, 10, 10}
+	actor.Body.Flags = [8]byte{}
+	actor.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	stats, err := actor.Items.CombatStats(actor.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor.Body.Armor, actor.Body.Thaco = byte(stats.Armor), byte(stats.Thaco)
+	state.Players["a"] = actor
+	npc := state.NPCs["guide"]
+	npc.Body.Level = 5
+	npc.Body.Class = 3
+	npc.Body.Stats[3] = 10
+	npc.Body.MPMax, npc.Body.MPCurrent = 30, 30
+	npc.Body.Spells[4/8] |= 1 << (4 % 8)
+	state.NPCs["guide"] = npc
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store.state, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func npcTalkTransportCatalog(t *testing.T, body string) world.TalkCatalog {
 	t.Helper()
 	catalog, err := world.LoadTalkCatalog(fstest.MapFS{
 		"Guide-0": &fstest.MapFile{Data: []byte(body)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func npcTalkTransportCatalogAtLevel(t *testing.T, level int, body string) world.TalkCatalog {
+	t.Helper()
+	catalog, err := world.LoadTalkCatalog(fstest.MapFS{
+		fmt.Sprintf("Guide-%d", level): &fstest.MapFile{Data: []byte(body)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +154,7 @@ func npcTalkConnectorConnectionsWithCatalog(t *testing.T, store *npcTalkReplaySt
 		Clock:       func() (int32, int) { return 100, 12 },
 		MaxSessions: 2,
 		TalkCatalog: catalog,
+		Roll:        func(int, int) int { return 1 },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +313,40 @@ func TestWorldConnectorSubmitDispatchesNPCTalkAttackAction(t *testing.T) {
 	saved, err := world.DecodeState(store.state)
 	if err != nil || len(saved.NPCs["guide"].Enemies) != 1 || saved.NPCs["guide"].Enemies[0].Target != (world.EntityRef{Kind: "player", ID: "a"}) {
 		t.Fatalf("saved NPC=%+v err=%v", saved.NPCs["guide"], err)
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesNPCTalkCastAndPersistsEffect(t *testing.T) {
+	store := npcTalkCastConnectorStore(t)
+	catalog := npcTalkTransportCatalogAtLevel(t, 5, "quest CAST 성현진 PLAYER\ncanonical answer\n")
+	_, actor, observer := npcTalkConnectorConnectionsWithCatalog(t, store, &catalog)
+
+	output, err := actor.Submit(context.Background(), "대화 Guide quest")
+	wantOutput := "\nGuide가 당신에게 \"canonical answer\"라고 이야기합니다.\r\n\nGuide가 당신의 머리에 한쪽손을 얹으며 성현진을 외웁니다.\n당신의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n"
+	if err != nil || output != wantOutput || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	wantEvents := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"canonical answer\"라고 이야기합니다.\r\n",
+		"\nGuide가 Alice의 머리에 한쪽손을 얹으며 성현진을 \n외웁니다.\n그의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n",
+	}
+	for i, want := range wantEvents {
+		select {
+		case got := <-observer.events:
+			if got != want {
+				t.Fatalf("observer cast event[%d]=%q want=%q", i, got, want)
+			}
+		default:
+			t.Fatalf("observer cast event[%d] missing", i)
+		}
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.NPCs["guide"].Body.MPCurrent != 20 || saved.Players["a"].Body.Flags[0]&1 == 0 || saved.Players["a"].Body.Timers[2].Interval != 1320 {
+		t.Fatalf("saved cast state npc=%+v actor=%+v", saved.NPCs["guide"].Body, saved.Players["a"].Body)
 	}
 }
 
