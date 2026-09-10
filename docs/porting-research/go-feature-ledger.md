@@ -1,13 +1,14 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
-## 2026-09-10 NPC 대화 `CAST 해독·치료·개안술` — canonical 상태 정화
+## 2026-09-10 NPC 대화 `CAST` 정화·수생술 — canonical 상태 전이
 
 `command8.c:talk_action`의 비공격 주문 중 `해독`(SCUREP/PPOISN), `치료`(SRMDIS/PDISEA),
 `개안술`(SRMBLD/PBLIND)을 canonical body 정화 전이로 연결했다. NPC 주문 bit·직업 gate·
 도력·적대 관계를 확인하고 `spell_fail` RNG 1회를 계획 단계에서 기록한다. 성공은 대상
 상태 플래그 제거와 NPC MP 6 또는 12 차감을 원자 적용하며, 실패는 MP만 차감한다. 세
 주문은 target inventory/equipment가 필요하지 않아 미이관 actor도 안전하게 처리한다.
-room/actor projection은 receipt에 저장하고 replay에서는 재실행하지 않는다.
+동일 경계에 `수생술`(SBRWAT/PBRWAT)을 추가해 inventory 없이 LT_BRWAT 1200초 timed flag를
+설치한다. room/actor projection은 receipt에 저장하고 replay에서는 재실행하지 않는다.
 
 검증: world/transport NPCTalk focused race PASS. session parser는 기존 CAST 경계를
 재사용했다. PostgreSQL/browser/ARM64/release 및 전체 spell parity는 승격 cadence에서만

@@ -20,11 +20,13 @@ const (
 	npcTalkCurePoisonSpell = 3  // SCUREP / 해독
 	npcTalkDiseaseSpell    = 48 // SRMDIS / 치료
 	npcTalkBlindSpell      = 49 // SRMBLD / 개안술
+	npcTalkWaterSpell      = 44 // SBRWAT / 수생술
 	npcTalkBlessFlag       = 0  // PBLESS
 	npcTalkProtectionFlag  = 8  // PPROTE
 	npcTalkPoisonFlag      = 16 // PPOISN
 	npcTalkDiseaseFlag     = 41 // PDISEA
 	npcTalkBlindFlag       = 42 // PBLIND
+	npcTalkWaterFlag       = 37 // PBRWAT
 	npcTalkProtectionTimer = 1  // LT_PROTE
 	npcTalkBlessTimer      = 2  // LT_BLESS
 	npcTalkRoomMagicExtend = 32 // RPMEXT
@@ -73,6 +75,11 @@ type npcTalkCastSpec struct {
 	Timer     int
 	Cost      int16
 	ClassGate npcTalkCastClassGate
+	// CombatStats is only required for bless/protection, whose target armor or
+	// thaco is recomputed by the source reducer. Other timed body effects keep
+	// the canonical equipment graph out of the cast boundary.
+	CombatStats       bool
+	ClassIntervalTerm bool
 }
 
 type npcTalkCastClassGate uint8
@@ -106,14 +113,14 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
 		}
 		return npcTalkCastSpec{
-			Name: name, Spell: npcTalkBlessSpell, Flag: npcTalkBlessFlag, Timer: npcTalkBlessTimer, Cost: 10,
+			Name: name, Spell: npcTalkBlessSpell, Flag: npcTalkBlessFlag, Timer: npcTalkBlessTimer, Cost: 10, CombatStats: true, ClassIntervalTerm: true,
 		}, nil
 	case "수호진":
 		if len(legacyInfoSpellNames) <= npcTalkProtectionSpell || legacyInfoSpellNames[npcTalkProtectionSpell] != name {
 			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
 		}
 		return npcTalkCastSpec{
-			Name: name, Spell: npcTalkProtectionSpell, Flag: npcTalkProtectionFlag, Timer: npcTalkProtectionTimer, Cost: 10,
+			Name: name, Spell: npcTalkProtectionSpell, Flag: npcTalkProtectionFlag, Timer: npcTalkProtectionTimer, Cost: 10, CombatStats: true, ClassIntervalTerm: true,
 		}, nil
 	case "해독":
 		if len(legacyInfoSpellNames) <= npcTalkCurePoisonSpell || legacyInfoSpellNames[npcTalkCurePoisonSpell] != name {
@@ -121,6 +128,13 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
+		}, nil
+	case "수생술":
+		if len(legacyInfoSpellNames) <= npcTalkWaterSpell || legacyInfoSpellNames[npcTalkWaterSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkWaterSpell, Flag: npcTalkWaterFlag, Timer: 30, Cost: 12,
 		}, nil
 	case "치료":
 		if len(legacyInfoSpellNames) <= npcTalkDiseaseSpell || legacyInfoSpellNames[npcTalkDiseaseSpell] != name {
@@ -531,7 +545,7 @@ func npcTalkCastRoll(options *NPCTalkEffectOptions) (value int, err error) {
 	return value, nil
 }
 
-func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
+func npcTalkCastIntervalWithClassTerm(caster LegacyMonster, room RoomState, classTerm bool) (int32, error) {
 	if caster.Stats[3] > 63 {
 		return 0, fmt.Errorf("NPC talk cast intelligence outside legacy table")
 	}
@@ -539,7 +553,7 @@ func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
 	if interval < 300 {
 		interval = 300
 	}
-	if caster.Class == 3 || caster.Class == 6 { // CLERIC or PALADIN
+	if classTerm && (caster.Class == clericClass || caster.Class == paladinClass) {
 		interval += 60 * int64((int(caster.Level)+3)/4)
 	}
 	if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
@@ -551,6 +565,10 @@ func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
 	return int32(interval), nil
 }
 
+func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
+	return npcTalkCastIntervalWithClassTerm(caster, room, true)
+}
+
 func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, interval int32) (PlayerState, error) {
 	if spec.Timer < 0 {
 		body := target.Body
@@ -559,6 +577,13 @@ func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, inter
 		return target, nil
 	}
 	if target.Items == nil || len(target.Body.Inventory) != 0 {
+		if !spec.CombatStats {
+			body := target.Body
+			body.Flags[spec.Flag/8] |= 1 << (spec.Flag % 8)
+			body.Timers[spec.Timer] = LegacyTimer{LastTime: now, Interval: interval}
+			target.Body = body
+			return target, nil
+		}
 		return PlayerState{}, fmt.Errorf("%w: canonical target equipment required", ErrNPCTalkCastSpellUnavailable)
 	}
 	if err := target.Items.Validate(); err != nil {
@@ -567,6 +592,10 @@ func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, inter
 	body := target.Body
 	body.Flags[spec.Flag/8] |= 1 << (spec.Flag % 8)
 	body.Timers[spec.Timer] = LegacyTimer{LastTime: now, Interval: interval}
+	if !spec.CombatStats {
+		target.Body = body
+		return target, nil
+	}
 	stats, err := target.Items.CombatStats(body)
 	if err != nil {
 		return PlayerState{}, fmt.Errorf("%w: target combat stats unavailable: %v", ErrNPCTalkCastSpellUnavailable, err)
@@ -614,6 +643,9 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 	case npcTalkBlindFlag:
 		roomText = fmt.Sprintf("\n%s%s %s의 이마에 개안부를 붙히고서 개안술 주문을 외웁니다.\n그의 감겼던 눈이 움찔거리다가 갑자기 확 뜹니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 이마에 개안부를 붙히고서 주문을 외웁니다.\n감겼던 당신의 눈이 움찔거리다가 갑자기 밝아집니다.\n", npc.Name, npcSubject)
+	case npcTalkWaterFlag:
+		roomText = fmt.Sprintf("\n%s%s %s에게 수생부를 먹이며 주문을 외웠습니다.\n그의 가슴이 평소보다 두배나 커져 물속에서 오랫동안\n견딜수 있을 것 같습니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 수생부를 먹이며 주문을 외웠습니다.\n당신의 가슴이 평소보다 두배나 커져 물속에서 오랫동안\n견딜 수 있을 것 같습니다.\n", npc.Name, npcSubject)
 	default:
 		roomText = fmt.Sprintf("\n%s%s %s의 몸에 수호인을 그리며 수호진의 주문을 걸었습니다.\n빛의 수호령들이 그의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject, target.Name)
 		actorText = fmt.Sprintf("\n%s%s 당신의 몸에 수호인을 그리며 주문을 걸었습니다.\n빛의 수호령들이 당신의 주위를 둘러싸며 방어의 진을 형성했습니다.\n", npc.Name, npcSubject)
@@ -709,7 +741,7 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
-		interval, err = npcTalkCastInterval(npc.Body, room)
+		interval, err = npcTalkCastIntervalWithClassTerm(npc.Body, room, spec.ClassIntervalTerm)
 		if err != nil {
 			return err
 		}
@@ -858,7 +890,7 @@ func validateNPCTalkCastProposal(proposal NPCTalkProposal, actor PlayerState, np
 	}
 	interval := int32(0)
 	if spec.Timer >= 0 {
-		interval, err = npcTalkCastInterval(npc.Body, room)
+		interval, err = npcTalkCastIntervalWithClassTerm(npc.Body, room, spec.ClassIntervalTerm)
 		if err != nil {
 			return npcTalkCastSpec{}, err
 		}

@@ -119,6 +119,8 @@ func npcTalkCleansingState(t *testing.T, spell string, flagBit uint) State {
 	index := npcTalkDiseaseSpell
 	if spell == "개안술" {
 		index = npcTalkBlindSpell
+	} else if spell == "수생술" {
+		index = npcTalkWaterSpell
 	}
 	npc.Body.Spells[index/8] |= 1 << (index % 8)
 	s.NPCs["guide-one"] = npc
@@ -183,5 +185,42 @@ func TestNPCTalkCastCleansingClassGateRejectsWithoutRNG(t *testing.T) {
 	}
 	if _, _, err := s.ApplyNPCTalk(proposal, catalog); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNPCTalkCastWaterBreathingUsesTimedBodyEffectWithoutInventory(t *testing.T) {
+	s := npcTalkCleansingState(t, "수생술", npcTalkWaterFlag)
+	actor := s.Players["a"]
+	actor.Body.Flags[npcTalkWaterFlag/8] &^= 1 << (npcTalkWaterFlag % 8)
+	s.Players["a"] = actor
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	catalog := npcTalkCastCatalog(t, "수생술")
+	proposal, err := s.PlanNPCTalkProposalWithEffectOptions("a", "Guide", 1, "quest", catalog, NPCTalkEffectOptions{
+		Now: 1000,
+		Roll: func(low, high int) int {
+			if low != 1 || high != 100 {
+				t.Fatalf("roll bounds=%d..%d", low, high)
+			}
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.CastSpellName != "수생술" || proposal.CastInterval != 1200 || !proposal.CastAttempted || !proposal.CastSucceeded {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextActor := next.Players["a"]
+	if !flag(nextActor.Body.Flags[:], npcTalkWaterFlag) || nextActor.Body.Timers[30] != (LegacyTimer{LastTime: 1000, Interval: 1200}) || next.NPCs["guide-one"].Body.MPCurrent != 12 {
+		t.Fatalf("water effect actor=%+v npc=%+v", nextActor.Body, next.NPCs["guide-one"].Body)
+	}
+	if result.Event == nil || !strings.Contains(result.Response, "수생부") || !strings.Contains(result.Event.RoomText, "수생부") {
+		t.Fatalf("water event=%+v response=%q", result.Event, result.Response)
 	}
 }
