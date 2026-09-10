@@ -86,6 +86,14 @@ func main() {
 	helpDir := flag.String("help-dir", os.Getenv("MUD_HELP_DIR"), "directory containing UTF-8 help, spell and policy documents")
 	npcTalkDir := flag.String("npc-talk-dir", os.Getenv("MUD_NPC_TALK_DIR"), "directory containing canonical <name>-<level> NPC talk files (optional)")
 	voteIssueFile := flag.String("vote-issue-file", os.Getenv("MUD_VOTE_ISSUE_FILE"), "explicit legacy post/ISSUE file for the server-owned vote catalog (optional)")
+	voteManifest := flag.String("import-vote-manifest", "", "explicitly validate or import a reviewed vote-state manifest")
+	voteManifestDryRun := flag.Bool("import-vote-manifest-dry-run", false, "validate a vote-state manifest without connecting to PostgreSQL")
+	voteManifestApply := flag.Bool("import-vote-manifest-apply", false, "explicitly apply a reviewed vote-state manifest to PostgreSQL")
+	voteManifestRoot := flag.String("build-vote-manifest-root", "", "explicitly convert audited legacy player/vote files under a MUHAN_HOME-like root")
+	voteManifestIssue := flag.String("build-vote-manifest-issue-file", "", "explicit legacy post/ISSUE file for vote manifest build")
+	voteManifestMapping := flag.String("build-vote-manifest-mapping", "", "private operator name-to-player-ID mapping JSON for vote manifest build")
+	voteManifestOutput := flag.String("build-vote-manifest-output", "", "private destination manifest for vote-state import")
+	voteManifestBuildDryRun := flag.Bool("build-vote-manifest-dry-run", false, "validate vote files, ISSUE, and mapping without writing a manifest or connecting to PostgreSQL")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
@@ -144,6 +152,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	voteManifestImportOptions, err := validateVoteStateManifestImportFlags(*voteManifest, *voteManifestDryRun, *voteManifestApply)
+	if err != nil {
+		log.Fatal(err)
+	}
+	voteManifestBuildOptions, err := validateVoteStateManifestBuildFlags(*voteManifestRoot, *voteManifestIssue, *voteManifestMapping, *voteManifestOutput, *voteManifestBuildDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
 	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
 	bankRawConversionSelected := bankRawConvertOptions.Root != ""
@@ -151,6 +167,8 @@ func main() {
 	socialManifestBuildSelected := socialManifestBuildOptions.FamilyRoot != "" || socialManifestBuildOptions.MemoRoot != ""
 	bankSnapshotImportSelected := bankSnapshotImportOptions.ManifestPath != ""
 	bankSnapshotManifestBuildSelected := bankSnapshotManifestBuildOptions.ReviewPath != ""
+	voteManifestImportSelected := voteManifestImportOptions.ManifestPath != ""
+	voteManifestBuildSelected := voteManifestBuildOptions.Root != ""
 	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}
@@ -212,6 +230,40 @@ func main() {
 	if bankSnapshotModeSelected &&
 		(bankSnapshotImportSelected && bankSnapshotManifestBuildSelected || socialImportSelected || socialManifestBuildSelected || backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected) {
 		log.Fatal("bank snapshot manifest mode cannot be combined with another import, inspection, conversion, seed, backup, or world mode")
+	}
+	voteManifestModeSelected := voteManifestImportSelected || voteManifestBuildSelected
+	voteManifestOtherModeSelected := backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || socialImportSelected || socialManifestBuildSelected || bankSnapshotImportSelected || bankSnapshotManifestBuildSelected || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected
+	if voteManifestImportSelected && voteManifestBuildSelected {
+		log.Fatal("vote manifest import and build modes are mutually exclusive")
+	}
+	if voteManifestModeSelected && voteManifestOtherModeSelected {
+		log.Fatal("vote manifest mode cannot be combined with another import, inspection, conversion, seed, backup, or world mode")
+	}
+	var voteBatch storage.VoteStateImport
+	if voteManifestImportSelected {
+		voteBatch, err = readVoteStateManifest(voteManifestImportOptions.ManifestPath)
+		if err != nil {
+			log.Fatalf("vote state manifest rejected: %v", err)
+		}
+		if !voteManifestImportOptions.Apply {
+			log.Printf("vote state manifest validated: world=%s command=%s ballots=%d; no database connection or write performed", voteBatch.WorldID, voteBatch.CommandID, len(voteBatch.Votes.Ballots))
+			return
+		}
+	}
+	if voteManifestBuildSelected {
+		built, buildErr := buildVoteStateManifest(voteManifestBuildOptions)
+		if buildErr != nil {
+			log.Fatalf("vote state manifest build rejected: %v", buildErr)
+		}
+		if voteManifestBuildOptions.DryRun {
+			log.Printf("vote state manifest build validated: world=%s command=%s ballots=%d catalog_digest=%s; no manifest or database write performed", built.Batch.WorldID, built.Batch.CommandID, built.Ballots, built.Batch.CatalogDigest)
+			return
+		}
+		if err := writeVoteStateManifest(voteManifestBuildOptions.OutputPath, built.Raw, voteManifestBuildOptions.MappingPath, voteManifestBuildOptions.Root); err != nil {
+			log.Fatalf("vote state manifest build failed: %v", err)
+		}
+		log.Printf("vote state manifest built: world=%s command=%s ballots=%d output=%s; database import still requires a separate explicit command", built.Batch.WorldID, built.Batch.CommandID, built.Ballots, voteManifestBuildOptions.OutputPath)
+		return
 	}
 	var socialBatch socialImportBatch
 	if socialImportSelected {
@@ -401,6 +453,16 @@ func main() {
 			log.Fatalf("social import failed: %v", err)
 		}
 		log.Printf("social import completed: kind=%s world=%s command=%s", socialBatch.Kind, socialBatch.WorldID, socialBatch.CommandID)
+		return
+	}
+	if voteManifestImportOptions.Apply {
+		importCtx, importCancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := runVoteStateImport(importCtx, repo, voteBatch)
+		importCancel()
+		if err != nil {
+			log.Fatalf("vote state manifest import failed: %v", err)
+		}
+		log.Printf("vote state manifest import completed: world=%s command=%s ballots=%d", voteBatch.WorldID, voteBatch.CommandID, len(voteBatch.Votes.Ballots))
 		return
 	}
 	if bankSnapshotImportOptions.Apply {

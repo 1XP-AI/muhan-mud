@@ -1,5 +1,26 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 투표 raw→manifest builder·CLI 승격 경계
+
+collector와 canonical import 사이에 DB 없는 `cmd/muhan` builder를 연결했다.
+`-build-vote-manifest-root`는 명시적 `post/ISSUE`를 파싱해 catalog digest를 만들고,
+`player/vote/<name>_v` raw 파일을 lexical batch로 재수집한 뒤 operator가 공급한
+name→character ID mapping과 exact하게 결합한다. 파일 수·이름·선택지 수·A~G 범위·digest와
+expected revision을 모두 검증하며 ID를 이름으로 생성하지 않는다. 결과 manifest에는
+choices와 source SHA-256 evidence만 있고 raw path/bytes·metadata·credential은 없다.
+
+`-build-vote-manifest-dry-run` 또는 path-only `-import-vote-manifest`는 PostgreSQL,
+listener 없이 검증만 수행한다. 일반 build는 mapping 옆 private 0600 immutable output을
+만들고 같은 bytes replay만 허용한다. 실제 DB 변경은 별도
+`-import-vote-manifest-apply`에서만 `ImportVoteState` transaction/receipt 경계를
+호출하며, vote manifest mode와 다른 import/seed/backup/world mode 조합은 거부한다.
+schema와 operator 절차는 `docs/porting-research/go-vote-state-manifest.md`에 기록했다.
+
+검증: `go test -race ./cmd/muhan -count=1`, `go vet ./cmd/muhan`, CLI dry-run/write/
+path-only DB-free subprocess, same-byte replay·changed output·unknown/drift rejection PASS.
+실제 원본 대량 mapping 승인, ARM64 Supabase 운영 권한/RLS, backup/PITR·browser/deploy는
+여전히 G4/G5 승격 조건이다.
+
 ## 2026-09-10 투표 canonical 원장 PostgreSQL 승격 경계
 
 `Postgres.ImportVoteState`를 추가해 검토된 pointer-free `VoteState`를 world snapshot에

@@ -1,5 +1,33 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (vote raw→manifest builder)
+
+레거시 `player/vote/<name>_v` collector와 canonical PostgreSQL import 사이에 DB 없는
+`cmd/muhan` 승격 경계를 추가했다. `-build-vote-manifest-root`는 명시적 ISSUE digest와
+raw 선택지 bytes를 다시 검증하고 operator의 exact name→immutable player ID mapping을
+결합해 `vote-state-v1` manifest를 만든다. output은 mapping 옆 private immutable 0600이며
+source root overlap, unknown mapping field, 누락/추가 파일, malformed choice/digest,
+변경 output은 fail-closed한다. raw path/metadata/credential은 manifest와 storage request에
+들어가지 않는다.
+
+`-build-vote-manifest-dry-run`과 path-only `-import-vote-manifest`는 PostgreSQL/listener
+없이 종료하고, 실제 변경은 `-import-vote-manifest-apply`에서만 기존
+`Postgres.ImportVoteState` transaction/receipt를 호출한다. vote manifest mode는 다른
+import/seed/backup/world mode와 섞이지 않는다. schema와 실행 예는
+`docs/porting-research/go-vote-state-manifest.md`다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -count=1) PASS
+(cd server && go vet ./cmd/muhan) PASS
+CLI vote build dry-run/write, path-only validation, same-byte replay without DATABASE_URL PASS
+```
+
+이번 배치는 로컬에만 있으며 push/CI/배포는 실행하지 않았다. 실제 원본 대량 수집,
+operator character 대조·승인, Supabase RLS/PITR·운영 복구와 browser/deploy 검증은 남아
+있다. `src/frp.new`와 변경이 남은 기존 Orca worktree는 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (vote canonical PostgreSQL import)
 
 `Postgres.ImportVoteState`와 `mud_go.vote_imports`를 추가했다. 명시적 ISSUE

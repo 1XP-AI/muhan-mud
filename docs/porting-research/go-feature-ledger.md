@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 투표 raw→manifest builder·CLI 경계
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| raw + ISSUE + operator mapping | `cmd/muhan -build-vote-manifest-root`가 `LocateLegacyVoteRawFilesV1`와 명시적 `post/ISSUE` digest를 다시 검증하고, 모든 legacy name→immutable player ID 매핑을 exact하게 결합해 `vote-state-v1` manifest를 만든다. 선택지 bytes/SHA-256은 evidence로 남기되 raw path·metadata·credential은 canonical state로 전달하지 않는다. | `cmd/muhan` race/CLI DB-free dry-run·write·path-only validation·same-byte replay PASS. 실제 원본 대량 수집, operator character 대조·승인, Supabase RLS/운영 복구는 미완료 |
+| manifest read/apply | `-import-vote-manifest`는 private 0600 JSON과 ballot/digest/ID를 DB 전에 검증하고, `-import-vote-manifest-apply`만 `Postgres.ImportVoteState`를 호출한다. build/import/runtime mode 조합은 거부한다. | full local integration PASS 후 ARM64 PG apply/replay/restore와 운영 PITR·배포 검증이 남아 있음 |
+
+mapping schema와 실행 절차는 `docs/porting-research/go-vote-state-manifest.md`를 따른다.
+builder output은 mapping과 같은 private 0700 디렉터리의 immutable 0600 파일이며, source
+root와 겹치거나 변경된 bytes로 재실행하면 fail-closed한다.
+
 ## 2026-09-10 투표 canonical 원장 PostgreSQL 경계
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |
