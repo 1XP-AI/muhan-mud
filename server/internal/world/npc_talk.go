@@ -84,13 +84,16 @@ const (
 )
 
 func npcTalkCastClassAllowed(class byte, gate npcTalkCastClassGate) bool {
+	if class > maxLegacyClass {
+		return false
+	}
 	switch gate {
 	case npcTalkCastAnyClass:
 		return true
 	case npcTalkCastClericOrInvincible:
-		return class == 3 || class >= 9 // CLERIC or INVINCIBLE+
+		return class == clericClass || class >= invincibleClass
 	case npcTalkCastClericPaladinOrInvincible:
-		return class == 3 || class == 6 || class >= 9 // CLERIC/PALADIN or INVINCIBLE+
+		return class == clericClass || class == paladinClass || class >= invincibleClass
 	default:
 		return false
 	}
