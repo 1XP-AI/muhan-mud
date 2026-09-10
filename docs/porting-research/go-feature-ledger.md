@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 주문 봉합구 — canonical 상태 전이
+
+봉합구(SSILNC/PSILNC/LT_SILNC)를 player self-cast receipt로 연결했다. source MP 12와
+SUB_DM 이상 직업 gate, 고정 3,600초 지속 시간, PRMAGI 절반 보정 및 PINVIS 해제를 검증한다.
+성공 시 PSILNC·global LT_SPELL·MP를 원자 반영하고, 실패·replay에서는 상태와 출력이
+중복되지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet 및 전체 spell parity는 승격 cadence에서 단일 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 주문 실명 — canonical 상태 전이
 
 실명(SBLIND/PBLIND)을 player self-cast receipt로 연결했다. source MP 15, SUB_DM 이상

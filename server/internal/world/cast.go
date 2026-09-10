@@ -31,6 +31,7 @@ const (
 	castProtectionSpell      = 5  // SPROTE / 수호진
 	castRemoveCurseSpell     = 42 // SREMOV / 저주해소
 	castBlindSpell           = 53 // SBLIND / 실명
+	castSilenceSpell         = 54 // SSILNC / 봉합구
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -79,6 +80,7 @@ const (
 	castRemoveBlindFlag      = 42
 	castLightFlag            = 17
 	castLightTimer           = 13
+	castSilenceTimer         = 34 // LT_SILNC
 )
 
 const (
@@ -130,6 +132,8 @@ type castSpellSpec struct {
 	CombatStats        bool
 	ClearCursedReady   bool
 	RevealInvisibility bool
+	FixedInterval      bool
+	HalfIntervalFlag   uint
 	CombatGate         bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
@@ -277,6 +281,12 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 	case castBlindSpell:
 		spec.Cost, spec.healKind = 15, castHealFlag
 		spec.Flag, spec.Timer, spec.RevealInvisibility = castBlindFlag, -1, true
+		spec.failMask = castAllSpellFailMask
+		spec.classGate = castSubDMGate
+	case castSilenceSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castSilentFlag, castSilenceTimer
+		spec.IntervalBase, spec.FixedInterval, spec.HalfIntervalFlag, spec.RevealInvisibility = 3600, true, castResistMagicFlag, true
 		spec.failMask = castAllSpellFailMask
 		spec.classGate = castSubDMGate
 	case castKnowAlignmentSpell:
@@ -475,6 +485,19 @@ func castSpellInterval(class byte) int32 {
 func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (int32, error) {
 	if body.Stats[3] > 63 {
 		return 0, fmt.Errorf("cast timed spell intelligence outside legacy table")
+	}
+	if spec.FixedInterval {
+		interval := int64(spec.IntervalBase)
+		if interval < 0 {
+			return 0, fmt.Errorf("cast timed spell interval outside int32")
+		}
+		if spec.HalfIntervalFlag != 0 && flag(body.Flags[:], spec.HalfIntervalFlag) {
+			interval /= 2
+		}
+		if interval > math.MaxInt32 {
+			return 0, fmt.Errorf("cast timed spell interval outside int32")
+		}
+		return int32(interval), nil
 	}
 	base := spec.IntervalBase
 	if base == 0 {
@@ -751,6 +774,9 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 		}
 		after.MPCurrent -= spec.Cost
 		setSettingFlag(&after, castHiddenFlag, false)
+		if spec.RevealInvisibility {
+			setSettingFlag(&after, castInvisibilityFlag, false)
+		}
 		return after, int32(after.MPCurrent) - int32(body.MPCurrent), nil
 	}
 	if body.MPCurrent < spec.Cost {

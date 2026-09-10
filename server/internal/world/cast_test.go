@@ -446,6 +446,32 @@ func TestPlanApplyCastBlindSelfRevealsAndSetsBlindFlag(t *testing.T) {
 	}
 }
 
+func TestPlanApplyCastSilenceSelfUsesFixedIntervalAndReveals(t *testing.T) {
+	s := castTestState(castSubDMClass, castSilenceSpell)
+	actor := s.Players["a"]
+	setSettingFlag(&actor.Body, castInvisibilityFlag, true)
+	setSettingFlag(&actor.Body, castResistMagicFlag, true)
+	s.Players["a"] = actor
+	p, err := s.PlanCast("a", "봉합구", CastOptions{Now: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Attempted || !p.Succeeded || p.SpellFailed || p.Cost != 12 || p.MPDelta != -12 || p.SpellInterval != 0 || p.TimedFlag != castSilentFlag || p.TimedInterval != 1800 {
+		t.Fatalf("proposal=%+v", p)
+	}
+	next, result, err := s.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := next.Players["a"].Body
+	if !flag(body.Flags[:], castSilentFlag) || flag(body.Flags[:], castInvisibilityFlag) || body.MPCurrent != 18 || body.Timers[castSilenceTimer] != (LegacyTimer{LastTime: 100, Interval: 1800}) || body.Timers[castSpellTimerIndex] != (LegacyTimer{LastTime: 100, Interval: 0}) {
+		t.Fatalf("body=%+v", body)
+	}
+	if result.Event == nil || !strings.Contains(result.Response, "봉합구") || !result.Succeeded {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestCastRemoveCurseRequiresCanonicalEquipmentBeforeRandom(t *testing.T) {
 	s := castTestState(castClericClass, castRemoveCurseSpell)
 	calls := 0
