@@ -84,6 +84,17 @@ func TestParseChangeClassLineAdmitsBarePromptAndOneLineYes(t *testing.T) {
 			t.Fatalf("unsupported change-class line accepted: %q", line)
 		}
 	}
+	for _, line := range []string{"직업전환", "  직업전환  "} {
+		if !ParseChangeClassStartLine(line) || !IsChangeClassStartLine(line) {
+			t.Fatalf("bare change-class start rejected: %q", line)
+		}
+	}
+	if ParseChangeClassStartLine("직업전환 예") || IsChangeClassStartLine("직업전환 예") {
+		t.Fatal("confirmed change-class line entered the local start flow")
+	}
+	if ChangeClassCancelResponse != "직업전환이 되지 않았습니다" || ChangeClassRetryResponse == "" {
+		t.Fatalf("unexpected continuation responses: cancel=%q retry=%q", ChangeClassCancelResponse, ChangeClassRetryResponse)
+	}
 }
 
 func TestExecuteChangeClassYesCommitsTypedReceiptAndReplays(t *testing.T) {

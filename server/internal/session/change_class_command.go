@@ -18,6 +18,16 @@ import (
 // forms.
 var ErrUnsupportedChangeClassLine = errors.New("line is not an implemented change class command")
 
+// ChangeClassCancelResponse mirrors change_class_ok's non-affirmative
+// continuation. The connection-local prompt consumes this response before
+// ordinary command parsing, so cancellation never creates a world receipt.
+const ChangeClassCancelResponse = "직업전환이 되지 않았습니다"
+
+// ChangeClassRetryResponse is returned when the durable confirmation may have
+// committed but the store/response was inconclusive. The draft keeps its
+// command ID so the next exact confirmation is idempotent.
+const ChangeClassRetryResponse = "직업전환을 저장하지 못했습니다. 다시 시도해 주세요.\r\n"
+
 // ChangeClassCommand carries only parser-owned confirmation state.  Actor
 // identity and every mutable value are derived from the authenticated lease
 // and committed world snapshot.
@@ -74,6 +84,16 @@ func ParseChangeClassLine(line string) (ChangeClassCommand, bool) {
 	}
 	return ChangeClassCommand{}, false
 }
+
+// ParseChangeClassStartLine recognizes only the bare interactive entry point.
+// The connection-local continuation owns the following 예/아니오 line and
+// crosses the durable receipt boundary only after an affirmative response.
+func ParseChangeClassStartLine(line string) bool {
+	command, ok := ParseChangeClassLine(line)
+	return ok && !command.Confirmed
+}
+
+func IsChangeClassStartLine(line string) bool { return ParseChangeClassStartLine(line) }
 
 func IsChangeClassLine(line string) bool {
 	_, ok := ParseChangeClassLine(line)

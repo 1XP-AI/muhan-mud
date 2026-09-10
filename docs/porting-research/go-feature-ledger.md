@@ -1,5 +1,17 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `직업전환` xterm confirmation
+
+bare `직업전환`을 connection-local `예/아니오` continuation으로 연결했다. 서버가
+snapshot-bound gate를 먼저 확인한 뒤 prompt를 표시하고, `예`일 때만 기존
+`ExecuteChangeClassLineWithOptions("직업전환 예")` receipt를 생성한다. `아니오`·gate
+실패는 receipt-free이며, transient 저장/응답 오류에서는 동일 command ID를 유지해
+재시도한다. 직접 `직업전환 예` 형식은 기존 호환 경로로 남긴다.
+
+`go test -race ./internal/session ./internal/transport -run 'ChangeClass|WorldConnectorBareChangeClass' -count=1`와
+영향 패키지 `go vet`가 통과했다. 실제 PG/browser/ARM64/release 검사는 관련 계약이
+승격되는 cadence에서만 실행한다.
+
 ## 2026-09-10 패거리 탈퇴 전역 알림
 
 활성 회원 탈퇴 receipt에 원작의 전역 `### ... 탈퇴` 알림을 추가했다. 알림은 actor ID와

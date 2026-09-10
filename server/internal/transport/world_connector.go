@@ -350,6 +350,7 @@ const (
 	composeBoardWrite
 	composeFamilyApplication
 	composeFamilyWithdrawal
+	composeChangeClass
 )
 
 type composeDraft struct {
@@ -508,6 +509,21 @@ func (c *worldConnection) submitComposeLine(ctx context.Context, line string) (s
 		c.lastCommand = strings.TrimLeft(line, " ")
 		return session.FamilyWithdrawalConfirmPrompt, true, nil
 	}
+	if session.ParseChangeClassStartLine(line) {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		proposal, err := state.PlanChangeClass(c.lease.ActorID, false)
+		if err != nil {
+			// The bare form is a local prompt only after the same source gates
+			// have passed. No durable receipt is created for a failed gate.
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		c.compose = &composeDraft{kind: composeChangeClass, commandID: "change-class-" + rand.Text()}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return proposal.Response, true, nil
+	}
 	return "", false, nil
 }
 
@@ -529,6 +545,8 @@ func (c *worldConnection) submitComposeContinuation(ctx context.Context, line st
 		return c.submitFamilyApplicationContinuation(ctx, draft, line)
 	case composeFamilyWithdrawal:
 		return c.submitFamilyWithdrawalContinuation(ctx, draft, line)
+	case composeChangeClass:
+		return c.submitChangeClassContinuation(ctx, draft, line)
 	default:
 		c.clearCompose()
 		return "명령을 처리할 수 없습니다.\r\n", nil

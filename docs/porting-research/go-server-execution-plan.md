@@ -1,5 +1,16 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `직업전환` xterm 확인 경계
+
+원작의 bare `직업전환`을 connection-local prompt로 연결한다. 서버 소유 world
+snapshot에서 blind/RTRAIN/class/XP/PFAMIL gate를 먼저 재확인하고, 확인 전에는
+영속 receipt를 만들지 않는다. `예`만 기존 `직업전환 예` reducer를 동일 command ID로
+호출하며, `아니오`는 즉시 취소한다. 저장 결과가 불확실할 때는 draft와 ID를 유지해
+같은 receipt를 재시도하고, 직접 one-line 확인 입력은 계속 지원한다.
+
+검증은 session/transport 영향 패키지의 focused race와 vet만 수행하며, PG/browser/
+ARM64/release 게이트는 계약 승격 cadence에서 한 번만 실행한다.
+
 ## 2026-09-10 패거리 탈퇴 전역 알림
 
 활성 `패거리탈퇴` receipt에 원작의 전역 announcement를 추가했다. actor/PNOBRD 정책을

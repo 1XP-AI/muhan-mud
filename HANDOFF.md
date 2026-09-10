@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (`직업전환` xterm 확인)
+
+bare `직업전환`을 원작처럼 xterm connection-local `예/아니오` 흐름으로 연결했다.
+게이트 통과 전에는 prompt만 표시하고 receipt를 만들지 않으며, `아니오`는
+`직업전환이 되지 않았습니다`로 취소한다. `예`일 때만 기존 snapshot-bound
+change-class reducer를 동일 command ID로 호출하고, 저장/응답이 불확실하면 draft와
+ID를 유지해 재시도한다. 기존 `직업전환 예` one-line 입력도 그대로 동작한다.
+
+검증: `go test -race ./internal/session ./internal/transport -run 'ChangeClass|WorldConnectorBareChangeClass' -count=1`
+및 `go vet ./internal/session ./internal/transport` PASS. 기능 레인에서는 PG/browser/
+ARM64/release 게이트를 반복하지 않았다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (패거리 탈퇴 전역 알림)
 
 활성 회원 탈퇴 receipt에 전역 탈퇴 알림을 추가했다. actor는 제외하고 PNOBRD를 존중하며
