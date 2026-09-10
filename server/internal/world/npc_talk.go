@@ -18,6 +18,7 @@ const (
 	npcTalkBlessSpell           = 4  // SBLESS / 성현진
 	npcTalkProtectionSpell      = 5  // SPROTE / 수호진
 	npcTalkCurePoisonSpell      = 3  // SCUREP / 해독
+	npcTalkHealSpell            = 19 // SFHEAL / 완치
 	npcTalkInvisibilitySpell    = 7  // SINVIS / 은둔법
 	npcTalkDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
 	npcTalkDetectMagicSpell     = 10 // SDMAGI / 주문감지술
@@ -118,6 +119,7 @@ type npcTalkCastSpec struct {
 	CombatStats       bool
 	ClassIntervalTerm bool
 	ClassIntervalMage bool
+	TargetFullHeal    bool
 }
 
 type npcTalkCastClassGate uint8
@@ -166,6 +168,13 @@ func npcTalkCastSpecFor(name string) (npcTalkCastSpec, error) {
 		}
 		return npcTalkCastSpec{
 			Name: name, Spell: npcTalkCurePoisonSpell, Flag: npcTalkPoisonFlag, Timer: -1, Cost: 6,
+		}, nil
+	case "완치":
+		if len(legacyInfoSpellNames) <= npcTalkHealSpell || legacyInfoSpellNames[npcTalkHealSpell] != name {
+			return npcTalkCastSpec{}, ErrNPCTalkCastSpellUnavailable
+		}
+		return npcTalkCastSpec{
+			Name: name, Spell: npcTalkHealSpell, Timer: -2, Cost: 20, ClassGate: npcTalkCastClericPaladinOrInvincible, TargetFullHeal: true,
 		}, nil
 	case "은둔법":
 		if len(legacyInfoSpellNames) <= npcTalkInvisibilitySpell || legacyInfoSpellNames[npcTalkInvisibilitySpell] != name {
@@ -693,6 +702,12 @@ func npcTalkCastInterval(caster LegacyMonster, room RoomState) (int32, error) {
 }
 
 func npcTalkCastTargetAfter(target PlayerState, spec npcTalkCastSpec, now, interval int32) (PlayerState, error) {
+	if spec.TargetFullHeal {
+		body := target.Body
+		body.HPCurrent = body.HPMax
+		target.Body = body
+		return target, nil
+	}
 	if spec.Timer < 0 {
 		body := target.Body
 		body.Flags[spec.Flag/8] &^= 1 << (spec.Flag % 8)
@@ -756,6 +771,15 @@ func appendNPCTalkCastEvent(event *NPCTalkEvent, npc, target LegacyMonster, spec
 		return
 	}
 	var roomText, actorText string
+	if spec.Spell == npcTalkHealSpell {
+		roomText = fmt.Sprintf("\n%s%s %s에게 완치부적을 먹이며 주문을 외웁니다.\n갑자기 그의 몸에서 심한 진동이 일어나면서 체력이 회복되는 것이 느껴집니다.\n", npc.Name, npcSubject, target.Name)
+		actorText = fmt.Sprintf("\n%s%s 당신에게 완치부적을 먹이며 주문을 외웁니다.\n갑자기 당신의 몸에서 심한 진동이 일어나면서 체력이 회복되는 것이 느껴집니다.\n", npc.Name, npcSubject)
+		event.RoomText += roomText
+		event.ActorText += actorText
+		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
+		event.ActorMessages = append(event.ActorMessages, actorText)
+		return
+	}
 	switch spec.Flag {
 	case npcTalkBlessFlag:
 		roomText = fmt.Sprintf("\n%s%s %s의 머리에 한쪽손을 얹으며 성현진을 \n외웁니다.\n그의 머리에서 삼매광이 뿜어져 나와 성스러운 기운이 몸을\n휘감습니다.\n", npc.Name, npcSubject, target.Name)

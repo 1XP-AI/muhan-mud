@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `CAST` 완치 — canonical HP 전이
+
+`완치`(SFHEAL)를 NPC talk receipt 경계에 연결했다. 원작의 클레릭·팔라딘·상위 직업
+게이트, MP 20, `spell_fail` RNG 1회를 검증하고 성공 시 canonical actor의 HP를 HPMax로
+설정한다. 실패·직업 게이트에서는 대상 HP를 바꾸지 않으며, 성공·실패 출력은 receipt에
+고정해 replay에서 중복 실행하지 않는다.
+
+검증: `go test -race ./internal/world -run 'NPCTalkCast(Heal|Detection|TimedUtility)' -count=1`,
+영향 패키지 vet, diff check PASS. 전체 spell parity·PostgreSQL·ARM64·browser·release는
+승격 cadence에서만 실행한다.
+
 ## 2026-09-10 NPC 대화 `CAST` 은둔 계열 — `은둔법`
 
 `은둔법`(SINVIS/PINVIS/LT_INVIS)을 감지 계열과 같은 canonical NPC talk receipt
