@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 저주해소)
+
+플레이어 self-cast 저주해소(SREMOV)를 연결했다. source MP 18·습득 비트·spell-fail 1회와
+PFEARS 해제를 canonical receipt에 고정하고, 성공 시 canonical ItemCollection의 장착
+루트에서만 OCURSE를 제거한다. 인벤토리·컨테이너의 저주 표시는 보존하며, 장비 graph가
+아직 이관되지 않은 캐릭터는 난수·MP 없이 fail-closed한다. 성공 item projection과 해제
+개수는 receipt에 저장해 replay에서 RNG·fan-out을 중복하지 않는다.
+
+검증: go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1,
+영향 패키지 go vet, git diff --check PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release
+게이트는 승격 cadence에서만 실행한다. src/frp.new 기존 사용자 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 전투 강화 2종)
 
 플레이어 self-cast에 성현진(SBLESS)과 수호진(SPROTE)을 연결했다. source 주문

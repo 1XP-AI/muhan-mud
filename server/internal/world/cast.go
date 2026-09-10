@@ -29,6 +29,7 @@ const (
 	castLightSpell           = 2  // SLIGHT / 발광
 	castBlessSpell           = 4  // SBLESS / 성현진
 	castProtectionSpell      = 5  // SPROTE / 수호진
+	castRemoveCurseSpell     = 42 // SREMOV / 저주해소
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -125,6 +126,7 @@ type castSpellSpec struct {
 	// after setting their flag.
 	ClassIntervalTerm bool
 	CombatStats       bool
+	ClearCursedReady  bool
 	CombatGate        bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
@@ -264,6 +266,10 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Flag, spec.Timer = castProtectionFlag, castProtectionTimer
 		spec.RoomExtend, spec.MinInterval, spec.ClassIntervalTerm, spec.CombatStats = 800, true, true, true
 		spec.failMask = castAllSpellFailMask
+	case castRemoveCurseSpell:
+		spec.Cost, spec.healKind = 18, castHealCleanse
+		spec.Flag, spec.Timer, spec.ClearCursedReady = fleeFearFlag, -1, true
+		spec.failMask = castAllSpellFailMask
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
@@ -299,63 +305,67 @@ type CastEvent struct {
 }
 
 type CastResult struct {
-	Action        string     `json:"action"`
-	Response      string     `json:"response"`
-	Broadcast     bool       `json:"broadcast"`
-	Changed       bool       `json:"changed"`
-	Attempted     bool       `json:"attempted,omitempty"`
-	Succeeded     bool       `json:"succeeded,omitempty"`
-	SpellFailed   bool       `json:"spell_failed,omitempty"`
-	DailyUsed     bool       `json:"daily_used,omitempty"`
-	HiddenCleared bool       `json:"hidden_cleared,omitempty"`
-	SpellName     string     `json:"spell_name,omitempty"`
-	SpellIndex    int        `json:"spell_index,omitempty"`
-	Cost          int16      `json:"cost,omitempty"`
-	Chance        int        `json:"chance,omitempty"`
-	Roll          int        `json:"roll,omitempty"`
-	EffectRolls   []int      `json:"effect_rolls,omitempty"`
-	HPDelta       int32      `json:"hp_delta,omitempty"`
-	MPDelta       int32      `json:"mp_delta,omitempty"`
-	Now           int32      `json:"now,omitempty"`
-	SpellInterval int32      `json:"spell_interval,omitempty"`
-	TimedFlag     uint       `json:"timed_flag,omitempty"`
-	TimedInterval int32      `json:"timed_interval,omitempty"`
-	Event         *CastEvent `json:"event,omitempty"`
+	Action             string     `json:"action"`
+	Response           string     `json:"response"`
+	Broadcast          bool       `json:"broadcast"`
+	Changed            bool       `json:"changed"`
+	Attempted          bool       `json:"attempted,omitempty"`
+	Succeeded          bool       `json:"succeeded,omitempty"`
+	SpellFailed        bool       `json:"spell_failed,omitempty"`
+	DailyUsed          bool       `json:"daily_used,omitempty"`
+	HiddenCleared      bool       `json:"hidden_cleared,omitempty"`
+	SpellName          string     `json:"spell_name,omitempty"`
+	SpellIndex         int        `json:"spell_index,omitempty"`
+	Cost               int16      `json:"cost,omitempty"`
+	Chance             int        `json:"chance,omitempty"`
+	Roll               int        `json:"roll,omitempty"`
+	EffectRolls        []int      `json:"effect_rolls,omitempty"`
+	HPDelta            int32      `json:"hp_delta,omitempty"`
+	MPDelta            int32      `json:"mp_delta,omitempty"`
+	Now                int32      `json:"now,omitempty"`
+	SpellInterval      int32      `json:"spell_interval,omitempty"`
+	TimedFlag          uint       `json:"timed_flag,omitempty"`
+	TimedInterval      int32      `json:"timed_interval,omitempty"`
+	CursedItemsCleared int        `json:"cursed_items_cleared,omitempty"`
+	Event              *CastEvent `json:"event,omitempty"`
 }
 
 // CastProposal is the snapshot-bound receipt candidate.  ApplyCast never
 // calls Roll: all spell-fail/effect draws are copied into EffectRolls during
 // planning and validated from those values during apply/replay.
 type CastProposal struct {
-	Action        string
-	ActorID       string
-	RoomID        int16
-	SpellName     string
-	SpellIndex    int
-	Cost          int16
-	HealKind      int
-	Now           int32
-	Chance        int
-	Roll          int
-	EffectRolls   []int
-	HPDelta       int32
-	MPDelta       int32
-	SpellInterval int32
-	Attempted     bool
-	Succeeded     bool
-	SpellFailed   bool
-	DailyUsed     bool
-	HiddenCleared bool
-	Changed       bool
-	Broadcast     bool
-	Response      string
-	RoomText      string
-	TimedFlag     uint
-	TimedInterval int32
+	Action             string
+	ActorID            string
+	RoomID             int16
+	SpellName          string
+	SpellIndex         int
+	Cost               int16
+	HealKind           int
+	Now                int32
+	Chance             int
+	Roll               int
+	EffectRolls        []int
+	HPDelta            int32
+	MPDelta            int32
+	SpellInterval      int32
+	Attempted          bool
+	Succeeded          bool
+	SpellFailed        bool
+	DailyUsed          bool
+	HiddenCleared      bool
+	Changed            bool
+	Broadcast          bool
+	Response           string
+	RoomText           string
+	TimedFlag          uint
+	TimedInterval      int32
+	CursedItemsCleared int
 
 	expectedActor     PlayerState
 	expectedRoomFlags [8]byte
 	afterBody         LegacyMonster
+	afterItems        ItemCollection
+	afterItemsSet     bool
 }
 
 func castActor(s State, actorID string) (PlayerState, RoomState, error) {
@@ -521,6 +531,33 @@ func castApplyTimedEffect(body *LegacyMonster, items *ItemCollection, spec castS
 		return ErrCastSpellUnavailable
 	}
 	return nil
+}
+
+// castClearCursedReady mirrors remove_curse's self-target branch: only
+// equipped roots are un-cursed, while inventory/container objects remain
+// untouched. The returned collection is a receipt projection, never a
+// mutation of the planning snapshot.
+func castClearCursedReady(items *ItemCollection) (ItemCollection, int, error) {
+	if items == nil {
+		return ItemCollection{}, 0, fmt.Errorf("%w: canonical equipment required", ErrCastSpellUnavailable)
+	}
+	if err := items.Validate(); err != nil {
+		return ItemCollection{}, 0, fmt.Errorf("%w: canonical equipment invalid: %v", ErrCastSpellUnavailable, err)
+	}
+	next := items.clone()
+	cleared := 0
+	for _, id := range next.Ready {
+		if id == "" {
+			continue
+		}
+		item := next.Items[id]
+		if flag(item.Object.Flags[:], objectCursedFlag) {
+			setObjectFlag(&item.Object.Flags, objectCursedFlag, false)
+			next.Items[id] = item
+			cleared++
+		}
+	}
+	return next, cleared, nil
 }
 
 func castCombatActive(s State, actorID string, actor PlayerState) bool {
@@ -779,6 +816,8 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 		}
 	case castHealCleanse:
 		switch spec.Index {
+		case castRemoveCurseSpell:
+			return "당신은 오른손에 성스러운 기운을 모으자 저주해소 주문을 외웁니다.\r\n붉은 빛이 퍼져나가며 당신의 몸에 걸렸던 저주가 풀리기 시작합니다.\r\n"
 		case castCurePoisonSpell:
 			return "당신은 오른손으로 혈도를 짚으면서 해독 주문을 외웁니다.\r\n당신 몸에 남아 있는 독이 모두 빠져나갔습니다.\r\n"
 		case castDiseaseSpell:
@@ -887,6 +926,15 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 		p.Response = "지금 싸우고 있잖아요..!!.\r\n"
 		return p, nil
 	}
+	var clearedItems ItemCollection
+	var clearedCount int
+	if spec.ClearCursedReady {
+		var clearErr error
+		clearedItems, clearedCount, clearErr = castClearCursedReady(actor.Items)
+		if clearErr != nil {
+			return CastProposal{}, clearErr
+		}
+	}
 	if spec.CombatStats {
 		// Validate the canonical equipment projection before spell_fail so a
 		// legacy-only body cannot consume an unreplayable random draw.
@@ -969,6 +1017,11 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 			return CastProposal{}, err
 		}
 	}
+	if spec.ClearCursedReady {
+		p.afterItems = clearedItems
+		p.afterItemsSet = true
+		p.CursedItemsCleared = clearedCount
+	}
 	if spec.healKind == castHealFull {
 		p.afterBody.Daily[castDailyHealIndex] = dailyAfter
 	}
@@ -981,7 +1034,7 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 }
 
 func castResult(p CastProposal, actor PlayerState) CastResult {
-	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, SpellInterval: p.SpellInterval, TimedFlag: p.TimedFlag, TimedInterval: p.TimedInterval}
+	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, SpellInterval: p.SpellInterval, TimedFlag: p.TimedFlag, TimedInterval: p.TimedInterval, CursedItemsCleared: p.CursedItemsCleared}
 	if p.Broadcast {
 		result.Event = &CastEvent{RoomID: p.RoomID, ActorID: p.ActorID, ActorName: actor.Body.Name, SpellName: p.SpellName, ExcludeActorID: p.ActorID, Text: p.RoomText}
 	}
@@ -999,7 +1052,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastStaleProposal
 	}
 	if p.SpellName == "" {
-		if p.Changed || p.HiddenCleared || p.Broadcast || p.Attempted || p.Succeeded || p.SpellFailed || p.SpellIndex != 0 || p.Cost != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.RoomText != "" {
+		if p.Changed || p.HiddenCleared || p.Broadcast || p.Attempted || p.Succeeded || p.SpellFailed || p.SpellIndex != 0 || p.Cost != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.RoomText != "" {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		return s.clone(), castResult(p, actor), nil
@@ -1009,7 +1062,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if !p.Attempted {
-		if p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 {
+		if p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		if p.HiddenCleared {
@@ -1035,7 +1088,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		}
 		return s.clone(), castResult(p, actor), nil
 	}
-	if !p.Changed || p.Broadcast != p.Succeeded || p.Succeeded == p.SpellFailed || p.Chance < 1 || p.Chance > math.MaxInt32 || p.Roll < 0 || p.Roll > 100 {
+	if !p.Changed || p.Broadcast != p.Succeeded || p.Succeeded == p.SpellFailed || p.Chance < 1 || p.Chance > math.MaxInt32 || p.Roll < 0 || p.Roll > 100 || p.CursedItemsCleared < 0 {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if p.HiddenCleared != flag(actor.Body.Flags[:], castHiddenFlag) {
@@ -1050,7 +1103,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if p.SpellFailed {
-		if len(p.EffectRolls) != 0 || p.DailyUsed || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
+		if len(p.EffectRolls) != 0 || p.DailyUsed || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		after, mpDelta, err := castBodyAfter(actor.Body, room, spec, CastOptions{}, nil, false, true)
@@ -1070,7 +1123,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if spec.healKind == castHealTimed {
-		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != spec.Flag || p.TimedInterval < 0 {
+		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.TimedFlag != spec.Flag || p.TimedInterval < 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		expectedInterval, err := castTimedInterval(actor.Body, room, spec)
@@ -1079,6 +1132,13 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		}
 	} else if spec.healKind == castHealCleanse {
 		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer != -1 {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
+		if spec.ClearCursedReady {
+			if !p.afterItemsSet {
+				return State{}, CastResult{}, ErrCastInvalidProposal
+			}
+		} else if p.afterItemsSet || p.CursedItemsCleared != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 	} else if spec.healKind == castHealFull {
@@ -1116,12 +1176,24 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		}
 		after.Daily[castDailyHealIndex] = daily
 	}
+	var afterItems *ItemCollection
+	if spec.ClearCursedReady {
+		projected, cleared, err := castClearCursedReady(actor.Items)
+		if err != nil || !p.afterItemsSet || cleared != p.CursedItemsCleared || !reflect.DeepEqual(projected, p.afterItems) {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
+		items := projected.clone()
+		afterItems = &items
+	}
 	if int32(after.MPCurrent)-int32(actor.Body.MPCurrent) != p.MPDelta || !reflect.DeepEqual(after, p.afterBody) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	next := s.clone()
 	nextActor := next.Players[p.ActorID]
 	nextActor.Body = after
+	if afterItems != nil {
+		nextActor.Items = afterItems
+	}
 	next.Players[p.ActorID] = nextActor
 	if err := next.Validate(); err != nil {
 		return State{}, CastResult{}, err

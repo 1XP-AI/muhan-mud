@@ -368,6 +368,71 @@ func TestCastCombatBuffRequiresCanonicalEquipmentBeforeRandom(t *testing.T) {
 	}
 }
 
+func TestPlanApplyCastRemoveCurseClearsReadyRootsOnly(t *testing.T) {
+	s := castCombatTestState(castClericClass, castRemoveCurseSpell)
+	actor := s.Players["a"]
+	ready := LegacyObject{Name: "저주검", Type: 0, Adjustment: 1}
+	setObjectFlag(&ready.Flags, objectCursedFlag, true)
+	inventory := LegacyObject{Name: "저주상자", Type: 0}
+	setObjectFlag(&inventory.Flags, objectCursedFlag, true)
+	actor.Items.Items["ready"] = Item{Object: ready}
+	actor.Items.Items["inventory"] = Item{Object: inventory}
+	actor.Items.Ready[19] = "ready"
+	actor.Items.Inventory = []string{"inventory"}
+	setSettingFlag(&actor.Body, fleeFearFlag, true)
+	stats, err := actor.Items.CombatStats(actor.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor.Body.Armor, actor.Body.Thaco = byte(stats.Armor), byte(stats.Thaco)
+	s.Players["a"] = actor
+	calls := 0
+	p, err := s.PlanCast("a", "저주해소", CastOptions{Now: 100, Roll: func(low, high int) int {
+		calls++
+		if low != 1 || high != 100 {
+			t.Fatalf("spell-fail range=%d..%d", low, high)
+		}
+		return 1
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !p.Attempted || !p.Succeeded || p.CursedItemsCleared != 1 || p.MPDelta != -18 || p.SpellInterval != 3 {
+		t.Fatalf("proposal=%+v calls=%d", p, calls)
+	}
+	next, result, err := s.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := next.Players["a"].Body
+	if flag(body.Flags[:], fleeFearFlag) || body.MPCurrent != 12 || body.Timers[castSpellTimerIndex] != (LegacyTimer{LastTime: 100, Interval: 3}) {
+		t.Fatalf("body=%+v", body)
+	}
+	readyAfter := next.Players["a"].Items.Items["ready"]
+	inventoryAfter := next.Players["a"].Items.Items["inventory"]
+	if flag(readyAfter.Object.Flags[:], objectCursedFlag) || !flag(inventoryAfter.Object.Flags[:], objectCursedFlag) {
+		t.Fatalf("item curse projection=%+v", next.Players["a"].Items)
+	}
+	if result.CursedItemsCleared != 1 || result.Event == nil || !strings.Contains(result.Response, "저주해소") {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, _, err := next.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+		t.Fatalf("second apply err=%v", err)
+	}
+}
+
+func TestCastRemoveCurseRequiresCanonicalEquipmentBeforeRandom(t *testing.T) {
+	s := castTestState(castClericClass, castRemoveCurseSpell)
+	calls := 0
+	_, err := s.PlanCast("a", "저주해소", CastOptions{Now: 100, Roll: func(int, int) int {
+		calls++
+		return 1
+	}})
+	if !errors.Is(err, ErrCastSpellUnavailable) || calls != 0 {
+		t.Fatalf("err=%v random calls=%d", err, calls)
+	}
+}
+
 func TestCastInvisibilityCombatGateClearsHiddenWithoutRolling(t *testing.T) {
 	s := castTestState(castMageClass, castInvisibilitySpell)
 	s.Players["b"] = PlayerState{Body: LegacyMonster{Name: "Bob", Type: 0, RoomID: 1}, Online: true}

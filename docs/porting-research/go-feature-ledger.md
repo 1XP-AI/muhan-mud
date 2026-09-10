@@ -1,5 +1,17 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 주문 저주해소 — canonical 장착 아이템 정화
+
+저주해소(SREMOV/PFEARS/OCURSE)를 player self-cast receipt로 연결했다. source MP 18과
+spell-fail RNG 1회를 검증하고, 성공 시 장착된 ready root의 OCURSE만 제거하며 인벤토리와
+컨테이너 항목은 건드리지 않는다. PFEARS 해제·global LT_SPELL·MP 차감과 해제 개수/아이템
+projection을 원자적으로 기록하고, canonical item graph가 없는 상태에서는 난수·비용 없이
+fail-closed한다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet 및 전체 spell parity는 승격 cadence에서 단일 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 주문 전투 강화 2종 — canonical combat stat 전이
 
 성현진(SBLESS/PBLESS/LT_BLESS)과 수호진(SPROTE/PPROTE/LT_PROTE)을 player

@@ -1,5 +1,17 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 주문 저주해소
+
+저주해소를 self-cast reducer에 추가한다. source SREMOV의 MP 18·습득 비트·spell-fail,
+PFEARS와 장착 OCURSE 해제 규칙을 snapshot-bound receipt로 고정하고, canonical
+ItemCollection의 ready roots만 정화한다. 장비 이관 전 상태는 receipt 전에 닫으며, 성공
+projection에 변경된 item graph와 개수를 포함해 replay에서 allocator/RNG/출력을 재실행하지
+않는다.
+
+이번 레인은 world/session/transport focused race, 영향 패키지 vet, diff check만 실행했다.
+전체 통합·PostgreSQL·ARM64·browser/IME·release/testnet 검증은 주문 묶음 승격 시 한 번만
+수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 주문 전투 강화 2종
 
 성현진·수호진을 self-cast reducer에 추가한다. source SBLESS/SPROTE의 MP·습득
