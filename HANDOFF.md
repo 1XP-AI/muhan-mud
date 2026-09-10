@@ -1,5 +1,34 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (bank snapshot review→import manifest)
+
+은행 raw→kind-8 변환 review와 `Postgres.ImportBankSnapshot` 사이를 잇는 DB-free CLI를
+추가했다. `-build-bank-snapshot-manifest-review`와 `-build-bank-snapshot-manifest-mapping`은
+canonical digest/크기/root/node, review source player name, operator account/player/item ID와
+expected revision을 다시 대조해 private immutable import manifest를 만든다. 이름 기반
+claim, 평문 credential, raw path/bytes는 manifest에 들어가지 않는다. malformed/unknown
+field/path traversal/digest·graph·account mismatch/중복 identity·item은 fail-closed한다.
+
+`-build-bank-snapshot-manifest-dry-run`과 path-only `-import-bank-snapshot-manifest`는
+DATABASE_URL/listener 없이 검증만 수행한다. 실제 DB 변경은 명시적인
+`-import-bank-snapshot-manifest-apply`에서만 기존 atomic bank import/receipt를 호출하며,
+동일 command ID/revision으로 중단 batch를 재개할 수 있다. schema는
+`docs/porting-research/go-bank-snapshot-manifest.md`다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -count=1) PASS
+(cd server && go vet ./cmd/muhan) PASS
+CLI bank build dry-run/write, path-only validation, same-byte replay without DATABASE_URL PASS
+git diff --check PASS
+```
+
+이번 배치는 로컬에만 있으며 push/CI/배포는 실행하지 않았다. 실제 account/character 대조,
+대량 운영 이관, Supabase RLS/apply·복구/PITR와 live bank/gold parity는 남아 있다.
+
+## 최신 구현·검증 체크포인트 — 2026-09-10 (social raw→manifest builder)
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (social raw→manifest builder)
 
 collector와 explicit import 사이를 잇는 DB-free `cmd/muhan` builder를 추가했다.

@@ -24,6 +24,17 @@ builder는 `-build-social-manifest-dry-run`에서 DB/listener 없이 동일 검�
 output은 mapping과 같은 private `0700` 디렉터리의 immutable `0600` 파일로 제한한다.
 생성 문서와 mapping schema는 `docs/porting-research/go-social-manifest.md`에 있다.
 
+## 2026-09-10 은행 kind-8 review→import manifest
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| bank review + identity/item mapping | `-build-bank-snapshot-manifest-review`와 `-build-bank-snapshot-manifest-mapping`이 raw conversion review의 canonical digest/크기/root/node/name을 다시 확인하고 명시적 account/player/item ID를 `BankSnapshotV1` import manifest로 결합한다. | `cmd/muhan` race, unknown/path/digest/account mismatch, changed artifact, DB-free dry-run·immutable replay PASS. 실제 account/character 대조·대량 운영 승인은 미완료 |
+| manifest read/apply | `-import-bank-snapshot-manifest`는 모든 canonical artifact와 item ID를 DB 전에 검증하고, `-import-bank-snapshot-manifest-apply`만 기존 `Postgres.ImportBankSnapshot` receipt 경계를 호출한다. | 기존 ARM64 PG import/replay/rollback PASS와 CLI path-only 검증 PASS. 운영 Supabase/RLS·중단 batch 복구·live bank/gold parity는 미완료 |
+
+mapping schema와 실행 예는 `docs/porting-research/go-bank-snapshot-manifest.md`를
+따른다. raw source digest는 converter review evidence로 유지되고, import request에는
+실제로 부착되는 canonical artifact digest만 사용한다.
+
 ## 2026-09-10 소셜 aggregate manifest·복구 reader
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

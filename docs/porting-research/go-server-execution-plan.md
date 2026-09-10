@@ -46,6 +46,26 @@ same-byte replay·changed output·source overlap 및 `git diff --check` PASS. �
 대량 mapping 승인, Supabase 권한/RLS, aggregate apply/restore와 전체 social parity는
 여전히 G4/G5 승격 조건이다.
 
+## 2026-09-10 은행 kind-8 review→import manifest 승격 경계
+
+은행 raw 변환 review와 `Postgres.ImportBankSnapshot` 사이에 명시적 manifest 경계를
+추가했다. `-build-bank-snapshot-manifest-review`는 review의 canonical file/digest/size/
+root/node/source-name evidence와 operator mapping의 account/player/item ID를 다시 대조해
+`snapshot_sha256` 기반 import manifest를 만든다. source 이름은 account 대조용 evidence일
+뿐이며, ID를 이름으로 생성하지 않는다. unknown field, path traversal, duplicate identity/
+item, changed/non-canonical artifact, account-name mismatch는 전체 batch를 거부한다.
+
+`-build-bank-snapshot-manifest-dry-run`과 path-only `-import-bank-snapshot-manifest`는
+private artifact 검증만 수행하고 DB/listener를 열지 않는다. 실제 변경은 명시적인
+`-import-bank-snapshot-manifest-apply`에서만 기존 atomic bank import/receipt를 호출한다.
+output은 review 옆 immutable `0600` 파일이고, 중단된 batch는 command ID와 revision을
+그대로 재시도한다. schema/example은 `docs/porting-research/go-bank-snapshot-manifest.md`다.
+
+검증: bank manifest unit/CLI race, `go vet ./cmd/muhan`, DB 없는 build/path-only,
+digest·unknown·changed artifact·same-byte replay와 `git diff --check` PASS. 실제 account/
+character 대조, Supabase RLS/운영 apply, batch 복구와 live bank/gold parity는 여전히 G4/G5
+조건이다.
+
 ## 2026-09-10 소셜 manifest·복구 승격 경계
 
 운영자가 검토한 `family-ledger-v1` 또는 `character-memos-v1` JSON만

@@ -62,6 +62,13 @@ func main() {
 	socialManifestMapping := flag.String("build-social-manifest-mapping", "", "private operator identity mapping JSON for social manifest build")
 	socialManifestOutput := flag.String("build-social-manifest-output", "", "private destination manifest for social import")
 	socialManifestDryRun := flag.Bool("build-social-manifest-dry-run", false, "validate legacy social files and identity mapping without writing a manifest or connecting to PostgreSQL")
+	bankSnapshotManifest := flag.String("import-bank-snapshot-manifest", "", "explicitly validate or import reviewed BankSnapshotV1 records from a private manifest")
+	bankSnapshotManifestDryRun := flag.Bool("import-bank-snapshot-manifest-dry-run", false, "validate a BankSnapshotV1 import manifest without connecting to PostgreSQL")
+	bankSnapshotManifestApply := flag.Bool("import-bank-snapshot-manifest-apply", false, "explicitly apply a reviewed BankSnapshotV1 manifest to PostgreSQL")
+	bankSnapshotManifestReview := flag.String("build-bank-snapshot-manifest-review", "", "review JSON produced by legacy bank raw conversion")
+	bankSnapshotManifestMapping := flag.String("build-bank-snapshot-manifest-mapping", "", "private operator identity/item mapping JSON for bank snapshots")
+	bankSnapshotManifestOutput := flag.String("build-bank-snapshot-manifest-output", "", "private destination manifest for BankSnapshotV1 import")
+	bankSnapshotManifestBuildDryRun := flag.Bool("build-bank-snapshot-manifest-dry-run", false, "validate bank review, mapping, and canonical artifacts without writing a manifest or connecting to PostgreSQL")
 	bankSnapshotInspectDir := flag.String("inspect-bank-snapshot-dir", "", "inspect all private BankSnapshotV1 files under a directory and emit metadata-only JSON")
 	bankSnapshotInspectFile := flag.String("inspect-bank-snapshot-file", "", "inspect one private BankSnapshotV1 file and emit metadata-only JSON")
 	bankSnapshotInspectDryRun := flag.Bool("inspect-bank-snapshot-dry-run", false, "run BankSnapshotV1 inspection without connecting to PostgreSQL (inspection is always DB-free)")
@@ -117,6 +124,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	bankSnapshotImportOptions, err := validateBankSnapshotImportFlags(*bankSnapshotManifest, *bankSnapshotManifestDryRun, *bankSnapshotManifestApply)
+	if err != nil {
+		log.Fatal(err)
+	}
+	bankSnapshotManifestBuildOptions, err := validateBankSnapshotManifestBuildFlags(*bankSnapshotManifestReview, *bankSnapshotManifestMapping, *bankSnapshotManifestOutput, *bankSnapshotManifestBuildDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectOptions, err := validateBankSnapshotInspectionFlags(*bankSnapshotInspectDir, *bankSnapshotInspectFile)
 	if err != nil {
 		log.Fatal(err)
@@ -134,6 +149,8 @@ func main() {
 	bankRawConversionSelected := bankRawConvertOptions.Root != ""
 	socialImportSelected := socialImportOptions.ManifestPath != ""
 	socialManifestBuildSelected := socialManifestBuildOptions.FamilyRoot != "" || socialManifestBuildOptions.MemoRoot != ""
+	bankSnapshotImportSelected := bankSnapshotImportOptions.ManifestPath != ""
+	bankSnapshotManifestBuildSelected := bankSnapshotManifestBuildOptions.ReviewPath != ""
 	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}
@@ -191,6 +208,11 @@ func main() {
 		(socialImportSelected || backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected) {
 		log.Fatal("social manifest build mode cannot be combined with import, inspection, conversion, seed, backup, or world flags")
 	}
+	bankSnapshotModeSelected := bankSnapshotImportSelected || bankSnapshotManifestBuildSelected
+	if bankSnapshotModeSelected &&
+		(bankSnapshotImportSelected && bankSnapshotManifestBuildSelected || socialImportSelected || socialManifestBuildSelected || backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected) {
+		log.Fatal("bank snapshot manifest mode cannot be combined with another import, inspection, conversion, seed, backup, or world mode")
+	}
 	var socialBatch socialImportBatch
 	if socialImportSelected {
 		socialBatch, err = readSocialImportManifest(socialImportOptions.ManifestPath)
@@ -219,6 +241,32 @@ func main() {
 			log.Fatalf("social manifest build failed: %v", err)
 		}
 		log.Printf("social import manifest built: kind=%s world=%s families=%d members=%d recipients=%d memos=%d output=%s; database import still requires a separate explicit command", built.Batch.Kind, built.Batch.WorldID, built.Batch.FamilyCount, built.Batch.MemberCount, built.Batch.RecipientCount, built.Batch.MemoCount, socialManifestBuildOptions.OutputPath)
+		return
+	}
+	var bankSnapshotBatch bankSnapshotImportBatch
+	if bankSnapshotImportSelected {
+		bankSnapshotBatch, err = readBankSnapshotImportManifest(bankSnapshotImportOptions.ManifestPath)
+		if err != nil {
+			log.Fatalf("bank snapshot manifest rejected: %v", err)
+		}
+		if !bankSnapshotImportOptions.Apply {
+			log.Printf("bank snapshot manifest validated: world=%s records=%d; no database connection or write performed", bankSnapshotBatch.WorldID, len(bankSnapshotBatch.Requests))
+			return
+		}
+	}
+	if bankSnapshotManifestBuildSelected {
+		builtBatch, manifestRaw, buildErr := buildBankSnapshotImportManifest(bankSnapshotManifestBuildOptions.ReviewPath, bankSnapshotManifestBuildOptions.MappingPath)
+		if buildErr != nil {
+			log.Fatalf("bank snapshot manifest build rejected: %v", buildErr)
+		}
+		if bankSnapshotManifestBuildOptions.DryRun {
+			log.Printf("bank snapshot manifest build validated: world=%s records=%d; no import manifest or database write performed", builtBatch.WorldID, len(builtBatch.Requests))
+			return
+		}
+		if err := writeBankSnapshotManifestBuild(bankSnapshotManifestBuildOptions.OutputPath, manifestRaw, bankSnapshotManifestBuildOptions.ReviewPath); err != nil {
+			log.Fatalf("bank snapshot manifest build failed: %v", err)
+		}
+		log.Printf("bank snapshot import manifest built: world=%s records=%d output=%s; database import still requires a separate explicit command", builtBatch.WorldID, len(builtBatch.Requests), bankSnapshotManifestBuildOptions.OutputPath)
 		return
 	}
 	if bankSnapshotInspectionSelected {
@@ -353,6 +401,16 @@ func main() {
 			log.Fatalf("social import failed: %v", err)
 		}
 		log.Printf("social import completed: kind=%s world=%s command=%s", socialBatch.Kind, socialBatch.WorldID, socialBatch.CommandID)
+		return
+	}
+	if bankSnapshotImportOptions.Apply {
+		importCtx, importCancel := context.WithTimeout(ctx, 5*time.Minute)
+		err := runBankSnapshotImport(importCtx, repo, bankSnapshotBatch)
+		importCancel()
+		if err != nil {
+			log.Fatalf("bank snapshot import failed: %v", err)
+		}
+		log.Printf("bank snapshot manifest import completed: world=%s records=%d", bankSnapshotBatch.WorldID, len(bankSnapshotBatch.Requests))
 		return
 	}
 	if *migrate {
