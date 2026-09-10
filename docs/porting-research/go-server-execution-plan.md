@@ -1,5 +1,17 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 지속·감지 주문
+
+기존 self-cast receipt 경계에 `은둔법`·`은둔감지술`·`주문감지술`·`선악감지`를 연결한다.
+주문별 canonical flag/timer와 MP 비용, INT/레벨/Mage/RPMEXT 지속 시간은 source 슬롯으로
+검증한다. 은둔·감지 3종은 계획 단계에서 `spell_fail` RNG 1회를 고정하고, 선악감지는 source
+계약대로 RNG 없이 처리한다. 은둔법 전투 게이트는 replay 가능한 no-op으로 닫아 MP/timer를
+변경하지 않으며, 성공 event만 한 번 fan-out한다.
+
+이번 레인은 world/session/transport focused race, 영향 패키지 vet, diff check만 실행했다.
+전체 통합·PostgreSQL·ARM64·browser/IME·release/testnet 검증은 기능 묶음 승격 시 한 번만
+수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` self-cast 경계
 
 `command_parser`와 world connector가 원작 `주문` 입력을 self-target Go reducer로 전달한다.

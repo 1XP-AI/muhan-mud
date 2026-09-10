@@ -226,3 +226,94 @@ func TestCastClearsHiddenBeforeSpellGate(t *testing.T) {
 		t.Fatalf("next=%+v result=%+v", body, result)
 	}
 }
+
+func TestPlanApplyCastTimedSelfSpellsUseSourceFlagsAndIntervals(t *testing.T) {
+	tests := []struct {
+		name         string
+		class        byte
+		spell        int
+		spellName    string
+		flag         uint
+		timer        int
+		wantInterval int32
+		wantCost     int16
+		wantGlobal   int32
+		wantRolls    int
+	}{
+		// INT 18 has bonus 2; a level-8 mage adds 120 seconds and RPMEXT adds 600.
+		{name: "invisibility mage", class: castMageClass, spell: castInvisibilitySpell, spellName: "은둔법", flag: castInvisibilityFlag, timer: castInvisibilityTimer, wantInterval: 3120, wantCost: 15, wantGlobal: 3, wantRolls: 1},
+		{name: "detect invisible mage", class: castMageClass, spell: castDetectInvisibleSpell, spellName: "은둔감지술", flag: castDetectInvisibleFlag, timer: castDetectInvisibleTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
+		{name: "detect magic mage", class: castMageClass, spell: castDetectMagicSpell, spellName: "주문감지술", flag: castDetectMagicFlag, timer: castDetectMagicTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
+		// A cleric does not receive the mage term; know-alignment uses RPMEXT +800.
+		{name: "know alignment cleric", class: castClericClass, spell: castKnowAlignmentSpell, spellName: "선악감지", flag: castKnowAlignmentFlag, timer: castKnowAlignmentTimer, wantInterval: 3200, wantCost: 6, wantGlobal: 3, wantRolls: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := castTestState(tc.class, tc.spell)
+			room := s.Rooms[1]
+			room.Resource.Flags[npcTalkRoomMagicExtend/8] |= 1 << (npcTalkRoomMagicExtend % 8)
+			s.Rooms[1] = room
+			calls := 0
+			p, err := s.PlanCast("a", tc.spellName, CastOptions{Now: 100, Roll: func(low, high int) int {
+				calls++
+				if low != 1 || high != 100 {
+					t.Fatalf("spell-fail range=%d..%d", low, high)
+				}
+				return 1
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != tc.wantRolls || !p.Attempted || !p.Succeeded || p.SpellFailed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != tc.flag || p.TimedInterval != tc.wantInterval {
+				t.Fatalf("proposal=%+v calls=%d", p, calls)
+			}
+			next, result, err := s.ApplyCast(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := next.Players["a"].Body
+			if body.MPCurrent != 30-tc.wantCost || !flag(body.Flags[:], tc.flag) || body.Timers[tc.timer] != (LegacyTimer{LastTime: 100, Interval: tc.wantInterval}) || body.Timers[castSpellTimerIndex] != (LegacyTimer{LastTime: 100, Interval: tc.wantGlobal}) {
+				t.Fatalf("body=%+v", body)
+			}
+			if result.TimedFlag != tc.flag || result.TimedInterval != tc.wantInterval || result.HPDelta != 0 || result.Event == nil || !strings.Contains(result.Response, tc.spellName) {
+				t.Fatalf("result=%+v", result)
+			}
+			bad := p
+			bad.TimedInterval++
+			if _, _, err := s.ApplyCast(bad); !errors.Is(err, ErrCastInvalidProposal) {
+				t.Fatalf("tampered timed receipt err=%v", err)
+			}
+		})
+	}
+}
+
+func TestCastInvisibilityCombatGateClearsHiddenWithoutRolling(t *testing.T) {
+	s := castTestState(castMageClass, castInvisibilitySpell)
+	s.Players["b"] = PlayerState{Body: LegacyMonster{Name: "Bob", Type: 0, RoomID: 1}, Online: true}
+	room := s.Rooms[1]
+	room.PlayerIDs = []string{"a", "b"}
+	s.Rooms[1] = room
+	actor := s.Players["a"]
+	actor.PlayerEnemies = []string{"b"}
+	setSettingFlag(&actor.Body, castHiddenFlag, true)
+	s.Players["a"] = actor
+	calls := 0
+	p, err := s.PlanCast("a", "은둔법", CastOptions{Now: 100, Roll: func(int, int) int {
+		calls++
+		return 1
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || p.Attempted || p.Succeeded || !p.Changed || !p.HiddenCleared || p.TimedFlag != 0 || !strings.Contains(p.Response, "싸우고") {
+		t.Fatalf("proposal=%+v calls=%d", p, calls)
+	}
+	next, result, err := s.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := next.Players["a"].Body
+	if flag(body.Flags[:], castHiddenFlag) || body.MPCurrent != actor.Body.MPCurrent || result.Attempted || result.TimedFlag != 0 || result.TimedInterval != 0 {
+		t.Fatalf("body=%+v result=%+v", body, result)
+	}
+}

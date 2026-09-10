@@ -1,5 +1,19 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 지속·감지)
+
+플레이어 `주문` self-cast 경계에 `은둔법`·`은둔감지술`·`주문감지술`·`선악감지를 추가했다.
+각 주문의 source spell bit, PINVIS/PDINVI/PDMAGI/PKNOWA flag, LT_INVIS/LT_DINVI/LT_DMAGI/
+LT_KNOWA timer, MP 비용과 `RPMEXT` 지속 시간을 canonical body에 원자 반영한다. 은둔·감지
+3종은 source `spell_fail` 난수를 receipt에 한 번 기록하고, 선악감지는 원작처럼 실패 난수를
+소비하지 않는다. 전투 중 은둔법은 replay가 모호해지지 않도록 난수·MP·timer 없이 hidden만
+해제하는 no-op receipt로 닫았다. 성공 room/actor 출력은 기존 receipt 경계를 재사용한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1`,
+영향 패키지 `go vet`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release
+게이트는 반복하지 않고 기능 묶음 승격 cadence에서 한 번 실행한다. `src/frp.new` 기존 사용자
+변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 회복)
 
 웹 xterm에서 원작처럼 `주문`, `주문 회복`, `주문 원기회복`, `주문 완치`를 직접 입력할

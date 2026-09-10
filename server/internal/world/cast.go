@@ -1,8 +1,8 @@
 package world
 
-// This file is the first player-facing slice of magic1.c:cast.  It admits
-// only the three self-target healing spells whose state transition is already
-// represented by the canonical player body.  Other spells remain visible in
+// This file is the player-facing slice of magic1.c:cast. It admits the
+// self-target healing and timed utility spells whose state transition is
+// represented by the canonical player body. Other spells remain visible in
 // the spell catalog but fail closed at this boundary until their target,
 // combat, room or item contracts are migrated.
 
@@ -23,9 +23,24 @@ const (
 	castSilentFlag      = 44 // PSILNC
 	castDailyHealIndex  = 2  // DL_FHEAL
 
-	castVigorSpell = 0  // SVIGOR / 회복
-	castMendSpell  = 18 // SMENDW / 원기회복
-	castHealSpell  = 19 // SFHEAL / 완치
+	castVigorSpell           = 0  // SVIGOR / 회복
+	castMendSpell            = 18 // SMENDW / 원기회복
+	castHealSpell            = 19 // SFHEAL / 완치
+	castInvisibilitySpell    = 7  // SINVIS / 은둔법
+	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
+	castDetectMagicSpell     = 10 // SDMAGI / 주문감지술
+	castKnowAlignmentSpell   = 41 // SKNOWA / 선악감지
+)
+
+const (
+	castInvisibilityFlag     = 2
+	castInvisibilityTimer    = 0
+	castDetectInvisibleFlag  = 21
+	castDetectInvisibleTimer = 17
+	castDetectMagicFlag      = 20
+	castDetectMagicTimer     = 18
+	castKnowAlignmentFlag    = 33
+	castKnowAlignmentTimer   = 27
 )
 
 const (
@@ -33,6 +48,7 @@ const (
 	castHealVigor
 	castHealMend
 	castHealFull
+	castHealTimed
 )
 
 var (
@@ -58,6 +74,15 @@ type castSpellSpec struct {
 	Index    int
 	Cost     int16
 	healKind int
+	Flag     uint
+	Timer    int
+	// Timed spell intervals are derived from the caster's intelligence and
+	// optional mage/room terms in the original spell routine.
+	IntervalBase int32
+	RoomExtend   int32
+	MageInterval bool
+	MinInterval  bool
+	CombatGate   bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
 	failMask uint16
@@ -70,6 +95,8 @@ const (
 	castAnyClass = iota
 	castClericPaladinInvincible
 )
+
+const castAllSpellFailMask uint16 = 1<<castAssassinClass | 1<<castBarbarianClass | 1<<castClericClass | 1<<castFighterClass | 1<<castMageClass | 1<<castPaladinClass | 1<<7 | 1<<8
 
 func castSpellSpecFor(name string) (castSpellSpec, error) {
 	name = strings.TrimSpace(name)
@@ -114,6 +141,25 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 	case castHealSpell:
 		spec.Cost, spec.healKind = 20, castHealFull
 		spec.classGate = castClericPaladinInvincible
+	case castInvisibilitySpell:
+		spec.Cost, spec.healKind = 15, castHealTimed
+		spec.Flag, spec.Timer = castInvisibilityFlag, castInvisibilityTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MageInterval, spec.CombatGate = 1200, 600, true, true
+		spec.failMask = castAllSpellFailMask
+	case castDetectInvisibleSpell:
+		spec.Cost, spec.healKind = 10, castHealTimed
+		spec.Flag, spec.Timer = castDetectInvisibleFlag, castDetectInvisibleTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MageInterval, spec.MinInterval = 1200, 600, true, true
+		spec.failMask = castAllSpellFailMask
+	case castDetectMagicSpell:
+		spec.Cost, spec.healKind = 10, castHealTimed
+		spec.Flag, spec.Timer = castDetectMagicFlag, castDetectMagicTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MageInterval, spec.MinInterval = 1200, 600, true, true
+		spec.failMask = castAllSpellFailMask
+	case castKnowAlignmentSpell:
+		spec.Cost, spec.healKind = 6, castHealTimed
+		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
 	default:
 		return castSpellSpec{}, ErrCastSpellUnavailable
 	}
@@ -164,6 +210,8 @@ type CastResult struct {
 	MPDelta       int32      `json:"mp_delta,omitempty"`
 	Now           int32      `json:"now,omitempty"`
 	SpellInterval int32      `json:"spell_interval,omitempty"`
+	TimedFlag     uint       `json:"timed_flag,omitempty"`
+	TimedInterval int32      `json:"timed_interval,omitempty"`
 	Event         *CastEvent `json:"event,omitempty"`
 }
 
@@ -194,6 +242,8 @@ type CastProposal struct {
 	Broadcast     bool
 	Response      string
 	RoomText      string
+	TimedFlag     uint
+	TimedInterval int32
 
 	expectedActor     PlayerState
 	expectedRoomFlags [8]byte
@@ -284,6 +334,51 @@ func castSpellInterval(class byte) int32 {
 	default:
 		return 5
 	}
+}
+
+func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (int32, error) {
+	if body.Stats[3] > 63 {
+		return 0, fmt.Errorf("cast timed spell intelligence outside legacy table")
+	}
+	base := spec.IntervalBase
+	if base == 0 {
+		base = 1200
+	}
+	interval := int64(base) + int64(legacyStatBonus[body.Stats[3]])*600
+	if spec.MinInterval && interval < 300 {
+		interval = 300
+	}
+	if spec.MageInterval && body.Class == castMageClass {
+		interval += int64(60 * ((int(body.Level) + 3) / 4))
+	}
+	if flag(room.Resource.Flags[:], npcTalkRoomMagicExtend) {
+		extend := spec.RoomExtend
+		if extend == 0 {
+			extend = 800
+		}
+		interval += int64(extend)
+	}
+	if interval < 0 || interval > math.MaxInt32 {
+		return 0, fmt.Errorf("cast timed spell interval outside int32")
+	}
+	return int32(interval), nil
+}
+
+func castCombatActive(s State, actorID string, actor PlayerState) bool {
+	if len(actor.PlayerEnemies) != 0 {
+		return true
+	}
+	for _, npc := range s.NPCs {
+		if npc.Body.RoomID != actor.Body.RoomID || npc.Enemies == nil {
+			continue
+		}
+		for _, enemy := range npc.Enemies {
+			if enemy.Target.Kind == "player" && enemy.Target.ID == actorID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func castEffectBounds(body LegacyMonster, room RoomState, kind int) ([][2]int, error) {
@@ -475,6 +570,10 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 		before := after.HPCurrent
 		after.HPCurrent = after.HPMax
 		return after, int32(after.HPCurrent) - int32(before), nil
+	case castHealTimed:
+		// Timed utility spells only consume mana here. PlanCast/ApplyCast write
+		// the spell-specific flag and timer after this pure body transition.
+		return after, 0, nil
 	default:
 		return LegacyMonster{}, 0, ErrCastSpellUnavailable
 	}
@@ -494,9 +593,21 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 		return "당신은 기공팔식의 자세를 취하며 원기회복의 주문을 외웁니다.\r\n지기의 뜨거운 기운이 당신의 몸에 가득차 체력을 향상시킵니다.\r\n"
 	case castHealFull:
 		return "당신은 천부공을 끌어올리며 완치 주문을 외웁니다.\r\n천상의 기운들이 당신의 몸으로 모이면서 체력을 최상으로 올려 줍니다.\r\n"
+	case castHealTimed:
+		switch spec.Index {
+		case castInvisibilitySpell:
+			return "당신은 소명부를 삼키면서 은둔법의 주문을 외웁니다.\r\n몸이 눈부실 정도로 강렬한 빛을 내다가 갑자기 사라졌습니다.\r\n"
+		case castDetectInvisibleSpell:
+			return "당신은 버들잎을 두눈에 비비며 은둔감지술의 주문을 외웁니다.\r\n두눈에 푸른광안이 떠오르며 숨어있는 자들을 볼수 있게되었습니다.\r\n"
+		case castDetectMagicSpell:
+			return "당신은 됴화잎을 눈에 비비며 주문감지술을 외웁니다.\r\n당신의 눈에서 은빛광안이 떠오르며 주술에 관한 안목이 넓어졌습니다.\r\n"
+		case castKnowAlignmentSpell:
+			return "당신은 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
+		}
 	default:
 		return ""
 	}
+	return ""
 }
 
 func castRoomText(actorName string, spec castSpellSpec) string {
@@ -507,6 +618,8 @@ func castRoomText(actorName string, spec castSpellSpec) string {
 		return fmt.Sprintf("\n%s이 기공팔식의 자세를 취하며 원기회복의 주문을 외웁니다.\r\n지기의 뜨거운 기운이 그에게 흘러가는 것이 느껴집니다.\r\n", actorName)
 	case castHealFull:
 		return fmt.Sprintf("\n%s이 천부공 자세를 취하면서 완치주문을 외웠습니다.\r\n천상의 기운들이 그에게로 모이는 것이 느껴집니다.\r\n", actorName)
+	case castHealTimed:
+		return fmt.Sprintf("\n%s이 %s 주문을 외웁니다.\r\n", actorName, spec.Name)
 	default:
 		return ""
 	}
@@ -584,6 +697,13 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 		p.Response = "당신은 아직 그 주술을 터득하지 못했습니다.\r\n"
 		return p, nil
 	}
+	if spec.CombatGate && castCombatActive(s, actorID, actor) {
+		// The legacy routine checks combat after spell_fail. The canonical
+		// receipt intentionally checks first so a blocked cast is a true no-op:
+		// no RNG draw, mana charge, or timer write can be replayed ambiguously.
+		p.Response = "지금 싸우고 있잖아요..!!.\r\n"
+		return p, nil
+	}
 	dailyUsed := false
 	dailyAfter := actor.Body.Daily[castDailyHealIndex]
 	if spec.healKind == castHealFull {
@@ -641,11 +761,25 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 	}
 	p.Succeeded = true
 	p.SpellInterval = castSpellInterval(actor.Body.Class)
+	if spec.healKind == castHealTimed {
+		p.TimedFlag = spec.Flag
+		p.TimedInterval, err = castTimedInterval(actor.Body, room, spec)
+		if err != nil {
+			return CastProposal{}, err
+		}
+	}
 	p.afterBody, p.HPDelta, err = castBodyAfter(actor.Body, room, spec, options, p.EffectRolls, dailyUsed, false)
 	if err != nil {
 		return CastProposal{}, err
 	}
 	p.afterBody.Timers[castSpellTimerIndex] = LegacyTimer{LastTime: options.Now, Interval: p.SpellInterval}
+	if spec.healKind == castHealTimed {
+		if spec.Flag >= uint(len(p.afterBody.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(p.afterBody.Timers) {
+			return CastProposal{}, ErrCastSpellUnavailable
+		}
+		setSettingFlag(&p.afterBody, spec.Flag, true)
+		p.afterBody.Timers[spec.Timer] = LegacyTimer{LastTime: options.Now, Interval: p.TimedInterval}
+	}
 	if spec.healKind == castHealFull {
 		p.afterBody.Daily[castDailyHealIndex] = dailyAfter
 	}
@@ -658,7 +792,7 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 }
 
 func castResult(p CastProposal, actor PlayerState) CastResult {
-	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, SpellInterval: p.SpellInterval}
+	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, SpellInterval: p.SpellInterval, TimedFlag: p.TimedFlag, TimedInterval: p.TimedInterval}
 	if p.Broadcast {
 		result.Event = &CastEvent{RoomID: p.RoomID, ActorID: p.ActorID, ActorName: actor.Body.Name, SpellName: p.SpellName, ExcludeActorID: p.ActorID, Text: p.RoomText}
 	}
@@ -676,7 +810,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastStaleProposal
 	}
 	if p.SpellName == "" {
-		if p.Changed || p.HiddenCleared || p.Broadcast || p.Attempted || p.Succeeded || p.SpellFailed || p.SpellIndex != 0 || p.Cost != 0 || p.RoomText != "" {
+		if p.Changed || p.HiddenCleared || p.Broadcast || p.Attempted || p.Succeeded || p.SpellFailed || p.SpellIndex != 0 || p.Cost != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.RoomText != "" {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		return s.clone(), castResult(p, actor), nil
@@ -686,7 +820,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if !p.Attempted {
-		if p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 {
+		if p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		if p.HiddenCleared {
@@ -727,7 +861,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if p.SpellFailed {
-		if len(p.EffectRolls) != 0 || p.DailyUsed || p.SpellInterval != 0 || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
+		if len(p.EffectRolls) != 0 || p.DailyUsed || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		after, mpDelta, err := castBodyAfter(actor.Body, room, spec, CastOptions{}, nil, false, true)
@@ -746,14 +880,26 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 	if p.SpellInterval != castSpellInterval(actor.Body.Class) || p.SpellInterval < 0 || p.RoomText != castRoomText(actor.Body.Name, spec) || p.Response != castResponse(spec, false, "") {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
-	if spec.healKind == castHealFull {
+	if spec.healKind == castHealTimed {
+		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != spec.Flag || p.TimedInterval <= 0 {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
+		expectedInterval, err := castTimedInterval(actor.Body, room, spec)
+		if err != nil || p.TimedInterval != expectedInterval || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(actor.Body.Timers) {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
+	} else if spec.healKind == castHealFull {
+		if p.TimedFlag != 0 || p.TimedInterval != 0 {
+			return State{}, CastResult{}, ErrCastInvalidProposal
+		}
 		_, allowed, err := castDailyUse(actor.Body.Daily[castDailyHealIndex], p.Now)
 		if err != nil || (actor.Body.Class < 10 && !allowed) || allowed != p.DailyUsed {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 	} else if p.DailyUsed || len(p.EffectRolls) == 0 && spec.healKind != castHealFull {
 		// Vigor/mend always have at least one effect draw.  Full heal was
-		// handled above and has no effect draws.
+		// handled above and has no effect draws. Timed spells were handled in
+		// the preceding branch and also have no effect draws.
 		if p.DailyUsed {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
@@ -763,6 +909,10 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	after.Timers[castSpellTimerIndex] = LegacyTimer{LastTime: p.Now, Interval: p.SpellInterval}
+	if spec.healKind == castHealTimed {
+		setSettingFlag(&after, spec.Flag, true)
+		after.Timers[spec.Timer] = LegacyTimer{LastTime: p.Now, Interval: p.TimedInterval}
+	}
 	if spec.healKind == castHealFull {
 		daily, allowed, err := castDailyUse(actor.Body.Daily[castDailyHealIndex], p.Now)
 		if err != nil || (actor.Body.Class < 10 && !allowed) || allowed != p.DailyUsed {

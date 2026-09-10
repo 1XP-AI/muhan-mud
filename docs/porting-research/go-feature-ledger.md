@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 `주문` 자기 대상 지속·감지 주문 — canonical flag/timer 전이
+
+`주문` self-target reducer에 `은둔법`(SINVIS/PINVIS/LT_INVIS), `은둔감지술`(SDINVI/PDINVI/
+LT_DINVI), `주문감지술`(SDMAGI/PDMAGI/LT_DMAGI), `선악감지`(SKNOWA/PKNOWA/LT_KNOWA)를
+추가했다. source MP 비용과 INT/레벨/Mage/RPMEXT 지속 시간, spell bit 및 timer slot을
+receipt에 고정한다. 은둔·감지 3종만 source `spell_fail` RNG 1회를 사용하고 선악감지는
+원작처럼 RNG 없이 성공한다. 성공 시 flag/timer·global LT_SPELL·MP를 원자 반영하고, 전투 중
+은둔법은 deterministic no-op으로 처리해 replay에서 난수·비용을 재실행하지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity,
+실제 PostgreSQL, ARM64, browser/IME, release/testnet 검증은 승격 cadence에서 단일 종합 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 `주문` 자기 대상 회복 — session/transport 연결
 
 원작 `magic1.c:cast`의 self-target 입력 경계를 Go session parser에 추가하고, `주문` prompt와
