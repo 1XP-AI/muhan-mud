@@ -1,5 +1,20 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 `주문` 자기 대상 지속 버프 7종 — canonical flag/timer 전이
+
+`부양술`(SLEVIT/PLEVIT/LT_LEVIT), `방열진`(SRFIRE/PRFIRE/LT_RFIRE), `비상술`
+(SFLYSP/PFLYSP/LT_FLYSP), `보마진`(SRMAGI/PRMAGI/LT_RMAGI), `방한진`
+(SRCOLD/PRCOLD/LT_RCOLD), `수생술`(SBRWAT/PBRWAT/LT_BRWAT), `지방호`
+(SSSHLD/PSSHLD/LT_SSHLD)를 player self-cast reducer에 연결했다. source MP 비용, 주문별
+기본 interval(부양술 2400, 나머지 1200), INT/`MAX(300, ...)` 규칙과 `RPMEXT` 가산(+600 또는
++800)을 canonical receipt에 고정하고, 7종 모두 `spell_fail` RNG 1회만 계획 단계에서 소비한다.
+성공 시 global LT_SPELL과 주문 flag/timer를 함께 원자 반영하며 replay는 RNG·fan-out을
+재실행하지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 전체 spell parity,
+실제 PostgreSQL, ARM64, browser/IME, release/testnet은 승격 cadence에서 단일 종합 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 `주문` 자기 대상 지속·감지 주문 — canonical flag/timer 전이
 
 `주문` self-target reducer에 `은둔법`(SINVIS/PINVIS/LT_INVIS), `은둔감지술`(SDINVI/PDINVI/

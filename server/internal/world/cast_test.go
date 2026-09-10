@@ -244,6 +244,13 @@ func TestPlanApplyCastTimedSelfSpellsUseSourceFlagsAndIntervals(t *testing.T) {
 		{name: "invisibility mage", class: castMageClass, spell: castInvisibilitySpell, spellName: "은둔법", flag: castInvisibilityFlag, timer: castInvisibilityTimer, wantInterval: 3120, wantCost: 15, wantGlobal: 3, wantRolls: 1},
 		{name: "detect invisible mage", class: castMageClass, spell: castDetectInvisibleSpell, spellName: "은둔감지술", flag: castDetectInvisibleFlag, timer: castDetectInvisibleTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
 		{name: "detect magic mage", class: castMageClass, spell: castDetectMagicSpell, spellName: "주문감지술", flag: castDetectMagicFlag, timer: castDetectMagicTimer, wantInterval: 3120, wantCost: 10, wantGlobal: 3, wantRolls: 1},
+		{name: "levitate mage", class: castMageClass, spell: castLevitateSpell, spellName: "부양술", flag: castLevitateFlag, timer: castLevitateTimer, wantInterval: 4400, wantCost: 10, wantGlobal: 3, wantRolls: 1},
+		{name: "resist fire mage", class: castMageClass, spell: castResistFireSpell, spellName: "방열진", flag: castResistFireFlag, timer: castResistFireTimer, wantInterval: 3200, wantCost: 12, wantGlobal: 3, wantRolls: 1},
+		{name: "fly mage", class: castMageClass, spell: castFlySpell, spellName: "비상술", flag: castFlyFlag, timer: castFlyTimer, wantInterval: 3000, wantCost: 15, wantGlobal: 3, wantRolls: 1},
+		{name: "resist magic mage", class: castMageClass, spell: castResistMagicSpell, spellName: "보마진", flag: castResistMagicFlag, timer: castResistMagicTimer, wantInterval: 3200, wantCost: 12, wantGlobal: 3, wantRolls: 1},
+		{name: "resist cold mage", class: castMageClass, spell: castResistColdSpell, spellName: "방한진", flag: castResistColdFlag, timer: castResistColdTimer, wantInterval: 3200, wantCost: 12, wantGlobal: 3, wantRolls: 1},
+		{name: "water breathing mage", class: castMageClass, spell: castWaterSpell, spellName: "수생술", flag: castWaterFlag, timer: castWaterTimer, wantInterval: 3200, wantCost: 12, wantGlobal: 3, wantRolls: 1},
+		{name: "earth shield mage", class: castMageClass, spell: castEarthShieldSpell, spellName: "지방호", flag: castEarthShieldFlag, timer: castEarthShieldTimer, wantInterval: 3200, wantCost: 12, wantGlobal: 3, wantRolls: 1},
 		// A cleric does not receive the mage term; know-alignment uses RPMEXT +800.
 		{name: "know alignment cleric", class: castClericClass, spell: castKnowAlignmentSpell, spellName: "선악감지", flag: castKnowAlignmentFlag, timer: castKnowAlignmentTimer, wantInterval: 3200, wantCost: 6, wantGlobal: 3, wantRolls: 0},
 	}

@@ -1,5 +1,17 @@
 # Go 게임 서버 전환 실행 계획
 
+## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 지속 버프 7종
+
+`부양술`·`방열진`·`비상술`·`보마진`·`방한진`·`수생술`·`지방호`를 self-cast receipt로
+확장한다. source 주문 비트/flag/timer와 MP 비용을 명시하고, 부양술의 2400초 기본 interval,
+나머지 주문의 1200초 기본 interval, INT·`MAX(300, ...)`·`RPMEXT`(+600/+800)을 그대로
+검증한다. 모두 `spell_fail` 1회 결과를 receipt에 기록하며, 성공 상태와 global LT_SPELL은
+재생 가능한 단일 전이로 저장한다.
+
+이번 레인은 world/session/transport focused race, 영향 패키지 vet, diff check만 실행했다.
+전체 통합·PostgreSQL·ARM64·browser/IME·release/testnet 검증은 주문 묶음 승격 시 한 번만
+수행한다.
+
 ## 최신 구현 체크포인트 (2026-09-10): 플레이어 `주문` 자기 대상 지속·감지 주문
 
 기존 self-cast receipt 경계에 `은둔법`·`은둔감지술`·`주문감지술`·`선악감지`를 연결한다.

@@ -1,5 +1,18 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 지속 버프 7종)
+
+플레이어 self-cast에 `부양술`·`방열진`·`비상술`·`보마진`·`방한진`·`수생술`·`지방호`를
+추가했다. source의 주문 비트, PLEVIT/PRFIRE/PFLYSP/PRMAGI/PRCOLD/PBRWAT/PSSHLD flag,
+각 LT timer slot, MP 비용과 주문별 기본 지속 시간·`RPMEXT` 가산을 하나의 receipt로 검증한다.
+7종은 모두 원작 `spell_fail` RNG 1회를 계획 단계에서만 소비하며, 성공 시 flag/timer·global
+LT_SPELL·MP를 원자 반영하고 replay에서는 RNG·room fan-out을 반복하지 않는다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1`,
+영향 패키지 `go vet`, `git diff --check` PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release
+게이트는 같은 주문 경계가 더 모인 승격 cadence에서 한 번만 실행한다. `src/frp.new` 기존 사용자
+변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 `주문` 자기 대상 지속·감지)
 
 플레이어 `주문` self-cast 경계에 `은둔법`·`은둔감지술`·`주문감지술`·`선악감지를 추가했다.

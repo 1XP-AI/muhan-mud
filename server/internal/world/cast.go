@@ -29,6 +29,13 @@ const (
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
 	castDetectMagicSpell     = 10 // SDMAGI / 주문감지술
+	castLevitateSpell        = 21 // SLEVIT / 부양술
+	castResistFireSpell      = 22 // SRFIRE / 방열진
+	castFlySpell             = 23 // SFLYSP / 비상술
+	castResistMagicSpell     = 24 // SRMAGI / 보마진
+	castResistColdSpell      = 43 // SRCOLD / 방한진
+	castWaterSpell           = 44 // SBRWAT / 수생술
+	castEarthShieldSpell     = 45 // SSSHLD / 지방호
 	castKnowAlignmentSpell   = 41 // SKNOWA / 선악감지
 )
 
@@ -41,6 +48,20 @@ const (
 	castDetectMagicTimer     = 18
 	castKnowAlignmentFlag    = 33
 	castKnowAlignmentTimer   = 27
+	castLevitateFlag         = 25
+	castLevitateTimer        = 21
+	castResistFireFlag       = 30
+	castResistFireTimer      = 23
+	castFlyFlag              = 31
+	castFlyTimer             = 24
+	castResistMagicFlag      = 32
+	castResistMagicTimer     = 25
+	castResistColdFlag       = 36
+	castResistColdTimer      = 29
+	castWaterFlag            = 37
+	castWaterTimer           = 30
+	castEarthShieldFlag      = 38
+	castEarthShieldTimer     = 31
 )
 
 const (
@@ -105,7 +126,7 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 	}
 	// Keep the source prefix/unique-match behavior, but resolve against the
 	// complete catalog first so a prefix that names an unported spell does not
-	// accidentally select one of the three admitted effects.
+	// accidentally select another admitted effect.
 	entries, err := SpellCatalog()
 	if err != nil {
 		return castSpellSpec{}, err
@@ -155,6 +176,41 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Cost, spec.healKind = 10, castHealTimed
 		spec.Flag, spec.Timer = castDetectMagicFlag, castDetectMagicTimer
 		spec.IntervalBase, spec.RoomExtend, spec.MageInterval, spec.MinInterval = 1200, 600, true, true
+		spec.failMask = castAllSpellFailMask
+	case castLevitateSpell:
+		spec.Cost, spec.healKind = 10, castHealTimed
+		spec.Flag, spec.Timer = castLevitateFlag, castLevitateTimer
+		spec.IntervalBase, spec.RoomExtend = 2400, 800
+		spec.failMask = castAllSpellFailMask
+	case castResistFireSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castResistFireFlag, castResistFireTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
+		spec.failMask = castAllSpellFailMask
+	case castFlySpell:
+		spec.Cost, spec.healKind = 15, castHealTimed
+		spec.Flag, spec.Timer = castFlyFlag, castFlyTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 600, true
+		spec.failMask = castAllSpellFailMask
+	case castResistMagicSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castResistMagicFlag, castResistMagicTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
+		spec.failMask = castAllSpellFailMask
+	case castResistColdSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castResistColdFlag, castResistColdTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
+		spec.failMask = castAllSpellFailMask
+	case castWaterSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castWaterFlag, castWaterTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
+		spec.failMask = castAllSpellFailMask
+	case castEarthShieldSpell:
+		spec.Cost, spec.healKind = 12, castHealTimed
+		spec.Flag, spec.Timer = castEarthShieldFlag, castEarthShieldTimer
+		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
 		spec.failMask = castAllSpellFailMask
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
@@ -603,11 +659,12 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 			return "당신은 됴화잎을 눈에 비비며 주문감지술을 외웁니다.\r\n당신의 눈에서 은빛광안이 떠오르며 주술에 관한 안목이 넓어졌습니다.\r\n"
 		case castKnowAlignmentSpell:
 			return "당신은 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
+		default:
+			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 		}
 	default:
 		return ""
 	}
-	return ""
 }
 
 func castRoomText(actorName string, spec castSpellSpec) string {
@@ -881,7 +938,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if spec.healKind == castHealTimed {
-		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != spec.Flag || p.TimedInterval <= 0 {
+		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.TimedFlag != spec.Flag || p.TimedInterval < 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		expectedInterval, err := castTimedInterval(actor.Body, room, spec)
