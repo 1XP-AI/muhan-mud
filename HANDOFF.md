@@ -1,5 +1,34 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (social raw→manifest builder)
+
+collector와 explicit import 사이를 잇는 DB-free `cmd/muhan` builder를 추가했다.
+`-build-social-family-root`는 family raw locator/parser와 `family_identity`의 explicit
+boss/member ID map을 결합해 `family-ledger-v1` manifest를 만든다. `-build-social-memo-root`는
+operator가 열거한 recipient 및 sender ID map으로 `player/fal/<name>`을 파싱해
+`character-memos-v1`를 만든다. 두 경로 모두 malformed/unknown mapping/duplicate identity/
+source-output overlap을 fail-closed하고, raw path·bytes·password·credential은 manifest나
+storage request로 넘기지 않는다.
+
+`-build-social-manifest-dry-run`은 DB/listener/output 없이 같은 검증을 수행한다. 일반 output은
+mapping과 같은 private `0700` 디렉터리의 immutable `0600` 파일이며, 같은 bytes 재실행만
+허용한다. 생성물은 사람 검토 후 `-import-social-manifest` 재검증과 별도
+`-import-social-manifest-apply`에서만 DB 변경에 사용한다. mapping schema/example은
+`docs/porting-research/go-social-manifest.md`다.
+
+검증:
+
+```text
+(cd server && go test -race ./cmd/muhan -count=1) PASS
+(cd server && go vet ./cmd/muhan) PASS
+CLI family/memo dry-run·write·same-byte replay without DATABASE_URL PASS
+git diff --check PASS
+```
+
+이번 배치는 로컬에만 있으며 push/CI/배포는 실행하지 않았다. 실제 원본 tree 대량 수집,
+operator ID/timezone 승인, Supabase apply/RLS/PITR와 전체 social parity는 남아 있다.
+`src/frp.new`와 미병합/미커밋 기존 Orca worktree는 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (legacy social raw collector)
 
 레거시 `family/family_list`·`family_member_<n>` 원장을 읽는

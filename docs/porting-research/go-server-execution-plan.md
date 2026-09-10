@@ -24,6 +24,28 @@ bound와 명시적 sender/recipient ID mapping으로 검증한다. 두 경계 �
 PASS. 실제 legacy tree 대량 수집, operator ID mapping, timezone 선택, manifest 생성/apply,
 Supabase 운영 권한과 recovery/PITR는 아직 남아 있다.
 
+## 2026-09-10 소셜 raw→manifest builder 승격 경계
+
+collector와 import 사이에 DB 없는 builder를 연결했다. `-build-social-family-root`는
+`family_identity`의 모든 legacy 이름→immutable character ID 매핑을 확인하고 family
+catalog/state/boss ID를 `family-ledger-v1`로 만든다. `-build-social-memo-root`는
+operator가 열거한 각 recipient 파일과 sender ID map을 exact canonical name으로 읽고
+`character-memos-v1`로 만든다. 두 경로 모두 source root가 mapping/output과 겹치지 않으며,
+unknown JSON field, duplicate ID/name, malformed source, timezone 오류는 전체 batch를
+거부한다.
+
+`-build-social-manifest-dry-run`은 locator/parser/normalizer만 실행하고 PostgreSQL,
+listener, output write를 시작하지 않는다. 일반 실행은 mapping과 같은 private `0700`
+디렉터리에 immutable `0600` manifest를 쓰며, 동일 bytes 재실행만 허용한다. 생성된 manifest는
+내용을 사람이 검토한 후 기존 `-import-social-manifest` 검증을 다시 통과해야 하고,
+실제 DB 변경은 별도의 `-import-social-manifest-apply`에 한정된다. schema/example은
+`docs/porting-research/go-social-manifest.md`를 따른다.
+
+검증: social builder unit/CLI race, `go vet ./cmd/muhan`, DB 없는 subprocess,
+same-byte replay·changed output·source overlap 및 `git diff --check` PASS. 실제 legacy
+대량 mapping 승인, Supabase 권한/RLS, aggregate apply/restore와 전체 social parity는
+여전히 G4/G5 승격 조건이다.
+
 ## 2026-09-10 소셜 manifest·복구 승격 경계
 
 운영자가 검토한 `family-ledger-v1` 또는 `character-memos-v1` JSON만

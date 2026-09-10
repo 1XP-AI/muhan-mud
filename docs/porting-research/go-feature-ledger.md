@@ -13,6 +13,17 @@ migration evidence로만 남고 canonical aggregate에는 들어가지 않는다
 `character-memos-v1` manifest로 넘긴 뒤에만 기존 `cmd/muhan -import-social-manifest-apply`
 경계를 사용할 수 있다.
 
+## 2026-09-10 소셜 raw→manifest builder
+
+| 이관 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| family raw + operator mapping | `cmd/muhan -build-social-family-root`가 `family_identity`의 모든 boss/member ID를 요구하고 locator/parser 결과를 `family-ledger-v1`로 직렬화한다. 이름으로 ID를 추측하지 않으며 manifest에는 raw path·bytes·credential이 없다. | `go test -race ./cmd/muhan` 및 CLI DB-free/immutable replay PASS. 실제 원본 tree·operator mapping 승인·manifest apply는 미완료 |
+| memo raw + operator mapping | `cmd/muhan -build-social-memo-root`가 명시된 `player/fal/<name>` 수신자와 sender ID map을 모두 파싱하고 `character-memos-v1` aggregate를 만든다. ctime timezone은 UTC 기본 또는 명시 IANA location만 사용한다. | malformed/unknown field/duplicate identity/source-output overlap과 dry-run PASS. 실제 대량 수집·timezone 승인·Supabase 운영 import/복구는 미완료 |
+
+builder는 `-build-social-manifest-dry-run`에서 DB/listener 없이 동일 검증만 수행하고,
+output은 mapping과 같은 private `0700` 디렉터리의 immutable `0600` 파일로 제한한다.
+생성 문서와 mapping schema는 `docs/porting-research/go-social-manifest.md`에 있다.
+
 ## 2026-09-10 소셜 aggregate manifest·복구 reader
 
 | 이관 경계 | Go 구현 | 검증/남은 조건 |

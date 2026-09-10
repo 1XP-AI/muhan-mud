@@ -57,6 +57,11 @@ func main() {
 	socialImportManifest := flag.String("import-social-manifest", "", "explicitly validate or import one reviewed Family/Memo aggregate manifest")
 	socialImportDryRun := flag.Bool("import-social-manifest-dry-run", false, "validate a reviewed social aggregate manifest without connecting to PostgreSQL")
 	socialImportApply := flag.Bool("import-social-manifest-apply", false, "explicitly apply a reviewed social aggregate manifest to PostgreSQL")
+	socialManifestFamilyRoot := flag.String("build-social-family-root", "", "explicitly convert audited legacy family files under a MUHAN_HOME-like root")
+	socialManifestMemoRoot := flag.String("build-social-memo-root", "", "explicitly convert audited legacy memo files under a MUHAN_HOME-like root")
+	socialManifestMapping := flag.String("build-social-manifest-mapping", "", "private operator identity mapping JSON for social manifest build")
+	socialManifestOutput := flag.String("build-social-manifest-output", "", "private destination manifest for social import")
+	socialManifestDryRun := flag.Bool("build-social-manifest-dry-run", false, "validate legacy social files and identity mapping without writing a manifest or connecting to PostgreSQL")
 	bankSnapshotInspectDir := flag.String("inspect-bank-snapshot-dir", "", "inspect all private BankSnapshotV1 files under a directory and emit metadata-only JSON")
 	bankSnapshotInspectFile := flag.String("inspect-bank-snapshot-file", "", "inspect one private BankSnapshotV1 file and emit metadata-only JSON")
 	bankSnapshotInspectDryRun := flag.Bool("inspect-bank-snapshot-dry-run", false, "run BankSnapshotV1 inspection without connecting to PostgreSQL (inspection is always DB-free)")
@@ -108,6 +113,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	socialManifestBuildOptions, err := validateSocialManifestBuildFlags(*socialManifestFamilyRoot, *socialManifestMemoRoot, *socialManifestMapping, *socialManifestOutput, *socialManifestDryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectOptions, err := validateBankSnapshotInspectionFlags(*bankSnapshotInspectDir, *bankSnapshotInspectFile)
 	if err != nil {
 		log.Fatal(err)
@@ -124,6 +133,7 @@ func main() {
 	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
 	bankRawConversionSelected := bankRawConvertOptions.Root != ""
 	socialImportSelected := socialImportOptions.ManifestPath != ""
+	socialManifestBuildSelected := socialManifestBuildOptions.FamilyRoot != "" || socialManifestBuildOptions.MemoRoot != ""
 	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}
@@ -177,6 +187,10 @@ func main() {
 		(backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "") {
 		log.Fatal("legacy raw bank conversion mode cannot be combined with import, inspection, seed, backup, or world flags")
 	}
+	if socialManifestBuildSelected &&
+		(socialImportSelected || backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || bankRawInspectionSelected || bankRawConversionSelected) {
+		log.Fatal("social manifest build mode cannot be combined with import, inspection, conversion, seed, backup, or world flags")
+	}
 	var socialBatch socialImportBatch
 	if socialImportSelected {
 		socialBatch, err = readSocialImportManifest(socialImportOptions.ManifestPath)
@@ -187,6 +201,25 @@ func main() {
 			log.Printf("social import manifest validated: kind=%s world=%s command=%s; no database connection or write performed", socialBatch.Kind, socialBatch.WorldID, socialBatch.CommandID)
 			return
 		}
+	}
+	if socialManifestBuildSelected {
+		built, buildErr := buildSocialImportManifest(socialManifestBuildOptions)
+		if buildErr != nil {
+			log.Fatalf("social manifest build rejected: %v", buildErr)
+		}
+		if socialManifestBuildOptions.DryRun {
+			log.Printf("social manifest build validated: kind=%s world=%s families=%d members=%d recipients=%d memos=%d; no manifest or database write performed", built.Batch.Kind, built.Batch.WorldID, built.Batch.FamilyCount, built.Batch.MemberCount, built.Batch.RecipientCount, built.Batch.MemoCount)
+			return
+		}
+		sourceRoot := socialManifestBuildOptions.MemoRoot
+		if socialManifestBuildOptions.FamilyRoot != "" {
+			sourceRoot = socialManifestBuildOptions.FamilyRoot
+		}
+		if err := writeSocialManifestBuild(socialManifestBuildOptions.OutputPath, built.Raw, socialManifestBuildOptions.MappingPath, sourceRoot); err != nil {
+			log.Fatalf("social manifest build failed: %v", err)
+		}
+		log.Printf("social import manifest built: kind=%s world=%s families=%d members=%d recipients=%d memos=%d output=%s; database import still requires a separate explicit command", built.Batch.Kind, built.Batch.WorldID, built.Batch.FamilyCount, built.Batch.MemberCount, built.Batch.RecipientCount, built.Batch.MemoCount, socialManifestBuildOptions.OutputPath)
+		return
 	}
 	if bankSnapshotInspectionSelected {
 		inspectionJSON, inspectErr := InspectBankSnapshotReviewJSON(bankSnapshotInspectOptions.Directory, bankSnapshotInspectOptions.File)
