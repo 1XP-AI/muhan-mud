@@ -32,6 +32,7 @@ const (
 	castRemoveCurseSpell     = 42 // SREMOV / 저주해소
 	castBlindSpell           = 53 // SBLIND / 실명
 	castSilenceSpell         = 54 // SSILNC / 봉합구
+	castFearSpell            = 50 // SFEARS / 공포
 	castCurePoisonSpell      = 3  // SCUREP / 해독
 	castInvisibilitySpell    = 7  // SINVIS / 은둔법
 	castDetectInvisibleSpell = 9  // SDINVI / 은둔감지술
@@ -81,6 +82,8 @@ const (
 	castLightFlag            = 17
 	castLightTimer           = 13
 	castSilenceTimer         = 34 // LT_SILNC
+	castFearFlag             = 43 // PFEARS
+	castFearTimer            = 33 // LT_FEARS
 )
 
 const (
@@ -134,6 +137,10 @@ type castSpellSpec struct {
 	RevealInvisibility bool
 	FixedInterval      bool
 	HalfIntervalFlag   uint
+	RandomInterval     bool
+	RandomIntervalDie  int
+	RandomIntervalStep int32
+	StatIntervalStep   int32
 	CombatGate         bool
 	// A zero mask means spell_fail is not needed for this spell.  Otherwise
 	// only the listed class bits call spell_fail, matching magic2.c/magic5.c.
@@ -289,6 +296,11 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.IntervalBase, spec.FixedInterval, spec.HalfIntervalFlag, spec.RevealInvisibility = 3600, true, castResistMagicFlag, true
 		spec.failMask = castAllSpellFailMask
 		spec.classGate = castSubDMGate
+	case castFearSpell:
+		spec.Cost, spec.healKind = 15, castHealTimed
+		spec.Flag, spec.Timer = castFearFlag, castFearTimer
+		spec.IntervalBase, spec.RandomInterval, spec.RandomIntervalDie, spec.RandomIntervalStep, spec.StatIntervalStep, spec.HalfIntervalFlag, spec.RevealInvisibility = 600, true, 30, 10, 150, castResistMagicFlag, true
+		spec.failMask = castAllSpellFailMask
 	case castKnowAlignmentSpell:
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
@@ -483,8 +495,25 @@ func castSpellInterval(class byte) int32 {
 }
 
 func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (int32, error) {
+	return castTimedIntervalWithRoll(body, room, spec, 0)
+}
+
+func castTimedIntervalWithRoll(body LegacyMonster, room RoomState, spec castSpellSpec, randomRoll int) (int32, error) {
 	if body.Stats[3] > 63 {
 		return 0, fmt.Errorf("cast timed spell intelligence outside legacy table")
+	}
+	if spec.RandomInterval {
+		if spec.RandomIntervalDie < 1 || randomRoll < 1 || randomRoll > spec.RandomIntervalDie {
+			return 0, fmt.Errorf("cast timed spell random interval outside source range")
+		}
+		interval := int64(spec.IntervalBase) + int64(randomRoll)*int64(spec.RandomIntervalStep) + int64(legacyStatBonus[body.Stats[3]])*int64(spec.StatIntervalStep)
+		if spec.HalfIntervalFlag != 0 && flag(body.Flags[:], spec.HalfIntervalFlag) {
+			interval /= 2
+		}
+		if interval < 0 || interval > math.MaxInt32 {
+			return 0, fmt.Errorf("cast timed spell interval outside int32")
+		}
+		return int32(interval), nil
 	}
 	if spec.FixedInterval {
 		interval := int64(spec.IntervalBase)
@@ -529,6 +558,13 @@ func castTimedInterval(body LegacyMonster, room RoomState, spec castSpellSpec) (
 		return 0, fmt.Errorf("cast timed spell interval outside int32")
 	}
 	return int32(interval), nil
+}
+
+func castTimedRollsValid(spec castSpellSpec, rolls []int) bool {
+	if !spec.RandomInterval {
+		return len(rolls) == 0
+	}
+	return len(rolls) == 1 && spec.RandomIntervalDie >= 1 && rolls[0] >= 1 && rolls[0] <= spec.RandomIntervalDie
 }
 
 // castApplyTimedEffect installs a source timer/flag and, for the two timed
@@ -858,6 +894,10 @@ func castResponse(spec castSpellSpec, failed bool, noOp string) string {
 			return "당신은 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
 		case castLightSpell:
 			return "당신의 왼손에 발광 주문을 걸었습니다.\r\n왼손에서 황금빛이 뿜어져 나와 주위를 밝혀 줍니다.\r\n"
+		case castFearSpell:
+			return "당신은 실수로 지옥구슬을 떨어뜨렸습니다.\r\n갑자기 공포의 기운이 당신을 둘러싸며 공포에 떨기 시작합니다.\r\n"
+		case castSilenceSpell:
+			return "당신은 실수로 봉합구 주문을 자신에게 걸었습니다.\r\n입을 벌려 말을 하려 하지만 목소리가 사라졌습니다.\r\n"
 		default:
 			return fmt.Sprintf("당신은 %s 주문을 외웁니다.\r\n", spec.Name)
 		}
@@ -1012,6 +1052,12 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 	}
 	spellFailRequired := castSpellFailRequired(spec, actor.Body.Class)
 	chance, roll := 100, 0
+	var timedRolls []int
+	if spec.RandomInterval {
+		if _, err := castRoll(options, 1, spec.RandomIntervalDie, &timedRolls); err != nil {
+			return CastProposal{}, err
+		}
+	}
 	if spellFailRequired {
 		chance, err = castSpellChance(actor.Body)
 		if err != nil {
@@ -1022,7 +1068,7 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 			return CastProposal{}, err
 		}
 	}
-	p.Attempted, p.Chance, p.Roll = true, chance, roll
+	p.Attempted, p.Chance, p.Roll, p.EffectRolls = true, chance, roll, timedRolls
 	p.Changed = true
 	p.afterBody = actor.Body
 	if spellFailRequired && roll > chance {
@@ -1054,7 +1100,11 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 	p.SpellInterval = castSpellInterval(actor.Body.Class)
 	if spec.healKind == castHealTimed {
 		p.TimedFlag = spec.Flag
-		p.TimedInterval, err = castTimedInterval(actor.Body, room, spec)
+		randomRoll := 0
+		if len(timedRolls) == 1 {
+			randomRoll = timedRolls[0]
+		}
+		p.TimedInterval, err = castTimedIntervalWithRoll(actor.Body, room, spec, randomRoll)
 		if err != nil {
 			return CastProposal{}, err
 		}
@@ -1155,7 +1205,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if p.SpellFailed {
-		if len(p.EffectRolls) != 0 || p.DailyUsed || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
+		if !castTimedRollsValid(spec, p.EffectRolls) || p.DailyUsed || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.Broadcast || p.RoomText != "" || p.HPDelta != 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
 		after, mpDelta, err := castBodyAfter(actor.Body, room, spec, CastOptions{}, nil, false, true)
@@ -1175,10 +1225,14 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if spec.healKind == castHealTimed {
-		if p.DailyUsed || len(p.EffectRolls) != 0 || p.HPDelta != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.TimedFlag != spec.Flag || p.TimedInterval < 0 {
+		if p.DailyUsed || !castTimedRollsValid(spec, p.EffectRolls) || p.HPDelta != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.TimedFlag != spec.Flag || p.TimedInterval < 0 {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}
-		expectedInterval, err := castTimedInterval(actor.Body, room, spec)
+		randomRoll := 0
+		if spec.RandomInterval {
+			randomRoll = p.EffectRolls[0]
+		}
+		expectedInterval, err := castTimedIntervalWithRoll(actor.Body, room, spec, randomRoll)
 		if err != nil || p.TimedInterval != expectedInterval || spec.Flag >= uint(len(actor.Body.Flags)*8) || spec.Timer < 0 || spec.Timer >= len(actor.Body.Timers) {
 			return State{}, CastResult{}, ErrCastInvalidProposal
 		}

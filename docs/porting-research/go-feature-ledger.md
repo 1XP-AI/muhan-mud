@@ -1,5 +1,16 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 플레이어 주문 공포·봉합구 — canonical 상태 전이
+
+공포(SFEARS/PFEARS/LT_FEARS)와 봉합구(SSILNC/PSILNC/LT_SILNC)를 player self-cast receipt로
+연결했다. 공포는 source 지속시간 난수와 spell-fail의 소비 순서, INT·PRMAGI 보정을 검증하고,
+봉합구는 MP 12·SUB_DM gate·고정 3,600초와 PRMAGI 절반 보정을 검증한다. 성공 시 PINVIS·
+주문 timer·MP를 원자 반영하고 실패·replay에서는 RNG·출력 fan-out을 반복하지 않는다.
+
+검증: world/session/transport focused race, 영향 패키지 vet, diff check PASS. 실제 PostgreSQL,
+ARM64, browser/IME, release/testnet 및 전체 spell parity는 승격 cadence에서 단일 게이트로
+수행한다.
+
 ## 2026-09-10 플레이어 주문 봉합구 — canonical 상태 전이
 
 봉합구(SSILNC/PSILNC/LT_SILNC)를 player self-cast receipt로 연결했다. source MP 12와

@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 공포·봉합구)
+
+플레이어 self-cast 공포(SFEARS)와 봉합구(SSILNC)를 연결했다. 공포는 source의 지속시간
+난수→spell-fail 순서, INT·PRMAGI 보정·LT_FEARS를 receipt에 고정하고, 봉합구는 MP 12·
+SUB_DM 이상 gate·고정 3,600초·PRMAGI 절반·LT_SILNC를 고정한다. 두 주문 모두 성공 시
+PINVIS를 해제하고 상태·global LT_SPELL·MP를 원자 반영하며, 실패·replay에서는 난수와
+room fan-out을 중복하지 않는다.
+
+검증: go test -race ./internal/world ./internal/session ./internal/transport -run 'Cast|CommandParser' -count=1,
+영향 패키지 go vet, git diff --check PASS. 전체 통합·ARM64·PostgreSQL·브라우저·release
+게이트는 승격 cadence에서만 실행한다. src/frp.new 기존 사용자 변경은 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 봉합구)
 
 플레이어 self-cast 봉합구(SSILNC)를 연결했다. source MP 12·SUB_DM 이상 직업 gate·고정

@@ -472,6 +472,50 @@ func TestPlanApplyCastSilenceSelfUsesFixedIntervalAndReveals(t *testing.T) {
 	}
 }
 
+func TestPlanApplyCastFearSelfUsesSourceRandomDuration(t *testing.T) {
+	s := castTestState(castClericClass, castFearSpell)
+	actor := s.Players["a"]
+	setSettingFlag(&actor.Body, castInvisibilityFlag, true)
+	setSettingFlag(&actor.Body, castResistMagicFlag, true)
+	s.Players["a"] = actor
+	calls := 0
+	p, err := s.PlanCast("a", "공포", CastOptions{Now: 100, Roll: func(low, high int) int {
+		calls++
+		switch calls {
+		case 1:
+			if low != 1 || high != 30 {
+				t.Fatalf("duration range=%d..%d", low, high)
+			}
+			return 7
+		case 2:
+			if low != 1 || high != 100 {
+				t.Fatalf("spell-fail range=%d..%d", low, high)
+			}
+			return 1
+		default:
+			t.Fatalf("unexpected roll %d..%d", low, high)
+			return 1
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || !p.Attempted || !p.Succeeded || p.SpellFailed || p.EffectRolls == nil || len(p.EffectRolls) != 1 || p.EffectRolls[0] != 7 || p.Roll != 1 || p.TimedFlag != castFearFlag || p.TimedInterval != 485 || p.MPDelta != -15 {
+		t.Fatalf("proposal=%+v calls=%d", p, calls)
+	}
+	next, result, err := s.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := next.Players["a"].Body
+	if !flag(body.Flags[:], castFearFlag) || flag(body.Flags[:], castInvisibilityFlag) || body.MPCurrent != 15 || body.Timers[castFearTimer] != (LegacyTimer{LastTime: 100, Interval: 485}) {
+		t.Fatalf("body=%+v", body)
+	}
+	if result.Event == nil || !strings.Contains(result.Response, "공포") || !result.Succeeded {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestCastRemoveCurseRequiresCanonicalEquipmentBeforeRandom(t *testing.T) {
 	s := castTestState(castClericClass, castRemoveCurseSpell)
 	calls := 0
