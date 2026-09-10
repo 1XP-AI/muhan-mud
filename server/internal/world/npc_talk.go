@@ -116,23 +116,25 @@ type NPCTalkEvent struct {
 // projection. Target identity is included for audit/replay; it is resolved by
 // the world reducer and is never accepted from the terminal as authority.
 type NPCTalkResult struct {
-	Response       string        `json:"response"`
-	Broadcast      bool          `json:"broadcast"`
-	TargetID       string        `json:"target_id,omitempty"`
-	TargetName     string        `json:"target_name,omitempty"`
-	Occurrence     int           `json:"occurrence,omitempty"`
-	Topic          string        `json:"topic,omitempty"`
-	EnemyAdded     bool          `json:"enemy_added,omitempty"`
-	Action         *TalkAction   `json:"action,omitempty"`
-	SpellName      string        `json:"spell_name,omitempty"`
-	SpellTargetID  string        `json:"spell_target_id,omitempty"`
-	SpellAttempted bool          `json:"spell_attempted,omitempty"`
-	SpellSucceeded bool          `json:"spell_succeeded,omitempty"`
-	SpellFailed    bool          `json:"spell_failed,omitempty"`
-	SpellRoll      int           `json:"spell_roll,omitempty"`
-	SpellChance    int           `json:"spell_chance,omitempty"`
-	SpellInterval  int32         `json:"spell_interval,omitempty"`
-	Event          *NPCTalkEvent `json:"event,omitempty"`
+	Response         string        `json:"response"`
+	Broadcast        bool          `json:"broadcast"`
+	TargetID         string        `json:"target_id,omitempty"`
+	TargetName       string        `json:"target_name,omitempty"`
+	Occurrence       int           `json:"occurrence,omitempty"`
+	Topic            string        `json:"topic,omitempty"`
+	EnemyAdded       bool          `json:"enemy_added,omitempty"`
+	Action           *TalkAction   `json:"action,omitempty"`
+	ActionTargetID   string        `json:"action_target_id,omitempty"`
+	ActionSuppressed bool          `json:"action_suppressed,omitempty"`
+	SpellName        string        `json:"spell_name,omitempty"`
+	SpellTargetID    string        `json:"spell_target_id,omitempty"`
+	SpellAttempted   bool          `json:"spell_attempted,omitempty"`
+	SpellSucceeded   bool          `json:"spell_succeeded,omitempty"`
+	SpellFailed      bool          `json:"spell_failed,omitempty"`
+	SpellRoll        int           `json:"spell_roll,omitempty"`
+	SpellChance      int           `json:"spell_chance,omitempty"`
+	SpellInterval    int32         `json:"spell_interval,omitempty"`
+	Event            *NPCTalkEvent `json:"event,omitempty"`
 }
 
 // NPCTalkProposal is the pure candidate for PlanNPCTalkProposal/ApplyNPCTalk.
@@ -160,6 +162,9 @@ type NPCTalkProposal struct {
 	TopicCatalogFound bool
 	TopicFound        bool
 	TopicEntry        TalkTopic
+	Action            TalkAction
+	ActionTargetID    string
+	ActionSuppressed  bool
 	CastAction        TalkAction
 	CastTargetID      string
 	CastSpellName     string
@@ -177,6 +182,8 @@ type NPCTalkProposal struct {
 	castNPCAfter     LegacyMonster
 	castTargetBefore PlayerState
 	castTargetAfter  PlayerState
+	actionNPCBefore  LegacyMonster
+	actionNPCAfter   LegacyMonster
 }
 
 // ValidateNPCTalkName checks a client-selected display-name token before it
@@ -376,6 +383,51 @@ func buildNPCTalkTopicEvent(actor LegacyMonster, actorID, npcID string, npc Lega
 		event.ActorMessages = append(event.ActorMessages, actorAttack)
 	}
 	return event
+}
+
+// appendNPCTalkActionEvent mirrors the action(crt_ptr, &cm) branch used by
+// command8.c:talk_action.  The NPC is the action actor, while PLAYER means
+// the talking player is the exact target.  We reuse the already closed
+// action.c emote table instead of introducing a second social vocabulary.
+// Targetless actions are broadcast to the player as well as other room
+// occupants because the legacy broadcast excludes only the NPC descriptor.
+func appendNPCTalkActionEvent(event *NPCTalkEvent, npc LegacyMonster, target PlayerState, action TalkAction) error {
+	if event == nil {
+		return fmt.Errorf("NPC talk action event missing")
+	}
+	if action.Kind != TalkActionAction {
+		return fmt.Errorf("invalid NPC talk action kind")
+	}
+	if action.Target != "" && action.Target != "PLAYER" {
+		return fmt.Errorf("%w: unsupported target %q", ErrNPCTalkActionUnavailable, action.Target)
+	}
+	spec, ok := emoteSpecs[strings.TrimSpace(action.Name)]
+	if !ok {
+		return fmt.Errorf("%w: unsupported action %q", ErrNPCTalkActionUnavailable, action.Name)
+	}
+	if !validNPCTalkName(npc.Name) || !validNPCTalkName(target.Body.Name) {
+		return fmt.Errorf("%w: invalid action identity", ErrNPCTalkActionUnavailable)
+	}
+	// action.c's targetless-only branches ignore a supplied PLAYER target;
+	// preserve that source behavior while keeping target resolution exact for
+	// all actions that actually render a target.
+	if action.Target == "PLAYER" && !spec.targetlessOnly {
+		targetName := emotePlayerName(target.Body.Name)
+		targetRef := emoteTargetRef(target.Body.Name, targetName, spec.particle)
+		roomText := emoteRoom(fmt.Sprintf(spec.targetRoom, npc.Name, targetRef))
+		actorText := emoteDirect(fmt.Sprintf(spec.targetTarget, npc.Name))
+		event.RoomText += roomText
+		event.ActorText += actorText
+		event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText, ExcludeActorID: event.ActorID})
+		event.ActorMessages = append(event.ActorMessages, actorText)
+		return nil
+	}
+	roomText := emoteRoom(fmt.Sprintf(spec.soloRoom, npc.Name))
+	event.RoomText += roomText
+	// No ExcludeActorID is intentional: broadcast_rom excludes the NPC, not
+	// the player who triggered the topic, for a targetless action.
+	event.RoomMessages = append(event.RoomMessages, NPCTalkRoomMessage{Text: roomText})
+	return nil
 }
 
 func npcTalkCastRoll(options *NPCTalkEffectOptions) (value int, err error) {
@@ -593,6 +645,69 @@ func (s State) planNPCTalkCast(proposal *NPCTalkProposal, actor PlayerState, npc
 	return nil
 }
 
+func (s State) planNPCTalkAction(proposal *NPCTalkProposal, actor PlayerState, npc NPCState) error {
+	if proposal == nil || proposal.TopicEntry.Action.Kind != TalkActionAction {
+		return nil
+	}
+	action := proposal.TopicEntry.Action
+	if action.Target != "" && action.Target != "PLAYER" {
+		return fmt.Errorf("%w: unsupported target %q", ErrNPCTalkActionUnavailable, action.Target)
+	}
+	if _, ok := emoteSpecs[strings.TrimSpace(action.Name)]; !ok {
+		return fmt.Errorf("%w: unsupported action %q", ErrNPCTalkActionUnavailable, action.Name)
+	}
+	if !validNPCTalkName(actor.Body.Name) || !validNPCTalkName(npc.Body.Name) {
+		return fmt.Errorf("%w: invalid action identity", ErrNPCTalkActionUnavailable)
+	}
+	proposal.Action = action
+	proposal.ActionTargetID = ""
+	if action.Target == "PLAYER" {
+		proposal.ActionTargetID = proposal.ActorID
+	}
+	proposal.ActionSuppressed = flag(npc.Body.Flags[:], playerSilentStateFlag)
+	proposal.actionNPCBefore = npc.Body
+	proposal.actionNPCAfter = npc.Body
+	// action.c clears PHIDDN on the NPC before checking PSILNC.  Keep that
+	// ordering in the proposal even when a silent NPC produces no projection.
+	proposal.actionNPCAfter.Flags[npcHiddenFlag/8] &^= 1 << (npcHiddenFlag % 8)
+	return nil
+}
+
+func validateNPCTalkActionProposal(proposal NPCTalkProposal, actor PlayerState, npc NPCState) error {
+	action := proposal.TopicEntry.Action
+	if action.Kind != TalkActionAction || proposal.Action != action {
+		return fmt.Errorf("invalid NPC talk action proposal")
+	}
+	if action.Target != "" && action.Target != "PLAYER" {
+		return fmt.Errorf("%w: unsupported target %q", ErrNPCTalkActionUnavailable, action.Target)
+	}
+	if _, ok := emoteSpecs[strings.TrimSpace(action.Name)]; !ok {
+		return fmt.Errorf("%w: unsupported action %q", ErrNPCTalkActionUnavailable, action.Name)
+	}
+	if action.Target == "PLAYER" {
+		if proposal.ActionTargetID != proposal.ActorID {
+			return fmt.Errorf("invalid NPC talk action target proposal")
+		}
+	} else if proposal.ActionTargetID != "" {
+		return fmt.Errorf("invalid NPC talk action target proposal")
+	}
+	if !reflect.DeepEqual(proposal.actionNPCBefore, npc.Body) {
+		return fmt.Errorf("NPC talk action target changed")
+	}
+	if proposal.ActionSuppressed != flag(npc.Body.Flags[:], playerSilentStateFlag) {
+		return fmt.Errorf("NPC talk action silence changed")
+	}
+	expected := npc.Body
+	expected.Flags[npcHiddenFlag/8] &^= 1 << (npcHiddenFlag % 8)
+	if !reflect.DeepEqual(proposal.actionNPCAfter, expected) {
+		return fmt.Errorf("NPC talk action state projection changed")
+	}
+	if !validNPCTalkName(actor.Body.Name) {
+		return fmt.Errorf("%w: invalid action target identity", ErrNPCTalkActionUnavailable)
+	}
+	return nil
+}
+
 func npcTalkSpellChance(body LegacyMonster) (int, error) {
 	// spell_fail in magic8.c uses the same class/INT table as readscroll and
 	// consumes one 1..100 draw even for the DM/default success branch.
@@ -745,7 +860,7 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 		proposal.TopicCatalogFound = true
 		proposal.TopicFound = found
 		proposal.TopicEntry = entry
-		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionCast {
+		if found && entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionAction && entry.Action.Kind != TalkActionCast {
 			return NPCTalkProposal{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 		}
 	}
@@ -765,6 +880,11 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 			return NPCTalkProposal{}, err
 		}
 	}
+	if proposal.TopicCatalogFound && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionAction {
+		if err := s.planNPCTalkAction(&proposal, actor, s.NPCs[targetID]); err != nil {
+			return NPCTalkProposal{}, err
+		}
+	}
 	event := buildNPCTalkEvent(actor.Body, actorID, targetID, npc.Body, "")
 	if proposal.TopicCatalogFound {
 		if proposal.TopicFound {
@@ -775,6 +895,11 @@ func (s State) planNPCTalkProposal(actorID, targetName string, occurrence int, t
 					return NPCTalkProposal{}, specErr
 				}
 				appendNPCTalkCastEvent(&event, npc.Body, actor.Body, castSpec, proposal.CastAttempted, proposal.CastSucceeded, proposal.CastFailed, proposal.CastRefused)
+			}
+			if proposal.TopicEntry.Action.Kind == TalkActionAction && !proposal.ActionSuppressed {
+				if err := appendNPCTalkActionEvent(&event, npc.Body, actor, proposal.Action); err != nil {
+					return NPCTalkProposal{}, err
+				}
 			}
 		} else {
 			event = buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc.Body, topic)
@@ -869,7 +994,7 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			if proposal.TopicEntry.Key != proposal.Topic || !validNPCTalkText(proposal.TopicEntry.Response) {
 				return State{}, NPCTalkResult{}, fmt.Errorf("invalid NPC talk topic proposal")
 			}
-			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack && proposal.TopicEntry.Action.Kind != TalkActionCast {
+			if proposal.TopicEntry.Action.Kind != TalkActionNone && proposal.TopicEntry.Action.Kind != TalkActionAttack && proposal.TopicEntry.Action.Kind != TalkActionAction && proposal.TopicEntry.Action.Kind != TalkActionCast {
 				return State{}, NPCTalkResult{}, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, proposal.TopicEntry.Action.Kind.String())
 			}
 		} else if proposal.TopicEntry != (TalkTopic{}) {
@@ -902,12 +1027,22 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 			return State{}, NPCTalkResult{}, err
 		}
 	}
+	if mtalksTopic && proposal.TopicFound && proposal.TopicEntry.Action.Kind == TalkActionAction {
+		if err := validateNPCTalkActionProposal(proposal, actor, currentNPC); err != nil {
+			return State{}, NPCTalkResult{}, err
+		}
+	}
 	expected := buildNPCTalkEvent(actor.Body, proposal.ActorID, targetID, npc, "")
 	if mtalksTopic {
 		if proposal.TopicFound {
 			expected = buildNPCTalkTopicEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic, proposal.TopicEntry.Response, proposal.TopicEntry.Action)
 			if proposal.TopicEntry.Action.Kind == TalkActionCast {
 				appendNPCTalkCastEvent(&expected, npc, actor.Body, castSpec, proposal.CastAttempted, proposal.CastSucceeded, proposal.CastFailed, proposal.CastRefused)
+			}
+			if proposal.TopicEntry.Action.Kind == TalkActionAction && !proposal.ActionSuppressed {
+				if err := appendNPCTalkActionEvent(&expected, npc, actor, proposal.Action); err != nil {
+					return State{}, NPCTalkResult{}, err
+				}
 			}
 		} else {
 			expected = buildNPCTalkTopicMissEvent(actor.Body, proposal.ActorID, targetID, npc, proposal.Topic)
@@ -930,6 +1065,11 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 	if proposal.TopicEntry.Action.Kind == TalkActionCast && (proposal.CastAttempted || proposal.CastRefused) {
 		nextNPC := next.NPCs[targetID]
 		nextNPC.Body = proposal.castNPCAfter
+		next.NPCs[targetID] = nextNPC
+	}
+	if proposal.TopicEntry.Action.Kind == TalkActionAction {
+		nextNPC := next.NPCs[targetID]
+		nextNPC.Body = proposal.actionNPCAfter
 		next.NPCs[targetID] = nextNPC
 	}
 	if addEnemy {
@@ -959,6 +1099,12 @@ func (s State) ApplyNPCTalk(proposal NPCTalkProposal, catalogs ...TalkCatalog) (
 		Topic:      proposal.Topic,
 		EnemyAdded: addEnemy && !npcEnemyContains(currentNPC.Enemies, EntityRef{Kind: "player", ID: proposal.ActorID}),
 		Event:      &expected,
+	}
+	if proposal.TopicEntry.Action.Kind == TalkActionAction {
+		action := proposal.Action
+		result.Action = &action
+		result.ActionTargetID = proposal.ActionTargetID
+		result.ActionSuppressed = proposal.ActionSuppressed
 	}
 	if proposal.TopicEntry.Action.Kind == TalkActionCast {
 		action := proposal.CastAction
@@ -1032,10 +1178,16 @@ func (s State) RoomNPCTalkEvent(actorID, targetID, topic string, catalogs ...Tal
 				// already existed, so callers must use the committed receipt event.
 				return NPCTalkEvent{}, false, ErrNPCTalkCastProjectionUnavailable
 			}
-			if entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack {
+			if entry.Action.Kind != TalkActionNone && entry.Action.Kind != TalkActionAttack && entry.Action.Kind != TalkActionAction {
 				return NPCTalkEvent{}, false, fmt.Errorf("%w: %s", ErrNPCTalkActionUnavailable, entry.Action.Kind.String())
 			}
-			return buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc, topic, entry.Response, entry.Action), true, nil
+			event := buildNPCTalkTopicEvent(actor.Body, actorID, targetID, npc, topic, entry.Response, entry.Action)
+			if entry.Action.Kind == TalkActionAction && !flag(npc.Flags[:], playerSilentStateFlag) {
+				if err := appendNPCTalkActionEvent(&event, npc, actor, entry.Action); err != nil {
+					return NPCTalkEvent{}, false, err
+				}
+			}
+			return event, true, nil
 		}
 		return buildNPCTalkTopicMissEvent(actor.Body, actorID, targetID, npc, topic), true, nil
 	}

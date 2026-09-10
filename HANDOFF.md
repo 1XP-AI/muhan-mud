@@ -1,5 +1,17 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `ACTION`)
+
+원작 `talk_action`의 `ACTION` 중 canonical Go 감정표현 alias를 NPC topic에 연결했다.
+`PLAYER` 대상은 대화한 player ID로 고정하고, 대상 없는 action은 actor도 받는 room
+projection으로 보낸다. action 호출 순서의 NPC `MHIDDN` 해제, NPC `PSILNC` 시 topic 응답만
+남기는 억제를 receipt에 고정했으며, room/actor 순서와 replay 무중복 fan-out을 검증했다.
+알 수 없는 action/target과 `GIVE`는 계속 fail-closed한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`,
+`git diff --check` PASS. 고비용 PostgreSQL/browser/ARM64/release와 전체 corpus 검사는
+이 계약에서는 반복하지 않았다. `src/frp.new`는 기존 사용자 dirty 변경으로 보존한다.
+
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (NPC 대화 `CAST` — 성현진·수호진)
 
 talk catalog의 `CAST` action 중 원작 canonical 주문 `성현진`/`수호진`만 Go world reducer에

@@ -1,5 +1,17 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 NPC 대화 `ACTION` canonical 감정표현 경계
+
+원작 `talk_action`의 `ACTION` 중 Go `action.c` 감정표현 표에 존재하는 exact alias만
+연결한다. `PLAYER` 대상은 canonical 대화 actor로 resolve하고, 대상 없는 표현은 actor도
+받는 room projection으로 보낸다. NPC `MHIDDN` 해제와 `PSILNC` 억제는 snapshot-bound
+receipt 전이로 고정하며, room/actor 출력 순서와 target ID를 재생 데이터에 보존한다.
+미확인 alias/target·`GIVE`는 영수증 전에 거부한다.
+
+이 기능 레인은 영향 패키지 focused race/vet와 diff 검증만 실행한다. PostgreSQL/browser/
+ARM64/release 게이트는 기능 묶음 승격 cadence에서 한 번만 실행해 동일 검사를 매 loop마다
+반복하지 않는다.
+
 ## 2026-09-10 NPC 대화 `CAST` canonical 주문 경계
 
 talk catalog의 `CAST` 중 원작 `성현진`·`수호진`만 snapshot-bound effect로 admit한다.

@@ -215,7 +215,7 @@ func TestNPCTalkTopicActionsFailClosedWithoutStateMutation(t *testing.T) {
 		name string
 		line string
 	}{
-		{name: "action", line: "quest ACTION smile PLAYER"},
+		{name: "unknown action", line: "quest ACTION smile PLAYER"},
 		{name: "cast", line: "quest CAST cure PLAYER"},
 		{name: "give", line: "quest GIVE 107"},
 	} {
@@ -232,6 +232,94 @@ func TestNPCTalkTopicActionsFailClosedWithoutStateMutation(t *testing.T) {
 			}
 			if !reflect.DeepEqual(s, before) {
 				t.Fatal("unsupported topic action mutated state")
+			}
+		})
+	}
+}
+
+func TestNPCTalkTopicActionUsesCanonicalEmoteProjectionAndClearsNPCHidden(t *testing.T) {
+	s := npcTalkFixture(t)
+	npc := s.NPCs["guide-one"]
+	npc.Body.Level = 7
+	npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+	npc.Body.Flags[npcHiddenFlag/8] |= 1 << (npcHiddenFlag % 8)
+	s.NPCs["guide-one"] = npc
+	catalog := npcTalkTopicCatalog(t, "quest ACTION 미소 PLAYER", "응답")
+	proposal, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Action.Kind != TalkActionAction || proposal.Action.Name != "미소" || proposal.ActionTargetID != "a" || proposal.ActionSuppressed {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyNPCTalk(proposal, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantResponse := "\nGuide가 당신에게 \"응답\"라고 이야기합니다.\r\n\nGuide이 당신에게 미소를 짓습니다.\r\n"
+	if result.Response != wantResponse || result.Event == nil || result.Action == nil || result.ActionTargetID != "a" || result.ActionSuppressed {
+		t.Fatalf("result=%+v", result)
+	}
+	nextNPC := next.NPCs["guide-one"]
+	if flag(nextNPC.Body.Flags[:], npcHiddenFlag) {
+		t.Fatal("NPC ACTION did not clear MHIDDN")
+	}
+	if len(result.Event.RoomMessages) != 3 || len(result.Event.ActorMessages) != 2 {
+		t.Fatalf("event=%+v", result.Event)
+	}
+	if result.Event.RoomMessages[2].ExcludeActorID != "a" || result.Event.RoomMessages[2].Text != "\nGuide이 Alice님에게 미소를 짓습니다.\r\n" {
+		t.Fatalf("action room projection=%+v", result.Event.RoomMessages[2])
+	}
+	if result.Event.ActorMessages[1] != "\nGuide이 당신에게 미소를 짓습니다.\r\n" || result.Event.ActorText != wantResponse {
+		t.Fatalf("action actor projection=%+v", result.Event)
+	}
+	projected, ok, err := next.RoomNPCTalkEvent("a", "guide-one", "quest", catalog)
+	if err != nil || !ok || !reflect.DeepEqual(projected, *result.Event) {
+		t.Fatalf("projected=%+v ok=%v err=%v want=%+v", projected, ok, err, result.Event)
+	}
+}
+
+func TestNPCTalkTopicActionTargetlessReachesActorAndSilentNPCSuppressesOnlyAction(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		silent         bool
+		wantRoomCount  int
+		wantActorCount int
+	}{
+		{name: "targetless", wantRoomCount: 3, wantActorCount: 1},
+		{name: "silent", silent: true, wantRoomCount: 2, wantActorCount: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcTalkFixture(t)
+			npc := s.NPCs["guide-one"]
+			npc.Body.Level = 7
+			npc.Body.Flags[npcTalkFlag/8] |= 1 << (npcTalkFlag % 8)
+			npc.Body.Flags[npcHiddenFlag/8] |= 1 << (npcHiddenFlag % 8)
+			if tc.silent {
+				npc.Body.Flags[playerSilentStateFlag/8] |= 1 << (playerSilentStateFlag % 8)
+			}
+			s.NPCs["guide-one"] = npc
+			catalog := npcTalkTopicCatalog(t, "quest ACTION 미소", "응답")
+			proposal, err := s.PlanNPCTalkProposal("a", "Guide", 1, "quest", catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, result, err := s.ApplyNPCTalk(proposal, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Action == nil || result.ActionSuppressed != tc.silent || len(result.Event.RoomMessages) != tc.wantRoomCount || len(result.Event.ActorMessages) != tc.wantActorCount {
+				t.Fatalf("result=%+v", result)
+			}
+			nextNPC := next.NPCs["guide-one"]
+			if flag(nextNPC.Body.Flags[:], npcHiddenFlag) {
+				t.Fatal("targetless/silent ACTION did not clear MHIDDN")
+			}
+			if tc.silent && strings.Contains(result.Response, "미소") {
+				t.Fatalf("silent NPC emitted action output: %q", result.Response)
+			}
+			if !tc.silent && !strings.Contains(result.Event.RoomMessages[2].Text, "Guide이 밝은 미소를 짓습니다") {
+				t.Fatalf("targetless room action=%+v", result.Event.RoomMessages[2])
 			}
 		})
 	}

@@ -1,5 +1,19 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 NPC 대화 `ACTION` — canonical 감정표현 연결
+
+`TalkCatalog`의 `ACTION` 중 이미 `action.c`와 대조된 닫힌 Go 감정표현 alias만
+snapshot-bound NPC action으로 admit했다. `PLAYER` 대상은 대화한 canonical player로
+고정하고, 대상 없는 표현은 원작처럼 NPC descriptor만 제외한 room broadcast로 투영한다.
+NPC의 `MHIDDN`은 action 호출 순서대로 해제하며 `PSILNC`인 NPC는 topic 응답만 남기고
+action projection을 억제한다. room/actor 메시지와 action target ID는 receipt에 저장하고
+replay에서는 재선택·재전송하지 않는다. 알 수 없는 alias/target과 `GIVE`는 계속
+fail-closed한다.
+
+검증: `go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCTalk|WorldConnectorSubmitDispatchesNPCTalk' -count=1`, 영향 패키지 `go vet`,
+`git diff --check` PASS. 고비용 PostgreSQL/browser/ARM64/release 게이트와 알려진 전체
+corpus 회귀는 이번 작은 계약에서 반복하지 않았다.
+
 ## 2026-09-10 NPC 대화 `CAST` — 성현진·수호진
 
 `TalkCatalog`의 `CAST` action 중 source `spllist`와 일치하는 `성현진`(SBLESS)·`수호진`(SPROTE)만

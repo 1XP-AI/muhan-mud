@@ -201,6 +201,56 @@ func TestExecuteNPCTalkLineRejectsUnsupportedTopicActionAtomically(t *testing.T)
 	}
 }
 
+func TestExecuteNPCTalkLinePersistsCanonicalActionAndReplays(t *testing.T) {
+	raw := npcTalkCommandFixture(t)
+	s, err := world.DecodeState(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := s.NPCs["guide-one"]
+	npc.Body.Flags[23/8] |= 1 << (23 % 8) // MTALKS
+	npc.Body.Flags[1/8] |= 1 << (1 % 8)   // MHIDDN
+	s.NPCs["guide-one"] = npc
+	raw, err = json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	catalog := npcTalkSessionCatalog(t, "quest ACTION 미소 PLAYER\ncanonical answer\n")
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-action", lease, "대화 Guide quest", NPCTalkOptions{Catalog: &catalog})
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.NPCTalkResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	wantResponse := "\nGuide가 당신에게 \"canonical answer\"라고 이야기합니다.\r\n\nGuide이 당신에게 미소를 짓습니다.\r\n"
+	if result.Action == nil || result.ActionTargetID != "a" || result.Response != wantResponse || result.Event == nil {
+		t.Fatalf("result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedNPC := saved.NPCs["guide-one"]
+	if savedNPC.Body.Flags[0]&(1<<1) != 0 {
+		t.Fatal("NPC ACTION did not persist MHIDDN release")
+	}
+	replay, err := owners.ExecuteNPCTalkLineWithOptions(context.Background(), store, "w", "npc-talk-action", lease, "대화 Guide quest", NPCTalkOptions{Catalog: &catalog})
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func TestExecuteNPCTalkLineWithOptionsPersistsCanonicalCastAndReplays(t *testing.T) {
 	s, err := world.DecodeState(npcTalkCommandFixture(t))
 	if err != nil {

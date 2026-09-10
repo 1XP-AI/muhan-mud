@@ -316,6 +316,48 @@ func TestWorldConnectorSubmitDispatchesNPCTalkAttackAction(t *testing.T) {
 	}
 }
 
+func TestWorldConnectorSubmitDispatchesNPCTalkSocialActionAndSkipsReplayFanout(t *testing.T) {
+	store := npcTalkTopicConnectorStore(t)
+	catalog := npcTalkTransportCatalog(t, "quest ACTION 미소 PLAYER\ncanonical answer\n")
+	_, actor, observer := npcTalkConnectorConnectionsWithCatalog(t, store, &catalog)
+
+	output, err := actor.Submit(context.Background(), "대화 Guide quest")
+	wantOutput := "\nGuide가 당신에게 \"canonical answer\"라고 이야기합니다.\r\n\nGuide이 당신에게 미소를 짓습니다.\r\n"
+	if err != nil || output != wantOutput || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	wantEvents := []string{
+		"\nAlice님이 Guide에게 \"quest\"에 관해 물어봅니다.\r\n",
+		"\nGuide가 Alice님에게 \"canonical answer\"라고 이야기합니다.\r\n",
+		"\nGuide이 Alice님에게 미소를 짓습니다.\r\n",
+	}
+	for i, want := range wantEvents {
+		select {
+		case got := <-observer.events:
+			if got != want {
+				t.Fatalf("observer social action event[%d]=%q want=%q", i, got, want)
+			}
+		default:
+			t.Fatalf("observer social action event[%d] missing", i)
+		}
+	}
+	select {
+	case got := <-actor.events:
+		t.Fatalf("actor received targeted NPC action event=%q", got)
+	default:
+	}
+	firstCommits := store.commits
+	replayed, err := actor.Submit(context.Background(), "대화 Guide quest")
+	if err != nil || replayed != output || store.commits != firstCommits {
+		t.Fatalf("replay output=%q err=%v commits=%d", replayed, err, store.commits)
+	}
+	select {
+	case got := <-observer.events:
+		t.Fatalf("replay fanned out social action event=%q", got)
+	default:
+	}
+}
+
 func TestWorldConnectorSubmitDispatchesNPCTalkCastAndPersistsEffect(t *testing.T) {
 	store := npcTalkCastConnectorStore(t)
 	catalog := npcTalkTransportCatalogAtLevel(t, 5, "quest CAST 성현진 PLAYER\ncanonical answer\n")
