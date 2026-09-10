@@ -23,6 +23,17 @@ var (
 	ErrFamilyMutationSelectionRequired = errors.New("family application selection requires a connection-local continuation")
 )
 
+// FamilyApplicationSelectionPrompt and FamilyApplicationChoicePrompt are the
+// connection-local prompts emitted by the original add_family editor.  The
+// family directory itself is rendered by the world catalog so names never
+// come from client input.
+const (
+	FamilyApplicationSelectionPrompt = "\n당신은 어떤 패거리에 가입을 원하십니까?\r\n패거리의 이름을 입력해 주십시요.  "
+	FamilyApplicationConfirmPrompt   = "%s에 가입을 하시겠습니까? (예/아니오) "
+	FamilyApplicationInvalidChoice   = "\n잘못된 선택입니다.\r\n"
+	FamilyApplicationCancelResponse  = "\n가입 신청을 취소합니다."
+)
+
 // FamilyMutationCommand is the parser-owned projection of command11.c's
 // membership aliases. FamilyName is display input only: the reducer resolves
 // it against the immutable server-owned catalog before planning a proposal.
@@ -112,6 +123,21 @@ func ParseFamilyMutationLine(line string) (FamilyMutationCommand, bool) {
 func IsFamilyMutationLine(line string) bool {
 	_, ok := ParseFamilyMutationLine(line)
 	return ok
+}
+
+// ParseFamilyMutationStartLine recognizes the bare interactive `패거리가입`
+// entry point.  It is intentionally separate from ParseFamilyMutationLine:
+// the former owns a connection-local selection/confirmation flow and must not
+// create a durable receipt until the user confirms a concrete family.
+func ParseFamilyMutationStartLine(line string) bool {
+	if !validFamilyMutationLine(line) {
+		return false
+	}
+	return strings.TrimSpace(line) == "패거리가입"
+}
+
+func IsFamilyMutationStartLine(line string) bool {
+	return ParseFamilyMutationStartLine(line)
 }
 
 // Source-oriented parser aliases keep the C function vocabulary available to

@@ -1,5 +1,18 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-10 `패거리가입` 원작 continuation 연결
+
+bare `패거리가입`을 웹 xterm의 connection-local selection/confirmation 흐름으로
+연결했다. 서버 소유 `FamilyCatalog`을 먼저 목록으로 보여주고, exact family name을
+선택한 뒤 `예`를 입력할 때만 기존 `PlanFamilyJoinByName`→`ExecuteGame` receipt를
+호출한다. 목록·잘못된 선택·`아니오`는 receipt-free이며, commit 오류는 동일 command ID와
+선택을 유지해 재시도한다. actor/boss/catalog 권위는 기존 world reducer가 다시 확인하고
+이름으로 ID를 추측하지 않는다.
+
+`go test -race ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 `go vet ./internal/session ./internal/transport`가 통과했다. 실제 PG/browser/release
+게이트는 이 변경이 해당 계약에 영향을 주는 cadence에서만 실행한다.
+
 ## 2026-09-10 Go + PostgreSQL 브라우저 수직 경로
 
 `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`를 한 번

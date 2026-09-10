@@ -1,5 +1,15 @@
 # Muhan MUD 포팅 핸드오프
 
+## 최신 구현·검증 체크포인트 — 2026-09-10 (`패거리가입` continuation)
+
+bare `패거리가입`을 xterm 안의 원작형 목록→이름 선택→`예/아니오` 확인 흐름으로
+연결했다. 목록과 취소/잘못된 선택은 저장하지 않고, 확인된 exact 이름만 기존 canonical
+family mutation receipt로 넘긴다. 저장이 불확실하면 같은 command ID로 재시도할 수 있다.
+
+검증: `go test -race ./internal/session ./internal/transport -run 'FamilyMutation|FamilyApplication'`
+및 `go vet ./internal/session ./internal/transport` PASS. 이 변경에서는 고비용 PG/browser/
+ARM64/release 검사를 반복하지 않았다.
+
 ## 최신 검증 체크포인트 — 2026-09-10 (Go + PostgreSQL 브라우저 수직 경로)
 
 반복 실행하지 않던 실제 브라우저 게이트를 이번 기능 묶음의 종료 시점에 한 번 실행했다.

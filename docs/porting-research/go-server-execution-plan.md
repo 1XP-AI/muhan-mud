@@ -1,5 +1,16 @@
 # Go 게임 서버 전환 실행 계획
 
+## 2026-09-10 `패거리가입` interactive gate
+
+원작의 bare `패거리가입`을 xterm connection-local continuation으로 연결했다.
+server-owned family catalog을 목록으로 렌더링하고 exact 이름 선택·`예` 확인을 거친
+뒤에만 기존 canonical family mutation receipt를 만든다. 목록/오류/취소는 영속 변경이
+없고, 저장 결과가 불확실하면 동일 command ID와 선택을 보존해 한 번의 재시도로 수렴한다.
+이 변경은 웹 계정 가입을 추가하지 않으며, 게임 캐릭터 세션 안의 원작 흐름만 확장한다.
+
+영향 패키지 race와 vet만 실행했다. PostgreSQL/browser/ARM64/release gate는 코드 계약에
+실질적인 영향이 생기는 승격 cadence에서 한 번 실행한다.
+
 ## 2026-09-10 Go + PostgreSQL 브라우저 수직 경로 검증
 
 기능 묶음 종료 시점의 단일 브라우저 게이트로

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1XP-Inc/muhan-mud/server/internal/session"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
@@ -89,6 +90,54 @@ func TestWorldConnectorSubmitDispatchesFamilyMutation(t *testing.T) {
 	approval, err := connections[1].Submit(context.Background(), "가입허가 Alice")
 	if err != nil || !strings.Contains(approval, "아직 구현되지 않은 명령") || store.commits != 1 {
 		t.Fatalf("approval output=%q err=%v commits=%d", approval, err, store.commits)
+	}
+}
+
+func TestWorldConnectorBareFamilyApplicationUsesLocalSelectionBeforeOneReceipt(t *testing.T) {
+	store := &connectorCommandStore{}
+	connector, connections := boundedLaneConnection(t, store, connectorFamilyMutationState(false, false), "applicant", "boss")
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+
+	start, err := connections[0].Submit(context.Background(), "패거리가입")
+	if err != nil || !strings.Contains(start, "청룡") || !strings.Contains(start, "패거리의 이름을 입력") || store.commits != 0 {
+		t.Fatalf("start=%q err=%v commits=%d", start, err, store.commits)
+	}
+	choice, err := connections[0].Submit(context.Background(), "청룡")
+	if err != nil || choice != "청룡에 가입을 하시겠습니까? (예/아니오) " || store.commits != 0 {
+		t.Fatalf("choice=%q err=%v commits=%d", choice, err, store.commits)
+	}
+	confirmed, err := connections[0].Submit(context.Background(), "예")
+	if err != nil || confirmed != world.FamilyApplicationResponse || store.commits != 1 {
+		t.Fatalf("confirmed=%q err=%v commits=%d", confirmed, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applicant := saved.Players["applicant"].Body
+	if !world.PlayerFlagSet(applicant, world.FamilyPendingFlag) || applicant.Daily[world.FamilyDailySlot].Max != 2 {
+		t.Fatalf("application was not persisted: %+v", applicant)
+	}
+}
+
+func TestWorldConnectorBareFamilyApplicationCancelAndInvalidChoiceAreReceiptFree(t *testing.T) {
+	store := &connectorCommandStore{}
+	connector, connections := boundedLaneConnection(t, store, connectorFamilyMutationState(false, false), "applicant", "boss")
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+	if _, err := connections[0].Submit(context.Background(), "패거리가입"); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := connections[0].Submit(context.Background(), "없는패거리"); err != nil || output != session.FamilyApplicationInvalidChoice || store.commits != 0 {
+		t.Fatalf("invalid choice=%q err=%v commits=%d", output, err, store.commits)
+	}
+	if _, err := connections[0].Submit(context.Background(), "패거리가입"); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := connections[0].Submit(context.Background(), "청룡"); err != nil || store.commits != 0 {
+		t.Fatalf("selection=%q err=%v commits=%d", output, err, store.commits)
+	}
+	if output, err := connections[0].Submit(context.Background(), "아니오"); err != nil || output != session.FamilyApplicationCancelResponse || store.commits != 0 {
+		t.Fatalf("cancel=%q err=%v commits=%d", output, err, store.commits)
 	}
 }
 

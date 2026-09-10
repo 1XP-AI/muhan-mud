@@ -103,6 +103,22 @@ func TestParseFamilyMutationLineAdmitsBoundedSourceForms(t *testing.T) {
 	}
 }
 
+func TestParseFamilyMutationStartLineOwnsBareInteractiveEntry(t *testing.T) {
+	for _, line := range []string{"패거리가입", "  패거리가입  "} {
+		if !ParseFamilyMutationStartLine(line) || !IsFamilyMutationStartLine(line) {
+			t.Fatalf("interactive start rejected: %q", line)
+		}
+		if _, ok := ParseFamilyMutationLine(line); ok {
+			t.Fatalf("bare interactive start crossed durable parser: %q", line)
+		}
+	}
+	for _, line := range []string{"패거리가입 청룡", "패거리가입\n", "패거리가입\x00", string([]byte{0xff})} {
+		if ParseFamilyMutationStartLine(line) {
+			t.Fatalf("non-bare line accepted as interactive start: %q", line)
+		}
+	}
+}
+
 func TestExecuteFamilyMutationJoinPersistsAndReplays(t *testing.T) {
 	initial := familyMutationSessionFixture(t, false, false)
 	store := &departureStore{state: initial}

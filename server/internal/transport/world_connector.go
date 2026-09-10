@@ -348,6 +348,7 @@ type composeKind uint8
 const (
 	composeMailSend composeKind = iota + 1
 	composeBoardWrite
+	composeFamilyApplication
 )
 
 type composeDraft struct {
@@ -359,6 +360,10 @@ type composeDraft struct {
 	body        []string
 	timestamp   time.Time
 	messageID   string
+	// familyName/familyID are connection-local selection data for the bare
+	// `패거리가입` flow. They cross the receipt boundary only after the user
+	// confirms the exact catalog entry.
+	familyName string
 }
 
 // Events is an optional asynchronous room-output stream. The WebSocket
@@ -385,6 +390,7 @@ func (c *worldConnection) clearCompose() {
 	c.compose.title = ""
 	c.compose.recipientID = ""
 	c.compose.messageID = ""
+	c.compose.familyName = ""
 	c.compose.commandID = ""
 	c.compose.boardID = 0
 	c.compose.timestamp = time.Time{}
@@ -435,6 +441,45 @@ func (c *worldConnection) submitComposeLine(ctx context.Context, line string) (s
 		c.lastCommand = strings.TrimLeft(line, " ")
 		return session.BoardWriteTitlePrompt, true, nil
 	}
+	if session.ParseFamilyMutationStartLine(line) {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		actor, exists := state.Players[c.lease.ActorID]
+		if !exists || !actor.Online || actor.Body.Type != 0 {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		room, roomExists := state.Rooms[actor.Body.RoomID]
+		member := false
+		if roomExists {
+			for _, id := range room.PlayerIDs {
+				if id == c.lease.ActorID {
+					member = true
+					break
+				}
+			}
+		}
+		if !roomExists || !member {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		if world.PlayerFlagSet(actor.Body, world.FamilyMemberFlag) {
+			return "당신은 이미 패거리에 가입이 되어있습니다.\r\n", true, nil
+		}
+		if world.PlayerFlagSet(actor.Body, world.FamilyPendingFlag) {
+			return "당신은 이미 가입신청을 해두고 있습니다.\r\n", true, nil
+		}
+		if err := c.game.config.FamilyCatalog.Validate(); err != nil {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		list, err := state.ListFamily(c.game.config.FamilyCatalog)
+		if err != nil {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		c.compose = &composeDraft{kind: composeFamilyApplication, commandID: "family-join-" + rand.Text()}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return list + session.FamilyApplicationSelectionPrompt, true, nil
+	}
 	return "", false, nil
 }
 
@@ -452,6 +497,8 @@ func (c *worldConnection) submitComposeContinuation(ctx context.Context, line st
 		return c.submitMailSendContinuation(ctx, draft, line)
 	case composeBoardWrite:
 		return c.submitBoardWriteContinuation(ctx, draft, line)
+	case composeFamilyApplication:
+		return c.submitFamilyApplicationContinuation(ctx, draft, line)
 	default:
 		c.clearCompose()
 		return "명령을 처리할 수 없습니다.\r\n", nil
