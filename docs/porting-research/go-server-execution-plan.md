@@ -19,7 +19,7 @@ DB-free graph 경계를 추가했다. 이는 운영 발행이 아니라 E0/E1 �
 DB head·legacy importer·event scheduler·AI tool 호출은 후속 단계다. 상세 실행·스키마·인수 기준은
 [`go-engine-ai-gm-plan.md`](go-engine-ai-gm-plan.md)를 따른다.
 
-## 최신 엔진 구현 체크포인트 — 2026-09-10 (E0/E1 순수 materializer)
+## 최신 엔진 구현 체크포인트 — 2026-09-10 (E0 완료·E1 순수 materializer 진행)
 
 `ContentCatalog`은 validated typed proposal을 정확한 content head에 적용하고
 map/room/monster/spawn/scenario/event의 전체 참조 그래프·digest를 검증한다. 실패 시

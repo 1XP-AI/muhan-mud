@@ -170,9 +170,9 @@ bytes는 conflict다.
 
 | 단계 | 범위 | 완료 증거 |
 | --- | --- | --- |
-| E0 | typed proposal/digest/validation (현재) | 순수 TDD, malformed corpus, stable digest |
-| E1 | published content catalog/head와 legacy importer | reviewed room/template fixture가 engine revision으로 재현됨 |
-| E2 | Go world가 published map/NPC catalog를 읽는 materializer | 이동·look·spawn trace가 기존 fixture와 일치 |
+| E0 | typed proposal/digest/validation (완료) | 순수 TDD, malformed corpus, stable digest |
+| E1 | 순수 content catalog/materializer와 legacy importer (진행 중) | reviewed room/template fixture가 engine revision으로 재현됨 |
+| E2 | published content revision/head와 Go world materializer | 이동·look·spawn trace가 published fixture와 일치 |
 | E3 | scenario/event scheduler | seed-bound tick, duplicate suppression, restart/replay |
 | E4 | AI GM tool adapter와 policy gate | draft→validate→simulate→publish/rollback 전체 계약 |
 | E5 | Supabase PostgreSQL 실제 영속화 | migration idempotency, conflict/lease, backup/restore |

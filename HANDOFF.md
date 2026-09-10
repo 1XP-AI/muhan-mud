@@ -1,6 +1,6 @@
 # Muhan MUD 포팅 핸드오프
 
-## 최신 방향 전환 체크포인트 — 2026-09-10 (엔진 중심 포팅·AI GM E0)
+## 최신 방향 전환 체크포인트 — 2026-09-10 (엔진 중심 포팅·AI GM E0/E1)
 
 Go `engine`을 명령 receipt 조정기에서 콘텐츠 권위 계층으로 확장하는 방향을 확정했다.
 맵/방/출구, 몬스터 템플릿, 스폰 규칙, 시나리오, 이벤트를 typed proposal로 만들고
@@ -18,6 +18,18 @@ proposal→revision head 원자 materializer를 추가해 순수 TDD를 통과�
 legacy importer, scenario/event scheduler, AI 모델 호출, 자동 발행, testnet 배포는
 미완료다.
 상세 계획은 [`docs/porting-research/go-engine-ai-gm-plan.md`](docs/porting-research/go-engine-ai-gm-plan.md)다.
+
+## 최신 엔진 구현 체크포인트 — 2026-09-10 (E0 완료·E1 순수 materializer 진행)
+
+typed content proposal을 revision-zero/기존 head에 적용하는 순수
+`ContentCatalog.ApplyContentProposal`과 `ContentApplyReceipt`를 추가했다. map/room/
+monster/spawn/scenario/event 전체 graph를 검증하고, base world/revision conflict,
+중복·dangling reference·map room removal을 거부하며 실패 시 원본을 변경하지 않는다.
+새 head에는 proposal/catalog digest와 revision이 고정된다.
+
+검증: `go test -race ./internal/engine -run 'Content' -count=1`,
+`go vet ./internal/engine`, `git diff --check` PASS. DB publisher/head migration,
+legacy importer, scenario/event scheduler, AI 모델 호출/자동 발행, testnet은 미완료다.
 
 ## 최신 구현·검증 체크포인트 — 2026-09-10 (플레이어 주문 공포·봉합구)
 
