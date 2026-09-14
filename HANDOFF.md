@@ -2,7 +2,7 @@
 
 ## STOP — 사용자가 재개하기 전까지 오케스트레이션 금지
 
-**STOP.** 새 Orca 워커를 시작하지 마라. `worker-start` / `check --wait` / `check --ack` / 새 dispatch 금지. 사용자가 명시적으로 재개하기 전에는 이슈 close, 커밋/푸시, Helm, `src/frp.new` 터치 금지. 상세 카드: `docs/porting-research/orchestrator-resume.md`.
+**STOP.** 새 Orca 워커를 시작하지 마라. 2026-09-14 정리: leftover는 `c50ab9a`로 `private`에 푸시됨. Documents 워크트리의 grok 워커 탭 51개는 닫았고 `Terminal 1`/`Terminal 2`만 남김. 라이브 워크트리 Documents/moray/gramma는 삭제하지 않음. G0 `task_7a36af246be8`는 stuck 그대로. `src/frp.new`는 여전히 dirty이며 커밋하지 않음. GitHub #1,#3–#12는 OPEN. 상세: `docs/porting-research/orchestrator-resume.md`.
 
 스냅샷:
 - HEAD **`c46579a`** (`c46579a3d02c74df39c3fad0c47b5bc92486f914`) `private/codex/mud-identity-foundation`
