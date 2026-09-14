@@ -5,13 +5,15 @@ import "fmt"
 type PlayerDeathResult struct {
 	Entry                                                    RoomEntry
 	BroadcastDeath, FamilyDefeated, DeactivateSourceMonsters bool
+	Events                                                   []FamilyWarEvent
 }
 
 // PlanPlayerDeath handles local PLAYER attackers, including self. NPC attackers
 // require canonical NPC/enemy identities and are not impersonated as players.
 // Caller resolves the lethal event and commits state + result atomically before
-// broadcasting or accepting another command. Network dispatch is not wired yet.
-func (s State) PlanPlayerDeath(victimID, attackerID string, now int32, view SceneOptions, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, PlayerDeathResult, error) {
+// broadcasting or accepting another command. An optional FamilyCatalog binds
+// creature.c:die's two broadcast_all strings when a war boss dies.
+func (s State) PlanPlayerDeath(victimID, attackerID string, now int32, view SceneOptions, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error), families ...FamilyCatalog) (State, PlayerDeathResult, error) {
 	if err := s.Validate(); err != nil {
 		return State{}, PlayerDeathResult{}, err
 	}
@@ -59,6 +61,10 @@ func (s State) PlanPlayerDeath(victimID, attackerID string, now int32, view Scen
 	}
 	next.Players[attackerID] = attacker
 	war, defeated := next.War.AfterPlayerDeath(victim.Body)
+	events, err := familyDefeatEvents(defeated, victim.Body.Daily[9].Max, families...)
+	if err != nil {
+		return State{}, PlayerDeathResult{}, err
+	}
 	next.War = &war
 	views, err := next.RoomPlayers(source.Resource.ID)
 	if err != nil {
@@ -114,5 +120,5 @@ func (s State) PlanPlayerDeath(victimID, attackerID string, now int32, view Scen
 	if err != nil {
 		return State{}, PlayerDeathResult{}, err
 	}
-	return next, PlayerDeathResult{Entry: entry, BroadcastDeath: !survival, FamilyDefeated: defeated, DeactivateSourceMonsters: departure.DeactivateMonsters}, nil
+	return next, PlayerDeathResult{Entry: entry, BroadcastDeath: !survival, FamilyDefeated: defeated, DeactivateSourceMonsters: departure.DeactivateMonsters, Events: events}, nil
 }

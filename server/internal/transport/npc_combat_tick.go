@@ -79,18 +79,19 @@ type NPCCombatTickFailClosed struct {
 // State; these fields make the same facts available without replaying that
 // graph or re-rendering output.
 type NPCCombatTickDeath struct {
-	NPCID                    string `json:"npc_id"`
-	PlayerID                 string `json:"player_id"`
-	SourceRoomID             int16  `json:"source_room_id"`
-	DestinationRoomID        int16  `json:"destination_room_id"`
-	BroadcastDeath           bool   `json:"broadcast_death"`
-	FamilyDefeated           bool   `json:"family_defeated"`
-	DeactivateSourceMonsters bool   `json:"deactivate_source_monsters"`
-	EnemyRemoved             bool   `json:"enemy_removed"`
-	ExperienceBefore         int32  `json:"experience_before"`
-	ExperienceAfter          int32  `json:"experience_after"`
-	DroppedItemCount         int    `json:"dropped_item_count"`
-	Scene                    string `json:"scene,omitempty"`
+	NPCID                    string                 `json:"npc_id"`
+	PlayerID                 string                 `json:"player_id"`
+	SourceRoomID             int16                  `json:"source_room_id"`
+	DestinationRoomID        int16                  `json:"destination_room_id"`
+	BroadcastDeath           bool                   `json:"broadcast_death"`
+	FamilyDefeated           bool                   `json:"family_defeated"`
+	DeactivateSourceMonsters bool                   `json:"deactivate_source_monsters"`
+	EnemyRemoved             bool                   `json:"enemy_removed"`
+	ExperienceBefore         int32                  `json:"experience_before"`
+	ExperienceAfter          int32                  `json:"experience_after"`
+	DroppedItemCount         int                    `json:"dropped_item_count"`
+	Scene                    string                 `json:"scene,omitempty"`
+	Events                   []world.FamilyWarEvent `json:"events,omitempty"`
 }
 
 // NPCCombatTickSummary is stored in the command receipt.  Every slice is
@@ -115,6 +116,7 @@ type NPCCombatTickOptions struct {
 	ContinuePlayerDeath bool
 	View                world.SceneOptions
 	Catalog             world.SpawnCatalog
+	FamilyCatalog       world.FamilyCatalog
 	Allocate            func() (string, error)
 }
 
@@ -252,8 +254,7 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 		return storage.WorldReceipt{}, err
 	}
 	g.commandMu.Lock()
-	defer g.commandMu.Unlock()
-	return engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
+	receipt, err := engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
 			return nil, nil, err
@@ -263,6 +264,7 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 			ContinuePlayerDeath: true,
 			View:                world.SceneOptions{ViewOptions: world.ViewOptions{Hour: hour}},
 			Catalog:             g.config.Catalog,
+			FamilyCatalog:       g.config.FamilyCatalog,
 			Allocate:            g.config.Allocate,
 		})
 		if err != nil {
@@ -275,6 +277,19 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 		response, err := json.Marshal(summary)
 		return saved, response, err
 	})
+	g.commandMu.Unlock()
+	if err != nil {
+		return receipt, err
+	}
+	if !receipt.Replayed {
+		var summary NPCCombatTickSummary
+		if decodeErr := json.Unmarshal(receipt.Response, &summary); decodeErr == nil {
+			if after, ok := g.snapshot(ctx); ok {
+				g.publishFamilyDefeat(after, familyDefeatEventsFromDeaths(summary.Deaths))
+			}
+		}
+	}
+	return receipt, nil
 }
 
 // PlanNPCCombatTick composes the source-backed one-round reducer for every
@@ -537,7 +552,7 @@ func planNPCCombatPlayerDeath(state, lethalCandidate world.State, npcID, playerI
 		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death attacker absent before attack")
 	}
 	roomID := beforeNPC.Body.RoomID
-	next, result, err := lethalCandidate.PlanNPCPlayerDeath(npcID, playerID, now, options.View, options.Catalog, roll, options.Allocate)
+	next, result, err := lethalCandidate.PlanNPCPlayerDeath(npcID, playerID, now, options.View, options.Catalog, roll, options.Allocate, options.FamilyCatalog)
 	if err != nil {
 		return world.State{}, NPCCombatTickDeath{}, err
 	}
@@ -562,7 +577,16 @@ func planNPCCombatPlayerDeath(state, lethalCandidate world.State, npcID, playerI
 		ExperienceAfter:          afterPlayer.Body.Experience,
 		DroppedItemCount:         itemCount(beforePlayer.Items) - itemCount(afterPlayer.Items),
 		Scene:                    result.Entry.Scene,
+		Events:                   append([]world.FamilyWarEvent(nil), result.Events...),
 	}, nil
+}
+
+func familyDefeatEventsFromDeaths(deaths []NPCCombatTickDeath) []world.FamilyWarEvent {
+	var events []world.FamilyWarEvent
+	for _, death := range deaths {
+		events = append(events, death.Events...)
+	}
+	return events
 }
 
 // planNPCCombatPhase is kept as a package-local name for transport tests and

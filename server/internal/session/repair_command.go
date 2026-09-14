@@ -39,9 +39,10 @@ type RepairOptions struct {
 	Roll func(int, int) int
 }
 
-// ParseRepairLine admits the exact Korean repair alias with an exact display
-// name and an optional positive one-based occurrence. Prefix/key/equipped
-// matching and legacy linked-list inventory remain outside this boundary.
+// ParseRepairLine admits the exact Korean repair alias. Bare 수리 is C's
+// cmnd->num < 2 ask-what print. A name is exact display text with an
+// optional positive one-based occurrence. Prefix/key/equipped matching
+// and legacy linked-list inventory remain outside this boundary.
 func ParseRepairLine(line string) (RepairCommand, bool) {
 	if !utf8.ValidString(line) {
 		return RepairCommand{}, false
@@ -52,13 +53,17 @@ func ParseRepairLine(line string) (RepairCommand, bool) {
 		}
 	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || len(tokens) < 2 || len(tokens) > 3 || tokens[0] != "수리" {
+	if err != nil || len(tokens) < 1 || len(tokens) > 3 || tokens[0] != "수리" {
 		return RepairCommand{}, false
+	}
+	command := RepairCommand{Occurrence: 1}
+	if len(tokens) == 1 {
+		return command, true
 	}
 	if tokens[1] == "" || strings.TrimSpace(tokens[1]) != tokens[1] {
 		return RepairCommand{}, false
 	}
-	command := RepairCommand{Name: tokens[1], Occurrence: 1}
+	command.Name = tokens[1]
 	if len(tokens) == 3 {
 		occurrence, err := strconv.ParseUint(tokens[2], 10, 31)
 		if err != nil || occurrence < 1 {
@@ -76,7 +81,10 @@ func IsRepairLine(line string) bool {
 }
 
 // ExecuteRepairLine runs repair through the authenticated session and durable
-// ExecuteGame boundary. The random source is injected by the owning game loop.
+// ExecuteGame boundary. C-prints for bare 수리 and non-RREPAI keep the original
+// state. A named leftover (inventory miss) is also a no-op receipt: C F_CLR
+// PHIDDN only after find_obj. Cost/ONOFIX/type/shots/gold still mutate through
+// RepairByName. A replay never re-runs selection or RNG after a receipt exists.
 func (o *Ownership) ExecuteRepairLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, roll func(int, int) int) (storage.WorldReceipt, error) {
 	return o.ExecuteRepairLineWithOptions(ctx, store, worldID, commandID, lease, line, RepairOptions{Roll: roll})
 }
@@ -97,19 +105,21 @@ func (o *Ownership) ExecuteRepairLineWithOptions(ctx context.Context, store engi
 		if err != nil {
 			return nil, nil, err
 		}
-		proposal, err := state.PlanRepair(actorID, command.Name, command.Occurrence, options.Roll)
+		next, result, err := state.RepairByName(actorID, command.Name, command.Occurrence, options.Roll)
 		if err != nil {
 			return nil, nil, err
 		}
-		next, result, err := state.ApplyRepair(proposal)
+		encoded, err := json.Marshal(result)
 		if err != nil {
 			return nil, nil, err
+		}
+		if result.Action == world.RepairAskWhatAction || result.Action == world.RepairNotRepairAction || result.Action == world.RepairNotHoldingAction {
+			return raw, encoded, nil
 		}
 		nextRaw, err := json.Marshal(next)
 		if err != nil {
 			return nil, nil, err
 		}
-		response, err := json.Marshal(result)
-		return nextRaw, response, err
+		return nextRaw, encoded, nil
 	})
 }

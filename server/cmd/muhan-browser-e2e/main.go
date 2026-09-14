@@ -75,10 +75,34 @@ func main() {
 		Rooms: map[int16]world.RoomState{
 			1: {
 				Resource: world.LegacyRoom{
-					LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "브라우저 광장"},
+					LegacyRoomHeader: world.LegacyRoomHeader{
+						ID: 1, Name: "브라우저 광장",
+						Exits: []world.LegacyExit{
+							{Name: "북", Destination: 2},
+							{Name: "동굴", Destination: 3},
+						},
+					},
 					ShortDescription: "실제 Go 서버와 PostgreSQL이 연결된 테스트 방입니다.",
 				},
 				NPCIDs: []string{"npc-key", "npc-name"},
+			},
+			2: {
+				Resource: world.LegacyRoom{
+					LegacyRoomHeader: world.LegacyRoomHeader{
+						ID: 2, Name: "브라우저 북쪽",
+						Exits: []world.LegacyExit{{Name: "남", Destination: 1}},
+					},
+					ShortDescription: "북쪽으로 이동한 테스트 방입니다.",
+				},
+			},
+			3: {
+				Resource: world.LegacyRoom{
+					LegacyRoomHeader: world.LegacyRoomHeader{
+						ID: 3, Name: "브라우저 동굴",
+						Exits: []world.LegacyExit{{Name: "광장", Destination: 1}},
+					},
+					ShortDescription: "가 명령으로 들어온 테스트 동굴입니다.",
+				},
 			},
 		},
 		Players: map[string]world.PlayerState{"legacy-existing-player": existingPlayer},

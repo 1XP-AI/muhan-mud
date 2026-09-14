@@ -152,6 +152,11 @@ func (c *worldConnection) submitFamilyWithdrawalContinuation(ctx context.Context
 		return "탈퇴 신청을 저장하지 못했습니다. 다시 시도해 주세요.\r\n", nil
 	}
 	c.clearCompose()
+	if !receipt.Replayed && len(result.Events) != 0 {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishFamilyMutation(after, result.Events)
+		}
+	}
 	return result.Response, nil
 }
 

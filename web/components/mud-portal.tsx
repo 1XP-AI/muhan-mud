@@ -4,8 +4,8 @@ import type { Session } from "@supabase/supabase-js";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { AuthGate } from "@/components/auth-gate";
 import { CharacterRoster } from "@/components/character-roster";
+import { ClassicTerminal } from "@/components/classic-terminal";
 import type { OnboardingMode, OnboardingRecovery } from "@/lib/onboarding-contract";
 import type { GatewayStatus } from "@/components/mud-terminal";
 import type { ConfigResult } from "@/lib/config";
@@ -220,7 +220,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
   }
 
   if (!session) {
-    return <AuthGate supabase={supabase} />;
+    return <ClassicTerminal url={configResult.config.gatewayUrl} />;
   }
 
   const identityReady = Boolean(session.user.id);

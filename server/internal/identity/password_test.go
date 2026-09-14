@@ -40,3 +40,10 @@ func TestPasswordBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckPasswordRejectsLegacyPlaintext(t *testing.T) {
+	password := []byte("pw1234")
+	if CheckPassword(password, password) {
+		t.Fatal("legacy plaintext hash accepted")
+	}
+}

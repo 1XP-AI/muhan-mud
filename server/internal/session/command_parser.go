@@ -111,6 +111,17 @@ const (
 	CommandMarriageSend
 	CommandDivorce
 	CommandVote
+	CommandFamilyNews
+	CommandFamilyWar
+	CommandDMFamily
+	CommandMoonSet
+	CommandDMFollow
+	CommandZap
+	CommandGo
+	CommandForge
+	CommandBuyStates
+	CommandSuicide
+	CommandNewForge
 )
 
 // Descriptive aliases preserve the original CommandRead value used by the
@@ -149,6 +160,64 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		if len(parsed.Tokens) > 7 {
 			return ParsedCommand{}, ErrCommandTooManyTokens
 		}
+		return parsed, nil
+	}
+	if IsMoonSetLine(trimmed) {
+		parsed.Kind = CommandMoonSet
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsZapLine(trimmed) {
+		parsed.Kind = CommandZap
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsGoLine(trimmed) {
+		parsed.Kind = CommandGo
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// C parse() takes the last token as the verb, so `동 봐` / `북 보다` and
+	// extra-token forms like `동 junk 봐` are look() peeks. Classify them
+	// before ParseDirectionalToken, which would otherwise treat the leading
+	// cardinal as CommandDirectional and move. A look verb in the middle
+	// with a non-look last token (`동 봐 extra`) is fail-closed unknown.
+	if IsLookLine(trimmed) {
+		parsed.Kind = CommandLook
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// C parse() takes the last token as the verb, so `검 버려` / `검 주워`
+	// and extra-token forms like `동 junk extra 버려` are drop/get rather
+	// than unknown first-token names. 4+ token last-token is nested
+	// str[1]/str[2] like C get()/drop() when cmnd->num>2, not a floor
+	// rest[:1] peek. Classify them before ParseDirectionalToken, which
+	// would otherwise treat a leading cardinal (`동 버려`) as movement.
+	// A mutation verb in the middle with a non-mutation last token
+	// (`동 버려 extra`) is fail-closed unknown.
+	if IsItemMutationLine(trimmed) {
+		parsed.Kind = CommandItemMutation
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsForgeLine(trimmed) {
+		parsed.Kind = CommandForge
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsNewForgeLine(trimmed) {
+		parsed.Kind = CommandNewForge
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsBuyStatesLine(trimmed) {
+		parsed.Kind = CommandBuyStates
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsSuicideLine(trimmed) {
+		parsed.Kind = CommandSuicide
+		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
 	if IsRangerPrayLine(trimmed) {
@@ -224,6 +293,26 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsFamilyMutationLine(trimmed) {
 		parsed.Kind = CommandFamilyMutation
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsFamilyNewsLine(trimmed) {
+		parsed.Kind = CommandFamilyNews
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsFamilyWarLine(trimmed) {
+		parsed.Kind = CommandFamilyWar
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsDMFamilyLine(trimmed) {
+		parsed.Kind = CommandDMFamily
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsDMFollowLine(trimmed) {
+		parsed.Kind = CommandDMFollow
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
@@ -431,7 +520,22 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	if len(tokens) == 0 {
 		return parsed, nil
 	}
+	if isLookVerb(tokens[len(tokens)-1]) {
+		parsed.Kind = CommandLook
+		return parsed, nil
+	}
 	if _, ok := world.ParseDirectionalToken(trimmed); ok {
+		// C parse() last token is the verb. A look alias in the middle
+		// (`동 봐 extra`) is neither look() nor move(); fail closed.
+		if tokensContainLookVerb(tokens) {
+			parsed.Kind = CommandUnknown
+			return parsed, nil
+		}
+		// Same for get/drop: `동 버려 extra` is not move().
+		if tokensContainItemMutationVerb(tokens) {
+			parsed.Kind = CommandUnknown
+			return parsed, nil
+		}
 		parsed.Kind = CommandDirectional
 		return parsed, nil
 	}
@@ -478,6 +582,32 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Kind = CommandUnknown
 	}
 	return parsed, nil
+}
+
+func tokensContainLookVerb(tokens []string) bool {
+	for _, token := range tokens {
+		if isLookVerb(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokensContainItemMutationVerb(tokens []string) bool {
+	for _, token := range tokens {
+		if isItemMutationVerb(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineContainsLookVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil {
+		return false
+	}
+	return tokensContainLookVerb(tokens)
 }
 
 func legacyTokens(line string) []string {
@@ -640,6 +770,14 @@ func commandKind(first string) CommandKind {
 		return CommandDoor
 	case "풀어", "잠궈", "따":
 		return CommandDoorKey
+	case "제련":
+		return CommandForge
+	case "무기만들기":
+		return CommandNewForge
+	case "향상":
+		return CommandBuyStates
+	case "목매달기":
+		return CommandSuicide
 	default:
 		if world.IsEmoteAlias(first) {
 			return CommandEmote
@@ -650,7 +788,7 @@ func commandKind(first string) CommandKind {
 
 func isSingleTokenKind(kind CommandKind) bool {
 	switch kind {
-	case CommandLook, CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandPassword, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore, CommandVote:
+	case CommandStatus, CommandItems, CommandSocial, CommandQuit, CommandRead, CommandSave, CommandMail, CommandInfo, CommandPassword, CommandWelcome, CommandSearch, CommandTrack, CommandHide, CommandFlee, CommandShopList, CommandIgnore, CommandVote, CommandForge, CommandNewForge, CommandBuyStates, CommandSuicide:
 		return true
 	default:
 		return false

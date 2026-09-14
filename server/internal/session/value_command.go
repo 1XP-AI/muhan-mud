@@ -35,9 +35,10 @@ type valueLineRequest struct {
 	Occurrence int    `json:"occurrence"`
 }
 
-// ParseValueLine admits only global.c's exact Korean aliases. The occurrence
-// is one-based; omitting it preserves the legacy parser's default of one, while
-// an explicit occurrence must be a positive decimal integer.
+// ParseValueLine admits only global.c's exact Korean aliases. Bare 가치/가격
+// is C's cmnd->num < 2 ask-what print. The occurrence is one-based; omitting
+// it preserves the legacy parser's default of one, while an explicit
+// occurrence must be a positive decimal integer.
 func ParseValueLine(line string) (ValueCommand, bool) {
 	if !utf8.ValidString(line) {
 		return ValueCommand{}, false
@@ -48,16 +49,20 @@ func ParseValueLine(line string) (ValueCommand, bool) {
 		}
 	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || len(tokens) < 2 || len(tokens) > 3 {
+	if err != nil || len(tokens) < 1 || len(tokens) > 3 {
 		return ValueCommand{}, false
 	}
 	if tokens[0] != "가치" && tokens[0] != "가격" {
 		return ValueCommand{}, false
 	}
+	command := ValueCommand{Alias: tokens[0], Occurrence: 1}
+	if len(tokens) == 1 {
+		return command, true
+	}
 	if tokens[1] == "" || strings.TrimSpace(tokens[1]) != tokens[1] {
 		return ValueCommand{}, false
 	}
-	command := ValueCommand{Alias: tokens[0], Name: tokens[1], Occurrence: 1}
+	command.Name = tokens[1]
 	if len(tokens) == 3 {
 		occurrence, err := strconv.ParseUint(tokens[2], 10, 31)
 		if err != nil || occurrence < 1 {
@@ -81,10 +86,14 @@ func IsValueLine(line string) bool {
 	return ok
 }
 
-// ExecuteValueLine runs the read-only value quote through the authenticated
-// session ownership and durable ExecuteGame boundary. The candidate snapshot
-// is returned unchanged; only the typed world.ValueResult is persisted as the
-// response so retries never re-select a different duplicate item.
+// ExecuteValueLine binds 가치/가격 to the authenticated session and durable
+// ExecuteGame boundary. C-prints for non-RPAWNS/non-RREPAI and bare 가치
+// keep the original state. A named leftover (inventory miss) commits
+// F_CLR PHIDDN with no gold/item move, matching command7.c:312 before
+// find_obj. A successful quote is still observational for inventory and
+// gold but commits the revealed actor. A replay never re-runs selection
+// or hide-clear after a receipt exists. Unmigrated nil Items fail closed
+// before commit.
 func (o *Ownership) ExecuteValueLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
 	command, ok := ParseValueLine(line)
 	if !ok {
@@ -101,11 +110,21 @@ func (o *Ownership) ExecuteValueLine(ctx context.Context, store engine.CommandSt
 		if err != nil {
 			return nil, nil, err
 		}
-		result, err := state.QuoteValueByName(actorID, command.Name, command.Occurrence)
+		next, result, err := state.ValueByName(actorID, command.Name, command.Occurrence)
 		if err != nil {
 			return nil, nil, err
 		}
-		response, err := json.Marshal(result)
-		return raw, response, err
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return nil, nil, err
+		}
+		if result.Action == world.ValueQuotedAction || result.Action == world.ValueNotHoldingAction {
+			nextRaw, err := json.Marshal(next)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nextRaw, encoded, nil
+		}
+		return raw, encoded, nil
 	})
 }

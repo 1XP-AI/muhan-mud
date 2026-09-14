@@ -8,6 +8,8 @@ func TestParseShopPurchaseLineAdmitsOnlyBoundedAliasesAndPositiveOccurrence(t *t
 		name       string
 		occurrence int
 	}{
+		{line: "사", name: "", occurrence: 1},
+		{line: "구입", name: "", occurrence: 1},
 		{line: "사 검", name: "검", occurrence: 1},
 		{line: `구입 "마법 검" 2`, name: "마법 검", occurrence: 2},
 	}
@@ -18,8 +20,6 @@ func TestParseShopPurchaseLineAdmitsOnlyBoundedAliasesAndPositiveOccurrence(t *t
 		}
 	}
 	for _, line := range []string{
-		"사",
-		"구입",
 		"buy 검",
 		"사 검 0",
 		"사 검 -1",
@@ -33,7 +33,7 @@ func TestParseShopPurchaseLineAdmitsOnlyBoundedAliasesAndPositiveOccurrence(t *t
 		}
 	}
 
-	for _, line := range []string{"사 검", "구입 검 2"} {
+	for _, line := range []string{"사", "구입", "사 검", "구입 검 2"} {
 		parsed, err := ParseCommand(line)
 		if err != nil || parsed.Kind != CommandShopPurchase {
 			t.Fatalf("ParseCommand(%q)=%+v err=%v", line, parsed, err)

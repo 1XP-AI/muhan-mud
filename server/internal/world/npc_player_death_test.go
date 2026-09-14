@@ -1,6 +1,7 @@
 package world
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -39,6 +40,15 @@ func noDeathRNG(t *testing.T) func(int, int) int {
 	}
 }
 
+func warBossNPCPlayerDeathFixture() State {
+	s := npcPlayerDeathFixture()
+	s.War = &FamilyWar{Active: 2*16 + 3, CalledBy: 2, CalledAgainst: 3}
+	p := s.Players["a"]
+	p.Body.Flags[7] |= 2
+	s.Players["a"] = p
+	return s
+}
+
 func TestPlanNPCPlayerDeathCommitsOneAtomicCandidate(t *testing.T) {
 	s := npcPlayerDeathFixture()
 	before := s.clone()
@@ -67,6 +77,39 @@ func TestPlanNPCPlayerDeathCommitsOneAtomicCandidate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(s, before) {
 		t.Fatal("planner mutated input snapshot")
+	}
+}
+
+func TestPlanNPCPlayerDeathWarBossEmitsCatalogDefeatBroadcasts(t *testing.T) {
+	s := warBossNPCPlayerDeathFixture()
+	before := s.clone()
+	next, result, err := s.PlanNPCPlayerDeath("wolf", "a", 100, SceneOptions{}, nil, noDeathRNG(t), nil, deathFamilyCatalog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.FamilyDefeated || result.NPCID != "wolf" || result.VictimID != "a" || *next.War != (FamilyWar{}) {
+		t.Fatalf("result=%+v war=%+v", result, next.War)
+	}
+	assertFamilyDefeatBroadcasts(t, result.Events, "청룡")
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("planner mutated input snapshot")
+	}
+}
+
+func TestPlanNPCPlayerDeathWarBossRejectsMissingCatalog(t *testing.T) {
+	s := warBossNPCPlayerDeathFixture()
+	next, result, err := s.PlanNPCPlayerDeath("wolf", "a", 100, SceneOptions{}, nil, noDeathRNG(t), nil, FamilyCatalog{})
+	if !errors.Is(err, ErrFamilyCatalogUnavailable) || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCPlayerDeathResult{}) {
+		t.Fatalf("missing catalog next=%+v result=%+v err=%v", next, result, err)
+	}
+}
+
+func TestPlanNPCPlayerDeathRejectsUnmigratedWar(t *testing.T) {
+	s := npcPlayerDeathFixture()
+	s.War = nil
+	next, result, err := s.PlanNPCPlayerDeath("wolf", "a", 100, SceneOptions{}, nil, noDeathRNG(t), nil)
+	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCPlayerDeathResult{}) {
+		t.Fatalf("unmigrated war next=%+v result=%+v err=%v", next, result, err)
 	}
 }
 

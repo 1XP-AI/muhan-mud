@@ -229,3 +229,156 @@ func TestApplyRepairRejectsStaleOrTamperedOutcomeAtomically(t *testing.T) {
 		t.Fatalf("stale repair applied: next=%+v err=%v", next, err)
 	}
 }
+
+func repairNoRNG(t *testing.T) func(int, int) int {
+	t.Helper()
+	return func(int, int) int {
+		t.Fatal("repair leftover consumed RNG")
+		return 1
+	}
+}
+
+func repairActorHidden(s State) bool {
+	actor := s.Players["a"]
+	return flag(actor.Body.Flags[:], playerHiddenStateFlag)
+}
+
+func TestRepairByNamePrintsCAskWhatWithoutClearingPHIDDN(t *testing.T) {
+	s := repairStateFixture()
+	original := s.clone()
+	next, result, err := s.RepairByName("a", "", 1, repairNoRNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != RepairAskWhatAction || result.Response != RepairAskWhatResponse || result.RoomID != 1 || result.ItemID != "" || result.Cost != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !repairActorHidden(next) {
+		t.Fatal("ask-what cleared PHIDDN")
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("ask-what mutated or diverged from source")
+	}
+	if next.Players["a"].Body.Gold != 100 || !containsString(next.Players["a"].Items.Inventory, "sword") {
+		t.Fatalf("ask-what moved gold/item: %+v", next.Players["a"])
+	}
+}
+
+func TestRepairByNamePrintsCNotRepairWithoutClearingPHIDDN(t *testing.T) {
+	s := repairStateFixture()
+	room := s.Rooms[1]
+	room.Resource.Flags = [8]byte{}
+	s.Rooms[1] = room
+	original := s.clone()
+	next, result, err := s.RepairByName("a", "검", 1, repairNoRNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != RepairNotRepairAction || result.Response != RepairNotRepairResponse || result.RoomID != 1 || result.ItemID != "" || result.Cost != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !repairActorHidden(next) {
+		t.Fatal("not-repair cleared PHIDDN")
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-repair mutated or diverged from source")
+	}
+}
+
+func TestRepairByNamePrintsCAskWhatBeforeNotRepair(t *testing.T) {
+	s := repairStateFixture()
+	room := s.Rooms[1]
+	room.Resource.Flags = [8]byte{}
+	s.Rooms[1] = room
+	_, result, err := s.RepairByName("a", "", 1, repairNoRNG(t))
+	if err != nil || result.Action != RepairAskWhatAction || result.Response != RepairAskWhatResponse {
+		t.Fatalf("bare repair outside repair shop=%+v err=%v", result, err)
+	}
+}
+
+func TestRepairByNamePrintsCNotHoldingWithoutClearingPHIDDN(t *testing.T) {
+	s := repairStateFixture()
+	original := s.clone()
+	next, result, err := s.RepairByName("a", "방패", 1, repairNoRNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != RepairNotHoldingAction || result.Response != RepairNotHoldingResponse || result.ItemID != "" || result.Cost != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !repairActorHidden(next) {
+		t.Fatal("not-holding leftover F_CLR PHIDDN before find_obj")
+	}
+	if !repairActorHidden(original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-holding mutated source snapshot")
+	}
+	if next.Players["a"].Body.Gold != 100 || !containsString(next.Players["a"].Items.Inventory, "sword") {
+		t.Fatalf("not-holding moved gold/item: %+v", next.Players["a"])
+	}
+
+	_, prefix, err := s.RepairByName("a", "검술", 1, repairNoRNG(t))
+	if err != nil || prefix.Response != RepairNotHoldingResponse {
+		t.Fatalf("prefix name=%+v err=%v", prefix, err)
+	}
+	_, occ, err := s.RepairByName("a", "검", 2, repairNoRNG(t))
+	if err != nil || occ.Response != RepairNotHoldingResponse {
+		t.Fatalf("missing occurrence=%+v err=%v", occ, err)
+	}
+}
+
+func TestRepairByNameStillRepairsExactInventoryRoot(t *testing.T) {
+	s := repairStateFixture()
+	rolls := []struct{ low, high, value int }{
+		{1, 100, 100},
+		{1, 50, 1},
+		{5, 9, 9},
+	}
+	next, result, err := s.RepairByName("a", "검", 1, func(low, high int) int {
+		if len(rolls) == 0 {
+			t.Fatal("repair consumed too many random outcomes")
+		}
+		outcome := rolls[0]
+		rolls = rolls[1:]
+		if low != outcome.low || high != outcome.high {
+			t.Fatalf("repair random range=%d..%d want=%d..%d", low, high, outcome.low, outcome.high)
+		}
+		return outcome.value
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolls) != 0 || result.Action != RepairSuccessAction || result.ItemID != "sword" || result.Cost != 25 || result.GoldAfter != 75 || result.ShotsCurrent != 9 {
+		t.Fatalf("result=%+v remaining=%v", result, rolls)
+	}
+	if repairActorHidden(next) {
+		t.Fatal("successful repair did not reveal actor")
+	}
+	item := next.Players["a"].Items.Items["sword"]
+	if item.Object.ShotsCurrent != 9 || next.Players["a"].Body.Gold != 75 {
+		t.Fatalf("item=%+v gold=%d", item, next.Players["a"].Body.Gold)
+	}
+}
+
+func TestRepairByNameFailClosesUnmigratedItemsAfterRoomGate(t *testing.T) {
+	s := repairStateFixture()
+	actor := s.Players["a"]
+	actor.Items = nil
+	s.Players["a"] = actor
+	original := s.clone()
+	if next, result, err := s.RepairByName("a", "검", 1, repairNoRNG(t)); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, RepairResult{}) || !reflect.DeepEqual(s, original) {
+		t.Fatalf("unmigrated items repaired: next=%+v result=%+v err=%v", next, result, err)
+	}
+
+	_, ask, err := s.RepairByName("a", "", 1, repairNoRNG(t))
+	if err != nil || ask.Response != RepairAskWhatResponse {
+		t.Fatalf("unmigrated bare repair=%+v err=%v", ask, err)
+	}
+
+	room := s.Rooms[1]
+	room.Resource.Flags = [8]byte{}
+	s.Rooms[1] = room
+	_, notRepair, err := s.RepairByName("a", "검", 1, repairNoRNG(t))
+	if err != nil || notRepair.Response != RepairNotRepairResponse {
+		t.Fatalf("unmigrated named outside shop=%+v err=%v", notRepair, err)
+	}
+}

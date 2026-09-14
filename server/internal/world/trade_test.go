@@ -1,6 +1,7 @@
 package world
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -186,5 +187,108 @@ func TestTradeNPCByNameRejectsUnsafeOrAmbiguousBranchesWithoutMutation(t *testin
 				t.Fatal("rejected trade mutated state")
 			}
 		})
+	}
+}
+
+func TestPlanTradePrintsCAskWhoWithoutLookingAtItems(t *testing.T) {
+	s := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	player := s.Players["actor"]
+	player.Items = nil
+	player.Body.Inventory = []LegacyObject{{Name: "legacy"}}
+	s.Players["actor"] = player
+	before := s.clone()
+	allocated := 0
+	proposal, err := s.PlanTrade("actor", "", 1, "", 1, func() (string, error) {
+		allocated++
+		return "unexpected", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Changed || proposal.Result.Action != TradeAskWhoAction || proposal.Result.Response != TradeAskWhoResponse || allocated != 0 {
+		t.Fatalf("proposal=%+v allocated=%d", proposal, allocated)
+	}
+	next, result, err := s.ApplyTrade(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != TradeAskWhoAction || result.Response != TradeAskWhoResponse || result.Changed {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(next, before) || !reflect.DeepEqual(s, before) {
+		t.Fatal("ask-who mutated source or applied state")
+	}
+}
+
+func TestPlanTradePrintsCUsageWhenNPCNameMissing(t *testing.T) {
+	s := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	before := s.clone()
+	proposal, err := s.PlanTrade("actor", "사과", 1, "", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Changed || proposal.Result.Action != TradeUsageAction || proposal.Result.Response != TradeUsageResponse {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyTrade(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != TradeUsageAction || result.Response != TradeUsageResponse || result.Changed {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(next, before) {
+		t.Fatal("usage mutated state")
+	}
+}
+
+func TestPlanApplyTradeAllocatesOnceAndReplaysWithoutRecommit(t *testing.T) {
+	s := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13, Keys: [3]string{"reward"}})
+	before := s.clone()
+	allocated := 0
+	proposal, err := s.PlanTrade("actor", "사과", 1, "상인", 1, func() (string, error) {
+		allocated++
+		return "reward-1", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocated != 1 || !proposal.Changed || proposal.Result.Action != TradeNPCItemAction {
+		t.Fatalf("proposal=%+v allocated=%d", proposal, allocated)
+	}
+	next, result, err := s.ApplyTrade(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocated != 1 || !result.Rewarded || result.RewardRootID != "reward-1" || result.Changed != true {
+		t.Fatalf("result=%+v allocated=%d", result, allocated)
+	}
+	if _, ok := next.Players["actor"].Items.Items["offered"]; ok {
+		t.Fatal("offered item survived apply")
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("plan/apply mutated source snapshot")
+	}
+	if _, _, err := next.ApplyTrade(proposal); !errors.Is(err, ErrTradeStaleProposal) {
+		t.Fatalf("stale apply err=%v", err)
+	}
+}
+
+func TestPlanTradeFailClosedUnmigratedNPCAndItems(t *testing.T) {
+	missingItems := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	actor := missingItems.Players["actor"]
+	actor.Items = nil
+	actor.Body.Inventory = []LegacyObject{{Name: "legacy"}}
+	missingItems.Players["actor"] = actor
+	if _, err := missingItems.PlanTrade("actor", "사과", 1, "상인", 1, nil); !errors.Is(err, ErrTradeItemsUnmigrated) {
+		t.Fatalf("nil items err=%v", err)
+	}
+
+	unmigratedNPC := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	npc := unmigratedNPC.NPCs["merchant"]
+	npc.TradeOffers = nil
+	unmigratedNPC.NPCs["merchant"] = npc
+	if _, err := unmigratedNPC.PlanTrade("actor", "사과", 1, "상인", 1, nil); !errors.Is(err, ErrTradeOffersUnmigrated) {
+		t.Fatalf("nil offers err=%v", err)
 	}
 }

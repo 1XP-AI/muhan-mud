@@ -84,6 +84,9 @@ func movementEvents(before, after world.State, actorID string) []roomEvent {
 			Text:   fmt.Sprintf("\n%s이(가) 따라왔습니다.\r\n", newNPC.Body.Name),
 		})
 	}
+	for _, chase := range world.NPCGoChaseFanoutEvents(before, after, actorID) {
+		events = append(events, roomEvent{RoomID: chase.RoomID, Text: chase.Text})
+	}
 	return events
 }
 
@@ -404,6 +407,30 @@ func (g *WorldConnector) publishExpress(after world.State, actorID, text string)
 		}
 		select {
 		case connection.events <- event.Text:
+		default:
+			// A slow client cannot block the actor's durable command.
+		}
+	}
+}
+
+func (g *WorldConnector) publishLookInspect(after world.State, actorID, prefix string, occurrence, hour int) {
+	event, ok, err := after.RoomLookInspectEvent(actorID, prefix, occurrence, hour)
+	if err != nil || !ok || event.Text == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.events == nil || connection.lease.ActorID == event.ExcludeActorID {
+			continue
+		}
+		text := event.TextFor(player.Body)
+		if text == "" {
+			continue
+		}
+		select {
+		case connection.events <- text:
 		default:
 			// A slow client cannot block the actor's durable command.
 		}

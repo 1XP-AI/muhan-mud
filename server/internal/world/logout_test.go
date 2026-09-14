@@ -47,3 +47,77 @@ func TestLeavePlayerDetachesFollowerEdgesBeforeCommit(t *testing.T) {
 		t.Fatalf("next=%+v err=%v", next, err)
 	}
 }
+
+func resolveDMFollowLogoutDomain(s State) State {
+	next := s.clone()
+	for id, npc := range next.NPCs {
+		if npc.Enemies == nil {
+			npc.Enemies = []NPCEnemy{}
+			next.NPCs[id] = npc
+		}
+	}
+	if next.ActiveNPCIDs == nil {
+		next.ActiveNPCIDs = []string{}
+	}
+	return next
+}
+
+func TestLeavePlayerClearsMDMFOLFlagsAndReciprocalEdges(t *testing.T) {
+	s := resolveDMFollowLogoutDomain(dmFollowFixture(t))
+	proposal, err := s.PlanDMFollow("dm", "*따르기", "늑대", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attached, _, err := s.ApplyDMFollow(proposal)
+	if err != nil || attached.NPCs["wolf-1"].FollowingPlayerID != "dm" || !PlayerFlagSet(attached.NPCs["wolf-1"].Body, npcDMFollowFlag) {
+		t.Fatalf("attached=%+v err=%v", attached.NPCs["wolf-1"], err)
+	}
+	next, _, err := attached.LeavePlayer("dm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := next.NPCs["wolf-1"]
+	dm := next.Players["dm"]
+	if npc.FollowingPlayerID != "" || PlayerFlagSet(npc.Body, npcDMFollowFlag) || dm.NPCFollowerIDs != nil || dm.FollowerRefs != nil || dm.Online {
+		t.Fatalf("logout left MDMFOL edge npc=%+v dm=%+v", npc, dm)
+	}
+	if attached.NPCs["wolf-1"].FollowingPlayerID != "dm" || !PlayerFlagSet(attached.NPCs["wolf-1"].Body, npcDMFollowFlag) || !attached.Players["dm"].Online {
+		t.Fatal("LeavePlayer mutated the attached snapshot")
+	}
+	if _, _, err := next.LeavePlayer("dm"); err == nil {
+		t.Fatal("repeated logout accepted")
+	}
+	if _, _, err := next.ApplyDMFollow(proposal); err == nil {
+		t.Fatal("stale MDMFOL proposal recommitted after logout")
+	}
+}
+
+func TestLeavePlayerRejectsUnmigratedMDMFOLEnemiesAndActiveOrder(t *testing.T) {
+	s := resolveDMFollowLogoutDomain(dmFollowFixture(t))
+	proposal, err := s.PlanDMFollow("dm", "*따르기", "늑대", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attached, _, err := s.ApplyDMFollow(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missingEnemies := attached.clone()
+	npc := missingEnemies.NPCs["wolf-1"]
+	npc.Enemies = nil
+	missingEnemies.NPCs["wolf-1"] = npc
+	got, departure, err := missingEnemies.LeavePlayer("dm")
+	if err == nil || !reflect.DeepEqual(got, State{}) || !reflect.DeepEqual(departure, RoomDeparture{}) ||
+		!missingEnemies.Players["dm"].Online || !PlayerFlagSet(missingEnemies.NPCs["wolf-1"].Body, npcDMFollowFlag) {
+		t.Fatalf("unmigrated enemies next=%+v departure=%+v err=%v", got, departure, err)
+	}
+
+	missingActive := attached.clone()
+	missingActive.ActiveNPCIDs = nil
+	got, departure, err = missingActive.LeavePlayer("dm")
+	if err == nil || !reflect.DeepEqual(got, State{}) || !reflect.DeepEqual(departure, RoomDeparture{}) ||
+		!missingActive.Players["dm"].Online || missingActive.NPCs["wolf-1"].FollowingPlayerID != "dm" {
+		t.Fatalf("unmigrated active next=%+v departure=%+v err=%v", got, departure, err)
+	}
+}

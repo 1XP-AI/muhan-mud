@@ -58,7 +58,18 @@ func TestParseRepairLineAdmitsExactNameAndPositiveOccurrence(t *testing.T) {
 	if command, ok := ParseRepairLine("수리 검 2"); !ok || command.Name != "검" || command.Occurrence != 2 {
 		t.Fatalf("parsed=%+v ok=%t", command, ok)
 	}
-	for _, line := range []string{"repair 검", "수리", "수리 검 0", "수리 검 -1", "수리 검 x", "수리 검 1 extra", "수리\n검"} {
+	if command, ok := ParseRepairLine("수리"); !ok || command.Name != "" || command.Occurrence != 1 {
+		t.Fatalf("bare 수리=%+v ok=%t", command, ok)
+	}
+	parsed, err := ParseCommand("수리")
+	if err != nil || parsed.Kind != CommandRepair {
+		t.Fatalf("ParseCommand bare 수리=%+v err=%v", parsed, err)
+	}
+	parsed, err = ParseCommand("수리 검")
+	if err != nil || parsed.Kind != CommandRepair {
+		t.Fatalf("ParseCommand 수리 검=%+v err=%v", parsed, err)
+	}
+	for _, line := range []string{"repair 검", "수리 검 0", "수리 검 -1", "수리 검 x", "수리 검 1 extra", "수리\n검"} {
 		if _, ok := ParseRepairLine(line); ok {
 			t.Fatalf("unsupported repair line accepted: %q", line)
 		}
@@ -117,5 +128,141 @@ func TestExecuteRepairLineRejectsMalformedBeforeReceipt(t *testing.T) {
 	}
 	if _, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-bad", lease, "수리 검 0", func(int, int) int { t.Fatal("malformed repair consumed RNG"); return 1 }); err == nil || store.commits != 0 {
 		t.Fatalf("malformed repair committed: err=%v commits=%d", err, store.commits)
+	}
+}
+
+func repairCommandMutatedFixture(t *testing.T, mutate func(*world.State)) []byte {
+	t.Helper()
+	s, err := world.DecodeState(repairCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutate != nil {
+		mutate(&s)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func repairCommandActorHidden(s world.State) bool {
+	return s.Players["actor"].Body.Flags[1/8]&(1<<(1%8)) != 0
+}
+
+func admitRepairOwner(t *testing.T) (*Ownership, SessionLease) {
+	t.Helper()
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return owners, lease
+}
+
+func TestExecuteRepairLineAskWhatSucceedsWithCResponseAndReplays(t *testing.T) {
+	store := &departureStore{state: repairCommandFixture(t)}
+	owners, lease := admitRepairOwner(t)
+	before := append([]byte(nil), store.state...)
+	first, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-ask-what", lease, "수리", func(int, int) int { t.Fatal("ask-what repair consumed RNG"); return 1 })
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.RepairResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.RepairAskWhatResponse || result.Action != world.RepairAskWhatAction {
+		t.Fatalf("result=%+v", result)
+	}
+	if string(store.state) != string(before) {
+		t.Fatal("ask-what repair changed world snapshot")
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !repairCommandActorHidden(saved) {
+		t.Fatalf("ask-what cleared PHIDDN: %+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-ask-what", lease, "수리", func(int, int) int { t.Fatal("repair replay consumed RNG"); return 1 })
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteRepairLineNotRepairSucceedsWithCResponseAndReplays(t *testing.T) {
+	store := &departureStore{state: repairCommandMutatedFixture(t, func(s *world.State) {
+		room := s.Rooms[1]
+		room.Resource.Flags = [8]byte{}
+		s.Rooms[1] = room
+	})}
+	owners, lease := admitRepairOwner(t)
+	before := append([]byte(nil), store.state...)
+	first, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-not-repair", lease, "수리 검", func(int, int) int { t.Fatal("not-repair consumed RNG"); return 1 })
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.RepairResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.RepairNotRepairResponse || result.Action != world.RepairNotRepairAction {
+		t.Fatalf("result=%+v", result)
+	}
+	if string(store.state) != string(before) {
+		t.Fatal("not-repair changed world snapshot")
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !repairCommandActorHidden(saved) || saved.Players["actor"].Body.Gold != 100 {
+		t.Fatalf("not-repair mutated gold/hide: %+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-not-repair", lease, "수리 검", func(int, int) int { t.Fatal("repair replay consumed RNG"); return 1 })
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteRepairLineNotHoldingKeepsPHIDDNAndReplays(t *testing.T) {
+	store := &departureStore{state: repairCommandFixture(t)}
+	owners, lease := admitRepairOwner(t)
+	first, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-not-holding", lease, "수리 방패", func(int, int) int { t.Fatal("not-holding repair consumed RNG"); return 1 })
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.RepairResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.RepairNotHoldingResponse || result.Action != world.RepairNotHoldingAction {
+		t.Fatalf("result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !repairCommandActorHidden(saved) || saved.Players["actor"].Body.Gold != 100 || len(saved.Players["actor"].Items.Inventory) != 1 {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-not-holding", lease, "수리 방패", func(int, int) int { t.Fatal("repair replay consumed RNG"); return 1 })
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+	replayed, err := world.DecodeState(store.state)
+	if err != nil || !repairCommandActorHidden(replayed) || replayed.Players["actor"].Body.Gold != 100 {
+		t.Fatalf("replay re-cleared or re-committed: %+v err=%v commits=%d", replayed, err, store.commits)
+	}
+}
+
+func TestExecuteRepairLineUnmigratedItemsFailClosed(t *testing.T) {
+	store := &departureStore{state: repairCommandMutatedFixture(t, func(s *world.State) {
+		actor := s.Players["actor"]
+		actor.Items = nil
+		s.Players["actor"] = actor
+	})}
+	owners, lease := admitRepairOwner(t)
+	if _, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-unmigrated", lease, "수리 검", func(int, int) int { t.Fatal("unmigrated repair consumed RNG"); return 1 }); err == nil {
+		t.Fatal("unmigrated items unexpectedly repaired")
+	}
+	if store.commits != 0 {
+		t.Fatalf("fail-closed repair committed=%d", store.commits)
 	}
 }

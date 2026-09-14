@@ -30,8 +30,9 @@ type shopMarketplaceAction struct {
 }
 
 // parseShopMarketplaceLine admits only the exact global.c aliases: 품목 for
-// list and 팔아 <exact-name> [occurrence] for sell. The occurrence is explicit
-// and one-based; implicit legacy prefix/key selection remains fail-closed.
+// list and 팔아 / 팔아 <exact-name> [occurrence] for sell. Bare 팔아 is C's
+// cmnd->num < 2 ask-what print. The occurrence is explicit and one-based;
+// implicit legacy prefix/key selection remains fail-closed.
 func parseShopMarketplaceLine(line string) (shopMarketplaceAction, bool) {
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
 	if err != nil {
@@ -39,6 +40,9 @@ func parseShopMarketplaceLine(line string) (shopMarketplaceAction, bool) {
 	}
 	if len(tokens) == 1 && tokens[0] == "품목" {
 		return shopMarketplaceAction{kind: "list", occurrence: 1}, true
+	}
+	if len(tokens) == 1 && tokens[0] == "팔아" {
+		return shopMarketplaceAction{kind: "sell", occurrence: 1}, true
 	}
 	if len(tokens) < 2 || len(tokens) > 3 || tokens[0] != "팔아" || tokens[1] == "" {
 		return shopMarketplaceAction{}, false
@@ -62,9 +66,14 @@ type shopMarketplaceRequest struct {
 }
 
 // ExecuteShopLine binds list and sell to the same actor-checked receipt
-// boundary. list returns the original state bytes; sell stores the complete
-// player/storage/gold candidate atomically. A replay never re-runs selection
-// or sale validation after a receipt exists.
+// boundary. list returns the original state bytes, including C's non-shop
+// and missing-storage prints as successful responses. sell C-prints for
+// non-RPAWNS and bare 팔아 keep the original state. A named leftover
+// (inventory miss) commits F_CLR PHIDDN with no gold/item move, matching
+// command7.c:244 before find_obj. A completed sale stores the
+// player/storage/gold/PHIDDN candidate atomically. A replay never re-runs
+// selection, hide-clear, or sale validation after a receipt exists.
+// Unmigrated storage/nil Items fail closed before commit.
 func (o *Ownership) ExecuteShopLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
 	action, ok := parseShopMarketplaceLine(line)
 	if !ok {
@@ -93,11 +102,13 @@ func (o *Ownership) ExecuteShopLine(ctx context.Context, store engine.CommandSto
 			if sellErr != nil {
 				return nil, nil, sellErr
 			}
-			state, err = json.Marshal(next)
-			if err != nil {
-				return nil, nil, err
-			}
 			response = result
+			if result.Action == world.ShopSaleSoldAction || result.Action == world.ShopSaleNotHoldingAction {
+				state, err = json.Marshal(next)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 		default:
 			return nil, nil, fmt.Errorf("unknown shop marketplace action")
 		}

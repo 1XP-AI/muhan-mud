@@ -36,6 +36,9 @@ type State struct {
 	// non-nil FamilyState with an empty member slice is an explicit empty
 	// ledger, never an invitation to discover members from player flags.
 	Family *FamilyState
+	// Nil means legacy family_news_<n> files have not been imported. A non-nil
+	// FamilyNewsState with a missing family key is C's missing notice file.
+	FamilyNews *FamilyNewsState
 	// Property special number -> invited character IDs (legacy invite_N, 10 slots).
 	// Nil is unimported; a nonnil empty map explicitly means no invitations.
 	Invitations map[int16][]string
@@ -152,6 +155,11 @@ func (s State) Validate() error {
 					return fmt.Errorf("invalid family member identity %q in family %d", member.ID, familyID)
 				}
 			}
+		}
+	}
+	if s.FamilyNews != nil {
+		if err := s.FamilyNews.Validate(); err != nil {
+			return fmt.Errorf("invalid family news: %w", err)
 		}
 	}
 	for _, ids := range s.Invitations {
@@ -551,6 +559,10 @@ func (s State) clone() State {
 	if s.Family != nil {
 		family := s.Family.Clone()
 		next.Family = &family
+	}
+	if s.FamilyNews != nil {
+		news := s.FamilyNews.Clone()
+		next.FamilyNews = &news
 	}
 	for id, room := range s.Rooms {
 		room.Resource = cloneRoom(room.Resource)

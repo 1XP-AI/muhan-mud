@@ -1,5 +1,1812 @@
 # Muhan MUD 포팅 핸드오프
 
+## 오케스트레이터 핸드오프 — 2026-09-14 (다른 에이전트 재개용)
+
+이 섹션이 다음 에이전트의 시작점이다. 아래 슬라이스 로그는 이력이다.
+
+### 작업 트리 (clone/worktree/reset/rebase 금지)
+
+- 라이브 루트: `/Users/jjangg96/Documents/1xp/muhan-mud.nosync`
+- 브랜치: `codex/mud-identity-foundation` (Orca `moray` 복사본이 아님)
+- 원격: `private` = `https://github.com/1XP-Inc/muhan-mud.git` (이슈·추적 원격)
+- `origin` = `https://github.com/1XP-AI/muhan-mud` (이 브랜치 없음)
+- **`src/frp.new`는 dirty 바이너리. checkout/commit/reset 하지 말 것.**
+
+### 절대 하지 말 것
+
+- GitHub #3–#12 / #1을 인수 체크박스+Evidence 없이 CLOSE
+- G0–G5 완료 선언, issue #1을 #2–#12보다 먼저 닫기
+- 라이브 C `mud-entrypoint` helm-upgrade, chart 0.1.8→0.1.5 다운그레이드
+- C→DB 어댑터, Rust 런타임, 웹 가입/Supabase 웹 로그인
+- 코드 push·CI·배포는 사용자 승인 범위 (이번 턴에서 로컬 커밋+`private` push는 사용자 요청으로 수행)
+
+### Orca (이어가려면)
+
+- CLI: `/usr/local/bin/orca`, `orca skills get orchestration` 먼저
+- Run: `run_80efe6288c63`
+- Coordinator: `term_d96bf1ac-3e2a-4d14-9b89-1a4b35c801ba` (`run-use` 후 `--terminal` 쓰지 말 것)
+- 워커: `--agent grok --timeout-ms 180000 --worktree path:/Users/jjangg96/Documents/1xp/muhan-mud.nosync --run run_80efe6288c63 --from term_d96bf1ac-3e2a-4d14-9b89-1a4b35c801ba`
+- Claude 워커는 trust TUI에 걸려 실패했음. grok만.
+- G0 `task_7a36af246be8` / `ctx_583060c51aa5`는 `worker_done` preamble 누락으로 stuck. **위조하지 말고 그대로 둘 것.** GitHub #2는 CLOSED.
+- `check --wait` 동시 두 개 금지. `consumer_fenced`면 `run-use --id run_80efe6288c63`.
+- 핸드오프 시점 in-flight:
+  - 리뷰 `ctx_3c9b17707cf8` / `task_30a1d4002960`: simultaneous-val 독립 리뷰, 아직 파일 없음 (`pr-g3-item-simultaneous-val-review.txt`). 살아 있으면 수거 후 release.
+  - 구현 `ctx_a15aa1f892bc`: succeeded, `worker-release --dispatch ctx_a15aa1f892bc` 남음 (release가 runtime_unavailable로 지연될 수 있음. `request-show` 후 `--retry-request`).
+
+### GitHub (1XP-Inc/muhan-mud)
+
+| 이슈 | 상태 | 메모 |
+| --- | --- | --- |
+| #2 G0 | CLOSED | 원장 매핑. Orca Task는 in_progress 방치 |
+| #3 G1 | OPEN | 보기/이동/출구/추종/함정 슬라이스 다수 로컬 착륙. 인수 체크박스 2개 남음 (원작 분기 전수, 실접속 E2E) |
+| #4 G2 | OPEN | C-file import+PG. 실기기 IME와 별개 |
+| #5 G2 | OPEN | xterm/IME/모바일. 샌드박스에서 실기기 불가 가능 |
+| #6–#10 G3 | OPEN | 전투/NPC/아이템/마법/가족 일부 착륙. catalog·채팅·퀘스트 등 남음 |
+| #11 G4 | OPEN | trailing-data / missing-terminator / invalid-euc-kr Admit 정책 착륙. backup/restore·전수 dry-run 남음 |
+| #12 G5 | OPEN | ARM64/Helm/testnet Go cutover. 라이브는 아직 C |
+| #1 | OPEN | #2–#12 닫힌 뒤에만 |
+
+닫을 때: 이슈 body 인수 `- [x]` + 실제 명령/출력을 인용한 코멘트. 로컬 PASS만으로는 안 됨.
+
+### 이번 커밋에 들어간 로컬 슬라이스 (독립 리뷰 no P0/P1)
+
+G1 #3: go 추격, look last-token/exit peek/나·first_ply/consider/HP/PKNOWA/broadcast/PINVIS/is_enm, check_exits, 방향 missing dest `그쪽으로 지도가 없습니다. 신에게 연락해 주세요.`
+G2 #4: C-file 로그인 import (name-only 거절, password offset 240)
+G3 #6–#10: 전쟁사망, 향상·목매달기, 주문 위치/소환/귀환/zap, 가족 뉴스/전쟁/DM, 상점 list/buy/sell/value/repair/trade, 제련·무기만들기
+G3 #8 leftover: last-token 주워/버려 이동 아님 → 4+ token nested C get/drop → DropItem 이름 유지 → occurrence val[1]/val[2] → simultaneous `가방 2 보석 3 꺼내`
+G4 #11: `LegacyRoomTrailingDataPolicy` (7방), `LegacyRoomMissingTextTerminatorPolicy` (6방/12건, mixed r03388 제외), `LegacyRoomInvalidEUCKRPolicy` (50방/80건, mixed r03388 포함). `DecodeLegacyRoom`과 zero-value policy는 계속 거절. 원본 바이트 Evidence 보존. U+FFFD preview only, Hangul 발명 금지.
+
+리뷰 파일(스크래치, 골 종료 시 삭제될 수 있음):
+`/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/pr-g*-*.txt`
+중요: `pr-g4-invalid-euc-kr-review.txt` no P0/P1/new P2. `pr-g3-item-occurrence-review.txt` no P0/P1/P2. simultaneous-val 리뷰는 핸드오프 시 미작성.
+
+### 남은 작업 (우선)
+
+1. simultaneous-val 독립 리뷰 수거. P0/P1 있으면 고치고, 없으면 다음.
+2. #8: 인벤토리·장착·은행 live 이체·상점 catalog 전수. 남은 P3: Inventory+Ready combined occurrence vs C worn fallback, ExecuteDirectionalLine item-mutation reject, transport 2-token Submit.
+3. #3: 실접속 이동 E2E 인수 체크, look extra-token P3 (invalid occurrence peek, closed/blind/nomap receipts).
+4. #11: 63방 CompatibilityPolicy 카탈로그는 이미 로드. 남은 인수는 전 데이터 dry-run, writer fencing/SIGKILL, 실제 backup/restore (`scripts/run-go-backup-restore-local.sh --allow-disposable`).
+5. #5 실기기 IME/모바일. 불가하면 GitHub 체크박스를 로컬 e2e로 대체하지 말고 `blocking: unverifiable`.
+6. #12 testnet-1xp / https://muhan.1xp.vc/ Go cutover + rollback. 클러스터 못 만지면 동일하게 unverifiable. 라이브는 C 이미지.
+7. #1은 마지막.
+
+병렬 규칙: `server/internal/{world,session,transport}` 같은 파일을 동시에 고치지 말 것. 리뷰 워커는 구현 금지.
+
+### 워커 계약
+
+TDD → 실패 테스트 → 구현 → `go test -race -count=1` 2회 → 이슈 코멘트(실제 명령) → 이슈 OPEN 유지 → 독립 grok 리뷰(구현자 아님) → unrebutted P0/P1 없으면 다음 슬라이스.
+`worker_done`은 live preamble 그대로 (`--dispatch-capability` 있으면 포함).
+
+### 검증 힌트
+
+```text
+cd /Users/jjangg96/Documents/1xp/muhan-mud.nosync/server
+go test -race -count=1 ./internal/world ./internal/session ./internal/transport
+bash scripts/run-go-validation.sh integration
+# docker 되면:
+bash scripts/run-go-backup-restore-local.sh --allow-disposable
+bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable
+```
+
+C 오라클: `src/global.c` cmdlist, `command2.c` look/move/get/drop, `command6.c:go`, `command7.c` shop, `room.c` traps/exits, `magic1.c` zap, `magic5.c` summon/recall, `magic7.c` locate.
+
+---
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (P3 simultaneous val[1]+val[2])
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #8 leftover P3 from `pr-g3-item-occurrence-review.txt` (P0/P1/P2 없음; occurrence val[1]과 val[2]는 각각 단독으로 동작).
+  C `command1.c parse()`는 숫자 토큰을 직전 str의 val로 넣고 num은 그대로 둔다.
+  C `get()`는 container `str[1]/val[1]` AND item `str[2]/val[2]`를 함께 쓴다.
+  `가방 2 보석 3 꺼내` / `가방 2 보석 3 주워`는 2번째 가방에서 3번째 보석.
+  `보석 3 가방 2 버려`는 3번째 보석을 2번째 가방에 넣는다.
+  예전 last-token `rest[:3]` (rest[1]이 숫자일 때)는 item occurrence를 잘랐다.
+  동일 command ID replay는 재commit하지 않는다. Actor `RoomID`는 그대로다.
+  기존 `가방 보석 2 꺼내`, `가방 2 보석 꺼내`, `보석 가방 2 버려`는 유지.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/session ./internal/world -run 'ItemMutation|TakeAndDrop|TakeItem|TakeContained|DropContained|ParseItemMutation|ParseCommandClassifiesImplemented|ParseCommandLastTokenItem|ParseCommandDoesNotTreatExtraTokens|ParseCommandLookVerb|ParseCommandDirectionThenLook|ParseCommandItemMutation|TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays|TestParseCommandLookVerbInMiddle'
+PASS (2회)
+gofmt / git diff --check (item simultaneous-val files) PASS
+session/world go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-item-simultaneous-val-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 인벤토리/은행/상점
+catalog가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 인벤토리·컨테이너·장착·은행·상점 catalog 전수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (P3 item occurrence val[1]/val[2])
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #8 leftover P3-1/P3-2 from `pr-g3-item-nested-name-review.txt` (P0/P1 없음; leftover P2 닫힘).
+  C `command1.c parse()`는 숫자 토큰을 직전 str의 val로 넣고 num은 그대로 둔다.
+  C `get()`는 container `str[1]/val[1]`, item `str[2]/val[2]`.
+  C `drop()`는 item `str[1]/val[1]`, container `str[2]/val[2]`.
+  `가방 보석 2 꺼내` / `가방 보석 2 주워`는 가방 안 2번째 보석.
+  `가방 2 보석 꺼내`는 2번째 가방에서 꺼낸다.
+  `보석 가방 2 버려`는 2번째 가방에 넣는다.
+  `TakeContainedItem`/`DropContainedItem`에 container occurrence를 넘긴다.
+  동일 command ID replay는 재commit하지 않는다. Actor `RoomID`는 그대로다.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/session ./internal/world ./internal/transport -run 'ItemMutation|TakeAndDrop|TakeItem|TakeContained|DropContained|ParseItemMutation|ParseCommandClassifiesImplemented|ParseCommandLastTokenItem|ParseCommandDoesNotTreatExtraTokens|ParseCommandLookVerb|ParseCommandDirectionThenLook|ParseCommandItemMutation|WorldConnectorSubmitLastTokenItem|WorldConnectorSubmitDispatchesInventory|TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays|TestParseCommandLookVerbInMiddle'
+PASS (2회)
+gofmt / git diff --check (item occurrence files) PASS
+session/world go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-item-occurrence-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 인벤토리/은행/상점
+catalog가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 인벤토리·컨테이너·장착·은행·상점 catalog 전수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (4+ token nested 주워/버려 + DropItem name)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #8 leftover P2-1/P2-2 from `pr-g3-item-extra-token-review.txt`.
+  C `command2.c` get()/drop() with `cmnd->num>2` is nested `str[1]`/`str[2]`.
+  Go 4+ token last-token copied look `rest[:1]` and floor-mutated
+  (`검 junk extra 주워` took 검). Now last-token 4+ is nested
+  (`검 junk extra 주워` → take junk from 검; `가방 보석 extra 꺼내` succeeds)
+  or fail-closed, never floor `rest[:1]`. `검 2 extra 버려` is nested drop
+  of 검#2 into extra. `DropItem` keeps the name from the destination after
+  transfer (`검 버려` receipt is `검을(를) 버렸습니다.`). 동일 command ID
+  replay는 재commit하지 않는다. Actor `RoomID`는 그대로다.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/session ./internal/world ./internal/transport -run 'ItemMutation|TakeAndDrop|TakeItem|ParseItemMutation|ParseCommandClassifiesImplemented|ParseCommandLastTokenItem|ParseCommandDoesNotTreatExtraTokens|ParseCommandLookVerb|ParseCommandDirectionThenLook|ParseCommandItemMutation|WorldConnectorSubmitLastTokenItem|WorldConnectorSubmitDispatchesInventory|TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays|TestParseCommandLookVerbInMiddle'
+PASS (2회)
+gofmt / git diff --check (item nested/name files) PASS
+session/world go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-item-nested-name-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 인벤토리/은행/상점
+catalog가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 인벤토리·컨테이너·장착·은행·상점 catalog 전수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (invalid-euc-kr 80 issues, mixed r03388)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #11 leftover 63-room corpus 중 invalid-euc-kr 80건(50방, 혼합 `r03/r03388` 포함).
+  `DecodeLegacyRoom`과 zero-value `LegacyRoomAdmissionPolicy`는 계속 거절한다.
+  명시적 `LegacyRoomInvalidEUCKRPolicy`만 원본 바이트를 Evidence에 보존하고
+  U+FFFD 미리보기만 쓴다. 게임 문자열에 Hangul을 발명하지 않는다. 예:
+  `r00/r00100` description `c9 a6` → U+FFFD. 이 정책은 AllowTrailingData /
+  AllowMissingTextTerminator를 켜지 않는다. 혼합방 terminator는 원본 80바이트
+  그대로 남기고 C 필드 경계만 읽는다(NUL 합성 없음; terminator P2 미수정).
+  `TestRoomBodyCorpusExceptionAudit`는 그대로 통과.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/world -run '^(TestRoomBodyCorpusExceptionAudit|TestAdmitLegacyRoomInvalidEUCKRKeepsOriginalBytesAndUsesReplacementPreview|TestAdmitLegacyRoomInvalidEUCKRExampleR00100DescriptionC9A6|TestAdmitLegacyRoomInvalidEUCKRMixedR03388KeepsOriginalBytes|TestAdmitLegacyRoomInvalidEUCKRPolicyRejectsTrailingDataAndTerminatorOnly|TestAdmitLegacyRoomMissingTextTerminatorPolicyRejectsInvalidTextAndTrailingData|TestAdmitLegacyRoomTrailingDataPolicyRejectsInvalidTextAndMissingTerminator)$'
+PASS (2회)
+gofmt / git diff --check (legacy admission invalid-euc-kr files) PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-11-invalid-euc-kr-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+#11은 63방 전수·backup/restore 인수가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 63방 전수 승격과 운영 PG backup/restore 인수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (missing-text-terminator C field boundary)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #11 leftover 63-room corpus 중 missing-text-terminator 13건만. 변환 대상은
+  terminator-only 6방(12건). `InspectLegacyRoom`은 이미 고정폭 필드를 C
+  `char[80]` 경계에서 자른다. `DecodeLegacyRoom`과 zero-value
+  `LegacyRoomAdmissionPolicy`는 계속 거절한다. 명시적
+  `LegacyRoomMissingTextTerminatorPolicy`만 원본 바이트를 보존하고
+  unterminated field를 C 필드 경계까지 읽는다. 예: `r03/r03438` size 23909,
+  use_output@15352. 혼합방 `r03/r03388`(invalid-euc-kr + missing terminator)과
+  invalid-euc-kr / trailing-data는 이 정책에서 거절한다. 원본 NUL 합성·필드
+  절삭 없음. `TestRoomBodyCorpusExceptionAudit`는 그대로 통과.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/world -run '^(TestRoomBodyCorpusExceptionAudit|TestAdmitLegacyRoomMissingTextTerminatorKeepsOriginalBytesAndReadsToFieldBoundary|TestAdmitLegacyRoomMissingTextTerminatorExampleR03438UseOutputAt15352|TestAdmitLegacyRoomMissingTextTerminatorPolicyRejectsInvalidTextAndTrailingData|TestAdmitLegacyRoomTrailingDataPolicyRejectsInvalidTextAndMissingTerminator)$'
+PASS (2회)
+gofmt / git diff --check (legacy admission missing-terminator files) PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-11-missing-terminator-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+#11은 63방 전수 미해결이므로 열린 채로 둔다.
+
+### 다음
+
+1. invalid-euc-kr 80건 파일별 변환 정책(혼합 r03/r03388의 terminator 1건 포함).
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (trailing-data 7 rooms through Consumed)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #11 leftover 63-room corpus 중 trailing-data 7건만. `InspectLegacyRoom`은
+  이미 leftover를 감사한다. `DecodeLegacyRoom`과 zero-value
+  `LegacyRoomAdmissionPolicy`는 계속 거절한다. 명시적
+  `LegacyRoomTrailingDataPolicy`만 원본 바이트를 보존하고 `Consumed` 접두만
+  `DecodeLegacyRoom`으로 읽는다. 예: `r00/r00173` size 2295, leftover after 751.
+  invalid-euc-kr / missing-text-terminator는 이 정책에서 거절한다. 원본 tail
+  절삭·EUC-KR 대체 문자 없음. `TestRoomBodyCorpusExceptionAudit`는 그대로 통과.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/world -run '^(TestRoomBodyCorpusExceptionAudit|TestAdmitLegacyRoomTrailingDataKeepsOriginalBytesAndDecodesThroughConsumed|TestAdmitLegacyRoomTrailingDataExampleR00173LeftoverAfter751|TestAdmitLegacyRoomTrailingDataPolicyRejectsInvalidTextAndMissingTerminator)$'
+PASS (2회)
+gofmt / git diff --check (legacy admission trailing-data files) PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-11-trailing-data-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+#11은 63방 전수 미해결이므로 열린 채로 둔다.
+
+### 다음
+
+1. invalid-euc-kr 80 / missing-text-terminator 13의 파일별 변환 정책.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`동 junk extra 버려` last-token extra)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #8 leftover P2: C `command1.c:parse()` last-token verb. `동 junk extra 버려`는
+  drop이지 move가 아니다. Go `parseItemMutationLine`은 2–3토큰만 받아
+  4토큰 last-token이 `ParseDirectionalToken`으로 빠지며 이동했다.
+  last-token extra는 first remaining arg를 peek해 CommandItemMutation
+  (`동 junk extra 버려` → drop 동). `동 버려 extra`처럼 동사가 가운데면
+  fail-closed unknown. Actor `RoomID`는 그대로다. 동일 command ID replay는
+  재commit하지 않는다. 없는 물건은 fail-closed (commit 없음).
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/session -run 'ItemMutation|ParseItemMutation|ParseCommandClassifiesImplemented|ParseCommandLastTokenItem|ParseCommandDoesNotTreatExtraTokens|ParseCommandLookVerb|ParseCommandDirectionThenLook|ParseCommandItemMutation|TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays|TestParseCommandLookVerbInMiddle'
+PASS (2회)
+gofmt / git diff --check (item extra-token files) PASS
+session go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-item-extra-token-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / directional_command.go / world_connector.go / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 인벤토리/은행/상점
+catalog가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 인벤토리·컨테이너·장착·은행·상점 catalog 전수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`북`/`동` missing dest move() copy)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 P2 leftover: cardinal missing dest reused go() map copy on Submit.
+  C `command2.c:move` load_rom same-pointer is
+  `"그쪽으로 지도가 없습니다. 신에게 연락해 주세요."`, not
+  `command6.c:go` `"그 방향의 지도가 없습니다."`.
+  `ExecuteDirectionalLine`은 `ErrDirectionalDestinationUnresolved`로
+  fail-closed(commit 없음, Track 없음, RoomID 유지)하고, Submit `북`/`동`은
+  그 문구를 찍는다. `가`/`들어가`는 기존 `GoMapMissingResponse`를 유지한다.
+  동일 command ID replay는 재commit하지 않는다. 소켓은 닫지 않는다.
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/session ./internal/transport -run 'TestExecuteDirectionalLine|TestWorldConnectorSubmitDirectional|TestWorldConnectorSubmitGoMissingDestinationFailsClosed|TestWorldConnectorSubmitDispatchesKoreanDirectional|TestWorldConnectorSubmitDispatchesGoAndSuppressesReplay|TestWorldConnectorSubmitGoClosedFlyTimeSexGatesAndReplay|TestExecuteGoLineGatesMissingLockSilentAndCombat|TestWorldConnectorSubmitLoggedInNorthThenGoChangesRooms'
+PASS (2회)
+gofmt / git diff --check (directional missing-dest files) PASS
+session/transport go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-dir-missing-dest-race-1.log`, `-2.log`.
+src/frp.new / command_parser.go / look.go / shop_* / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. 보기/출구/함정 전수와 63방 corpus.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`검 주워`/`검 버려` last-token)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #8 leftover: C `command1.c:parse()` last-token verb. `검 버려`/`검 주워`는
+  drop/get이지 unknown이 아니다. Go `ParseCommand`는 first-token
+  `commandKind`만 보고 있었고, look은 이미 last-token `봐`를 받는다.
+  `ParseCommand`+`parseItemMutationLine`+`ExecuteItemMutationLine`이
+  last-token `주워`/`주`/`가져`/`꺼내`/`버려`/`넣어`를
+  CommandItemMutation으로 분류한다. `검 주워`는 방→인벤, `검 버려`는
+  인벤→방. Actor `RoomID`는 그대로다. 동일 command ID replay는
+  재commit하지 않는다. 없는 물건·미이관 `Items==nil`은 fail-closed
+  (commit 없음).
+
+### 검증
+
+```text
+cd server && go test -race -count=1 ./internal/world ./internal/session ./internal/transport -run 'ItemMutation|TakeAndDrop|TakeItem|ParseItemMutation|ParseCommandClassifiesImplemented|ParseCommandLastTokenItem|ParseCommandDoesNotTreatExtraTokens|ParseCommandLookVerb|ParseCommandDirectionThenLook|WorldConnectorSubmitLastTokenItem|WorldConnectorSubmitDispatchesInventory'
+PASS (2회)
+gofmt / git diff --check (item mutation last-token files) PASS
+world/session/transport go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-item-last-token-race-1.log`, `-2.log`.
+src/frp.new / go.go / look.go / forge / newforge / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 인벤토리/은행/상점
+catalog가 남아 열린 채로 둔다.
+
+### 다음
+
+1. 인벤토리·컨테이너·장착·은행·상점 catalog 전수.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`가`/`북` 닫힘/비행/시간/성별 + check_exits)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command6.c:go` / `command2.c:move` 닫힘·비행·시간·성별 입장
+  게이트를 shipped parse→plan→apply→transport로 이었다. `가 동굴`은
+  XCLOSD `"그 출구는 닫혀 있습니다."`, XFLYSP `"그곳에는 날아서만 갈 수 있습니다."`,
+  XNGHTO `"그 출구는 밤에만 갈 수 있습니다."`, XDAYON `"그 출구로는 낮에만 갈 수 있습니다."`,
+  XFEMAL `"여성만 들어갈 수 있습니다. 여탕인가~~"`, XMALES `"남성만 들어갈 수 있습니다."`.
+  방향 이동은 move 문구(문이 닫혀 있습니다 등)를 쓴다. PFLYSP는 비행 출구를
+  통과한다. 입장 `check_exits`/`RefreshDoors`는 dest XCLOSS due면 XCLOSD를
+  켜고, 같은 출구로 돌아가면 닫힘 게이트가 막는다. 동일 command ID replay는
+  재commit하지 않는다. 게이트 통과 뒤 스냅샷에 dest가 없으면
+  `ErrGoDestinationUnresolved`(commit 없음). 닫힌 출구+없는 dest는 닫힘
+  메시지를 남긴다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'TestPlanGoClosedFlyTimeAndSexGates|TestPlanGoArrivalRefreshDoorsThenClosedGate|TestPlanGoMissingDestinationFailsClosedAfterGates|TestPlanGoUsageMissingSilentCombatAndLock|TestPlanApplyGoMovesThroughNamedExitAndOccurrence|TestPlanGoArrivalSceneIncludesDisplayRomCombatNotice|TestPlanGoRejectsInvalidOccurrenceAndAbsentActor|TestExecuteGoLineClosedFlyTimeSexGatesAndReplay|TestExecuteGoLineGatesMissingLockSilentAndCombat|TestExecuteGoLineCommitsCanonicalMoveAndReplays|TestExecuteDirectionalLineClosedFlyTimeSexGatesAndReplay|TestExecuteDirectionalLineMissingDestinationFailsClosed|TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays|TestWorldConnectorSubmitGoClosedFlyTimeSexGatesAndReplay|TestWorldConnectorSubmitGoMissingDestinationFailsClosed|TestWorldConnectorSubmitDispatchesGoAndSuppressesReplay|TestParseGoLineAdmitsPrefixAndSuffixForms|TestParseCommandClassifiesGo|TestDoorRefreshDeadlineAndOverflow|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook' -count=1  PASS (2회)
+gofmt / git diff --check (go/directional files) PASS
+world/session/transport go vet PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-check-exits-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger / look.go는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. 보기/출구/함정 전수와 63방 corpus. MFOLLO chase fixture의 Damage:-1는
+   display_rom 전투 안내와 충돌하므로 후속 슬라이스에서 정리한다.
+2. 운영 PG 영속·IME/모바일 실기기·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` first_mon/self is_enm_crt + first_enm)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_mon/`나` 성공 경로(219-230)는
+  HP 띠 뒤에 `is_enm_crt`이면 `"%s는 당신에게 매우 화가 난것 같습니다.\n"`,
+  `first_enm`이면 적이 viewer 이름일 때 `"%s는 당신과 싸우고 있습니다.\n"`,
+  아니면 `"%s는 %S%j 싸우고 있습니다.\n"` (`%S` raw 이름, `%j` 2=과/와,
+  MMALES `그`/`그녀`)을 찍는다. first_ply 분기에는 이 줄이 없다.
+  Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 `봐 나`/`나 봐`와
+  `봐 <monster>` inspect에 같은 줄을 HP 뒤, consider 앞에 붙인다.
+  Actor `RoomID`는 그대로다. 동일 command ID replay는 재commit하지 않는다.
+  NPC `Enemies == nil`과 unmigrated first_enm 이름은 fail-closed(commit 없음).
+  빈 `[]NPCEnemy{}`는 평화(줄 없음).
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-enm-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` inspect broadcast PINVIS/%M)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 P2 leftover: inspect `broadcast_rom`의 `%M`은 스냅샷 한 줄이 아니라
+  C `io.c:print` + `misc.c:crt_str`처럼 occupant마다 렌더한다. INV는
+  viewer `PDINVI`에서 오고, PINVIS이면서 PDINVI가 없으면 `누군가`,
+  PDINVI가 PINVIS를 보면 `(*)`를 붙인 뒤 `님`이다. `PlanLook`의
+  `BroadcastText`는 INV|DMF 스냅샷(stale 검사용)이고
+  `LookInspectEvent.TextFor`가 실제 fan-out 문자열이다.
+  `ExecuteLookLine`/`publishLookInspect`가 최초 commit에서만 이 경로를
+  탄다. 동일 command ID replay는 재fan-out하지 않는다. Actor `RoomID`는
+  그대로다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-broadcast-pinvis-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` inspect broadcast_rom)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` inspect `broadcast_rom`을 연다.
+  self `나`(173-174)는 `"\n%M%j 거울을 들고 자신을 바라 봅니다."`,
+  first_mon 이름 prefix self도 같은 줄, 그 외 first_mon(178-179)과
+  first_ply(242)는 `"\n%M%j %M%j 봅니다."`. `%M` 플레이어 이름은 `님`,
+  `%j` 1=이/가, 3=을/를. Actor는 inspect 본문을 받고 room event에서는
+  제외된다. Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`/`Submit`이 최초
+  commit에서만 fan-out한다. 동일 command ID replay는 재fan-out하지 않는다.
+  미이관 room occupant는 fail-closed(commit 없음). Actor `RoomID`는
+  그대로다. object/exit/bare look은 broadcast하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-broadcast-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐 <player>` first_ply PKNOWA + 3/10 HP)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_ply 성공 경로(257-267)는
+  viewer `PKNOWA` && `alignment>=-100 && alignment<101`이면
+  `"%s에게서 푸른 광채가 뻗어 나오고 있습니다.\n"`을 찍는다. 바깥 문은
+  `[-100,100]`이고 안쪽 `alignment<-100` 붉은은 이 경로에서 도달하지
+  않는다. 대명사는 MMALES `그`/`그녀`. `hpcur < hpmax*3/10`이면
+  `"%s는 가벼운 상처를 입었습니다.\n"` (PMALES `그`/`그녀`). first_mon
+  9/10–2/10 띠는 찍지 않는다. Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이
+  `봐 <player>` / `<player> 봐` inspect에 같은 줄을 standing 뒤,
+  equip_list 앞에 붙인다. Actor `RoomID`는 그대로다. 동일 command ID
+  replay는 재commit하지 않는다. `hpmax<=0`은 fail-closed(commit 없음).
+  broadcast_rom은 이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-first-ply-hp-pknowa-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐 나` PLAYER PMARRI marriage)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_mon/`나` 성공 경로(181-185)는
+  self가 PLAYER이고 PMARRI이면 `"%s는 %s님과 결혼한 기혼자입니다.\n"`을
+  거울 뒤, standing 앞에 찍는다. 대명사는 PMALES `그`/`그녀`,
+  배우자는 `key[2][1]`. first_ply 같은 줄(243-246)은 이미 실렸다.
+  Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 `봐 나`/`나 봐`
+  inspect에 같은 줄을 거울 뒤, standing 앞에 붙인다. Actor `RoomID`는
+  그대로다. 동일 command ID replay는 재commit하지 않는다. PMARRI인데
+  canonical `m`+배우자 key가 없으면 fail-closed(commit 없음).
+  first_ply 3/10 HP·PKNOWA·broadcast_rom은 이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-self-marriage-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() first_ply 3/10 HP/PKNOWA, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` first_ply standing description)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_ply 성공 경로(247-255)는
+  `type==PLAYER`라 else 분기다. `"%s는 %s서 있습니다.\n"`을
+  PMARRI 뒤, equip_list 앞에 찍는다. 대명사는 PMALES `그`/`그녀`,
+  본문은 `crt_ptr->description`(묘사 명령이 붙인 trailing space 포함).
+  Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 같은 줄을 inspect와
+  marriage(있으면) 뒤, equip_list 앞에 붙인다. Actor `RoomID`는
+  그대로다. 동일 command ID replay는 재commit하지 않는다.
+  빈/비정규 description은 fail-closed(commit 없음). C empty print
+  `"그는 서 있습니다."`나 몬스터 fallback `"특별한 것은 보이지 않습니다."`는
+  만들지 않는다. first_ply 3/10 HP·PKNOWA·broadcast_rom은
+  이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-first-ply-desc-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() first_ply 3/10 HP/PKNOWA, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` first_mon/`나` PKNOWA 광채)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_mon/`나` 성공 경로(196-203)는
+  viewer `PKNOWA` && `crt_ptr->alignment!=0`이면
+  `"%s에게서 붉은/푸른 광채가 뻗어 나오고 있습니다.\n"`을 찍는다.
+  `alignment<0` 붉은, else 푸른. 대명사는 MMALES `그`/`그녀`.
+  first_ply 분기(257-264)는 이 슬라이스에서 열지 않는다.
+  Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 `봐 나`/`나 봐`와
+  `봐 <monster>` inspect에 같은 줄을 description 뒤, HP 띠 앞에 붙인다.
+  Actor `RoomID`는 그대로다. 동일 command ID replay는 재commit하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+world/session/transport go vet PASS
+plain world/session/transport compile PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-pknowa-race-1.log`, `-2.log`.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() first_ply description/`3/10` HP/PKNOWA, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` first_ply marriage, no monster HP bands)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_ply 성공 경로(240-268)는
+  first_mon의 hpcur 9/10·8/10·6/10·4/10·2/10 띠를 찍지 않는다.
+  `봐 <player>`는 그 몬스터 HP 띠 문자열을 내지 않는다(회귀).
+  C first_ply는 PMARRI이면 `"%s는 %s님과 결혼한 기혼자입니다.\n"`을
+  본문 앞에 찍고 (`key[2][1]` 배우자, PMALES `그`/`그녀`) 뒤는
+  equip_list다. Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 같은
+  줄을 inspect 응답과 equip_list 사이에 붙인다. Actor `RoomID`는
+  그대로다. 동일 command ID replay는 재commit하지 않는다.
+  PMARRI인데 canonical `m`+배우자 key가 없으면 fail-closed(commit 없음).
+  first_ply 3/10 HP·description·PKNOWA·consider·broadcast_rom은
+  이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race -overlay /tmp/look-first-ply-overlay.json ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+session/transport/world go vet overlay PASS
+plain world/session/transport compile SKIP: concurrent value_* / shop_marketplace_test.go (not owned)
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-first-ply-hp-race-1.log`, `-2.log`.
+world/session/transport는 동시 레인의 `shop_marketplace_test.go`·`value_test.go`·`value_command_test.go`·`world_connector_value_test.go` 컴파일 오류로 overlay로 look 스위트만 돌렸다.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() first_ply description/`3/10` HP, first_mon/self PKNOWA, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` first_mon/`나` HP 띠)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_mon/`나` 성공 경로는
+  consider/equip 앞에서 `hpcur` vs `hpmax` 띠를 붙인다 (204-218).
+  배타 구간 9/10·8/10 가벼운, 8/10·6/10 여러군데, 6/10·4/10 많은,
+  4/10·2/10 심각한, `<2/10` 죽기 직전. 대명사는 MMALES `그`/`그녀`다.
+  Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 `봐 나`/`나 봐`와
+  `봐 <monster>` inspect에 같은 줄을 description 뒤, consider 앞에 붙인다.
+  Actor `RoomID`는 그대로다. 동일 command ID replay는 재commit하지 않는다.
+  hpmax<=0은 fail-closed(commit 없음). first_ply 3/10 PMALES 띠와
+  marriage/description/PKNOWA/first_enm/board/special/broadcast_rom은
+  이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race -overlay /tmp/world-look-overlay.json ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+session/transport go vet PASS
+world go vet overlay PASS; plain world go vet SKIP: concurrent shop_marketplace_test.go Flags 슬라이스 compile break (shop_* not owned)
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-hp-bands-race-1.log`, `-2.log`.
+world 패키지는 동시 shop 레인 `shop_marketplace_test.go` Flags 슬라이스 컴파일
+오류로 기본 compile이 막혀 shop_marketplace_test.go overlay로 look 스위트만
+돌렸다.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() marriage/description/PKNOWA, first_ply 3/10 HP, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` consider + equip_list)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()` first_mon/`나` 성공 경로는
+  `consider(ply_ptr,crt_ptr)` 뒤 `equip_list(fd,crt_ptr)`이고, first_ply는
+  `equip_list`만 한다. Go `PlanLook`/`ApplyLook`/`ExecuteLookLine`이 같은
+  순서로 inspect 응답 뒤에 붙인다. consider는 `level/4` 차이 -4..4와
+  MMALES `그`/`그녀` 문자열이다. equip_list는 command3.c:637 ready[] 슬롯
+  라벨 순서다. Actor `RoomID`는 그대로다. 동일 command ID replay는
+  재commit하지 않는다. nil Items·미이관 ready 이름은 fail-closed(commit 없음).
+  marriage/description/PKNOWA/HP 띠/first_enm/board/special/broadcast_rom은
+  이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race -overlay /tmp/world-look-overlay.json ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+session/transport go vet PASS
+world go vet SKIP: concurrent shop_marketplace_test.go compile break (shop_* not owned)
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-consider-equip-race-1.log`, `-2.log`.
+world 패키지는 동시 shop 레인 `shop_marketplace_test.go` Flags 슬라이스 컴파일
+오류로 기본 compile이 막혀 shop_marketplace_test.go overlay로 look 스위트만
+돌렸다.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() marriage/description/PKNOWA/HP 띠, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐 나` / first_ply)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `command2.c:look()`은 find_obj miss 뒤 `str[1]=="나"`이면
+  `crt_ptr=ply_ptr`이고, 아니면 `find_crt(first_mon)`이다. miss면
+  `str[1][0]=up(...)` 후 `find_crt(first_ply)`. Go `PlanLook`이
+  `봐 나`/`나 봐`를 self-look(`LookSelfMirrorResponse`)으로,
+  `봐 <player>`/`<player> 봐`를 first_ply inspect(`당신은 %M%j 봅니다`)로
+  받는다. Actor `RoomID`는 그대로다. 동일 command ID replay는 재commit하지
+  않는다. 이름 미이관·없는 플레이어는 fail-closed(commit 없음).
+  marriage/description/PKNOWA/HP 띠/first_enm/consider/equip_list/board/special
+  /broadcast_rom은 이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race -overlay /tmp/world-look-overlay.json ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt / git diff --check (look files) PASS
+session/transport go vet PASS
+world go vet SKIP: concurrent shop_transaction_test.go compile break (shop_* not owned)
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-self-ply-race-1.log`, `-2.log`.
+world 패키지는 동시 shop 레인 `shop_transaction_test.go` BuyShopItem 시그니처
+불일치로 기본 compile이 막혀 shop_*_test.go overlay로 look 스위트만 돌렸다.
+shop_* / src/frp.new / web / ledger는 수정하지 않았다.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() marriage/description/PKNOWA/HP 띠, consider/equip_list, broadcast_rom, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`display_rom` 전투 안내)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: C `room.c:display_rom`은 floor `list_obj` 뒤 `first_mon`을 돌며
+  `first_enm`이 있으면 `find_crt(first_ply, enemy, 1)`로 대상을 고른다.
+  대상이 자신이면 `%M이/가 당신과 싸우고 있습니다.`, 다른 플레이어면
+  `%M이/가 %M님과/와 싸우고 있습니다.`다. Go `CurrentScene`/`SceneAt`이
+  같은 안내를 붙이므로 bare `봐`와 출구 peek, `가` 도착 장면이 같은 경로를
+  탄다. Actor `RoomID`는 look에서 불변. 동일 command ID replay는 재commit하지
+  않는다. nil `Enemies`, Damage<0, 레거시 `Resource.Monsters`는 fail-closed.
+  어두운 방은 C처럼 전투 루프에 들어가지 않는다. `나`/first_ply,
+  board/special_obj, consider/equip_list, HP 띠, broadcast_rom은 이 슬라이스에서
+  열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|CombatNotice|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine|PlanGoArrival' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-display-rom-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() `나`/first_ply, consider/equip_list, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐` find_obj 인벤토리·장비·방 순서)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover P2: C `command2.c:look()`은 find_ext miss 뒤 `find_obj(ply->first_obj)`
+  그다음 `ready[]`, 그다음 `find_obj(rom->first_obj)`다. 각 리스트는 자기
+  `val[1]` occurrence만 센다. Go `PlanLook`이 같은 순서로 canonical
+  Inventory → Ready[0..19] → 방 Inventory를 본다. 손에 든/착용한 `검`이
+  바닥에 있어도 `봐 검`은 바닥이 아니라 소지·장비 쪽이다. Actor `RoomID`는
+  그대로다. 동일 command ID replay는 재commit하지 않는다. 없는 대상·미이관
+  레거시 인벤토리/바닥/몬스터·special은 fail-closed. ready[]는 C처럼 OINVIS를
+  건너뛰지 않는다. `나`/first_ply, board/special_obj, PKNOWA, 내용물,
+  consider, equip_list, HP 띠, broadcast_rom은 이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-inv-order-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() `나`/first_ply, display_rom 전투 안내, consider/equip_list, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐`/`보다`/`조사` 방 객체·생물)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover P1: C `command2.c:look()`은 find_ext 다음에 find_obj(방 first_obj)
+  와 find_crt(first_mon)로 방 객체·생물을 조사한다. Go `PlanLook`/`ApplyLook`이
+  `봐 검`/`보다 늑대`/`조사 검`과 last-token `늑대 봐`/`검 조사`를 같은
+  parse→plan→apply로 받는다. 출구 peek는 그대로 우선한다. Actor `RoomID`는
+  그대로다. 동일 command ID replay는 재commit하지 않는다. 없는 대상·미이관
+  바닥/몬스터·special 객체·인벤토리만 있는 물건은 fail-closed(commit 없음).
+  인벤토리/장비/`나`/first_ply, board/special_obj, PKNOWA, 내용물, consider,
+  equip_list, HP 띠, broadcast_rom은 이 슬라이스에서 열지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-obj-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() 인벤토리·장비·플레이어 조사, display_rom 전투 안내, consider/equip_list, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`동 봐` last-token look peek)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover P1: C `parse()`는 마지막 토큰을 동사로 두므로 `동 봐`/`북 보다`는
+  `look()` 출구 peek이고 이동이 아니다. Go는 선두 방향을 `CommandDirectional`로
+  분류해 이동하던 구멍을 닫았다. `ParseLookLine`이 prefix `봐 동`과 last-token
+  `동 봐`를 모두 받고, `ParseCommand`가 directional보다 먼저 `IsLookLine`을
+  본다. Actor `RoomID`는 그대로다. 동일 command ID replay는 재commit하지 않는다.
+  `ExecuteDirectionalLine`은 look suffix를 거절한다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens|ParseCommandDirectionThenLook|ExecuteDirectionalLineRejects|ParseLookLine' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-last-token-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. look() 객체/생물 조사, display_rom 전투 안내, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`가` MPERMT PermanentOrigin)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover P1: `PlanNPCGoChase`/`ApplyNPCFollowerChase`가 C `F_CLR(MPERMT)`만
+  하고 Go `PermanentOrigin`을 남겨, 다음 `가`/`북` MFOLLO chase가
+  "permanence changed"로 이동 전체를 fail-close하던 구멍을 닫았다.
+  Apply는 MPERMT와 origin occupancy를 같이 지운다. command2 `die_perm_crt`
+  timer write는 그대로다. 같은 chase proposal replay는 재commit하지 않는다.
+  미이관 nil Enemies/ActiveNPCIDs는 fail-closed.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCGoChase|NPCFollowerChase|Go|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-mperm-origin-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. display_rom 전투 안내·조사 대상 보기 전수, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`봐`/`보다`/`조사` 출구 대상 보기)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: command2.c `look()`의 출구 대상 분기를 shipped parse→plan→apply로
+  이었다. `봐 동`/`보다 동`/`조사 동굴 2`는 find_ext(SelectExit) 후 닫히지 않은
+  출구의 목적지를 `SceneAt`으로 보여 주고 액터는 이동하지 않는다. C는
+  XCLOSD면 `그 출구는 닫혀 있습니다.`, 같은 방이면 `지도가 없습니다.`,
+  RONMAR/RONFML이면 `그 방은 볼 수가 없습니다.`, 대상 look에서 PBLIND면
+  `당신은 눈이 멀어 있습니다!`다. 비밀 출구(XSECRT)는 이름으로 볼 수 있고
+  XINVIS는 PDINVI가 필요하다.
+- 목적지가 스냅샷에 없으면 fail-closed(commit 없음). 객체/생물 `look()`은
+  이 슬라이스에서 구현하지 않으며 `봐 늑대`/`조사 검`은 미구현으로 닫힌다.
+  `보아` 출구는 action.c 문구를 유지한다. `check_exits`는 입장 시
+  `RefreshDoors` 경로이며 look()은 문을 재닫지 않는다. 동일 command ID
+  replay는 commit·렌더를 재실행하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Look|CurrentScene|ParseCommandClassifiesImplemented|ParseCommandDoesNotTreatExtraTokens' -count=1  PASS (2회)
+gofmt/git diff --check PASS
+go vet ./internal/session ./internal/transport PASS
+```
+
+`go vet ./internal/world`의 `npc_chase_test.go` unaddressable slice는 이후
+MPERMT origin 슬라이스에서 고쳤다.
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-target-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. command2.c look 객체/생물 조사, display_rom 전투 안내, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`가` command6 MFOLLO chase)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- #3 leftover: `가`/`들어가`가 command2.c:move chase(`PlanNPCFollowerChase`,
+  threshold 15, non-MFOLLO 허용, `die_perm_crt`)를 타던 구멍을 닫고
+  `command6.c:go` first_mon chase만 탄다. `PlanNPCGoChase`는 MFOLLO &&
+  !MDMFOL, 성공 경계 `10 - dex + NPC dex`, MPERMT는 F_CLR만 하고 origin
+  timer를 쓰지 않는다. 미이관 nil Enemies/ActiveNPCIDs는 fail-closed.
+  액터 `따라옵니다`는 receipt 응답, 떠난 방 `따라갑니다`는 committed
+  snapshot fan-out이다. 동일 command ID replay는 commit·RNG·fan-out을
+  재실행하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NPCGoChase|NPCFollowerChase|Go|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-3-look-exits-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 보기/출구/함정 전수와
+63방 corpus가 있어 열린 채로 둔다.
+
+### 다음
+
+1. display_rom 전투 안내·조사 대상 보기 전수, 닫힘/비행/시간/성별 입장.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` select_newarm case 6)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `무기만들기`의 `select_newarm` case 6를 기존 case 5 경로
+  위에 이었다. 성공한 이름 다음 Submit은 `ParseCommand`가 아니라
+  `ExecuteNewForgeSelectConfirmLine`이다. C는 `strncmp(str,"예",2)`이면
+  `gold < sum`일 때 외상 거절·객체 free, 아니면 `add_obj_crt` 후
+  건네줌 인쇄·`broadcast_rom`·`gold -= sum`이다. 그 외 입력은 취소다.
+  제련 `select_arm` case 6와 인쇄 문구는 같지만 forge2 identity
+  (에메랄드/티타늄/일루션 + 담금질 100만 단위)가 다르다. 금화 차감과
+  무기 추가는 한 receipt에서 원자적이다.
+- 동일 command ID replay는 금화를 재차감하지 않고 무기를 중복 지급하지
+  않는다. 미이관 catalog 900-904·제련 forge2 sum·잘못된 quench/name
+  identity·PREADI 부재·미이관 gold/inventory graph·제어문자 입력은
+  fail-closed. 대기 중 `제련`/`도`는 취소이지 제련 시작·이동이 아니다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-case6-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. 상점/은행/거래 catalog 잔여 인수(#8).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` select_newarm case 5)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `무기만들기`의 `select_newarm` case 5를 기존 case 4 경로
+  위에 이었다. 성공한 담금질 다음 Submit은 `ParseCommand`가 아니라
+  `ExecuteNewForgeSelectNameLine`이다. C는 괄호를 거부하고 `strlen`이
+  3-20바이트일 때만 `strncpy(obj_ptr->name, str, 20)` 한 뒤 확인
+  프롬프트(RETURN param 6)를 낸다. 그 외는 짧은/긴/괄호 재프롬프트로
+  param 5에 남는다. 제련 `select_arm` case 5와 인쇄 문구는 같지만
+  forge2 identity(에메랄드/티타늄/일루션 + 담금질 100만 단위)가 다르다.
+  금화는 차감하지 않는다.
+- 동일 command ID replay는 commit을 중복하지 않는다. 미이관 catalog
+  900-904·제련 forge2 sum·잘못된 quench identity·PREADI 부재·제어문자
+  입력은 fail-closed. 대기 중 `제련`/`도`는 이름 후보이지 제련 시작·
+  이동이 아니다. case 6(확인/금화)은 미구현이며 성공한 case 5 다음 줄은
+  미구현 명령으로 닫힌다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-case5-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기` select_newarm case 6(확인 `예` 접두·금화 차감·add_obj_crt).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` select_newarm case 4)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `무기만들기`의 `select_newarm` case 4를 기존 case 3 경로
+  위에 이었다. 성공한 재료 다음 Submit은 `ParseCommand`가 아니라
+  `ExecuteNewForgeSelectQuenchLine`이다. C는 `low(str[0])` 1-5이면
+  shotsmax/shotscur를 100/200/300/400/500으로 두고 forge2에
+  100만/200만/300만/400만/500만을 더한 뒤 이름 프롬프트(RETURN param 5)를
+  낸다. 인쇄 메뉴는 100/300/500/700/900번이지만 switch는 100/200/300/400/500
+  이다. 그 외는 `하나를 선택하시오: `로 param 4에 남는다. 제련
+  `select_arm` case 4(오만냥/이십만냥/오십만냥/백만냥/이백만냥)와 다른
+  비용이다. 금화는 차감하지 않는다.
+- 동일 command ID replay는 commit을 중복하지 않는다. 미이관 catalog
+  900-904·제련 forge2 sum·PREADI 부재·제어문자 입력은 fail-closed. 대기 중
+  `제련`/`도`는 재프롬프트이지 제련 시작·이동이 아니다. case 5-6(이름·확인/
+  금화)은 미구현이며 성공한 case 4 다음 줄은 미구현 명령으로 닫힌다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-case4-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기` select_newarm case 5(무기 이름 3-20바이트, 괄호 거부).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` select_newarm case 3)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `무기만들기`의 `select_newarm` case 3를 기존 case 2 경로
+  위에 이었다. 성공한 무기 종류 다음 Submit은 `ParseCommand`가 아니라
+  `ExecuteNewForgeSelectMaterialLine`이다. C는 `low(str[0])` 1-3이면
+  OENCHA와 ndice/sdice/pdice(4d5+5/5d5+5/6d5+5)를 템플릿에 쓰고 forge2
+  sum을 100만/200만/300만으로 둔 뒤 담금질 프롬프트(RETURN param 4)를
+  낸다. 그 외는 `하나를 선택하시오: `로 param 3에 남는다. 제련
+  `select_arm` case 3(강철/귀금속/금강석, 직업 거부)과 다른 재료·비용·
+  주사위다. 성직자/기사/술사도 일루션을 고를 수 있다.
+- 동일 command ID replay는 commit을 중복하지 않는다. 미이관 catalog
+  900-904·PREADI 부재·제어문자 입력은 fail-closed. 대기 중 `제련`/`도`는
+  재프롬프트이지 제련 시작·이동이 아니다. case 4-6(담금질·이름·확인/
+  금화)은 미구현이며 성공한 case 3 다음 줄은 미구현 명령으로 닫힌다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-case3-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기` select_newarm case 4(담금질 1-5, forge2 sum 가산).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` select_newarm case 2 Submit)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- independent review P2: `newForgeSelectArmPending`만 세우고 다음 줄을
+  소비하지 않던 구멍을 막았다. 성공한 `무기만들기` 다음 Submit은
+  `ParseCommand`가 아니라 `select_newarm` case 2다. C는 `str[0]` 1-5면
+  `load_obj` 900-904 후 에메랄드/티타늄/일루션 재료 프롬프트(RETURN
+  param 3), 그 외는 `하나를 선택하시오: `로 param 2에 남는다. 제련
+  `ExecuteForgeSelectArmLine` Submit intercept와 같은 대기 상태다.
+- 동일 command ID replay는 commit을 중복하지 않는다. 미이관 catalog
+  900-904·PREADI 부재·제어문자 입력은 fail-closed. `제련`/`도`는 이
+  대기 상태에서 재프롬프트이지 제련 시작·이동이 아니다. case 3-6
+  (재료·담금질·이름·확인/금화)은 미구현.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-submit-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기` select_newarm case 3(에메랄드/티타늄/일루션, forge2 sum).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`무기만들기` newforge first prompt/gate)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `무기만들기`(`command7.c:newforge`)를 `제련`과 별도 경로로
+  이었다. parse는 정확 alias만 인정한다. C 첫 게이트는 RFORGE 부재 시
+  `여기는 대장간이 아닙니다.`, RFORGE이지만 방 번호가 611이 아니면
+  `여기서는 무기를 만들 수가 없습니다.`다. 둘 다 통과하면 select_newarm
+  case 1 무기 종류 프롬프트, PREADI, RETURN param 2다. C F_SET(PNOBRD)는
+  case-1 print만 감싸고 DOPROMPT 전에 F_CLR하므로 receipt에 PNOBRD를
+  남기지 않는다. 동일 command ID replay는 commit·prompt를 중복하지 않는다.
+- 미이관/부재 room flags는 fail-closed. select_newarm case 2-6(재료·담금질·
+  이름·확인/금화)은 미구현.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'NewForge|Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-newforge-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기` select_newarm case 2(무기 종류 1-5 / load_obj 900-904).
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`제련` select_arm case 6)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `제련`의 `select_arm` case 6를 기존 case 5 경로 위에 이었다.
+  확인 줄이 `예` 접두면 금화를 원자 차감하고 이름 붙인 무기를
+  `add_obj_crt`처럼 canonical inventory root에 넣는다. 금화 부족은
+  외상 거절 메시지로 PREADI만 지우고 무기를 넣지 않는다. `예`가 아니면
+  취소다. 동일 command ID replay는 금화·무기를 중복하지 않는다.
+- 미이관 gold(`Gold<0`)·object graph(`Items==nil` / legacy inventory)·
+  비재료 forge2 sum·잘못된 이름/quench identity·allocator 부재는
+  fail-closed. `무기만들기`/newforge는 미구현.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-forge-case6-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `무기만들기`/newforge.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`제련` select_arm case 5)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-85 `제련`의 `select_arm` case 5를 기존 case 4 경로 위에 이었다.
+  담금질 다음 줄은 무기 이름이다. 괄호는 거부하고, UTF-8 `strlen` 3-20
+  바이트만 템플릿 `name`에 복사한다. 잘못된 이름은 각각
+  괄호/너무 김/너무 짧음 메시지로 param 5에 남는다.
+- 성공 시 확인 프롬프트(`모든것에 만족하십니까? (예/아니오)`)와
+  RETURN param 6. 금화는 C case 6 전까지 차감하지 않고 인벤토리에
+  무기를 넣지 않는다. 동일 command ID replay는 commit을 중복하지 않는다.
+- 미이관 gold(`Gold<0`)·object graph(`Items==nil` / legacy inventory)·
+  비재료 forge2 sum·잘못된 quench identity는 fail-closed.
+  case 6 확인/금화 차감·`무기만들기`는 미구현.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Forge|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-8-forge-case5-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #8은 남은 경제 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. select_arm case 6 확인(`예`/`아니오`)·금화 차감·`add_obj_crt`.
+2. `무기만들기`/newforge.
+3. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`목매달기` param 2 wait-state)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-153 `목매달기` param 1 prompt 뒤에 C `RETURN(fd, suicide, 2)`
+  wait-state를 설치했다. 다음 Submit 줄은 `command_parser`가 아니라
+  suicide case 2 암호 검사다. `Authenticate`(없으면 PasswordStore)로
+  비교하며 암호는 receipt/`!` history에 넣지 않는다.
+- 암호 불일치는 `"암호가 틀립니다.\n삭제되지 않았습니다."`, `F_CLR(PREADI)`,
+  RETURN(command, 1). 플레이어 파일을 삭제하지 않는다. 동일 command ID
+  replay는 commit·prompt를 중복하지 않는다.
+- param 2 일치 / param 3 `찐짜로` 확인, broadcast_all, disconnect,
+  player/alias/bank `mv`는 fail-closed.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Suicide|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+로그: `/var/folders/7s/1pkt8kzx41zg5k2ffpkz_zpr0000gn/T/grok-goal-9d493c8e45f1/implementer/issue-suicide-wait-race-1.log`, `-2.log`.
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #6은 남은 전투/성장 catalog가
+있어 열린 채로 둔다.
+
+### 다음
+
+1. `목매달기` param 3 `찐짜로` 확인 및 archive facade.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`소환`)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- spllist `소환`(`magic5.c:summon` / SSUMMO)를 기존 CommandCast 경로에
+  parse → plan → apply → execute로 연결했다. `ParseCastLine`은 천리안과
+  같이 `주문 소환 <name>` 3토큰만 추가로 허용한다. 원작 게이트는 직업별
+  MP 50/100, 습득 비트, `mrand(1,100)<51`(실패 시 항상 -50), find_who,
+  CAST MP 차감 후 RNOTEL/RONEPL/RFAMIL/RONFML/레벨/PNOSUM, 출발방
+  RNOLEA다. 성공 시 대상 RoomID·occupancy·BeenHere와 LT_SPELL을 원자
+  receipt로 고정하고, 미이관 점유/NPC active/perm spawn은 fail-closed.
+  동일 command ID replay는 commit·RNG·fan-out을 중복하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Summon|ParseCastLine|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #9는 남은 주문 catalog가 있어
+열린 채로 둔다.
+
+### 다음
+
+1. 소환 `broadcast_rom2`가 적용 후 같은 방에 들어온 대상을 제외하도록
+   transport ExcludeTargetID 연결. `add_ply_rom` 도착 방송·check_exits.
+2. `zap` 공격 주문·전주문 효과와 나머지 지팡이 catalog.
+3. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`zap`)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-60 `zap`(`magic1.c:zap` / `zap_obj`)를 parse → plan → apply → transport로
+  연결했다. C parse()처럼 마지막 토큰이 동사다. prefix `zap 회복봉`은
+  CommandUnknown. 원작 게이트는 사용법·실명·exact 인벤/장비 조회·WAND·잔여
+  충전·OGOODO/OEVILO 증발·OCLSEL(CARETAKER 미만)·RNOMAG/magicpower·LT_SPELL
+  대기·대상 조회다. 회복(vigor) 지팡이만 자기/대상 HP를 적용하고, 공격 주문·
+  OSPECI/ODDICE·미이관 NPC 도메인은 fail-closed. 동일 command ID replay는
+  commit·RNG·fan-out을 중복하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'Zap|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #9는 남은 주문 catalog가 있어
+열린 채로 둔다.
+
+### 다음
+
+1. `zap` 공격 주문·전주문 효과와 나머지 지팡이 catalog.
+2. 문주 사망 전쟁 방송(`creature.c:die` broadcast_all 2줄) transport 연결.
+3. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-14 (`*따르기` / dm_follow)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-142 `*따르기`/`*cfollow`(`dm6.c:dm_follow`)를 parse → plan → apply → transport로
+  연결했다. C parse()처럼 마지막 토큰이 동사다. CARETAKER 미만은
+  `"*따르기": 이런 명령어는 없네요.`, CARETAKER/SUB_DM은 PROMPT 빈 응답,
+  DM만 같은 방 exact 이름(+occurrence) 몬스터에 MDMFOL과 first_fol head를
+  토글한다. MPERMT는 `고정된 괴물입니다.`, 미이관 NPC는 fail-closed.
+  prefix 조회와 선행 동사(`*따르기 늑대`)는 거부한다. C처럼 actor-local만
+  출력하고 broadcast는 없다. 동일 command ID replay는 commit을 중복하지 않는다.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'DMFollow|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다. #3은 출구·추종·함정 전수
+parity가 남아 열려 있다.
+
+### 다음
+
+1. 문주 사망 전쟁 방송(`creature.c:die` broadcast_all 2줄) transport 연결.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-13 (`기억` / moon_set)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-153 `기억`(`command8.c:moon_set`)를 parse → plan → apply → transport로
+  연결했다. C parse()처럼 마지막 토큰이 동사다. 광장(1001) 거부, value!=1001
+  이미 기억, 인벤토리 exact 이름(따옴표/`초인의 돌` 공백 결합). 성공 시
+  description·key[1]·value=방번호 원자 기록, broadcast_rom 2줄을 최초 commit만
+  같은 방 관찰자에게 전달한다. prefix/key/OINVIS·장비/중첩 조회는 fail-closed.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'MoonSet|ParseCommandClassifiesImplemented|FamilyWar|FamilyNews|TestDM|DMFamily' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다.
+
+### 다음
+
+1. 문주 사망 전쟁 방송(`creature.c:die` broadcast_all 2줄) transport 연결.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 즉시 재개용 핸드오프 — 2026-09-13 (Docker PG/browser E2E + ARM64)
+
+사용자 승인으로 Docker와 원격 배포를 열었다. 로컬 승격 게이트는 실행했고, 라이브 Helm은 C 런타임을 유지했다.
+
+### 검증
+
+```text
+bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable
+  → 3 passed (18.9s)  Chromium + ARM64 postgres:17-alpine + Go -race
+    signup/world/relogin, duplicate session reject, mobile viewport xterm focus
+scripts/run-go-validation.sh integration
+  → PASS (go test -race ./... skip TestRoomBodyCorpus, go vet ./..., git diff --check)
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+  → PASS; cmd/muhan ELF aarch64 static
+https://muhan.1xp.vc/  HTTP 200
+```
+
+Helm `muhan-mud-testnet` rev 9 (chart 0.1.8)는 `mud-entrypoint`(C) + `m3.mode=off`.
+`m3.mode`는 `off|probe`만 허용(C shadow receipt). tesnet `deploy.sh`는 `main`을 clone해 C 이미지를 만든다.
+로컬 tesnet 차트 0.1.5로 upgrade하면 클러스터 0.1.8을 다운그레이드한다. Go `cmd/muhan` 이미지/차트 경로가 없어 **라이브 Helm upgrade는 하지 않았다** (C PVC 단일 writer 보존).
+
+### 다음
+
+1. Go 런타임 Dockerfile + chart command를 `cmd/muhan`으로 바꾼 뒤에만 testnet 이미지 배포.
+2. 라이브 웹은 아직 로그인 카드 HTML. ClassicTerminal은 이미지 재빌드 필요.
+3. `기억`/문주 사망 방송 등 G3 잔여 TDD.
+
+## 이전 핸드오프 — 2026-09-13 (`*떨어져라` / `*침공`)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다.
+
+### 이번 슬라이스
+
+- cmdlist-148 남은 DM alias `*떨어져라`(`dm5.c:dm_moonstone`)와 `*침공`(`dm5.c:dm_monster`)를
+  parse → plan → apply → transport로 연결했다. CARETAKER 미만은 C처럼 명령 없음.
+  초인의 돌은 object 640을 랜덤 비-RNOTEL 방에 두고 PNOBRD broadcast. 침공은
+  3601–3630 / 몬스터 265–299 10마리, NPC 미이관은 fail-closed. replay는 commit·fan-out
+  무중복.
+
+### 검증
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'TestDM|DMFamily|DMMoonstone|FamilyWar|FamilyNews|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt/vet/git diff --check PASS
+```
+
+integration/ARM64/PG-browser E2E SKIP. commit/push 없음. `src/frp.new` 보존.
+G0~G5 이슈는 전체 인수 미충족으로 닫지 않는다.
+
+### 다음
+
+1. `기억`(moon_set) 등 남은 소셜, 문주 사망 전쟁 방송 연결.
+2. 운영 PG 영속·IME/모바일 실기기·63방 corpus·testnet은 승격 경계.
+
+## 이전 핸드오프 — 2026-09-13 (`선전포고`)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다. 아래 내용이 이 파일의
+과거 체크포인트보다 우선한다.
+
+### 이번 슬라이스
+
+- cmdlist-72 `선전포고`(`special1.c:call_war`)를 parse → plan → apply → transport로
+  연결했다. `패거리공지`·탈퇴/추방 replay는 재구현하지 않고 기존 회귀만 재확인했다.
+- 원작 게이트: PFMBOS·가족 ID, exact catalog 이름, 상대 두목 온라인, 자기 패거리
+  거부. `AT_WAR`/`CALLWAR1`/`CALLWAR2`는 기존 `FamilyWar` 인코딩을 쓴다.
+  선언은 `broadcast_all`(PNOBRD 무시), 취소/수락은 `broadcast`(PNOBRD 존중).
+  미이관 `State.War`는 fail-closed. 동일 command ID replay는 commit·fan-out을
+  중복하지 않는다.
+
+### 검증 (로컬, 이 레인)
+
+```text
+go test -race ./internal/world ./internal/session ./internal/transport -run 'FamilyWar|FamilyNews|TestWorldConnectorSubmitDispatchesFamily|TestExecuteFamily|TestParseFamilyMutation|ParseCommandClassifiesImplemented' -count=1  PASS (2회)
+gofmt -l (변경 Go 파일)  empty
+go vet ./internal/world ./internal/session ./internal/transport  PASS
+git diff --check  PASS
+```
+
+`scripts/run-go-validation.sh integration` SKIP (단일 레인). ARM64/Helm/testnet/
+Actions SKIP. PG+Chromium E2E SKIP (승격 경계 아님). commit/push 없음.
+
+### 체크아웃·보존
+
+- 브랜치: `codex/mud-identity-foundation` (HEAD `3909020`, private보다 534커밋 앞).
+- `src/frp.new`는 기존 사용자 dirty 바이너리이며 수정·stage·되돌리기 금지.
+- 목표 이슈 #1은 열린 채로 둔다. G0~G5 전체 인수는 완료가 아니다.
+
+### 다음 실행 순서
+
+1. 패거리 보상 등 남은 가족/소셜 fail-closed 명령을 작은 TDD 단위로 이어서 구현한다.
+2. 전쟁 상태의 운영 PG 영속·문주 사망 통합, 전체 C 출력 parity는 별도 레인이다.
+3. 실제 PostgreSQL·브라우저·ARM64는 승인된 승격 경계에서 batch당 한 번만 실행한다.
+
+## 이전 핸드오프 — 2026-09-13 (`패거리공지`)
+
+이 문서는 같은 작업 트리에서 이어가기 위한 최신 상태다. 아래 내용이 이 파일의
+과거 체크포인트보다 우선한다.
+
+### 이번 슬라이스
+
+- cmdlist-148의 다음 미구현 player alias `패거리공지`(`post.c:family_news`)를
+  parse → plan → apply → transport로 연결했다. 가입/탈퇴/추방 replay 경계는
+  재구현하지 않고 기존 targeted race만 재확인했다.
+- 원작 게이트: PFAMIL 아니면 "당신은 패거리에 가입되어 있지 않습니다.", 두목만
+  `d` unlink, `a`는 connection-local newsedit(줄마다 79바이트 append, `.` 종료),
+  그 외 2토큰은 "잘못된 옵션입니다.\n", 3+ 토큰은 C처럼 view.
+- canonical `FamilyNewsState`가 없으면 fail-closed. 동일 command ID replay는
+  commit·본문·fan-out을 중복하지 않는다. C는 공지 파일에 방송하지 않으므로
+  transport event도 없다.
+
+### 검증 (로컬, 이 레인)
+
+```text
+go test -race ./internal/transport -run '^TestWorldConnectorSubmitDispatchesFamily' -count=1  PASS (2회)
+go test -race ./internal/world -run '^TestFamilyMutation|^Test.*family' -count=1       PASS (2회)
+go test -race ./internal/session -run '^TestExecuteFamily|^TestParseFamilyMutation' -count=1 PASS (2회)
+go test -race ./internal/world ./internal/session ./internal/transport -run 'FamilyNews|ParseCommandClassifiesImplemented|ParseCommandClassifiesFamilyNews' -count=1  PASS (2회)
+gofmt -l (변경 Go 파일)  empty
+go vet ./internal/world ./internal/session ./internal/transport  PASS
+git diff --check  PASS
+```
+
+`scripts/run-go-validation.sh integration`은 이번 세션이 여러 레인을 한 batch로
+조립하지 않아 실행하지 않음 (SKIP). ARM64/Helm/testnet/cloud/Actions는 미실행.
+Docker 데몬은 연결되어 있으나 이 레인은 승인된 승격 경계가 아니므로
+`run-go-process-postgres-browser-e2e-local.sh`는 실행하지 않음 (SKIP).
+
+### 체크아웃·보존
+
+- 브랜치: `codex/mud-identity-foundation` (HEAD `3909020`, private보다 534커밋 앞).
+- 이번 슬라이스는 commit/push하지 않았다. `src/frp.new`는 기존 사용자 dirty 바이너리이며
+  수정·stage·되돌리기 금지. 미커밋 변경은 원격 완료 증거가 아니다.
+- 목표 이슈 #1은 열린 채로 둔다. G0~G5 전체 인수는 완료가 아니다.
+
+### 다음 실행 순서
+
+1. 패거리 전쟁·보상 등 cmdlist-148/소셜의 남은 fail-closed 명령을 작은 TDD 단위로 이어서 구현한다.
+2. `family_news_<n>` 운영 import와 전체 C view_file 페이지 parity는 별도 레인이다.
+3. 실제 PostgreSQL·브라우저·ARM64는 승인된 승격 경계에서 batch당 한 번만 실행한다.
+
+## 이전 핸드오프 — 2026-09-13 (패거리탈퇴/추방 replay)
+
+이 문서는 사용 한도로 멈춘 목표를 같은 작업 트리에서 이어가기 위한 최신 상태다.
+아래 내용이 이 파일의 과거 체크포인트보다 우선한다.
+
+### 목표·보드 상태
+
+- 현재 목표는 **Go 게임 서버 + self-hosted Supabase PostgreSQL** 전환이다. 원작처럼
+  웹의 중앙 xterm 안에서 캐릭터를 만들고 게임 이름/비밀번호로 로그인한다. 별도 웹 회원가입,
+  Supabase 웹 로그인, C→DB 어댑터 확장, Rust 운영 런타임은 사용하지 않는다.
+- 목표 상태는 `usageLimited`이며 완료/차단으로 판정된 것이 아니다. 사용 한도가 해소되면
+  Codex 목표의 재개를 누르고 이 섹션부터 읽어 작업을 계속한다.
+- 기준 문서: `docs/porting-research/go-server-execution-plan.md`,
+  `docs/porting-research/go-feature-ledger.md`, `docs/web-mud/terminal-only-ui-plan.md`.
+- 추적 보드: [Project 1](https://github.com/orgs/1XP-Inc/projects/1),
+  [전체 목표 이슈 #1](https://github.com/1XP-Inc/muhan-mud/issues/1).
+  G0~G5 이슈의 Status/Evidence는 실제 검증 결과만 갱신하며, 부분 구현만으로 Done 처리하지 않는다.
+
+### GitHub Project 운영 명령
+
+다른 에이전트가 보드를 이어서 관리할 때는 먼저 `gh auth status`에서 `project` scope를
+확인하고 아래 명령으로 현재 항목·필드 ID를 재조회한다. 저장소의 canonical push 원격은
+`private`이며 Project 기본 브랜치는 `main`이다.
+
+```text
+gh project list --owner 1XP-Inc --format json
+gh project field-list 1 --owner 1XP-Inc --format json
+gh project item-list 1 --owner 1XP-Inc --format json
+gh project item-add 1 --owner 1XP-Inc --url https://github.com/1XP-Inc/muhan-mud/issues/<N>
+```
+
+현재 보드 ID는 `PVT_kwDOCOMKYc4Biw7Q`, Status field는
+`PVTSSF_lADOCOMKYc4Biw7QzhhntwQ`(Todo `f75ad846`, In Progress `47fc9ee4`, Done
+`98236657`), Stage field는 `PVTSSF_lADOCOMKYc4Biw7Qzhhnt2Y`, Evidence field는
+`PVTF_lADOCOMKYc4Biw7Qzhhnt2U`다. 이슈 번호로 `item-list` 결과의 `id`를 찾은 뒤 다음처럼
+한 필드씩 갱신한다.
+
+```text
+gh project item-edit --id <ITEM_ID> --project-id PVT_kwDOCOMKYc4Biw7Q \
+  --field-id PVTSSF_lADOCOMKYc4Biw7QzhhntwQ --single-select-option-id 47fc9ee4
+gh project item-edit --id <ITEM_ID> --project-id PVT_kwDOCOMKYc4Biw7Q \
+  --field-id PVTF_lADOCOMKYc4Biw7Qzhhnt2U --text "<실제 commit·PR·검증·미검증 근거>"
+```
+
+작업 시작 시에만 In Progress로 바꾸고, 종료 시 실제 증거가 있을 때만 Evidence를 갱신한다.
+전체 인수 전에는 Done으로 바꾸지 않으며, 같은 상태의 댓글·Evidence를 반복해서 만들지 않는다.
+
+### 현재 체크아웃과 보존 규칙
+
+- 브랜치: `codex/mud-identity-foundation`.
+- `private` 원격(`1XP-Inc/muhan-mud`)보다 로컬이 534커밋 앞서 있다. 이번 핸드오프에서는
+  commit/push하지 않았으므로 다른 clone에서 재현하려면 먼저 원하는 커밋 경계를 확인한다.
+- 현재 dirty 파일:
+  - `server/internal/transport/world_connector_family_application.go`
+  - `server/internal/transport/world_connector_family_mutation_test.go`
+  - `HANDOFF.md`
+  - `docs/web-mud/terminal-only-ui-plan.md`
+  - `src/frp.new` — 기존 사용자 소유 dirty 바이너리. 수정·stage·되돌리기 금지.
+- 마지막 커밋은 `3909020` (`엔진 포팅 단계와 핸드오프 갱신`)이다. 미커밋 변경은 원격 완료
+  증거로 간주하지 않는다.
+
+### 직전 구현 범위
+
+- 가족 mutation transport에서 `패거리탈퇴` 최초 commit 뒤에만 전역 fan-out하도록 보정했다.
+  `receipt.Replayed`인 재시도는 commit 증가·RNG·이벤트 전파를 다시 수행하지 않는다.
+- `패거리탈퇴`와 `패거리추방` 각각의 WorldConnector replay suppression 회귀 테스트를 추가했다.
+  대상 테스트는 `server/internal/transport/world_connector_family_mutation_test.go`에 있다.
+- 웹 계획 문서는 실제 브라우저 인수와 코드/서버 회귀 증거를 분리해 기록하도록 갱신했다.
+
+### 마지막 검증 증거
+
+2026-09-11에 다음을 실행해 통과했다. 이번 핸드오프 턴에서는 고비용 검증을 반복하지 않았다.
+
+```text
+go test -race ./internal/transport -run '^TestWorldConnectorSubmitDispatchesFamily' -count=1  PASS
+go test -race ./internal/world -run '^TestFamilyMutation|^Test.*family' -count=1       PASS
+go test -race ./internal/session -run '^TestExecuteFamily|^TestParseFamilyMutation' -count=1 PASS
+GO_FAST_PACKAGES=all bash scripts/run-go-validation.sh fast                         PASS
+bash scripts/run-go-validation.sh integration                                       PASS
+web: npm test (58/58), npm run typecheck                                            PASS
+git diff --check                                                                     PASS
+```
+
+실제 Go+PostgreSQL+Chromium 브라우저 경로는
+`bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`를 시도했지만,
+이 환경에서 Docker 데몬과 `/Users/jjangg96/.docker/run/docker.sock`가 없어
+`postgres:17-alpine`을 기동하지 못했다. 따라서 브라우저/실제 PG 증거는 미완료다.
+현재 참고 URL은 [https://muhan.1xp.vc/](https://muhan.1xp.vc/)지만 WSS/Ingress·testnet
+실사용 인수 완료를 의미하지 않는다.
+
+### 다음 실행 순서
+
+1. 재개 세션에서 이 문서와 세 기준 문서를 읽고, 위 dirty 파일을 보존한 채 현재 diff를 확인한다.
+2. 저비용으로 가족 targeted race와 `git diff --check`를 다시 실행한 뒤, 의도한 네 개의
+   텍스트/Go 파일만 별도 commit할지 결정한다. `src/frp.new`는 절대 함께 stage하지 않는다.
+3. G0 기능 원장(등록 343행·handler 174개·C 근거)의 누락을 계속 줄이고, G3 가족/소셜의
+   남은 원작 parity를 작은 TDD 단위로 확장한다. unresolved combat/inventory/legacy 상태는
+   기존 fail-closed 계약을 유지한다.
+4. 실제 PostgreSQL·브라우저·Linux ARM64·차트/testnet 검증은 Docker 데몬과 승인된 승격
+   경계가 준비될 때 batch당 한 번만 실행한다. 기능 레인에서 같은 전체 검증을 반복하지 않는다.
+5. 의미 있는 변경을 마칠 때만 Project/이슈 Status와 Evidence에 실행 명령, PASS/FAIL/SKIP,
+   남은 조건을 기록한다. 전체 인수 전에는 목표 이슈를 닫지 않는다.
+
+### 재개 시 금지 사항
+
+- C 서버에 DB 연결을 추가하거나 Rust 런타임 포팅을 다시 시작하지 않는다.
+- 웹 로그인/회원가입 화면을 되살리지 않는다. 인증은 xterm 안의 원작 게임 흐름이다.
+- 자동 push, GitHub Actions/클라우드 빌드, 공유 Docker 리소스 일괄 삭제를 하지 않는다.
+- 같은 batch의 ARM64·실제 PG·브라우저 전체 gate를 하위 작업마다 반복하지 않는다.
+
+## 진행 재개 확인 — 2026-09-11
+
+- 2026-09-11 재개 검증 갱신:
+  - `/server` 기준 `go test ./internal/transport -run 'TestWorldConnector.*Family' -count=1` 통과.
+  - `GO_FAST_PACKAGES='./internal/transport' bash scripts/run-go-validation.sh fast` PASS.
+  - `go test ./internal/transport -run '^TestWorldConnectorSubmitDispatchesFamilyWithdrawalAndSuppressesReplayFanout$'` PASS.
+  - `bash scripts/run-go-validation.sh integration` PASS (`go test -race ./...` + `go vet ./...` 기준).
+  - `/web` 기준 `npm test` PASS(58/58), `npm run typecheck` PASS.
+  - `bash scripts/run-go-process-postgres-browser-e2e-local.sh --allow-disposable`는 여전히 `postgres:17-alpine` 선행 pull/daemon 제약으로 실패.
+  - `docker ps`는 `/Users/jjangg96/.docker/run/docker.sock` 미존재(daemon 미동작)로 연결 실패.
+- 재개 시점 점검(2026-09-11): `/server` 기준 `go test ./internal/transport -run 'TestWorldConnector.*Family' -count=1` 통과.
+- 목표 자체는 정지되지 않았으며 동일한 핵심 흐름(`패거리탈퇴` 이벤트 fan-out 보정) 위주로 계속 이어지고 있음.
+- 웹 루트 점검 결과: `web/app/page.tsx`는 `ClassicTerminal`을 단일 렌더링해
+  온보딩/게임 진입을 터미널 안에서 진행하는 방향을 유지한다.
+- 현재 활성 경로에서 별도 웹 계정 로그인/캐릭터 목록 화면은 호출되지 않는다.
+- 현재 목표는 `G0` 계약/원장 정합성(343 등록행, 174 handler 대응, C 근거 맵핑) 이어
+  작업을 계속 진행한다.
+- Go transport 경계에서 `패거리탈퇴` 확인/확정 흐름에 대한 남은 방송 전파가 누락되던
+  결함을 수정했다. `submitFamilyWithdrawalContinuation`에서 `receipt.Replayed == false`
+  인 경우 가족 mutation 이벤트를 `publishFamilyMutation`으로 fan-out 하도록 맞춰 `패거리탈퇴`
+  브로드캐스트가 발생하게 했다.
+- 같은 경로에 `familyWithdrawal` 재호출 replay 브랜치 회귀 테스트를 추가해,
+  `패거리탈퇴` 이력 재조회 시 커밋이 추가되지 않고 이벤트가 재전송되지 않는지 보장했다.
+- 이어서 `패거리추방` replay 브랜치도 동일하게 회귀 테스트를 추가해, 첫 추방 커밋 후
+  동일 명령의 재조회/재전송이 커밋 증가와 applicant 이벤트 중복 송출을 유발하지 않음을
+  검증했다.
+- `패거리탈퇴`/`패거리추방` replay 회귀 외에 새로 추가한 `패거리추방` replay suppression 테스트를
+  포함해 transport에서 가족 mutation 전체 replay 경로의 이벤트 중복 노출 가능성을 정리했다.
+- 추가 검증:
+  - `go test -race ./internal/transport -run '^TestWorldConnectorSubmitDispatchesFamily' -count=1` PASS
+  - `go test -race ./internal/world -run '^TestFamilyMutation|^Test.*family' -count=1` PASS
+  - `go test -race ./internal/session -run '^TestExecuteFamily|^TestParseFamilyMutation' -count=1` PASS
+- 검증: `GO_FAST_PACKAGES=all bash scripts/run-go-validation.sh fast`는 `internal/world`,
+  `internal/session`, `internal/transport` 모두 PASS, `web` `npm test`는 58/58 PASS.
+- 제한: 브라우저 기반 `run-go-process-postgres-browser-e2e-local.sh --allow-disposable`는
+  현재 환경의 Docker 데몬 미구동(`docker.sock` 경로 미존재)으로 즉시 차단됨.
+  `docker version`은 클라이언트만 출력하고 API 연결은 실패(`desktop-linux` context에서
+  도커 데몬 미가동) 상태다.
+
 ## 최신 방향 전환 체크포인트 — 2026-09-10 (엔진 중심 포팅·AI GM E0/E1)
 
 Go `engine`을 명령 receipt 조정기에서 콘텐츠 권위 계층으로 확장하는 방향을 확정했다.

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
@@ -16,9 +18,9 @@ import (
 var ErrUnsupportedTradeLine = errors.New("line is not an implemented NPC trade command")
 
 // TradeCommand follows command10.c's suffix command syntax:
-// <item> <monster> 교환. The optional two occurrences are an explicit Go
-// identity extension used only when duplicate canonical names exist:
-// <item> <monster> <item-occurrence> <monster-occurrence> 교환.
+// 교환, <item> 교환, or <item> <monster> 교환. The optional two occurrences
+// are an explicit Go identity extension used only when duplicate canonical
+// names exist: <item> <monster> <item-occurrence> <monster-occurrence> 교환.
 // Prefix/key guessing and client-owned IDs are intentionally not accepted.
 type TradeCommand struct {
 	ItemName       string
@@ -27,28 +29,69 @@ type TradeCommand struct {
 	NPCOccurrence  int
 }
 
+func validTradeLine(line string) bool {
+	if !utf8.ValidString(line) {
+		return false
+	}
+	for _, r := range line {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || (unicode.IsSpace(r) && r != ' ') {
+			return false
+		}
+	}
+	return true
+}
+
 func ParseTradeLine(line string) (TradeCommand, bool) {
+	if !validTradeLine(line) {
+		return TradeCommand{}, false
+	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || (len(tokens) != 3 && len(tokens) != 5) || tokens[len(tokens)-1] != "교환" {
+	if err != nil || len(tokens) == 0 || tokens[len(tokens)-1] != "교환" {
 		return TradeCommand{}, false
 	}
-	if tokens[0] == "" || tokens[1] == "" {
-		return TradeCommand{}, false
-	}
-	command := TradeCommand{ItemName: tokens[0], ItemOccurrence: 1, NPCName: tokens[1], NPCOccurrence: 1}
-	if len(tokens) == 5 {
-		itemOccurrence, err := strconv.Atoi(tokens[2])
+	rest := tokens[:len(tokens)-1]
+	command := TradeCommand{ItemOccurrence: 1, NPCOccurrence: 1}
+	switch len(rest) {
+	case 0:
+		return command, true
+	case 1:
+		if rest[0] == "" || strings.TrimSpace(rest[0]) != rest[0] {
+			return TradeCommand{}, false
+		}
+		command.ItemName = rest[0]
+		return command, true
+	case 2:
+		if rest[0] == "" || rest[1] == "" || strings.TrimSpace(rest[0]) != rest[0] || strings.TrimSpace(rest[1]) != rest[1] {
+			return TradeCommand{}, false
+		}
+		command.ItemName = rest[0]
+		command.NPCName = rest[1]
+		return command, true
+	case 4:
+		if rest[0] == "" || rest[1] == "" {
+			return TradeCommand{}, false
+		}
+		itemOccurrence, err := strconv.Atoi(rest[2])
 		if err != nil || itemOccurrence < 1 {
 			return TradeCommand{}, false
 		}
-		npcOccurrence, err := strconv.Atoi(tokens[3])
+		npcOccurrence, err := strconv.Atoi(rest[3])
 		if err != nil || npcOccurrence < 1 {
 			return TradeCommand{}, false
 		}
+		command.ItemName = rest[0]
+		command.NPCName = rest[1]
 		command.ItemOccurrence = itemOccurrence
 		command.NPCOccurrence = npcOccurrence
+		return command, true
+	default:
+		return TradeCommand{}, false
 	}
-	return command, true
+}
+
+func IsTradeLine(line string) bool {
+	_, ok := ParseTradeLine(line)
+	return ok
 }
 
 type tradeRequest struct {
@@ -78,10 +121,21 @@ func (o *Ownership) ExecuteTradeLine(ctx context.Context, store engine.CommandSt
 			return nil, nil, err
 		}
 		allocation := 0
-		next, result, err := s.TradeNPCByName(actorID, command.ItemName, command.ItemOccurrence, command.NPCName, command.NPCOccurrence, func() (string, error) {
+		proposal, err := s.PlanTrade(actorID, command.ItemName, command.ItemOccurrence, command.NPCName, command.NPCOccurrence, func() (string, error) {
 			allocation++
 			return fmt.Sprintf("trade-%s-%d", commandID, allocation), nil
 		})
+		if err != nil {
+			return nil, nil, err
+		}
+		var next world.State
+		var result world.NPCTradeResult
+		if !proposal.Changed {
+			result = proposal.Result
+			response, err := json.Marshal(result)
+			return raw, response, err
+		}
+		next, result, err = s.ApplyTrade(proposal)
 		if err != nil {
 			return nil, nil, err
 		}

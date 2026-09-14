@@ -269,32 +269,6 @@ func TestRunShopPurchaseFailuresAreAtomicAndFailClosed(t *testing.T) {
 				}
 			},
 		},
-		{
-			name:    "shop room failure",
-			stockID: "stock-root",
-			mutate: func(s world.State) world.State {
-				room := s.Rooms[10]
-				room.Resource.Flags[0] = 0
-				s.Rooms[10] = room
-				return s
-			},
-			allocate: func(calls *atomic.Int32) func() (string, error) {
-				return func() (string, error) {
-					calls.Add(1)
-					return "unused", nil
-				}
-			},
-		},
-		{
-			name:    "stock failure",
-			stockID: "missing-stock",
-			allocate: func(calls *atomic.Int32) func() (string, error) {
-				return func() (string, error) {
-					calls.Add(1)
-					return "unused", nil
-				}
-			},
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,5 +352,105 @@ func TestRunShopPurchaseBindsCommandIDToCanonicalActorAndStockRequest(t *testing
 	want := []byte(`{"actor_id":"actor-1","stock_id":"stock-other"}`)
 	if !reflect.DeepEqual(request, json.RawMessage(want)) {
 		t.Fatalf("stored request=%s want=%s", request, want)
+	}
+}
+
+func TestRunShopPurchaseCParityReceiptsDoNotCloneOrAllocate(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(world.State) world.State
+		stockID string
+		want    string
+		action  string
+	}{
+		{
+			name: "not shop",
+			mutate: func(s world.State) world.State {
+				room := s.Rooms[10]
+				room.Resource.Flags = [8]byte{}
+				room.Resource.Flags[world.RoomPawnFlag/8] |= 1 << (world.RoomPawnFlag % 8)
+				s.Rooms[10] = room
+				return s
+			},
+			stockID: "stock-root",
+			want:    world.ShopPurchaseNotShopResponse,
+			action:  world.ShopPurchaseNotShopAction,
+		},
+		{
+			name: "missing storage",
+			mutate: func(s world.State) world.State {
+				delete(s.Rooms, 11)
+				return s
+			},
+			stockID: "stock-root",
+			want:    world.ShopPurchaseNoStockResponse,
+			action:  world.ShopPurchaseNoStockAction,
+		},
+		{
+			name:    "stock missing",
+			stockID: "missing-stock",
+			want:    world.ShopPurchaseNotSoldResponse,
+			action:  world.ShopPurchaseNotSoldAction,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := shopPurchaseState(t)
+			if tc.mutate != nil {
+				state = tc.mutate(state)
+			}
+			store, initialRaw := shopPurchaseStore(t, state)
+			var calls atomic.Int32
+			connector := newShopPurchaseConnector(t, store, func() (string, error) {
+				calls.Add(1)
+				return "unused", nil
+			})
+			first, err := connector.RunShopPurchase(context.Background(), "shop-cprint-"+tc.name, "actor-1", tc.stockID)
+			if err != nil || first.Replayed {
+				t.Fatalf("receipt=%+v err=%v", first, err)
+			}
+			var result world.ShopPurchaseResult
+			if err := json.Unmarshal(first.Response, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Action != tc.action || result.Response != tc.want || result.Event != nil {
+				t.Fatalf("result=%+v", result)
+			}
+			stateRaw, _, _, _, commitAttempts, commits := store.snapshot()
+			if !bytes.Equal(stateRaw, initialRaw) || commitAttempts != 1 || commits != 1 || calls.Load() != 0 {
+				t.Fatalf("cloned or allocated: commits=%d attempts=%d calls=%d", commits, commitAttempts, calls.Load())
+			}
+			connector.config.Allocate = func() (string, error) {
+				t.Fatal("replay invoked shop allocator")
+				return "", nil
+			}
+			replay, err := connector.RunShopPurchase(context.Background(), "shop-cprint-"+tc.name, "actor-1", tc.stockID)
+			if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) {
+				t.Fatalf("replay=%+v err=%v", replay, err)
+			}
+			_, _, _, _, commitAttempts, commits = store.snapshot()
+			if commitAttempts != 1 || commits != 1 {
+				t.Fatalf("replay recommitted attempts=%d commits=%d", commitAttempts, commits)
+			}
+		})
+	}
+}
+
+func TestRunShopPurchaseUnmigratedStorageFailClosed(t *testing.T) {
+	state := shopPurchaseState(t)
+	room := state.Rooms[11]
+	room.Items = nil
+	state.Rooms[11] = room
+	store, initialRaw := shopPurchaseStore(t, state)
+	connector := newShopPurchaseConnector(t, store, func() (string, error) {
+		t.Fatal("allocator called for unmigrated storage")
+		return "", nil
+	})
+	if _, err := connector.RunShopPurchase(context.Background(), "shop-unmigrated", "actor-1", "stock-root"); err == nil {
+		t.Fatal("unmigrated storage unexpectedly purchased")
+	}
+	stateRaw, _, _, _, commitAttempts, commits := store.snapshot()
+	if !bytes.Equal(stateRaw, initialRaw) || commitAttempts != 0 || commits != 0 {
+		t.Fatalf("fail-closed storage committed attempts=%d commits=%d", commitAttempts, commits)
 	}
 }

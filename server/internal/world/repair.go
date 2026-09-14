@@ -15,6 +15,15 @@ const (
 	repairMissileType   = 4  // MISSILE
 	repairArmorType     = 5  // ARMOR
 	repairBodyWear      = 1  // BODY
+
+	RepairSuccessAction    = "repair"
+	RepairAskWhatAction    = "ask-what"
+	RepairNotRepairAction  = "not-repair"
+	RepairNotHoldingAction = "not-holding"
+
+	RepairAskWhatResponse    = "무엇을 수리하시려구요?"
+	RepairNotRepairResponse  = "여기서는 수리할 수 없습니다."
+	RepairNotHoldingResponse = "당신은 그런 물건을 갖고 있지 않습니다."
 )
 
 // RepairRoomFlag is the repair-shop room bit (RREPAI). It is kept local to
@@ -189,6 +198,67 @@ func validRepairResponse(proposal RepairProposal) bool {
 	return proposal.Response == repairResponse(proposal.ItemName, proposal.Broke, proposal.AdjustmentCleared)
 }
 
+// RepairByName is the terminal 수리 reducer. C order is preserved:
+// missing name, then non-RREPAI, then find_obj on player first_obj.
+// Those three prints are receipts and do not F_CLR PHIDDN. command8.c
+// clears hide only after find_obj succeeds. Cost value/4, ONOFIX, type,
+// shots, and gold still go through PlanRepair/ApplyRepair. Prefix/key
+// matching stays closed. Unmigrated nil Items fail closed after the
+// room gate.
+func (s State) RepairByName(actorID, name string, occurrence int, roll func(int, int) int) (State, RepairResult, error) {
+	if err := s.Validate(); err != nil {
+		return State{}, RepairResult{}, err
+	}
+	if actorID == "" {
+		return State{}, RepairResult{}, fmt.Errorf("repair actor required")
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 {
+		return State{}, RepairResult{}, fmt.Errorf("online player with migrated items required")
+	}
+	room, ok := s.Rooms[actor.Body.RoomID]
+	if !ok {
+		return State{}, RepairResult{}, fmt.Errorf("repair room absent")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return s.clone(), RepairResult{
+			Action:   RepairAskWhatAction,
+			RoomID:   actor.Body.RoomID,
+			Response: RepairAskWhatResponse,
+		}, nil
+	}
+	if !flag(room.Resource.Flags[:], RepairRoomFlag) {
+		return s.clone(), RepairResult{
+			Action:   RepairNotRepairAction,
+			RoomID:   actor.Body.RoomID,
+			Response: RepairNotRepairResponse,
+		}, nil
+	}
+	if occurrence < 1 {
+		return State{}, RepairResult{}, fmt.Errorf("invalid item occurrence")
+	}
+	if actor.Items == nil || len(actor.Body.Inventory) != 0 {
+		return State{}, RepairResult{}, fmt.Errorf("online player with migrated items required")
+	}
+	if err := actor.Items.Validate(); err != nil {
+		return State{}, RepairResult{}, err
+	}
+	if _, err := selectInventoryRoot(*actor.Items, name, occurrence, nil); err != nil {
+		return s.clone(), RepairResult{
+			Action:     RepairNotHoldingAction,
+			RoomID:     actor.Body.RoomID,
+			Occurrence: occurrence,
+			Response:   RepairNotHoldingResponse,
+		}, nil
+	}
+	proposal, err := s.PlanRepair(actorID, name, occurrence, roll)
+	if err != nil {
+		return State{}, RepairResult{}, err
+	}
+	return s.ApplyRepair(proposal)
+}
+
 // PlanRepair ports command8.c:repair's bounded canonical inventory path.  It
 // follows the C check order and consumes one break roll, an optional
 // adjustment roll, and one shots roll only after all admission checks pass.
@@ -360,7 +430,7 @@ func (s State) ApplyRepair(proposal RepairProposal) (State, RepairResult, error)
 	nextActor := next.Players[proposal.ActorID]
 	goldBefore := int64(nextActor.Body.Gold)
 	result := RepairResult{
-		Action:            "repair",
+		Action:            RepairSuccessAction,
 		RoomID:            proposal.RoomID,
 		ItemID:            proposal.ItemID,
 		ItemName:          proposal.ItemName,

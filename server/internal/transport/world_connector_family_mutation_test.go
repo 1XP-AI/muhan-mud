@@ -2,12 +2,33 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/session"
+	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
+
+type familyMutationReplayStore struct {
+	*connectorCommandStore
+}
+
+func (s *familyMutationReplayStore) ReadWorldReceipt(ctx context.Context, worldID, commandID string, request json.RawMessage) (storage.WorldReceipt, error) {
+	receipt, err := s.connectorCommandStore.ReadWorldReceipt(ctx, worldID, commandID, request)
+	if err == nil {
+		return receipt, nil
+	}
+	if s.connectorCommandStore.receipt == nil {
+		return storage.WorldReceipt{}, err
+	}
+	s.connectorCommandStore.mu.Lock()
+	defer s.connectorCommandStore.mu.Unlock()
+	replay := *s.connectorCommandStore.receipt
+	replay.Replayed = true
+	return replay, nil
+}
 
 func connectorFamilyMutationState(active, pending bool) world.State {
 	var applicantFlags [8]byte
@@ -239,5 +260,153 @@ func TestWorldConnectorSubmitDispatchesFamilyExpulsionAndTargetNotification(t *t
 		// Each transport Submit receives a fresh command ID; this is a new
 		// command and must fail after the member has been removed.
 		t.Fatalf("duplicate command output=%q err=%v commits=%d", duplicate, err, store.commits)
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesFamilyWithdrawalAndSuppressesReplayFanout(t *testing.T) {
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{}}
+	raw, err := json.Marshal(connectorFamilyExpulsionState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.connectorCommandStore.state = raw
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "bounded-lanes",
+		Clock:       func() (int32, int) { return 8, 12 },
+		Roll:        func(_, _ int) int { return 1 },
+		MaxSessions: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applicantLease, err := connector.owners.Acquire("applicant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.owners.Admit(applicantLease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	bossLease, err := connector.owners.Acquire("boss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.owners.Admit(bossLease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	connections := make([]*worldConnection, 0, 2)
+	applicantConnection := &worldConnection{game: connector, lease: applicantLease, ready: true, events: make(chan string, 8)}
+	bossConnection := &worldConnection{game: connector, lease: bossLease, ready: true, events: make(chan string, 8)}
+	connections = append(connections, applicantConnection, bossConnection)
+	connector.mu.Lock()
+	connector.connections[applicantConnection] = struct{}{}
+	connector.connections[bossConnection] = struct{}{}
+	connector.mu.Unlock()
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+
+	prompt, err := connections[0].Submit(context.Background(), "패거리탈퇴")
+	if err != nil || prompt != session.FamilyWithdrawalConfirmPrompt {
+		t.Fatalf("prompt=%q err=%v", prompt, err)
+	}
+
+	left, err := connections[0].Submit(context.Background(), "예")
+	if err != nil || !strings.Contains(left, "패거리에서 탈퇴") || store.commits != 1 {
+		t.Fatalf("left=%q err=%v commits=%d", left, err, store.commits)
+	}
+	select {
+	case event := <-connections[1].events:
+		if !strings.Contains(event, "Alice님이 청룡에서 탈퇴") {
+			t.Fatalf("leave broadcast=%q", event)
+		}
+	default:
+		t.Fatal("leave broadcast missing")
+	}
+
+	replay, err := connections[0].Submit(context.Background(), "패거리탈퇴")
+	if err != nil || replay != left {
+		t.Fatalf("replay=%q err=%v", replay, err)
+	}
+	if _, commits := store.snapshot(); commits != 1 {
+		t.Fatalf("replay committed again: commits=%d", commits)
+	}
+	select {
+	case event := <-connections[1].events:
+		t.Fatalf("replay fanned out unexpectedly: %q", event)
+	default:
+	}
+}
+
+func TestWorldConnectorSubmitDispatchesFamilyExpulsionReplaySuppressesFanout(t *testing.T) {
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{}}
+	raw, err := json.Marshal(connectorFamilyExpulsionState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.connectorCommandStore.state = raw
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "bounded-lanes",
+		Clock:       func() (int32, int) { return 8, 12 },
+		Roll:        func(_, _ int) int { return 1 },
+		MaxSessions: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bossLease, err := connector.owners.Acquire("boss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.owners.Admit(bossLease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	applicantLease, err := connector.owners.Acquire("applicant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.owners.Admit(applicantLease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	connections := make([]*worldConnection, 0, 2)
+	bossConnection := &worldConnection{game: connector, lease: bossLease, ready: true, events: make(chan string, 8)}
+	applicantConnection := &worldConnection{game: connector, lease: applicantLease, ready: true, events: make(chan string, 8)}
+	connections = append(connections, bossConnection, applicantConnection)
+	connector.mu.Lock()
+	connector.connections[bossConnection] = struct{}{}
+	connector.connections[applicantConnection] = struct{}{}
+	connector.mu.Unlock()
+	connector.config.FamilyCatalog = connectorFamilyMutationCatalog()
+
+	output, err := connections[0].Submit(context.Background(), "패거리추방 Alice")
+	if err != nil || !strings.Contains(output, "패거리에서 추방") || store.commits != 1 {
+		t.Fatalf("expel=%q err=%v commits=%d", output, err, store.commits)
+	}
+	select {
+	case event := <-connections[0].events:
+		t.Fatalf("boss unexpectedly received expulsion event: %q", event)
+	default:
+	}
+	select {
+	case event := <-connections[1].events:
+		if event != world.FamilyExpulsionNotification {
+			t.Fatalf("applicant event=%q", event)
+		}
+	default:
+		t.Fatal("applicant expulsion event missing")
+	}
+
+	replay, err := connections[0].Submit(context.Background(), "패거리추방 Alice")
+	if err != nil || replay != output || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+	select {
+	case event := <-connections[0].events:
+		t.Fatalf("replay sent boss expulsion event unexpectedly: %q", event)
+	default:
+	}
+	select {
+	case event := <-connections[1].events:
+		t.Fatalf("replay sent applicant expulsion event unexpectedly: %q", event)
+	default:
 	}
 }

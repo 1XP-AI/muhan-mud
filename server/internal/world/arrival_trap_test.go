@@ -86,3 +86,45 @@ func TestPlanArrivalTrapRejectsInvalidRandomSourceWithoutCandidate(t *testing.T)
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
 }
+
+func TestPlanArrivalTrapBlockUsesOneThirdHPMax(t *testing.T) {
+	got, err := PlanArrivalTrap(LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{Trap: TrapBlock}}, ArrivalTrapInput{
+		HP: 30, HPMax: 30, Dexterity: 1,
+	}, func(low, high int) int {
+		if low != 1 || high != 100 {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		return 100
+	})
+	if err != nil || !got.Triggered || got.Damage != 10 || got.HP != 20 || got.MPDamage != 0 || got.Dead || got.LoseItems || got.ClearSpells {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestPlanArrivalTrapRemovesSpells(t *testing.T) {
+	got, err := PlanArrivalTrap(LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{Trap: TrapRMSpl}}, ArrivalTrapInput{
+		HP: 20, HPMax: 20, MP: 8, MPMax: 10, Intelligence: 1,
+	}, func(low, high int) int {
+		if low != 1 || high != 100 {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		return 100
+	})
+	if err != nil || !got.Triggered || !got.ClearSpells || got.Damage != 0 || got.HP != 20 || got.MP != 8 || got.LoseItems {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestPlanArrivalTrapNakedMarksItemLoss(t *testing.T) {
+	got, err := PlanArrivalTrap(LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{Trap: TrapNaked}}, ArrivalTrapInput{
+		HP: 20, HPMax: 20, Dexterity: 1,
+	}, func(low, high int) int {
+		if low != 1 || high != 100 {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		return 100
+	})
+	if err != nil || !got.Triggered || !got.LoseItems || got.Damage != 0 || got.HP != 20 || got.ClearSpells || got.Dead {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}

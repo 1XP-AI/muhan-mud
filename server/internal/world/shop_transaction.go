@@ -12,6 +12,18 @@ const (
 	shopItemLimit      = 100000
 )
 
+const (
+	ShopPurchaseNotShopAction = ShopListNotShopAction
+	ShopPurchaseNoStockAction = ShopListNoStockAction
+	ShopPurchaseAskWhatAction = "ask-what"
+	ShopPurchaseNotSoldAction = "not-sold"
+
+	ShopPurchaseNotShopResponse = ShopListNotShopResponse
+	ShopPurchaseNoStockResponse = ShopListNoStockResponse
+	ShopPurchaseAskWhatResponse = "무엇을 사시려구요?"
+	ShopPurchaseNotSoldResponse = "그런 물건은 팔지 않습니다."
+)
+
 // ShopPurchaseQuote is the source-backed part of a shop purchase.  Stock is
 // identified by canonical item ID rather than display name, because names can
 // repeat and the durable graph owns identity.  Price is the stock object's
@@ -48,6 +60,20 @@ type ShopPurchaseResult struct {
 	GoldAfter       int64
 	PurchasedRootID string
 	PurchasedIDs    []string
+	Response        string
+	Event           *ShopPurchaseEvent
+}
+
+// ShopPurchaseEvent is the post-commit room broadcast for a successful
+// command7.c:buy. C-print receipts (not-shop / ask-what / no-stock / not-sold)
+// do not set this; replay must not re-fan-out.
+type ShopPurchaseEvent struct {
+	RoomID         int16
+	ActorID        string
+	ActorName      string
+	ExcludeActorID string
+	ItemName       string
+	Text           string
 }
 
 // ShopPurchaseItemIDAllocator is called once per node in the copied item
@@ -87,6 +113,68 @@ func (s State) shopStorage(actorID string) (PlayerState, RoomState, RoomState, e
 		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("상점 저장고가 없습니다")
 	}
 	return actor, shop, storage, nil
+}
+
+// shopPurchaseShop is the C RSHOPP gate. Non-shop rooms, including pawn-only
+// rooms, are a successful "여기는 상점이 아닙니다." receipt — not a guessed
+// RPAWNS/전당포 line and not a command error. Actor inventory is not required
+// for this print; unmigrated storage is checked only after a name is present.
+func (s State) shopPurchaseShop(actorID string) (PlayerState, RoomState, ShopPurchaseResult, bool, error) {
+	if err := s.Validate(); err != nil {
+		return PlayerState{}, RoomState{}, ShopPurchaseResult{}, false, err
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 || actor.Body.Name == "" {
+		return PlayerState{}, RoomState{}, ShopPurchaseResult{}, false, fmt.Errorf("online shop actor absent")
+	}
+	shop, ok := s.Rooms[actor.Body.RoomID]
+	if !ok {
+		return PlayerState{}, RoomState{}, ShopPurchaseResult{}, false, fmt.Errorf("shop room absent")
+	}
+	if !flag(shop.Resource.Flags[:], RoomShopFlag) {
+		return actor, shop, ShopPurchaseResult{
+			Action:     ShopPurchaseNotShopAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopPurchaseNotShopResponse,
+		}, true, nil
+	}
+	return actor, shop, ShopPurchaseResult{}, false, nil
+}
+
+// shopPurchaseStorage is C load_rom(rom_num+1). A missing next room is
+// "살 물건이 없습니다.". Nil Items fail closed. RNOTEL remains the success-path
+// docs/rom_stor constraint and is not guessed into a C print.
+func (s State) shopPurchaseStorage(actor PlayerState, shop RoomState) (RoomState, ShopPurchaseResult, bool, error) {
+	if actor.Body.RoomID == 32767 {
+		return RoomState{}, ShopPurchaseResult{}, false, fmt.Errorf("shop storage room identity overflow")
+	}
+	storageID := actor.Body.RoomID + 1
+	storage, ok := s.Rooms[storageID]
+	if !ok {
+		return RoomState{}, ShopPurchaseResult{
+			Action:     ShopPurchaseNoStockAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopPurchaseNoStockResponse,
+		}, true, nil
+	}
+	if storage.Items == nil {
+		return RoomState{}, ShopPurchaseResult{}, false, fmt.Errorf("canonical shop storage required")
+	}
+	if !flag(storage.Resource.Flags[:], roomNoTeleportFlag) {
+		return RoomState{}, ShopPurchaseResult{}, false, fmt.Errorf("상점 저장고가 없습니다")
+	}
+	return storage, ShopPurchaseResult{}, false, nil
+}
+
+func shopPurchaseSuccessEvent(actorID string, actor PlayerState, itemName string) *ShopPurchaseEvent {
+	return &ShopPurchaseEvent{
+		RoomID:         actor.Body.RoomID,
+		ActorID:        actorID,
+		ActorName:      actor.Body.Name,
+		ExcludeActorID: actorID,
+		ItemName:       itemName,
+		Text:           fmt.Sprintf("\n%s이 %s을(를) 샀습니다.\r\n", actor.Body.Name, itemName),
+	}
 }
 
 // QuoteShopPurchase validates the source-backed room, stock identity, price,
@@ -281,6 +369,32 @@ func insertShopInventoryRoot(items *ItemCollection, root string) error {
 // and the gold debit is applied only to the returned candidate.  Any failure
 // returns zero state/result and leaves the receiver untouched.
 func (s State) BuyShopItem(actorID, stockID string, allocate ShopPurchaseItemIDAllocator) (State, ShopPurchaseResult, error) {
+	actor, shop, printed, handled, err := s.shopPurchaseShop(actorID)
+	if err != nil {
+		return State{}, ShopPurchaseResult{}, err
+	}
+	if handled {
+		return s.clone(), printed, nil
+	}
+	storage, missing, handled, err := s.shopPurchaseStorage(actor, shop)
+	if err != nil {
+		return State{}, ShopPurchaseResult{}, err
+	}
+	if handled {
+		return s.clone(), missing, nil
+	}
+	if stockID == "" {
+		return State{}, ShopPurchaseResult{}, fmt.Errorf("shop stock identity required")
+	}
+	if _, ok := storage.Items.Items[stockID]; !ok || !containsString(storage.Items.Inventory, stockID) {
+		return s.clone(), ShopPurchaseResult{
+			Action:        ShopPurchaseNotSoldAction,
+			ShopRoomID:    shop.Resource.ID,
+			StorageRoomID: storage.Resource.ID,
+			StockID:       stockID,
+			Response:      ShopPurchaseNotSoldResponse,
+		}, nil
+	}
 	quote, err := s.QuoteShopPurchase(actorID, stockID)
 	if err != nil {
 		return State{}, ShopPurchaseResult{}, err
@@ -288,7 +402,6 @@ func (s State) BuyShopItem(actorID, stockID string, allocate ShopPurchaseItemIDA
 	if allocate == nil {
 		return State{}, ShopPurchaseResult{}, fmt.Errorf("shop item ID allocator required")
 	}
-	actor := s.Players[actorID]
 	goldBefore := int64(actor.Body.Gold)
 	if goldBefore < 0 {
 		return State{}, ShopPurchaseResult{}, fmt.Errorf("invalid player gold")
@@ -300,9 +413,8 @@ func (s State) BuyShopItem(actorID, stockID string, allocate ShopPurchaseItemIDA
 	if goldAfter < 0 || goldAfter > int64(1<<31-1) {
 		return State{}, ShopPurchaseResult{}, fmt.Errorf("player gold overflow")
 	}
-	_, _, storage, err := s.shopStorage(actorID)
-	if err != nil {
-		return State{}, ShopPurchaseResult{}, err
+	if actor.Items == nil {
+		return State{}, ShopPurchaseResult{}, fmt.Errorf("online player with migrated items required")
 	}
 	stockIDs, err := shopSubtreeIDs(*storage.Items, stockID)
 	if err != nil {
@@ -380,5 +492,7 @@ func (s State) BuyShopItem(actorID, stockID string, allocate ShopPurchaseItemIDA
 		GoldAfter:       goldAfter,
 		PurchasedRootID: newRoot,
 		PurchasedIDs:    purchasedIDs,
+		Response:        fmt.Sprintf("당신은 %s을(를) 샀습니다.\r\n", quote.ItemName),
+		Event:           shopPurchaseSuccessEvent(actorID, nextPlayer, quote.ItemName),
 	}, nil
 }

@@ -99,3 +99,71 @@ func TestCreationFailureDoesNotVerify(t *testing.T) {
 		t.Fatal("indeterminate save blindly retried")
 	}
 }
+
+func TestExistingCharacterRequiresPassword(t *testing.T) {
+	s := NewLogin(&fakeStore{exists: true})
+	view := s.Submit(context.Background(), "Alice")
+	if view.Verified != nil || view.Closed || !view.Secret {
+		t.Fatal("name-only ownership")
+	}
+	if !strings.Contains(view.Text, "암호") {
+		t.Fatal("missing password prompt")
+	}
+}
+
+func TestExistingCharacterPasswordLogin(t *testing.T) {
+	s := NewLogin(&fakeStore{exists: true})
+	ctx := context.Background()
+	s.Submit(ctx, "Alice")
+	view := s.Submit(ctx, "pw1234")
+	if view.Verified == nil || view.Verified.ID != "character-id" || view.Secret || view.Closed {
+		t.Fatal("password login failed")
+	}
+	if strings.Contains(view.Text, "pw1234") {
+		t.Fatal("password echoed")
+	}
+}
+
+func TestWrongPasswordThenRetrySucceeds(t *testing.T) {
+	s := NewLogin(&fakeStore{exists: true})
+	ctx := context.Background()
+	s.Submit(ctx, "Alice")
+	view := s.Submit(ctx, "wrong")
+	if view.Verified != nil || view.Closed || !view.Secret {
+		t.Fatal("first failure closed")
+	}
+	view = s.Submit(ctx, "pw1234")
+	if view.Verified == nil || view.Verified.ID != "character-id" {
+		t.Fatal("retry login failed")
+	}
+}
+
+func TestDisconnectThenNewSessionCanLogin(t *testing.T) {
+	db := &fakeStore{exists: true}
+	first := NewLogin(db)
+	ctx := context.Background()
+	first.Submit(ctx, "Alice")
+	first.Close()
+	if !first.View().Closed || first.View().Verified != nil {
+		t.Fatal("close did not seal")
+	}
+	if first.Submit(ctx, "pw1234").Verified != nil {
+		t.Fatal("closed session resumed")
+	}
+	second := NewLogin(db)
+	second.Submit(ctx, "Alice")
+	view := second.Submit(ctx, "pw1234")
+	if view.Verified == nil || view.Verified.ID != "character-id" {
+		t.Fatal("relogin after disconnect failed")
+	}
+}
+
+func TestEmptyPasswordClosesExistingCharacter(t *testing.T) {
+	s := NewLogin(&fakeStore{exists: true})
+	ctx := context.Background()
+	s.Submit(ctx, "Alice")
+	view := s.Submit(ctx, "")
+	if !view.Closed || view.Verified != nil {
+		t.Fatal("empty password admitted")
+	}
+}

@@ -245,3 +245,17 @@ func requestHash(request playerSnapshotImportRequest) [sha256.Size]byte {
 	raw, _ := json.Marshal(request)
 	return sha256.Sum256(raw)
 }
+
+// SnapshotFromVerifiedLegacyPlayerFile checks the C player-file password with
+// strcmp semantics, then returns a canonical CDTO for ImportPlayerSnapshot.
+// It does not grant ownership by name and never persists the native password.
+func SnapshotFromVerifiedLegacyPlayerFile(raw, password []byte) ([]byte, error) {
+	canonical, err := world.CanonicalPlayerSnapshotFromLegacyRaw(raw, password)
+	if errors.Is(err, world.ErrLegacyPlayerPassword) {
+		return nil, ErrCredentials
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPlayerSnapshotImport, err)
+	}
+	return canonical, nil
+}

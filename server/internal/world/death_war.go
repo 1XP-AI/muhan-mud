@@ -1,5 +1,7 @@
 package world
 
+import "fmt"
+
 // FamilyWar preserves the original AT_WAR / CALLWAR1 / CALLWAR2 encoding.
 // Active packs two family numbers in base 16; zero means no active war.
 // Declaration/acceptance commands and import validation remain separate work.
@@ -25,4 +27,20 @@ func (w FamilyWar) AfterPlayerDeath(player LegacyMonster) (FamilyWar, bool) {
 		return FamilyWar{}, true
 	}
 	return w, false
+}
+
+func familyDefeatEvents(defeated bool, familyID byte, catalogs ...FamilyCatalog) ([]FamilyWarEvent, error) {
+	if !defeated {
+		if len(catalogs) > 1 {
+			return nil, fmt.Errorf("invalid family catalog arguments")
+		}
+		return nil, nil
+	}
+	if len(catalogs) == 0 {
+		return nil, nil
+	}
+	if len(catalogs) != 1 {
+		return nil, fmt.Errorf("invalid family catalog arguments")
+	}
+	return FamilyDefeatBroadcasts(catalogs[0], familyID)
 }

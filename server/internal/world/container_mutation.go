@@ -121,8 +121,9 @@ func adjustContainerCount(c *ItemCollection, containerID string, delta int16) {
 
 // TakeContainedItem ports get <container> <item> for direct canonical child
 // roots. Player containers take precedence over floor containers, matching C's
-// find_obj order; the move preserves IDs and nested descendants.
-func (s State) TakeContainedItem(actorID, containerName, itemName string, occurrence int) (State, ItemMutationResult, error) {
+// find_obj order (str[1]/val[1] container, str[2]/val[2] item); the move
+// preserves IDs and nested descendants.
+func (s State) TakeContainedItem(actorID, containerName, itemName string, occurrence, containerOccurrence int) (State, ItemMutationResult, error) {
 	s, p, room, err := s.itemMutationContext(actorID)
 	if err != nil {
 		return State{}, ItemMutationResult{}, err
@@ -137,10 +138,10 @@ func (s State) TakeContainedItem(actorID, containerName, itemName string, occurr
 	visible := func(object LegacyObject) bool {
 		return detect || (!flag(object.Flags[:], objectInvisibleFlag) && !flag(object.Flags[:], objectHiddenFlag))
 	}
-	containerID, err := selectContainerRoot(*p.Items, containerName, 1, visible)
+	containerID, err := selectContainerRoot(*p.Items, containerName, containerOccurrence, visible)
 	owner := "player"
 	if err != nil {
-		containerID, err = selectContainerRoot(*room.Items, containerName, 1, visible)
+		containerID, err = selectContainerRoot(*room.Items, containerName, containerOccurrence, visible)
 		owner = "room"
 	}
 	if err != nil {
@@ -209,9 +210,10 @@ func (s State) TakeContainedItem(actorID, containerName, itemName string, occurr
 }
 
 // DropContainedItem ports drop <item> <container> for direct inventory roots.
+// Item selection uses C val[1]; container selection uses str[2]/val[2].
 // Container destruction/devouring is deliberately fail-closed until its C
 // side effects have a separate reducer.
-func (s State) DropContainedItem(actorID, itemName, containerName string, occurrence int) (State, ItemMutationResult, error) {
+func (s State) DropContainedItem(actorID, itemName, containerName string, occurrence, containerOccurrence int) (State, ItemMutationResult, error) {
 	s, p, room, err := s.itemMutationContext(actorID)
 	if err != nil {
 		return State{}, ItemMutationResult{}, err
@@ -229,10 +231,10 @@ func (s State) DropContainedItem(actorID, itemName, containerName string, occurr
 	if protected && p.Body.Class < playerDMClass {
 		return State{}, ItemMutationResult{}, fmt.Errorf("임무/이벤트 물건은 버릴 수 없습니다")
 	}
-	containerID, err := selectContainerRoot(*p.Items, containerName, 1, visible)
+	containerID, err := selectContainerRoot(*p.Items, containerName, containerOccurrence, visible)
 	owner := "player"
 	if err != nil {
-		containerID, err = selectContainerRoot(*room.Items, containerName, 1, visible)
+		containerID, err = selectContainerRoot(*room.Items, containerName, containerOccurrence, visible)
 		owner = "room"
 	}
 	if err != nil {

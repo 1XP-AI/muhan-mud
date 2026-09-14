@@ -7,7 +7,71 @@ import {
   getMobileViewportHeight,
   shouldDeferTerminalSubmission,
   shouldDeferTerminalResize,
+  shouldYieldTerminalKey,
 } from "./terminal-focus.ts";
+
+test("Tab and copy-with-selection leave the terminal so the browser can handle them", () => {
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "Tab",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      hasSelection: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      hasSelection: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "C",
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      hasSelection: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      hasSelection: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: true,
+      hasSelection: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "a",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      hasSelection: true,
+    }),
+    false,
+  );
+});
 
 test("terminal focus returns only when it will not interrupt IME or selection", () => {
   assert.equal(

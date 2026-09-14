@@ -1,8 +1,10 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -45,7 +47,21 @@ func TestParseTradeLineUsesLegacySuffixAndExplicitOccurrences(t *testing.T) {
 	if err != nil || parsed.Kind != CommandTrade {
 		t.Fatalf("parsed=%+v err=%v", parsed, err)
 	}
-	for _, line := range []string{"교환 사과 상인", "사과 상인", "사과 상인 0 1 교환", "사과 상인 1 교환"} {
+	bare, ok := ParseTradeLine("교환")
+	if !ok || bare.ItemName != "" || bare.NPCName != "" || !IsTradeLine("교환") {
+		t.Fatalf("bare 교환=%+v ok=%t", bare, ok)
+	}
+	usage, ok := ParseTradeLine("사과 교환")
+	if !ok || usage.ItemName != "사과" || usage.NPCName != "" {
+		t.Fatalf("usage=%+v ok=%t", usage, ok)
+	}
+	for _, line := range []string{"교환", "사과 교환", "사과 상인 교환"} {
+		parsed, err = ParseCommand(line)
+		if err != nil || parsed.Kind != CommandTrade {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v", line, parsed, err)
+		}
+	}
+	for _, line := range []string{"교환 사과 상인", "사과 상인", "사과 상인 0 1 교환", "사과 상인 1 교환", "교환\n", "trade"} {
 		if _, ok := ParseTradeLine(line); ok {
 			t.Fatalf("unsupported trade syntax accepted: %q", line)
 		}
@@ -70,5 +86,87 @@ func TestExecuteTradeLinePersistsAndReplaysWithoutReallocatingReward(t *testing.
 	rejected, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-2", lease, "사과 다른사람 교환")
 	if err != nil || !strings.Contains(string(rejected.Response), "그것은 여기 없습니다") {
 		t.Fatalf("missing NPC result=%s err=%v", rejected.Response, err)
+	}
+}
+
+func TestExecuteTradeLineAskWhoAndUsageReplayWithoutRecommit(t *testing.T) {
+	initial := tradeCommandFixture(t)
+	store := &departureStore{state: initial}
+	owners, lease := admitShopMarketplaceOwner(t)
+	first, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-ask", lease, "교환")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("ask first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.NPCTradeResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.TradeAskWhoAction || result.Response != world.TradeAskWhoResponse || result.Changed {
+		t.Fatalf("ask result=%+v", result)
+	}
+	if !bytes.Equal(store.state, initial) {
+		t.Fatal("ask-who mutated committed state")
+	}
+	replay, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-ask", lease, "교환")
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("ask replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+
+	usageStore := &departureStore{state: initial}
+	usage, err := owners.ExecuteTradeLine(context.Background(), usageStore, "w", "trade-usage", lease, "사과 교환")
+	if err != nil || usage.Replayed || usageStore.commits != 1 {
+		t.Fatalf("usage first=%+v err=%v commits=%d", usage, err, usageStore.commits)
+	}
+	if err := json.Unmarshal(usage.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.TradeUsageAction || result.Response != world.TradeUsageResponse || result.Changed {
+		t.Fatalf("usage result=%+v", result)
+	}
+	if !bytes.Equal(usageStore.state, initial) {
+		t.Fatal("usage mutated committed state")
+	}
+	usageReplay, err := owners.ExecuteTradeLine(context.Background(), usageStore, "w", "trade-usage", lease, "사과 교환")
+	if err != nil || !usageReplay.Replayed || usageStore.commits != 1 {
+		t.Fatalf("usage replay=%+v err=%v commits=%d", usageReplay, err, usageStore.commits)
+	}
+}
+
+func TestExecuteTradeLineRejectsUnmigratedBeforeReceipt(t *testing.T) {
+	s, err := world.DecodeState(tradeCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	player := s.Players["a"]
+	player.Items = nil
+	player.Body.Inventory = []world.LegacyObject{{Name: "사과"}}
+	s.Players["a"] = player
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners, lease := admitShopMarketplaceOwner(t)
+	if _, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-unmigrated-items", lease, "사과 상인 교환"); !errors.Is(err, world.ErrTradeItemsUnmigrated) || store.commits != 0 {
+		t.Fatalf("items err=%v commits=%d", err, store.commits)
+	}
+
+	s, err = world.DecodeState(tradeCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := s.NPCs["npc"]
+	npc.TradeOffers = nil
+	s.NPCs["npc"] = npc
+	raw, err = json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = &departureStore{state: raw}
+	if _, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-unmigrated-npc", lease, "사과 상인 교환"); !errors.Is(err, world.ErrTradeOffersUnmigrated) || store.commits != 0 {
+		t.Fatalf("npc err=%v commits=%d", err, store.commits)
+	}
+	if _, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-prefix", lease, "교환 사과 상인"); !errors.Is(err, ErrUnsupportedTradeLine) || store.commits != 0 {
+		t.Fatalf("prefix err=%v commits=%d", err, store.commits)
 	}
 }

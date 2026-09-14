@@ -2,9 +2,10 @@ package world
 
 // This file is the player-facing slice of magic1.c:cast. It admits the
 // self-target healing, cleansing and timed utility spells whose state transition is
-// represented by the canonical player body. Other spells remain visible in
-// the spell catalog but fail closed at this boundary until their target,
-// combat, room or item contracts are migrated.
+// represented by the canonical player body, plus the targeted SLOCAT / 천리안
+// locate path, SSUMMO / 소환, and self-cast SRECAL / 귀환. Other spells remain
+// visible in the spell catalog but fail closed at this boundary until their
+// target, combat, room or item contracts are migrated.
 
 import (
 	"errors"
@@ -47,6 +48,9 @@ const (
 	castDiseaseSpell         = 48 // SRMDIS / 치료
 	castRemoveBlindSpell     = 49 // SRMBLD / 개안술
 	castKnowAlignmentSpell   = 41 // SKNOWA / 선악감지
+	castLocateSpell          = 46 // SLOCAT / 천리안
+	// castSummonSpell is defined in summon.go so the SSUMMO reducer can own
+	// the source index next to its gates.
 )
 
 const (
@@ -94,6 +98,9 @@ const (
 	castHealTimed
 	castHealCleanse
 	castHealFlag
+	castHealLocate
+	castHealSummon
+	castHealRecall
 )
 
 var (
@@ -305,6 +312,12 @@ func castSpellSpecFor(name string) (castSpellSpec, error) {
 		spec.Cost, spec.healKind = 6, castHealTimed
 		spec.Flag, spec.Timer = castKnowAlignmentFlag, castKnowAlignmentTimer
 		spec.IntervalBase, spec.RoomExtend, spec.MinInterval = 1200, 800, true
+	case castLocateSpell:
+		spec.Cost, spec.healKind = locatePlayerCost, castHealLocate
+	case castSummonSpell:
+		spec.Cost, spec.healKind = summonNormalCost, castHealSummon
+	case castRecallSpell:
+		spec.Cost, spec.healKind, spec.classGate = recallCost, castHealRecall, castClericInvincible
 	default:
 		return castSpellSpec{}, ErrCastSpellUnavailable
 	}
@@ -323,17 +336,20 @@ const (
 )
 
 type CastOptions struct {
-	Now  int32
-	Roll func(int, int) int
+	Now    int32
+	Hour   int
+	Roll   func(int, int) int
+	Target string
 }
 
 type CastEvent struct {
-	RoomID         int16  `json:"room_id"`
-	ActorID        string `json:"actor_id"`
-	ActorName      string `json:"actor_name"`
-	SpellName      string `json:"spell_name"`
-	ExcludeActorID string `json:"exclude_actor_id"`
-	Text           string `json:"text"`
+	RoomID          int16  `json:"room_id"`
+	ActorID         string `json:"actor_id"`
+	ActorName       string `json:"actor_name"`
+	SpellName       string `json:"spell_name"`
+	ExcludeActorID  string `json:"exclude_actor_id"`
+	ExcludeTargetID string `json:"exclude_target_id,omitempty"`
+	Text            string `json:"text"`
 }
 
 type CastResult struct {
@@ -355,12 +371,20 @@ type CastResult struct {
 	HPDelta            int32      `json:"hp_delta,omitempty"`
 	MPDelta            int32      `json:"mp_delta,omitempty"`
 	Now                int32      `json:"now,omitempty"`
+	Hour               int        `json:"hour,omitempty"`
 	SpellInterval      int32      `json:"spell_interval,omitempty"`
 	TimedFlag          uint       `json:"timed_flag,omitempty"`
 	TimedInterval      int32      `json:"timed_interval,omitempty"`
 	CursedItemsCleared int        `json:"cursed_items_cleared,omitempty"`
+	TargetID           string     `json:"target_id,omitempty"`
+	TargetName         string     `json:"target_name,omitempty"`
+	LocateLinked       bool       `json:"locate_linked,omitempty"`
+	TargetText         string     `json:"target_text,omitempty"`
 	Event              *CastEvent `json:"event,omitempty"`
 }
+
+// CastEvent.ExcludeTargetID is set for targeted casts so a post-apply room
+// publish can omit the summoned/scryed player the way C broadcast_rom2 does.
 
 // CastProposal is the snapshot-bound receipt candidate.  ApplyCast never
 // calls Roll: all spell-fail/effect draws are copied into EffectRolls during
@@ -392,12 +416,30 @@ type CastProposal struct {
 	TimedFlag          uint
 	TimedInterval      int32
 	CursedItemsCleared int
+	TargetID           string
+	TargetName         string
+	LocateLinked       bool
+	TargetText         string
+	Hour               int
 
-	expectedActor     PlayerState
-	expectedRoomFlags [8]byte
-	afterBody         LegacyMonster
-	afterItems        ItemCollection
-	afterItemsSet     bool
+	expectedActor           PlayerState
+	expectedRoomFlags       [8]byte
+	expectedTarget          PlayerState
+	expectedTargetSet       bool
+	expectedTargetRoomFlags [8]byte
+	targetRoomID            int16
+	sourceRoomID            int16
+	afterSourceIDs          []string
+	afterDestIDs            []string
+	expectedSourceIDs       []string
+	expectedDestIDs         []string
+	afterDestBeenHere       int32
+	deactivateSource        bool
+	afterActiveNPCIDs       []string
+	afterActiveSet          bool
+	afterBody               LegacyMonster
+	afterItems              ItemCollection
+	afterItemsSet           bool
 }
 
 func castActor(s State, actorID string) (PlayerState, RoomState, error) {
@@ -859,6 +901,8 @@ func castBodyAfter(body LegacyMonster, room RoomState, spec castSpellSpec, optio
 		}
 		setSettingFlag(&after, spec.Flag, true)
 		return after, 0, nil
+	case castHealLocate, castHealSummon, castHealRecall:
+		return after, 0, nil
 	default:
 		return LegacyMonster{}, 0, ErrCastSpellUnavailable
 	}
@@ -939,19 +983,22 @@ func castRoomText(actorName string, spec castSpellSpec) string {
 	}
 }
 
-// PlanCast evaluates `주문 <spell>` with no target, matching cast()'s
-// self-target branch. Prompt, gate and cooldown responses are represented as
-// no-op receipts so the terminal sees deterministic output without mutating
-// canonical state.
+// PlanCast evaluates `주문 <spell>` and the targeted `주문 천리안 <name>` /
+// `주문 소환 <name>` paths, plus self-cast `주문 귀환`. Prompt, gate and cooldown
+// responses are represented as no-op receipts so the terminal sees deterministic
+// output without mutating canonical state.
 func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastProposal, error) {
 	if options.Now < 0 {
 		return CastProposal{}, fmt.Errorf("cast clock must be nonnegative")
+	}
+	if options.Hour < 0 {
+		return CastProposal{}, fmt.Errorf("cast hour must be nonnegative")
 	}
 	actor, room, err := castActor(s, actorID)
 	if err != nil {
 		return CastProposal{}, err
 	}
-	p := CastProposal{Action: "cast", ActorID: actorID, RoomID: actor.Body.RoomID, Now: options.Now, expectedActor: cloneDrinkActor(actor), expectedRoomFlags: room.Resource.Flags}
+	p := CastProposal{Action: "cast", ActorID: actorID, RoomID: actor.Body.RoomID, Now: options.Now, Hour: options.Hour, expectedActor: cloneDrinkActor(actor), expectedRoomFlags: room.Resource.Flags}
 	if spellName == "" {
 		p.Response = "어떤 주술을 펼치실겁니까?\r\n"
 		return p, nil
@@ -998,6 +1045,15 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 		p.afterBody = actor.Body
 		setSettingFlag(&p.afterBody, castHiddenFlag, false)
 		p.Changed = true
+	}
+	if spec.healKind == castHealSummon {
+		return s.planSummonCast(p, actor, room, spec, options)
+	}
+	if spec.healKind == castHealLocate {
+		return s.planLocateCast(p, actor, room, spec, options)
+	}
+	if spec.healKind == castHealRecall {
+		return s.planRecallCast(p, actor, room, spec, options)
 	}
 	if actor.Body.MPCurrent < spec.Cost {
 		p.Response = "당신의 도력이 부족합니다.\r\n"
@@ -1136,9 +1192,12 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 }
 
 func castResult(p CastProposal, actor PlayerState) CastResult {
-	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, SpellInterval: p.SpellInterval, TimedFlag: p.TimedFlag, TimedInterval: p.TimedInterval, CursedItemsCleared: p.CursedItemsCleared}
+	result := CastResult{Action: p.Action, Response: p.Response, Broadcast: p.Broadcast, Changed: p.Changed, Attempted: p.Attempted, Succeeded: p.Succeeded, SpellFailed: p.SpellFailed, DailyUsed: p.DailyUsed, HiddenCleared: p.HiddenCleared, SpellName: p.SpellName, SpellIndex: p.SpellIndex, Cost: p.Cost, Chance: p.Chance, Roll: p.Roll, EffectRolls: append([]int(nil), p.EffectRolls...), HPDelta: p.HPDelta, MPDelta: p.MPDelta, Now: p.Now, Hour: p.Hour, SpellInterval: p.SpellInterval, TimedFlag: p.TimedFlag, TimedInterval: p.TimedInterval, CursedItemsCleared: p.CursedItemsCleared, TargetID: p.TargetID, LocateLinked: p.LocateLinked, TargetText: p.TargetText}
+	if p.expectedTargetSet {
+		result.TargetName = p.expectedTarget.Body.Name
+	}
 	if p.Broadcast {
-		result.Event = &CastEvent{RoomID: p.RoomID, ActorID: p.ActorID, ActorName: actor.Body.Name, SpellName: p.SpellName, ExcludeActorID: p.ActorID, Text: p.RoomText}
+		result.Event = &CastEvent{RoomID: p.RoomID, ActorID: p.ActorID, ActorName: actor.Body.Name, SpellName: p.SpellName, ExcludeActorID: p.ActorID, ExcludeTargetID: p.TargetID, Text: p.RoomText}
 	}
 	return result
 }
@@ -1160,8 +1219,20 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 		return s.clone(), castResult(p, actor), nil
 	}
 	spec, err := castSpellSpecFor(p.SpellName)
-	if err != nil || spec.Name != p.SpellName || spec.Index != p.SpellIndex || spec.Cost != p.Cost || spec.healKind != p.HealKind {
+	if err != nil || spec.Name != p.SpellName || spec.Index != p.SpellIndex || spec.healKind != p.HealKind {
 		return State{}, CastResult{}, ErrCastInvalidProposal
+	}
+	if spec.healKind == castHealSummon {
+		return s.applySummonCast(p, actor, room, spec)
+	}
+	if spec.healKind == castHealRecall {
+		return s.applyRecallCast(p, actor, room, spec)
+	}
+	if spec.Cost != p.Cost {
+		return State{}, CastResult{}, ErrCastInvalidProposal
+	}
+	if spec.healKind == castHealLocate {
+		return s.applyLocateCast(p, actor, room, spec)
 	}
 	if !p.Attempted {
 		if p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet {

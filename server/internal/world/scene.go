@@ -8,7 +8,7 @@ type SceneOptions struct {
 
 // RenderRoomScene joins the non-combat room sections in legacy order. It is
 // an immutable snapshot renderer, not a command handler or a live world loop.
-// Combat notices and target-specific look remain to be ported.
+// display_rom combat notices are appended by CurrentScene/SceneAt.
 func RenderRoomScene(room LegacyRoom, players []RoomPlayerView, v SceneOptions) string {
 	output := RenderRoomEnvironment(room, v.ViewOptions)
 	if !roomVisible(room, v.ViewOptions) {

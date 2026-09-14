@@ -40,10 +40,8 @@ func (s State) ApplyArrivalTrap(actorID string, effect ArrivalTrapResult) (State
 		}
 	}
 	if effect.LoseItems {
-		actor.Body.Inventory = nil
-		if actor.Items != nil {
-			empty := ItemCollection{Items: map[string]Item{}}
-			actor.Items = &empty
+		if err := applyArrivalTrapItemLoss(&actor); err != nil {
+			return State{}, err
 		}
 	}
 	next.Players[actorID] = actor
@@ -97,6 +95,53 @@ func (s State) ApplyArrivalTrap(actorID string, effect ArrivalTrapResult) (State
 		return State{}, err
 	}
 	return next, nil
+}
+
+// applyArrivalTrapItemLoss ports room.c:check_traps TRAP_NAKED -> lose_all.
+// Non-cursed ready roots and every inventory root are destroyed. Cursed ready
+// roots stay equipped with their contents, then AC/THAC0 are recomputed.
+func applyArrivalTrapItemLoss(actor *PlayerState) error {
+	actor.Body.Inventory = nil
+	if actor.Items == nil {
+		return nil
+	}
+	kept := ItemCollection{Items: map[string]Item{}}
+	for slot, id := range actor.Items.Ready {
+		if id == "" {
+			continue
+		}
+		item, ok := actor.Items.Items[id]
+		if !ok {
+			return fmt.Errorf("arrival trap ready item absent")
+		}
+		if !flag(item.Object.Flags[:], objectCursedFlag) {
+			continue
+		}
+		if err := keepArrivalTrapItemTree(&kept, *actor.Items, id); err != nil {
+			return err
+		}
+		kept.Ready[slot] = id
+	}
+	actor.Items = &kept
+	return refreshEquipmentStats(actor)
+}
+
+func keepArrivalTrapItemTree(dst *ItemCollection, src ItemCollection, id string) error {
+	if _, exists := dst.Items[id]; exists {
+		return nil
+	}
+	item, ok := src.Items[id]
+	if !ok || id == "" {
+		return fmt.Errorf("arrival trap item tree incomplete")
+	}
+	item.Contents = append([]string(nil), item.Contents...)
+	dst.Items[id] = item
+	for _, child := range item.Contents {
+		if err := keepArrivalTrapItemTree(dst, src, child); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ArrivalAlarmResult records the canonical NPC identities moved by C's

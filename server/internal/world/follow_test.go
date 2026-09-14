@@ -77,3 +77,27 @@ func TestUnfollowAndDetachPreserveRemainingOrder(t *testing.T) {
 		t.Fatalf("detach=%+v err=%v", s, err)
 	}
 }
+
+func TestDetachPlayerRelationshipsClearsMDMFOLFlagsAndEdges(t *testing.T) {
+	s := resolveDMFollowLogoutDomain(dmFollowFixture(t))
+	proposal, err := s.PlanDMFollow("dm", "*따르기", "늑대", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attached, _, err := s.ApplyDMFollow(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := attached.DetachPlayerRelationships("dm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := next.NPCs["wolf-1"]
+	dm := next.Players["dm"]
+	if npc.FollowingPlayerID != "" || PlayerFlagSet(npc.Body, npcDMFollowFlag) || dm.NPCFollowerIDs != nil || dm.FollowerRefs != nil || !dm.Online {
+		t.Fatalf("detach npc=%+v dm=%+v", npc, dm)
+	}
+	if attached.NPCs["wolf-1"].FollowingPlayerID != "dm" || !PlayerFlagSet(attached.NPCs["wolf-1"].Body, npcDMFollowFlag) {
+		t.Fatal("DetachPlayerRelationships mutated the attached snapshot")
+	}
+}

@@ -54,11 +54,120 @@ func TestRunShopPurchaseByNameResolvesCanonicalStockAndReplays(t *testing.T) {
 		t.Fatalf("replay=%+v err=%v", replay, err)
 	}
 
-	if _, err := connector.RunShopPurchaseByName(context.Background(), "shop-name-prefix", "actor-1", "사 stock-root"); err == nil {
-		t.Fatal("client-provided stock ID unexpectedly resolved")
-	}
 	if _, err := connector.RunShopPurchaseByName(context.Background(), "shop-name-bad", "actor-1", "사 검 0"); !errors.Is(err, session.ErrUnsupportedShopPurchaseLine) {
 		t.Fatalf("invalid occurrence err=%v", err)
+	}
+
+	prefixState := shopPurchaseState(t)
+	prefixStore, prefixInitial := shopPurchaseStore(t, prefixState)
+	prefixAllocations := 0
+	prefixConnector := newShopPurchaseConnector(t, prefixStore, func() (string, error) {
+		prefixAllocations++
+		return "unused", nil
+	})
+	notSold, err := prefixConnector.RunShopPurchaseByName(context.Background(), "shop-name-prefix", "actor-1", "사 stock-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notSoldResult world.ShopPurchaseResult
+	if err := json.Unmarshal(notSold.Response, &notSoldResult); err != nil {
+		t.Fatal(err)
+	}
+	stateRaw, _, _, _, _, commits := prefixStore.snapshot()
+	if notSoldResult.Response != world.ShopPurchaseNotSoldResponse || prefixAllocations != 0 || commits != 1 || string(stateRaw) != string(prefixInitial) {
+		t.Fatalf("client-provided stock ID resolved: result=%+v allocations=%d commits=%d", notSoldResult, prefixAllocations, commits)
+	}
+}
+
+func TestRunShopPurchaseByNameCParityReceiptsAndReplay(t *testing.T) {
+	tests := []struct {
+		name   string
+		line   string
+		mutate func(world.State) world.State
+		want   string
+		action string
+	}{
+		{
+			name: "not shop",
+			line: "사 검",
+			mutate: func(s world.State) world.State {
+				room := s.Rooms[10]
+				room.Resource.Flags = [8]byte{}
+				s.Rooms[10] = room
+				return s
+			},
+			want:   world.ShopPurchaseNotShopResponse,
+			action: world.ShopPurchaseNotShopAction,
+		},
+		{
+			name:   "bare 사",
+			line:   "사",
+			want:   world.ShopPurchaseAskWhatResponse,
+			action: world.ShopPurchaseAskWhatAction,
+		},
+		{
+			name:   "bare 구입",
+			line:   "구입",
+			want:   world.ShopPurchaseAskWhatResponse,
+			action: world.ShopPurchaseAskWhatAction,
+		},
+		{
+			name: "missing storage",
+			line: "사 검",
+			mutate: func(s world.State) world.State {
+				delete(s.Rooms, 11)
+				return s
+			},
+			want:   world.ShopPurchaseNoStockResponse,
+			action: world.ShopPurchaseNoStockAction,
+		},
+		{
+			name:   "name missing",
+			line:   "사 방패아님",
+			want:   world.ShopPurchaseNotSoldResponse,
+			action: world.ShopPurchaseNotSoldAction,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := shopPurchaseState(t)
+			if tc.mutate != nil {
+				state = tc.mutate(state)
+			}
+			store, initialRaw := shopPurchaseStore(t, state)
+			var calls int
+			connector := newShopPurchaseConnector(t, store, func() (string, error) {
+				calls++
+				return "unused", nil
+			})
+			first, err := connector.RunShopPurchaseByName(context.Background(), "shop-name-cprint-"+tc.name, "actor-1", tc.line)
+			if err != nil || first.Replayed {
+				t.Fatalf("first=%+v err=%v", first, err)
+			}
+			var result world.ShopPurchaseResult
+			if err := json.Unmarshal(first.Response, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Action != tc.action || result.Response != tc.want || result.Event != nil {
+				t.Fatalf("result=%+v", result)
+			}
+			stateRaw, _, _, _, _, commits := store.snapshot()
+			if string(stateRaw) != string(initialRaw) || commits != 1 || calls != 0 {
+				t.Fatalf("cloned or allocated commits=%d calls=%d", commits, calls)
+			}
+			connector.config.Allocate = func() (string, error) {
+				t.Fatal("replay invoked allocator")
+				return "", nil
+			}
+			replay, err := connector.RunShopPurchaseByName(context.Background(), "shop-name-cprint-"+tc.name, "actor-1", tc.line)
+			if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) {
+				t.Fatalf("replay=%+v err=%v", replay, err)
+			}
+			_, _, _, _, _, commits = store.snapshot()
+			if commits != 1 {
+				t.Fatalf("replay recommitted commits=%d", commits)
+			}
+		})
 	}
 }
 

@@ -52,6 +52,16 @@ type NPCFollowerChaseProposal struct {
 	DestinationRoomID int16
 	Now               int32
 	Moves             []NPCFollowerChaseMove
+	// SkipPermanentTimer is command6.c:go's chase: F_CLR(MPERMT) without
+	// die_perm_crt. command2.c:move still writes the origin slot when due.
+	SkipPermanentTimer bool
+}
+
+type npcChaseRules struct {
+	requireFollow      bool
+	visibilityGate     bool
+	baseThreshold      int
+	skipPermanentTimer bool
 }
 
 // PlanNPCFollowerChase ports the NPC-following block immediately after a
@@ -60,6 +70,17 @@ type NPCFollowerChaseProposal struct {
 // is performed.  A nil Enemies slice is unresolved legacy state, not peace,
 // and therefore aborts the whole plan.
 func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int) int) (NPCFollowerChaseProposal, error) {
+	return s.planNPCChase(in, roll, npcChaseRules{visibilityGate: true, baseThreshold: 15})
+}
+
+// PlanNPCGoChase ports command6.c:go's first_mon chase (321-351). Unlike
+// command2.c:move, only MFOLLO && !MDMFOL NPCs chase, the success threshold
+// is 10 - player dex + NPC dex, and MPERMT is cleared without die_perm_crt.
+func (s State) PlanNPCGoChase(in NPCFollowerChaseInput, roll func(int, int) int) (NPCFollowerChaseProposal, error) {
+	return s.planNPCChase(in, roll, npcChaseRules{requireFollow: true, baseThreshold: 10, skipPermanentTimer: true})
+}
+
+func (s State) planNPCChase(in NPCFollowerChaseInput, roll func(int, int) int, rules npcChaseRules) (NPCFollowerChaseProposal, error) {
 	if err := s.Validate(); err != nil {
 		return NPCFollowerChaseProposal{}, err
 	}
@@ -89,10 +110,11 @@ func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int
 	}
 
 	proposal := NPCFollowerChaseProposal{
-		ActorID:           in.ActorID,
-		SourceRoomID:      in.SourceRoomID,
-		DestinationRoomID: destinationRoomID,
-		Now:               in.Now,
+		ActorID:            in.ActorID,
+		SourceRoomID:       in.SourceRoomID,
+		DestinationRoomID:  destinationRoomID,
+		Now:                in.Now,
+		SkipPermanentTimer: rules.skipPermanentTimer,
 	}
 	seenOrigins := map[NPCPermanentOrigin]bool{}
 	playerDexterity := int(int8(actor.Body.Stats[1]))
@@ -110,12 +132,15 @@ func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int
 		if len(npc.Enemies) == 0 {
 			continue
 		}
-
-		// command2.c intentionally applies this visibility gate only when the
-		// NPC is not MFOLLO or is MDMFOL.  Thus a plain non-MFOLLO NPC can still
-		// chase a visible player, matching the legacy predicate exactly.
-		if (!flag(npc.Body.Flags[:], npcFollowFlag) || flag(npc.Body.Flags[:], npcDMFollowFlag)) &&
+		if rules.requireFollow {
+			if !flag(npc.Body.Flags[:], npcFollowFlag) || flag(npc.Body.Flags[:], npcDMFollowFlag) {
+				continue
+			}
+		} else if rules.visibilityGate && (!flag(npc.Body.Flags[:], npcFollowFlag) || flag(npc.Body.Flags[:], npcDMFollowFlag)) &&
 			((!flag(npc.Body.Flags[:], 21) && playerInvisible) || playerDMInvisible) {
+			// command2.c applies this visibility gate only when the NPC is not
+			// MFOLLO or is MDMFOL. A plain non-MFOLLO NPC can still chase a
+			// visible player, matching the legacy predicate exactly.
 			continue
 		}
 		if npc.Enemies[0].Target != (EntityRef{Kind: "player", ID: in.ActorID}) {
@@ -125,20 +150,23 @@ func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int
 		origin := cloneNPCPermanentOrigin(npc.PermanentOrigin)
 		if flag(npc.Body.Flags[:], npcPermanentFlag) {
 			if origin == nil || origin.RoomID != in.SourceRoomID || int(origin.Slot) >= len(source.Resource.PermanentMonsters) {
-				return NPCFollowerChaseProposal{}, fmt.Errorf("permanent NPC %q has unknown origin", npcID)
-			}
-			key := *origin
-			if seenOrigins[key] {
-				return NPCFollowerChaseProposal{}, fmt.Errorf("duplicate permanent origin for NPC %q", npcID)
-			}
-			seenOrigins[key] = true
-			timer := source.Resource.PermanentMonsters[origin.Slot]
-			if timer.Misc == 0 {
-				return NPCFollowerChaseProposal{}, fmt.Errorf("permanent NPC %q has empty origin slot", npcID)
+				if !rules.skipPermanentTimer || origin != nil {
+					return NPCFollowerChaseProposal{}, fmt.Errorf("permanent NPC %q has unknown origin", npcID)
+				}
+			} else {
+				key := *origin
+				if seenOrigins[key] {
+					return NPCFollowerChaseProposal{}, fmt.Errorf("duplicate permanent origin for NPC %q", npcID)
+				}
+				seenOrigins[key] = true
+				timer := source.Resource.PermanentMonsters[origin.Slot]
+				if timer.Misc == 0 {
+					return NPCFollowerChaseProposal{}, fmt.Errorf("permanent NPC %q has empty origin slot", npcID)
+				}
 			}
 		}
 
-		threshold := 15 - playerDexterity + int(int8(npc.Body.Stats[1]))
+		threshold := rules.baseThreshold - playerDexterity + int(int8(npc.Body.Stats[1]))
 		value, err := randomIn(roll, 1, 50)
 		if err != nil {
 			return NPCFollowerChaseProposal{}, err
@@ -153,7 +181,7 @@ func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int
 			Body:              cloneNPCBody(npc.Body),
 			PermanentOrigin:   origin,
 		}
-		if origin != nil {
+		if origin != nil && !rules.skipPermanentTimer {
 			timer := source.Resource.PermanentMonsters[origin.Slot]
 			move.PermanentTimerWrite = int64(timer.LastTime)+int64(timer.Interval) <= int64(in.Now)
 		}
@@ -167,6 +195,61 @@ func (s State) PlanNPCFollowerChase(in NPCFollowerChaseInput, roll func(int, int
 		return NPCFollowerChaseProposal{}, fmt.Errorf("active NPC order unresolved")
 	}
 	return proposal, nil
+}
+
+// NPCGoChaseActorText is command6.c:go's actor print after add_ply_rom.
+func NPCGoChaseActorText(npcName string) string {
+	return npcName + legacySubjectParticle(npcName) + " 당신을 따라옵니다.\r\n"
+}
+
+// NPCGoChaseRoomText is command6.c:go's broadcast_rom to the vacated room.
+func NPCGoChaseRoomText(npcName, playerName string) string {
+	rendered := playerName + "님"
+	return "\n" + npcName + legacySubjectParticle(npcName) + " " + rendered + lookAtObjectParticle(rendered) + " 따라갑니다.\r\n"
+}
+
+// NPCGoChaseFanout is the vacated-room projection of a successful command6
+// chase. Transport derives it from committed before/after snapshots so a
+// replayed receipt never re-plans or re-rolls.
+type NPCGoChaseFanout struct {
+	RoomID int16
+	Text   string
+}
+
+// NPCGoChaseFanoutEvents walks the vacated room's NPCIDs in first_mon order.
+// MDMFOL first_fol movers are skipped; only MFOLLO enemy chases remain.
+func NPCGoChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFanout {
+	actorBefore, beforeOK := before.Players[actorID]
+	actorAfter, afterOK := after.Players[actorID]
+	if !beforeOK || !afterOK || actorBefore.Body.RoomID == actorAfter.Body.RoomID {
+		return nil
+	}
+	source, ok := before.Rooms[actorBefore.Body.RoomID]
+	if !ok || before.NPCs == nil || after.NPCs == nil {
+		return nil
+	}
+	var events []NPCGoChaseFanout
+	for _, npcID := range source.NPCIDs {
+		oldNPC, oldOK := before.NPCs[npcID]
+		newNPC, newOK := after.NPCs[npcID]
+		if !oldOK || !newOK || oldNPC.Body.RoomID != actorBefore.Body.RoomID || newNPC.Body.RoomID != actorAfter.Body.RoomID {
+			continue
+		}
+		if newNPC.FollowingPlayerID != "" || flag(newNPC.Body.Flags[:], npcDMFollowFlag) {
+			continue
+		}
+		if !flag(oldNPC.Body.Flags[:], npcFollowFlag) || flag(oldNPC.Body.Flags[:], npcDMFollowFlag) {
+			continue
+		}
+		if len(oldNPC.Enemies) == 0 || oldNPC.Enemies[0].Target != (EntityRef{Kind: "player", ID: actorID}) {
+			continue
+		}
+		events = append(events, NPCGoChaseFanout{
+			RoomID: actorBefore.Body.RoomID,
+			Text:   NPCGoChaseRoomText(newNPC.Body.Name, actorAfter.Body.Name),
+		})
+	}
+	return events
 }
 
 // ApplyNPCFollowerChase applies one previously planned candidate to an
@@ -227,7 +310,14 @@ func (s State) ApplyNPCFollowerChase(proposal NPCFollowerChaseProposal) (State, 
 			return State{}, fmt.Errorf("chase proposal NPC origin changed")
 		}
 		permanent := flag(npc.Body.Flags[:], npcPermanentFlag)
-		if permanent != (move.PermanentOrigin != nil) {
+		if proposal.SkipPermanentTimer {
+			if move.PermanentTimerWrite {
+				return State{}, fmt.Errorf("chase proposal permanent timer changed")
+			}
+			if move.PermanentOrigin != nil && !permanent {
+				return State{}, fmt.Errorf("chase proposal NPC permanence changed")
+			}
+		} else if permanent != (move.PermanentOrigin != nil) {
 			return State{}, fmt.Errorf("chase proposal NPC permanence changed")
 		}
 		if move.PermanentOrigin != nil {
@@ -239,9 +329,11 @@ func (s State) ApplyNPCFollowerChase(proposal NPCFollowerChaseProposal) (State, 
 			if timer.Misc == 0 {
 				return State{}, fmt.Errorf("chase proposal permanent slot empty")
 			}
-			due := int64(timer.LastTime)+int64(timer.Interval) <= int64(proposal.Now)
-			if due != move.PermanentTimerWrite {
-				return State{}, fmt.Errorf("chase proposal permanent timer changed")
+			if !proposal.SkipPermanentTimer {
+				due := int64(timer.LastTime)+int64(timer.Interval) <= int64(proposal.Now)
+				if due != move.PermanentTimerWrite {
+					return State{}, fmt.Errorf("chase proposal permanent timer changed")
+				}
 			}
 		}
 	}
@@ -264,6 +356,9 @@ func (s State) ApplyNPCFollowerChase(proposal NPCFollowerChaseProposal) (State, 
 
 		npc.Body.RoomID = proposal.DestinationRoomID
 		npc.Body.Flags[0] &^= 1 << (npcPermanentFlag % 8)
+		// C F_CLR(MPERMT) has no origin pointer. A leftover PermanentOrigin
+		// occupies the perm slot and makes the next 가/북 chase fail-close.
+		npc.PermanentOrigin = nil
 		next.NPCs[move.NPCID] = npc
 
 		destinationRoom := next.Rooms[proposal.DestinationRoomID]

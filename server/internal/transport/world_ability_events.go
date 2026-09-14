@@ -46,6 +46,48 @@ func (g *WorldConnector) publishStudy(after world.State, event world.StudyEvent)
 	publishWorldRoomEvent(g, after, event.RoomID, event.ActorID, event.ExcludeActorID, event.Text)
 }
 
+// publishRecall fans out magic5.c:recall's source-room broadcast after the
+// caster has already left that room, then room.c:add_ply_rom dest arrival.
+// publishWorldRoomEvent requires the actor to still occupy event.RoomID, so
+// this path follows publishReturnSquare: current source occupants receive
+// Event.Text, dest occupants receive dest arrival, the caster is excluded,
+// and replayed receipts never re-enter here.
+func (g *WorldConnector) publishRecall(after world.State, result world.CastResult) {
+	if !result.Broadcast || result.Event == nil || !world.IsRecallCastSpell(result.SpellName) {
+		return
+	}
+	event := *result.Event
+	if event.ActorID == "" || event.Text == "" || event.ExcludeActorID == "" {
+		return
+	}
+	destText := ""
+	destID := int16(0)
+	if actor, ok := after.Players[event.ActorID]; ok && actor.Online && world.RecallDestArrivalVisible(actor.Body) {
+		destID = actor.Body.RoomID
+		destText = world.RecallDestArrivalText(actor.Body.Name)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, ok := after.Players[connection.lease.ActorID]
+		if !ok || !player.Online || connection.events == nil || connection.lease.ActorID == event.ExcludeActorID {
+			continue
+		}
+		if player.Body.RoomID == event.RoomID {
+			select {
+			case connection.events <- event.Text:
+			default:
+			}
+		}
+		if destText != "" && player.Body.RoomID == destID {
+			select {
+			case connection.events <- destText:
+			default:
+			}
+		}
+	}
+}
+
 func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, text string) {
 	if actorID == "" || text == "" || excludeActorID == "" {
 		return

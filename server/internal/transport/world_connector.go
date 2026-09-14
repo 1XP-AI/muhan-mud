@@ -33,6 +33,9 @@ type WorldConnectorConfig struct {
 	// non-account world adapters can keep the command fail-closed without
 	// changing the world receipt contract.
 	PasswordStore session.PasswordChangeStore
+	// Accounts is the optional credential check for suicide case 2. When
+	// absent, ExecuteSuicidePasswordLine falls back to PasswordStore.
+	Accounts session.Accounts
 	// TalkCatalog is the immutable, server-owned command8.c topic catalog.
 	// It is optional so no-topic NPC speech keeps its original behavior; an
 	// MTALKS topic request fails closed when this dependency is absent.
@@ -76,13 +79,14 @@ type WorldConnector struct {
 }
 
 type playerPhaseSummary struct {
-	Now          int32    `json:"now"`
-	Hour         int      `json:"hour"`
-	Actors       []string `json:"actors"`
-	Messages     []string `json:"messages"`
-	Deaths       int      `json:"deaths"`
-	SaveDue      []string `json:"save_due"`
-	Extinguished []string `json:"extinguished"`
+	Now                int32                  `json:"now"`
+	Hour               int                    `json:"hour"`
+	Actors             []string               `json:"actors"`
+	Messages           []string               `json:"messages"`
+	Deaths             int                    `json:"deaths"`
+	SaveDue            []string               `json:"save_due"`
+	Extinguished       []string               `json:"extinguished"`
+	FamilyDefeatEvents []world.FamilyWarEvent `json:"family_defeat_events,omitempty"`
 }
 
 func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
@@ -149,8 +153,7 @@ func (g *WorldConnector) runPlayerVitalPhaseAt(ctx context.Context, commandID st
 		return storage.WorldReceipt{}, err
 	}
 	g.commandMu.Lock()
-	defer g.commandMu.Unlock()
-	return engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
+	receipt, err := engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 		s, err := world.DecodeState(raw)
 		if err != nil {
 			return nil, nil, err
@@ -174,6 +177,11 @@ func (g *WorldConnector) runPlayerVitalPhaseAt(ctx context.Context, commandID st
 			}
 			summary.Messages = append(summary.Messages, result.Update.Vitals.Messages...)
 			summary.Deaths += len(result.Update.Vitals.Deaths)
+			events, bindErr := familyDefeatEventsFromVitals(next, result.ActorID, result.Update.Vitals, g.config.FamilyCatalog)
+			if bindErr != nil {
+				return nil, nil, bindErr
+			}
+			summary.FamilyDefeatEvents = append(summary.FamilyDefeatEvents, events...)
 		}
 		state, err := json.Marshal(next)
 		if err != nil {
@@ -182,6 +190,42 @@ func (g *WorldConnector) runPlayerVitalPhaseAt(ctx context.Context, commandID st
 		response, err := json.Marshal(summary)
 		return state, response, err
 	})
+	g.commandMu.Unlock()
+	if err != nil {
+		return receipt, err
+	}
+	if !receipt.Replayed {
+		var summary playerPhaseSummary
+		if decodeErr := json.Unmarshal(receipt.Response, &summary); decodeErr == nil && len(summary.FamilyDefeatEvents) != 0 {
+			if after, ok := g.snapshot(ctx); ok {
+				g.publishFamilyDefeat(after, summary.FamilyDefeatEvents)
+			}
+		}
+	}
+	return receipt, nil
+}
+
+func familyDefeatEventsFromVitals(after world.State, actorID string, vitals world.VitalsTransitionResult, catalog world.FamilyCatalog) ([]world.FamilyWarEvent, error) {
+	var events []world.FamilyWarEvent
+	for _, death := range vitals.Deaths {
+		if !death.Result.FamilyDefeated {
+			continue
+		}
+		if len(death.Result.Events) != 0 {
+			events = append(events, death.Result.Events...)
+			continue
+		}
+		player, ok := after.Players[actorID]
+		if !ok {
+			return nil, fmt.Errorf("family-defeat vitals actor absent")
+		}
+		bound, err := world.FamilyDefeatBroadcasts(catalog, player.Body.Daily[world.FamilyDailySlot].Max)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, bound...)
+	}
+	return events, nil
 }
 
 // Shutdown prevents new leases before snapshotting existing ones. It can be
@@ -294,6 +338,71 @@ type worldConnection struct {
 	// receipt. It remains stable across an uncertain commit/response so a
 	// retry cannot render a newer snapshot or create a second page.
 	infoContinuationCommandID string
+	// forgeSelectArmPending owns select_arm case 2 after a successful 제련
+	// start. The next player line is not parsed as an ordinary command; it
+	// is ExecuteForgeSelectArmLine. The command ID stays stable across an
+	// uncertain commit so a retry cannot load 900-904 twice.
+	forgeSelectArmPending   bool
+	forgeSelectArmCommandID string
+	// forgeMaterialPending owns select_arm case 3 after a successful weapon
+	// type. The next player line is ExecuteForgeSelectMaterialLine. ObjectID
+	// is the C forge1 template (900-904) loaded in case 2.
+	forgeMaterialPending   bool
+	forgeMaterialCommandID string
+	forgeObjectID          int16
+	// forgeQuenchPending owns select_arm case 4 after a successful material.
+	// The next player line is ExecuteForgeSelectQuenchLine. forgeSum is the
+	// C forge2 running cost from case 3 (material only) until case 6.
+	forgeQuenchPending   bool
+	forgeQuenchCommandID string
+	forgeSum             int32
+	forgeQuenchChoice    int
+	// forgeNamePending owns select_arm case 5 after a successful quench.
+	// The next player line is ExecuteForgeSelectNameLine.
+	forgeNamePending   bool
+	forgeNameCommandID string
+	// forgeConfirmPending owns select_arm case 6 after a successful name.
+	// The next player line is ExecuteForgeSelectConfirmLine. forgeWeaponName
+	// is the C forge1 name copied in case 5.
+	forgeConfirmPending   bool
+	forgeConfirmCommandID string
+	forgeWeaponName       string
+	// newForgeSelectArmPending owns select_newarm case 2 after a successful
+	// 무기만들기 start. The next player line is ExecuteNewForgeSelectArmLine,
+	// not ParseCommand. This flag is the C RETURN marker so the next line
+	// cannot become 제련's select_arm. The command ID stays stable across
+	// an uncertain commit.
+	newForgeSelectArmPending   bool
+	newForgeSelectArmCommandID string
+	// newForgeMaterialPending owns select_newarm case 3 after a successful
+	// weapon type. The next player line is ExecuteNewForgeSelectMaterialLine.
+	// ObjectID is the C forge1 template (900-904) loaded in case 2; Sum is
+	// the C forge2 cost written in case 3 until case 6.
+	newForgeMaterialPending   bool
+	newForgeMaterialCommandID string
+	newForgeObjectID          int16
+	newForgeSum               int32
+	// newForgeQuenchPending owns select_newarm case 4 after a successful
+	// material. The next player line is ExecuteNewForgeSelectQuenchLine.
+	newForgeQuenchPending   bool
+	newForgeQuenchCommandID string
+	newForgeQuenchChoice    int
+	// newForgeNamePending owns select_newarm case 5 after a successful
+	// quench. The next player line is ExecuteNewForgeSelectNameLine.
+	newForgeNamePending   bool
+	newForgeNameCommandID string
+	// newForgeConfirmPending owns select_newarm case 6 after a successful
+	// name. The next player line is ExecuteNewForgeSelectConfirmLine, not
+	// ParseCommand. newForgeWeaponName is the C forge1 name copied in case 5.
+	newForgeConfirmPending   bool
+	newForgeConfirmCommandID string
+	newForgeWeaponName       string
+	// suicidePasswordPending owns suicide case 2 after 목매달기. The next
+	// player line is ExecuteSuicidePasswordLine, not ParseCommand. The
+	// command ID stays stable across an uncertain commit so a retry cannot
+	// re-prompt.
+	suicidePasswordPending   bool
+	suicidePasswordCommandID string
 	// vote is command11.c's connection-local vote_cmnd state. It is never
 	// serialized into State or a receipt; the final choices are bound to one
 	// canonical receipt only after the connection has completed the prompts.
@@ -350,6 +459,7 @@ const (
 	composeBoardWrite
 	composeFamilyApplication
 	composeFamilyWithdrawal
+	composeFamilyNewsAppend
 	composeChangeClass
 )
 
@@ -509,6 +619,22 @@ func (c *worldConnection) submitComposeLine(ctx context.Context, line string) (s
 		c.lastCommand = strings.TrimLeft(line, " ")
 		return session.FamilyWithdrawalConfirmPrompt, true, nil
 	}
+	if session.ParseFamilyNewsAppendStartLine(line) {
+		state, ok := c.game.snapshot(ctx)
+		if !ok {
+			return "명령을 처리할 수 없습니다.\r\n", true, nil
+		}
+		result, err := state.PlanFamilyNewsView(c.lease.ActorID, c.game.config.FamilyCatalog)
+		if err != nil {
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		if result.Response == world.FamilyNewsNotMemberResponse {
+			return result.Response, true, nil
+		}
+		c.compose = &composeDraft{kind: composeFamilyNewsAppend}
+		c.lastCommand = strings.TrimLeft(line, " ")
+		return world.FamilyNewsAppendPrompt, true, nil
+	}
 	if session.ParseChangeClassStartLine(line) {
 		state, ok := c.game.snapshot(ctx)
 		if !ok {
@@ -545,6 +671,8 @@ func (c *worldConnection) submitComposeContinuation(ctx context.Context, line st
 		return c.submitFamilyApplicationContinuation(ctx, draft, line)
 	case composeFamilyWithdrawal:
 		return c.submitFamilyWithdrawalContinuation(ctx, draft, line)
+	case composeFamilyNewsAppend:
+		return c.submitFamilyNewsAppendContinuation(ctx, draft, line)
 	case composeChangeClass:
 		return c.submitChangeClassContinuation(ctx, draft, line)
 	default:
@@ -660,6 +788,799 @@ func (c *worldConnection) clearVote() {
 	c.vote.lastChoice = 0
 	c.vote.phase = 0
 	c.vote = nil
+}
+
+func (c *worldConnection) clearForgeSelectArm() {
+	c.forgeSelectArmPending = false
+	c.forgeSelectArmCommandID = ""
+}
+
+func (c *worldConnection) clearForgeMaterial() {
+	c.forgeMaterialPending = false
+	c.forgeMaterialCommandID = ""
+}
+
+func (c *worldConnection) clearForgeQuench() {
+	c.forgeQuenchPending = false
+	c.forgeQuenchCommandID = ""
+	c.forgeObjectID = 0
+	c.forgeSum = 0
+	c.forgeQuenchChoice = 0
+}
+
+func (c *worldConnection) clearForgeName() {
+	c.forgeNamePending = false
+	c.forgeNameCommandID = ""
+}
+
+func (c *worldConnection) clearForgeConfirm() {
+	c.forgeConfirmPending = false
+	c.forgeConfirmCommandID = ""
+	c.forgeWeaponName = ""
+}
+
+func (c *worldConnection) clearForgeFlow() {
+	c.clearForgeSelectArm()
+	c.clearForgeMaterial()
+	c.clearForgeQuench()
+	c.clearForgeName()
+	c.clearForgeConfirm()
+}
+
+func (c *worldConnection) clearNewForgeSelectArm() {
+	c.newForgeSelectArmPending = false
+	c.newForgeSelectArmCommandID = ""
+}
+
+func (c *worldConnection) clearNewForgeMaterial() {
+	c.newForgeMaterialPending = false
+	c.newForgeMaterialCommandID = ""
+	c.newForgeObjectID = 0
+	c.newForgeSum = 0
+}
+
+func (c *worldConnection) clearNewForgeQuench() {
+	c.newForgeQuenchPending = false
+	c.newForgeQuenchCommandID = ""
+	c.newForgeQuenchChoice = 0
+}
+
+func (c *worldConnection) clearNewForgeName() {
+	c.newForgeNamePending = false
+	c.newForgeNameCommandID = ""
+}
+
+func (c *worldConnection) clearNewForgeConfirm() {
+	c.newForgeConfirmPending = false
+	c.newForgeConfirmCommandID = ""
+	c.newForgeWeaponName = ""
+}
+
+func (c *worldConnection) clearNewForgeFlow() {
+	c.clearNewForgeSelectArm()
+	c.clearNewForgeMaterial()
+	c.clearNewForgeQuench()
+	c.clearNewForgeName()
+	c.clearNewForgeConfirm()
+}
+
+// submitNewForgeSelectArmLine owns command7.c:select_newarm case 2 after
+// 무기만들기. It runs before history/alias/parser handling so a digit or
+// invalid answer cannot become 도/flee, 제련, or another terminal command.
+// Replay of the same command ID does not re-commit.
+func (c *worldConnection) submitNewForgeSelectArmLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.newForgeSelectArmPending {
+		return "", false, nil
+	}
+	if session.IsNewForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsNewForgeSelectArmLine(line) {
+		return "", false, nil
+	}
+	if c.newForgeSelectArmCommandID == "" {
+		c.newForgeSelectArmCommandID = "newforge-select-arm-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteNewForgeSelectArmLine(ctx, c.game.config.Store, c.game.config.WorldID, c.newForgeSelectArmCommandID, c.lease, line, c.game.config.Catalog)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+			errors.Is(err, world.ErrNewForgeActorAbsent) ||
+			errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrNewForgeNameInvalid) ||
+			errors.Is(err, world.ErrNewForgeStaleProposal) ||
+			errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+			errors.Is(err, world.ErrNewForgeNotReading) ||
+			errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeSelectArmInput) {
+			c.clearNewForgeFlow()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.NewForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.NewForgeReprompt:
+		c.newForgeSelectArmCommandID = ""
+	case world.NewForgeMaterial:
+		c.clearNewForgeSelectArm()
+		c.newForgeMaterialPending = true
+		c.newForgeMaterialCommandID = ""
+		c.newForgeObjectID = result.ObjectID
+		c.newForgeSum = 0
+	default:
+		c.clearNewForgeFlow()
+	}
+	return result.Response, true, nil
+}
+
+// submitNewForgeSelectMaterialLine owns command7.c:select_newarm case 3
+// after a weapon type. It runs before history/alias/parser and before 제련
+// intercepts so a digit or invalid answer cannot become 도/flee, 제련, or
+// another terminal command. Replay of the same command ID does not
+// re-commit or charge gold. A successful material arms the case-4 quench
+// intercept. Case 5 is submitNewForgeSelectNameLine. Case 6 is
+// submitNewForgeSelectConfirmLine.
+func (c *worldConnection) submitNewForgeSelectMaterialLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.newForgeMaterialPending {
+		return "", false, nil
+	}
+	if session.IsNewForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsNewForgeSelectMaterialLine(line) {
+		return "", false, nil
+	}
+	if c.newForgeMaterialCommandID == "" {
+		c.newForgeMaterialCommandID = "newforge-select-material-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteNewForgeSelectMaterialLine(ctx, c.game.config.Store, c.game.config.WorldID, c.newForgeMaterialCommandID, c.lease, line, c.game.config.Catalog, c.newForgeObjectID)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+			errors.Is(err, world.ErrNewForgeActorAbsent) ||
+			errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrNewForgeNameInvalid) ||
+			errors.Is(err, world.ErrNewForgeStaleProposal) ||
+			errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+			errors.Is(err, world.ErrNewForgeNotReading) ||
+			errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeSelectArmInput) {
+			c.clearNewForgeMaterial()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.NewForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.NewForgeReprompt:
+		c.newForgeMaterialCommandID = ""
+	case world.NewForgeQuench:
+		c.newForgeMaterialPending = false
+		c.newForgeMaterialCommandID = ""
+		c.newForgeQuenchPending = true
+		c.newForgeQuenchCommandID = ""
+		c.newForgeObjectID = result.ObjectID
+		c.newForgeSum = result.Sum
+		c.newForgeQuenchChoice = 0
+	default:
+		c.clearNewForgeMaterial()
+		c.clearNewForgeQuench()
+	}
+	return result.Response, true, nil
+}
+
+// submitNewForgeSelectQuenchLine owns command7.c:select_newarm case 4
+// after a material. It runs before history/alias/parser and before 제련
+// intercepts so a digit or invalid answer cannot become 도/flee, 제련, or
+// another terminal command. Replay of the same command ID does not
+// re-commit or charge gold. A successful name prompt arms the case-5
+// intercept. Case 6 is submitNewForgeSelectConfirmLine.
+func (c *worldConnection) submitNewForgeSelectQuenchLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.newForgeQuenchPending {
+		return "", false, nil
+	}
+	if session.IsNewForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsNewForgeSelectQuenchLine(line) {
+		return "", false, nil
+	}
+	if c.newForgeQuenchCommandID == "" {
+		c.newForgeQuenchCommandID = "newforge-select-quench-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteNewForgeSelectQuenchLine(ctx, c.game.config.Store, c.game.config.WorldID, c.newForgeQuenchCommandID, c.lease, line, c.game.config.Catalog, c.newForgeObjectID, c.newForgeSum)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+			errors.Is(err, world.ErrNewForgeActorAbsent) ||
+			errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrNewForgeNameInvalid) ||
+			errors.Is(err, world.ErrNewForgeStaleProposal) ||
+			errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+			errors.Is(err, world.ErrNewForgeNotReading) ||
+			errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeSelectArmInput) {
+			c.clearNewForgeQuench()
+			c.newForgeObjectID = 0
+			c.newForgeSum = 0
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.NewForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.NewForgeReprompt:
+		c.newForgeQuenchCommandID = ""
+	case world.NewForgeName:
+		c.newForgeQuenchPending = false
+		c.newForgeQuenchCommandID = ""
+		c.newForgeNamePending = true
+		c.newForgeNameCommandID = ""
+		c.newForgeObjectID = result.ObjectID
+		c.newForgeQuenchChoice = result.QuenchChoice
+		if result.MaterialSum != 0 {
+			c.newForgeSum = result.MaterialSum
+		}
+	default:
+		c.clearNewForgeQuench()
+		c.clearNewForgeName()
+		c.newForgeObjectID = 0
+		c.newForgeSum = 0
+	}
+	return result.Response, true, nil
+}
+
+// submitNewForgeSelectNameLine owns command7.c:select_newarm case 5 after
+// a quench. It runs before history/alias/parser and before 제련 intercepts
+// so a weapon name cannot become 도/flee, 제련, or another terminal
+// command. Replay of the same command ID does not re-commit or charge
+// gold. A successful name arms the case-6 confirm intercept.
+func (c *worldConnection) submitNewForgeSelectNameLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.newForgeNamePending {
+		return "", false, nil
+	}
+	if session.IsNewForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsNewForgeSelectNameLine(line) {
+		return "", false, nil
+	}
+	if c.newForgeNameCommandID == "" {
+		c.newForgeNameCommandID = "newforge-select-name-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteNewForgeSelectNameLine(ctx, c.game.config.Store, c.game.config.WorldID, c.newForgeNameCommandID, c.lease, line, c.game.config.Catalog, c.newForgeObjectID, c.newForgeSum, c.newForgeQuenchChoice)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+			errors.Is(err, world.ErrNewForgeActorAbsent) ||
+			errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrNewForgeNameInvalid) ||
+			errors.Is(err, world.ErrNewForgeStaleProposal) ||
+			errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+			errors.Is(err, world.ErrNewForgeNotReading) ||
+			errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeSelectArmInput) {
+			c.clearNewForgeName()
+			c.newForgeObjectID = 0
+			c.newForgeSum = 0
+			c.newForgeQuenchChoice = 0
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.NewForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.NewForgeReprompt:
+		c.newForgeNameCommandID = ""
+	case world.NewForgeConfirm:
+		c.clearNewForgeName()
+		c.newForgeConfirmPending = true
+		c.newForgeConfirmCommandID = ""
+		c.newForgeWeaponName = result.ObjectName
+		c.newForgeObjectID = result.ObjectID
+		if result.QuenchChoice != 0 {
+			c.newForgeQuenchChoice = result.QuenchChoice
+		}
+		if result.MaterialSum != 0 {
+			c.newForgeSum = result.MaterialSum
+		}
+	default:
+		c.clearNewForgeName()
+		c.clearNewForgeConfirm()
+		c.newForgeObjectID = 0
+		c.newForgeSum = 0
+		c.newForgeQuenchChoice = 0
+	}
+	return result.Response, true, nil
+}
+
+// submitNewForgeSelectConfirmLine owns command7.c:select_newarm case 6 after
+// a name. It runs before history/alias/parser and before 제련 intercepts so
+// 예/아니오 cannot become another terminal command. Replay of the same
+// command ID does not re-charge gold or add a second weapon.
+func (c *worldConnection) submitNewForgeSelectConfirmLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.newForgeConfirmPending {
+		return "", false, nil
+	}
+	if !session.IsNewForgeSelectConfirmLine(line) {
+		return "", false, nil
+	}
+	if c.newForgeConfirmCommandID == "" {
+		c.newForgeConfirmCommandID = "newforge-select-confirm-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteNewForgeSelectConfirmLine(ctx, c.game.config.Store, c.game.config.WorldID, c.newForgeConfirmCommandID, c.lease, line, c.game.config.Catalog, c.newForgeObjectID, c.newForgeSum, c.newForgeQuenchChoice, c.newForgeWeaponName)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+			errors.Is(err, world.ErrNewForgeActorAbsent) ||
+			errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrNewForgeNameInvalid) ||
+			errors.Is(err, world.ErrNewForgeStaleProposal) ||
+			errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+			errors.Is(err, world.ErrNewForgeNotReading) ||
+			errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeSelectArmInput) ||
+			errors.Is(err, world.ErrNewForgeGoldObjectUnmigrated) ||
+			errors.Is(err, world.ErrNewForgeItemAllocatorUnavailable) {
+			c.clearNewForgeFlow()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.NewForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	c.clearNewForgeFlow()
+	if !receipt.Replayed && len(result.Events) > 0 {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishNewForge(after, result.Events)
+		}
+	}
+	return result.Response, true, nil
+}
+
+// publishForge delivers select_arm case 6's broadcast_rom line after the
+// first commit. Recipients are current same-room observers; the actor
+// already received the command response. A replay never calls this method.
+func (g *WorldConnector) publishForge(after world.State, events []world.ForgeEvent) {
+	if len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, event := range events {
+		if event.ActorID == "" || event.RoomID == 0 || event.Text == "" {
+			continue
+		}
+		actor, ok := after.Players[event.ActorID]
+		if !ok || !actor.Online || actor.Body.RoomID != event.RoomID {
+			continue
+		}
+		for connection := range g.connections {
+			player, ok := after.Players[connection.lease.ActorID]
+			if !ok || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+			}
+		}
+	}
+}
+
+// publishNewForge delivers select_newarm case 6's broadcast_rom line after
+// the first commit. Recipients are current same-room observers; the actor
+// already received the command response. A replay never calls this method.
+func (g *WorldConnector) publishNewForge(after world.State, events []world.NewForgeEvent) {
+	if len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, event := range events {
+		if event.ActorID == "" || event.RoomID == 0 || event.Text == "" {
+			continue
+		}
+		actor, ok := after.Players[event.ActorID]
+		if !ok || !actor.Online || actor.Body.RoomID != event.RoomID {
+			continue
+		}
+		for connection := range g.connections {
+			player, ok := after.Players[connection.lease.ActorID]
+			if !ok || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ExcludeActorID || connection.events == nil {
+				continue
+			}
+			select {
+			case connection.events <- event.Text:
+			default:
+			}
+		}
+	}
+}
+
+func (c *worldConnection) clearSuicidePassword() {
+	c.suicidePasswordPending = false
+	c.suicidePasswordCommandID = ""
+	c.passwordSecret = false
+}
+
+// submitSuicidePasswordLine owns command5.c:suicide case 2 after 목매달기.
+// It runs before history/alias/parser handling so the password cannot become
+// `!` history or another terminal command. Replay of the same command ID
+// does not re-commit or re-prompt. Param 3 confirm/archive stays fail-closed.
+func (c *worldConnection) submitSuicidePasswordLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.suicidePasswordPending {
+		return "", false, nil
+	}
+	if c.suicidePasswordCommandID == "" {
+		c.suicidePasswordCommandID = "suicide-password-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteSuicidePasswordLine(ctx, c.game.config.Store, c.game.config.WorldID, c.suicidePasswordCommandID, c.lease, line, session.SuicidePasswordOptions{
+		Accounts: c.game.config.Accounts, PasswordStore: c.game.config.PasswordStore, Name: c.accountName,
+	})
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, world.ErrSuicideConfirmUnmigrated) ||
+			errors.Is(err, world.ErrSuicideNotReading) ||
+			errors.Is(err, world.ErrSuicideActorAbsent) ||
+			errors.Is(err, world.ErrSuicideNameInvalid) ||
+			errors.Is(err, world.ErrSuicideStaleProposal) ||
+			errors.Is(err, world.ErrSuicideInvalidProposal) {
+			c.clearSuicidePassword()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.SuicideResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	c.clearSuicidePassword()
+	return result.Response, true, nil
+}
+
+// submitForgeSelectArmLine owns command7.c:select_arm case 2 after 제련.
+// It runs before history/alias/parser handling so a digit or invalid
+// answer cannot become 도/flee or another terminal command. Replay of the
+// same command ID does not re-commit.
+func (c *worldConnection) submitForgeSelectArmLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.forgeSelectArmPending {
+		return "", false, nil
+	}
+	if session.IsForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsForgeSelectArmLine(line) {
+		return "", false, nil
+	}
+	if c.forgeSelectArmCommandID == "" {
+		c.forgeSelectArmCommandID = "forge-select-arm-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteForgeSelectArmLine(ctx, c.game.config.Store, c.game.config.WorldID, c.forgeSelectArmCommandID, c.lease, line, c.game.config.Catalog)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedForgeLine) ||
+			errors.Is(err, world.ErrForgeActorAbsent) ||
+			errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrForgeNameInvalid) ||
+			errors.Is(err, world.ErrForgeStaleProposal) ||
+			errors.Is(err, world.ErrForgeInvalidProposal) ||
+			errors.Is(err, world.ErrForgeNotReading) ||
+			errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrForgeSelectArmInput) ||
+			errors.Is(err, world.ErrForgeGoldObjectUnmigrated) {
+			c.clearForgeFlow()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.ForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.ForgeReprompt:
+		c.forgeSelectArmCommandID = ""
+	case world.ForgeMaterial:
+		c.clearForgeSelectArm()
+		c.clearForgeQuench()
+		c.clearForgeName()
+		c.clearForgeConfirm()
+		c.forgeMaterialPending = true
+		c.forgeMaterialCommandID = ""
+		c.forgeObjectID = result.ObjectID
+	default:
+		c.clearForgeFlow()
+	}
+	return result.Response, true, nil
+}
+
+// submitForgeSelectMaterialLine owns command7.c:select_arm case 3 after a
+// weapon type. It runs before history/alias/parser handling so a digit or
+// invalid answer cannot become 도/flee or another terminal command. Replay
+// of the same command ID does not re-commit or charge gold.
+func (c *worldConnection) submitForgeSelectMaterialLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.forgeMaterialPending {
+		return "", false, nil
+	}
+	if session.IsForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsForgeSelectMaterialLine(line) {
+		return "", false, nil
+	}
+	if c.forgeMaterialCommandID == "" {
+		c.forgeMaterialCommandID = "forge-select-material-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteForgeSelectMaterialLine(ctx, c.game.config.Store, c.game.config.WorldID, c.forgeMaterialCommandID, c.lease, line, c.game.config.Catalog, c.forgeObjectID)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedForgeLine) ||
+			errors.Is(err, world.ErrForgeActorAbsent) ||
+			errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrForgeNameInvalid) ||
+			errors.Is(err, world.ErrForgeStaleProposal) ||
+			errors.Is(err, world.ErrForgeInvalidProposal) ||
+			errors.Is(err, world.ErrForgeNotReading) ||
+			errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrForgeSelectArmInput) ||
+			errors.Is(err, world.ErrForgeGoldObjectUnmigrated) {
+			c.clearForgeMaterial()
+			c.clearForgeQuench()
+			c.clearForgeName()
+			c.clearForgeConfirm()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.ForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.ForgeReprompt, world.ForgeMaterialDenied:
+		c.forgeMaterialCommandID = ""
+	case world.ForgeQuench:
+		c.forgeMaterialPending = false
+		c.forgeMaterialCommandID = ""
+		c.forgeQuenchPending = true
+		c.forgeQuenchCommandID = ""
+		c.forgeObjectID = result.ObjectID
+		c.forgeSum = result.Sum
+		c.clearForgeName()
+		c.clearForgeConfirm()
+	default:
+		c.clearForgeMaterial()
+		c.clearForgeQuench()
+		c.clearForgeName()
+		c.clearForgeConfirm()
+	}
+	return result.Response, true, nil
+}
+
+// submitForgeSelectQuenchLine owns command7.c:select_arm case 4 after a
+// material. It runs before history/alias/parser handling so a digit or
+// invalid answer cannot become 도/flee or another terminal command. Replay
+// of the same command ID does not re-commit or charge gold. A successful
+// quench arms the case-5 name intercept. Case 6 stays fail-closed.
+func (c *worldConnection) submitForgeSelectQuenchLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.forgeQuenchPending {
+		return "", false, nil
+	}
+	if session.IsForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsForgeSelectQuenchLine(line) {
+		return "", false, nil
+	}
+	if c.forgeQuenchCommandID == "" {
+		c.forgeQuenchCommandID = "forge-select-quench-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteForgeSelectQuenchLine(ctx, c.game.config.Store, c.game.config.WorldID, c.forgeQuenchCommandID, c.lease, line, c.game.config.Catalog, c.forgeObjectID, c.forgeSum)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedForgeLine) ||
+			errors.Is(err, world.ErrForgeActorAbsent) ||
+			errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrForgeNameInvalid) ||
+			errors.Is(err, world.ErrForgeStaleProposal) ||
+			errors.Is(err, world.ErrForgeInvalidProposal) ||
+			errors.Is(err, world.ErrForgeNotReading) ||
+			errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrForgeSelectArmInput) ||
+			errors.Is(err, world.ErrForgeGoldObjectUnmigrated) {
+			c.clearForgeQuench()
+			c.clearForgeName()
+			c.clearForgeConfirm()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.ForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.ForgeReprompt:
+		c.forgeQuenchCommandID = ""
+	case world.ForgeName:
+		c.forgeQuenchPending = false
+		c.forgeQuenchCommandID = ""
+		c.forgeNamePending = true
+		c.forgeNameCommandID = ""
+		c.forgeObjectID = result.ObjectID
+		c.forgeQuenchChoice = result.QuenchChoice
+		if result.MaterialSum != 0 {
+			c.forgeSum = result.MaterialSum
+		}
+		c.clearForgeConfirm()
+	default:
+		c.clearForgeQuench()
+		c.clearForgeName()
+		c.clearForgeConfirm()
+	}
+	return result.Response, true, nil
+}
+
+// submitForgeSelectNameLine owns command7.c:select_arm case 5 after a
+// quench. It runs before history/alias/parser handling so a weapon name
+// cannot become another terminal command. Replay of the same command ID
+// does not re-commit or charge gold. A successful confirm prompt arms
+// the case-6 gold-charge intercept.
+func (c *worldConnection) submitForgeSelectNameLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.forgeNamePending {
+		return "", false, nil
+	}
+	if session.IsForgeLine(line) {
+		return "", false, nil
+	}
+	if !session.IsForgeSelectNameLine(line) {
+		return "", false, nil
+	}
+	if c.forgeNameCommandID == "" {
+		c.forgeNameCommandID = "forge-select-name-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteForgeSelectNameLine(ctx, c.game.config.Store, c.game.config.WorldID, c.forgeNameCommandID, c.lease, line, c.game.config.Catalog, c.forgeObjectID, c.forgeSum, c.forgeQuenchChoice)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedForgeLine) ||
+			errors.Is(err, world.ErrForgeActorAbsent) ||
+			errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrForgeNameInvalid) ||
+			errors.Is(err, world.ErrForgeStaleProposal) ||
+			errors.Is(err, world.ErrForgeInvalidProposal) ||
+			errors.Is(err, world.ErrForgeNotReading) ||
+			errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrForgeSelectArmInput) ||
+			errors.Is(err, world.ErrForgeGoldObjectUnmigrated) ||
+			errors.Is(err, world.ErrForgeItemAllocatorUnavailable) {
+			c.clearForgeName()
+			c.clearForgeQuench()
+			c.clearForgeConfirm()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.ForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	switch result.Action {
+	case world.ForgeReprompt:
+		c.forgeNameCommandID = ""
+	case world.ForgeConfirm:
+		c.clearForgeName()
+		c.forgeConfirmPending = true
+		c.forgeConfirmCommandID = ""
+		c.forgeWeaponName = result.ObjectName
+		if result.ObjectID != 0 {
+			c.forgeObjectID = result.ObjectID
+		}
+		if result.QuenchChoice != 0 {
+			c.forgeQuenchChoice = result.QuenchChoice
+		}
+		if result.MaterialSum != 0 {
+			c.forgeSum = result.MaterialSum
+		}
+	default:
+		c.clearForgeName()
+		c.clearForgeConfirm()
+	}
+	return result.Response, true, nil
+}
+
+// submitForgeSelectConfirmLine owns command7.c:select_arm case 6 after a
+// name. It runs before history/alias/parser handling so 예/아니오 cannot
+// become another terminal command. Replay of the same command ID does not
+// re-charge gold or add a second weapon.
+func (c *worldConnection) submitForgeSelectConfirmLine(ctx context.Context, line string) (string, bool, error) {
+	if !c.forgeConfirmPending {
+		return "", false, nil
+	}
+	if !session.IsForgeSelectConfirmLine(line) {
+		return "", false, nil
+	}
+	if c.forgeConfirmCommandID == "" {
+		c.forgeConfirmCommandID = "forge-select-confirm-" + rand.Text()
+	}
+	receipt, err := c.game.owners.ExecuteForgeSelectConfirmLine(ctx, c.game.config.Store, c.game.config.WorldID, c.forgeConfirmCommandID, c.lease, line, c.game.config.Catalog, c.forgeObjectID, c.forgeSum, c.forgeQuenchChoice, c.forgeWeaponName)
+	if err != nil {
+		if !c.game.owners.Owns(c.lease) {
+			c.ready = false
+			return "", true, err
+		}
+		if errors.Is(err, session.ErrUnsupportedForgeLine) ||
+			errors.Is(err, world.ErrForgeActorAbsent) ||
+			errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+			errors.Is(err, world.ErrForgeNameInvalid) ||
+			errors.Is(err, world.ErrForgeStaleProposal) ||
+			errors.Is(err, world.ErrForgeInvalidProposal) ||
+			errors.Is(err, world.ErrForgeNotReading) ||
+			errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+			errors.Is(err, world.ErrForgeSelectArmInput) ||
+			errors.Is(err, world.ErrForgeGoldObjectUnmigrated) ||
+			errors.Is(err, world.ErrForgeItemAllocatorUnavailable) {
+			c.clearForgeFlow()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
+		return "", true, err
+	}
+	var result world.ForgeResult
+	if err := json.Unmarshal(receipt.Response, &result); err != nil {
+		return "", true, err
+	}
+	c.clearForgeFlow()
+	if !receipt.Replayed && len(result.Events) > 0 {
+		if after, ok := c.game.snapshot(ctx); ok {
+			c.game.publishForge(after, result.Events)
+		}
+	}
+	return result.Response, true, nil
 }
 
 // submitVoteLine owns both the initial `투표` line and all source
@@ -846,6 +1767,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		output, _, err := c.submitPasswordLine(ctx, line)
 		return output, err
 	}
+	// suicide case 2 owns the next raw line after 목매달기. Route it before
+	// compose/vote/password/history/alias/parser so the password cannot
+	// become another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitSuicidePasswordLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	if output, handled, err := c.submitComposeLine(ctx, line); handled {
 		if err != nil {
 			if !c.game.owners.Owns(c.lease) {
@@ -869,6 +1802,126 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	// history entry.
 	if output, handled, err := c.submitPasswordLine(ctx, line); handled {
 		return output, err
+	}
+	// select_newarm case 2 owns the next raw line after 무기만들기. Route
+	// it before 제련/history/alias/parser so a digit cannot become another
+	// command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitNewForgeSelectArmLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_newarm case 3 owns the next raw line after a weapon type.
+	// Route it before 제련/history/alias/parser so a digit cannot become
+	// another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitNewForgeSelectMaterialLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_newarm case 4 owns the next raw line after a material.
+	// Route it before 제련/history/alias/parser so a digit cannot become
+	// another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitNewForgeSelectQuenchLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_newarm case 5 owns the next raw line after a quench.
+	// Route it before 제련/history/alias/parser so a weapon name cannot
+	// become another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitNewForgeSelectNameLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_newarm case 6 owns the next raw line after a weapon name.
+	// Route it before 제련/history/alias/parser so 예/아니오 cannot become
+	// another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitNewForgeSelectConfirmLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_arm case 2 owns the next raw line after 제련. Route it before
+	// history/alias/parser so a digit cannot become another command and a
+	// retry reuses the same receipt identity.
+	if output, handled, err := c.submitForgeSelectArmLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_arm case 3 owns the next raw line after a weapon type. Route
+	// it before history/alias/parser so a digit cannot become another
+	// command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitForgeSelectMaterialLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_arm case 4 owns the next raw line after a material. Route
+	// it before history/alias/parser so a digit cannot become another
+	// command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitForgeSelectQuenchLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_arm case 5 owns the next raw line after a quench. Route
+	// it before history/alias/parser so a weapon name cannot become
+	// another command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitForgeSelectNameLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	// select_arm case 6 owns the next raw line after a weapon name. Route
+	// it before history/alias/parser so 예/아니오 cannot become another
+	// command and a retry reuses the same receipt identity.
+	if output, handled, err := c.submitForgeSelectConfirmLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
 	}
 	line, c.lastCommand = session.ExpandHistoryLine(c.lastCommand, line)
 	// History expansion can recreate an interactive command. Route that
@@ -950,7 +2003,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			return output, nil
 		}
 	}
-	directional := parsed.Kind == session.CommandDirectional
+	directional := parsed.Kind == session.CommandDirectional || parsed.Kind == session.CommandGo
 	sayText, sayCommand := "", false
 	yellText, yellCommand := "", false
 	broadcastCommand := false
@@ -998,6 +2051,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	familyCommand := false
 	familyTalkCommand := false
 	familyMutationCommand := false
+	familyNewsCommand := false
+	familyWarCommand := false
+	dmFamilyCommand := false
+	dmFollowCommand := false
+	moonSetCommand := false
+	zapCommand := false
+	forgeCommand := false
+	newForgeCommand := false
+	buyStatesCommand := false
+	suicideCommand := false
 	marriageCommand := false
 	marriageSendCommand := false
 	divorceCommand := false
@@ -1035,6 +2098,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteLookLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, hour)
 	case session.CommandDirectional:
 		receipt, err = c.game.owners.ExecuteDirectionalLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, now, hour, world.SceneOptions{}, c.game.config.Catalog, c.game.config.Roll, c.game.config.Allocate)
+	case session.CommandGo:
+		receipt, err = c.game.owners.ExecuteGoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, now, hour, c.game.config.Catalog, c.game.config.Roll, c.game.config.Allocate)
 	case session.CommandAttack:
 		receipt, err = c.game.owners.ExecuteAttackLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.Roll, session.AttackOptions{Now: now, Allocate: c.game.config.Allocate})
 	case session.CommandSteal:
@@ -1093,7 +2158,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		receipt, err = c.game.owners.ExecuteReadScrollLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ReadScrollOptions{Now: now, Roll: c.game.config.Roll})
 	case session.CommandCast:
 		castCommand = true
-		receipt, err = c.game.owners.ExecuteCastLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.CastOptions{Now: now, Roll: c.game.config.Roll})
+		receipt, err = c.game.owners.ExecuteCastLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.CastOptions{Now: now, Hour: hour, Roll: c.game.config.Roll})
 	case session.CommandPropertyInvite:
 		propertyInviteCommand = true
 		receipt, err = c.game.owners.ExecutePropertyInviteLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -1106,6 +2171,38 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandFamilyMutation:
 		familyMutationCommand = true
 		receipt, err = c.game.owners.ExecuteFamilyMutationLineWithCatalog(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
+	case session.CommandFamilyNews:
+		familyNewsCommand = true
+		receipt, err = c.game.owners.ExecuteFamilyNewsLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
+	case session.CommandFamilyWar:
+		familyWarCommand = true
+		receipt, err = c.game.owners.ExecuteFamilyWarLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, c.game.config.FamilyCatalog)
+	case session.CommandDMFamily:
+		dmFamilyCommand = true
+		receipt, err = c.game.owners.ExecuteDMFamilyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.DMFamilyOptions{
+			Catalog: c.game.config.Catalog, Roll: c.game.config.Roll, Allocate: c.game.config.Allocate,
+		})
+	case session.CommandDMFollow:
+		dmFollowCommand = true
+		receipt, err = c.game.owners.ExecuteDMFollowLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandMoonSet:
+		moonSetCommand = true
+		receipt, err = c.game.owners.ExecuteMoonSetLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandZap:
+		zapCommand = true
+		receipt, err = c.game.owners.ExecuteZapLineWithOptions(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line, session.ZapOptions{Now: now, Roll: c.game.config.Roll})
+	case session.CommandForge:
+		forgeCommand = true
+		receipt, err = c.game.owners.ExecuteForgeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandNewForge:
+		newForgeCommand = true
+		receipt, err = c.game.owners.ExecuteNewForgeLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandBuyStates:
+		buyStatesCommand = true
+		receipt, err = c.game.owners.ExecuteBuyStatesLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandSuicide:
+		suicideCommand = true
+		receipt, err = c.game.owners.ExecuteSuicideLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandMarriage:
 		marriageCommand = true
 		receipt, err = c.game.owners.ExecuteMarriageLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -1309,8 +2406,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	if errors.Is(err, session.ErrReplyTargetUnavailable) {
 		return "누구에게 말을 전하시려구요?\r\n", nil
 	}
+	if errors.Is(err, session.ErrDirectionalDestinationUnresolved) {
+		return session.DirectionalMapMissingResponse, nil
+	}
+	if errors.Is(err, world.ErrGoDestinationUnresolved) {
+		return world.GoMapMissingResponse, nil
+	}
 	if errors.Is(err, session.ErrUnsupportedLookLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectionalLine) ||
+		errors.Is(err, session.ErrUnsupportedGoLine) ||
 		errors.Is(err, session.ErrUnsupportedAttackLine) ||
 		errors.Is(err, session.ErrUnsupportedStatusLine) ||
 		errors.Is(err, session.ErrUnsupportedFollowLine) ||
@@ -1323,6 +2427,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedShopLine) ||
 		errors.Is(err, session.ErrUnsupportedShopPurchaseLine) ||
 		errors.Is(err, session.ErrUnsupportedTradeLine) ||
+		errors.Is(err, world.ErrTradeActorAbsent) ||
+		errors.Is(err, world.ErrTradeItemsUnmigrated) ||
+		errors.Is(err, world.ErrTradeOffersUnmigrated) ||
+		errors.Is(err, world.ErrTradeNPCUnresolved) ||
+		errors.Is(err, world.ErrTradeStaleProposal) ||
+		errors.Is(err, world.ErrTradeInvalidProposal) ||
+		errors.Is(err, world.ErrTradeInvalidOccurrence) ||
+		errors.Is(err, world.ErrTradeRewardAllocator) ||
 		errors.Is(err, session.ErrUnsupportedValueLine) ||
 		errors.Is(err, session.ErrUnsupportedRepairLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectMessageLine) ||
@@ -1566,6 +2678,98 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrFamilyMemberDuplicate) ||
 		errors.Is(err, world.ErrFamilyMutationStaleProposal) ||
 		errors.Is(err, world.ErrFamilyMutationInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedFamilyNewsLine) ||
+		errors.Is(err, session.ErrFamilyNewsAppendContinuationRequired) ||
+		errors.Is(err, world.ErrFamilyNewsUnresolved) ||
+		errors.Is(err, world.ErrFamilyNewsInvalid) ||
+		errors.Is(err, world.ErrFamilyNewsActorAbsent) ||
+		errors.Is(err, world.ErrFamilyNewsIdentityUnresolved) ||
+		errors.Is(err, world.ErrFamilyNewsStateInvalid) ||
+		errors.Is(err, world.ErrFamilyNewsLineInvalid) ||
+		errors.Is(err, world.ErrFamilyNewsLimit) ||
+		errors.Is(err, world.ErrFamilyNewsStaleProposal) ||
+		errors.Is(err, world.ErrFamilyNewsInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedFamilyWarLine) ||
+		errors.Is(err, world.ErrFamilyWarUnresolved) ||
+		errors.Is(err, world.ErrFamilyWarActorAbsent) ||
+		errors.Is(err, world.ErrFamilyWarIdentityUnresolved) ||
+		errors.Is(err, world.ErrFamilyWarStateInvalid) ||
+		errors.Is(err, world.ErrFamilyWarStaleProposal) ||
+		errors.Is(err, world.ErrFamilyWarInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedDMFamilyLine) ||
+		errors.Is(err, world.ErrDMFamilyActorAbsent) ||
+		errors.Is(err, world.ErrDMFamilyCatalog) ||
+		errors.Is(err, world.ErrDMFamilyRandom) ||
+		errors.Is(err, world.ErrDMFamilyAllocator) ||
+		errors.Is(err, world.ErrDMFamilyFloorUnresolved) ||
+		errors.Is(err, world.ErrDMFamilyNPCUnresolved) ||
+		errors.Is(err, world.ErrDMFamilyRoomExhausted) ||
+		errors.Is(err, world.ErrDMFamilyStaleProposal) ||
+		errors.Is(err, world.ErrDMFamilyInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedDMFollowLine) ||
+		errors.Is(err, world.ErrDMFollowActorAbsent) ||
+		errors.Is(err, world.ErrDMFollowNPCUnresolved) ||
+		errors.Is(err, world.ErrDMFollowInvalidVerb) ||
+		errors.Is(err, world.ErrDMFollowInvalidName) ||
+		errors.Is(err, world.ErrDMFollowInvalidOccurrence) ||
+		errors.Is(err, world.ErrDMFollowNotReciprocal) ||
+		errors.Is(err, world.ErrDMFollowStaleProposal) ||
+		errors.Is(err, world.ErrDMFollowInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedMoonSetLine) ||
+		errors.Is(err, world.ErrMoonSetActorAbsent) ||
+		errors.Is(err, world.ErrMoonSetCanonicalInventoryNeeded) ||
+		errors.Is(err, world.ErrMoonSetItemNameRequired) ||
+		errors.Is(err, world.ErrMoonSetInvalidOccurrence) ||
+		errors.Is(err, world.ErrMoonSetRoomAbsent) ||
+		errors.Is(err, world.ErrMoonSetRoomNameInvalid) ||
+		errors.Is(err, world.ErrMoonSetDescriptionTooLong) ||
+		errors.Is(err, world.ErrMoonSetKeyTooLong) ||
+		errors.Is(err, world.ErrMoonSetStaleProposal) ||
+		errors.Is(err, world.ErrMoonSetInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedZapLine) ||
+		errors.Is(err, world.ErrZapActorAbsent) ||
+		errors.Is(err, world.ErrZapItemNameRequired) ||
+		errors.Is(err, world.ErrZapInvalidOccurrence) ||
+		errors.Is(err, world.ErrZapTargetNameRequired) ||
+		errors.Is(err, world.ErrZapNPCUnresolved) ||
+		errors.Is(err, world.ErrZapSpellUnavailable) ||
+		errors.Is(err, world.ErrZapRandom) ||
+		errors.Is(err, world.ErrZapRoomItemsRequired) ||
+		errors.Is(err, world.ErrZapStaleProposal) ||
+		errors.Is(err, world.ErrZapInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedForgeLine) ||
+		errors.Is(err, world.ErrForgeActorAbsent) ||
+		errors.Is(err, world.ErrForgeFlagsUnresolved) ||
+		errors.Is(err, world.ErrForgeNameInvalid) ||
+		errors.Is(err, world.ErrForgeStaleProposal) ||
+		errors.Is(err, world.ErrForgeInvalidProposal) ||
+		errors.Is(err, world.ErrForgeNotReading) ||
+		errors.Is(err, world.ErrForgeCatalogUnmigrated) ||
+		errors.Is(err, world.ErrForgeSelectArmInput) ||
+		errors.Is(err, world.ErrForgeGoldObjectUnmigrated) ||
+		errors.Is(err, session.ErrUnsupportedNewForgeLine) ||
+		errors.Is(err, world.ErrNewForgeActorAbsent) ||
+		errors.Is(err, world.ErrNewForgeFlagsUnresolved) ||
+		errors.Is(err, world.ErrNewForgeNameInvalid) ||
+		errors.Is(err, world.ErrNewForgeStaleProposal) ||
+		errors.Is(err, world.ErrNewForgeInvalidProposal) ||
+		errors.Is(err, world.ErrNewForgeNotReading) ||
+		errors.Is(err, world.ErrNewForgeCatalogUnmigrated) ||
+		errors.Is(err, world.ErrNewForgeSelectArmInput) ||
+		errors.Is(err, session.ErrUnsupportedBuyStatesLine) ||
+		errors.Is(err, world.ErrBuyStatesActorAbsent) ||
+		errors.Is(err, world.ErrBuyStatesGoldUnresolved) ||
+		errors.Is(err, world.ErrBuyStatesStatsUnresolved) ||
+		errors.Is(err, world.ErrBuyStatesApplyPending) ||
+		errors.Is(err, world.ErrBuyStatesInvalidStat) ||
+		errors.Is(err, world.ErrBuyStatesStaleProposal) ||
+		errors.Is(err, world.ErrBuyStatesInvalidProposal) ||
+		errors.Is(err, world.ErrBuyStatesNameInvalid) ||
+		errors.Is(err, session.ErrUnsupportedSuicideLine) ||
+		errors.Is(err, world.ErrSuicideActorAbsent) ||
+		errors.Is(err, world.ErrSuicideNameInvalid) ||
+		errors.Is(err, world.ErrSuicideStaleProposal) ||
+		errors.Is(err, world.ErrSuicideInvalidProposal) ||
 		errors.Is(err, world.ErrMarriageActorAbsent) ||
 		errors.Is(err, world.ErrMarriageNotWeddingHall) ||
 		errors.Is(err, world.ErrMarriageActorTooYoung) ||
@@ -1663,6 +2867,13 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			c.game.publishExpress(after, c.lease.ActorID, expressText)
 		}
 	}
+	if parsed.Kind == session.CommandLook && !receipt.Replayed {
+		if command, ok := session.ParseLookLine(line); ok {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishLookInspect(after, c.lease.ActorID, command.Target, command.Occurrence, hour)
+			}
+		}
+	}
 	if lookAtTargetCommand && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
 			c.game.publishLookAtTarget(after, c.lease.ActorID, lookAtTarget.Target, lookAtTarget.Occurrence)
@@ -1705,6 +2916,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishFlee(after, result)
+				if result.Death != nil {
+					c.game.publishFamilyDefeat(after, result.Death.Events)
+				}
 			}
 		}
 	}
@@ -1854,9 +3068,16 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	}
 	if castCommand && !receipt.Replayed {
 		var result world.CastResult
-		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && result.Broadcast && result.Event != nil {
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil {
 			if after, ok := c.game.snapshot(ctx); ok {
-				publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
+				if result.Broadcast && result.Event != nil {
+					if world.IsRecallCastSpell(result.SpellName) {
+						c.game.publishRecall(after, result)
+					} else {
+						publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
+					}
+				}
+				c.game.publishCastTarget(after, result)
 			}
 		}
 	}
@@ -1897,6 +3118,38 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
 			if after, ok := c.game.snapshot(ctx); ok {
 				c.game.publishFamilyMutation(after, result.Events)
+			}
+		}
+	}
+	if familyWarCommand && !receipt.Replayed {
+		var result world.FamilyWarResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishFamilyWar(after, c.lease.ActorID, result.Events)
+			}
+		}
+	}
+	if dmFamilyCommand && !receipt.Replayed {
+		var result world.DMFamilyResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishDMFamily(after, c.lease.ActorID, result.Events)
+			}
+		}
+	}
+	if moonSetCommand && !receipt.Replayed {
+		var result world.MoonSetResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishMoonSet(after, result.Events)
+			}
+		}
+	}
+	if zapCommand && !receipt.Replayed {
+		var result world.ZapResult
+		if decodeErr := json.Unmarshal(receipt.Response, &result); decodeErr == nil && len(result.Events) != 0 {
+			if after, ok := c.game.snapshot(ctx); ok {
+				c.game.publishZap(after, result.Events)
 			}
 		}
 	}
@@ -2207,6 +3460,83 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
+	} else if familyNewsCommand {
+		var result world.FamilyNewsResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if familyWarCommand {
+		var result world.FamilyWarResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if dmFamilyCommand {
+		var result world.DMFamilyResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if dmFollowCommand {
+		var result world.DMFollowResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if moonSetCommand {
+		var result world.MoonSetResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if zapCommand {
+		var result world.ZapResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if forgeCommand {
+		var result world.ForgeResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+			// Restore the select_arm case-2 gate after a successful (or
+			// replayed) weapon-type prompt so the next player line cannot
+			// fall through the ordinary parser.
+			if result.Action == world.ForgePrompt {
+				c.forgeSelectArmPending = true
+				c.forgeSelectArmCommandID = ""
+				c.clearForgeMaterial()
+				c.clearForgeQuench()
+				c.clearForgeName()
+				c.clearForgeConfirm()
+			}
+		}
+	} else if newForgeCommand {
+		var result world.NewForgeResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+			// Restore the select_newarm case-2 gate after a successful (or
+			// replayed) weapon-type prompt so the next player line cannot
+			// fall through the ordinary parser. This is not 제련's select_arm.
+			if result.Action == world.NewForgePrompt {
+				c.clearNewForgeFlow()
+				c.newForgeSelectArmPending = true
+				c.newForgeSelectArmCommandID = ""
+			}
+		}
+	} else if buyStatesCommand {
+		var result world.BuyStatesResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if suicideCommand {
+		var result world.SuicideResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+			// Restore suicide case 2 after a successful (or replayed)
+			// password prompt so the next player line cannot fall through
+			// the ordinary parser.
+			if result.Action == world.SuicidePrompt {
+				c.suicidePasswordPending = true
+				c.suicidePasswordCommandID = ""
+				c.passwordSecret = true
+			}
+		}
 	} else if marriageCommand {
 		var result world.MarriageResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
@@ -2350,6 +3680,9 @@ func (c *worldConnection) Close(ctx context.Context) {
 	// departure cleanup may need a retry, but an abandoned title/body must not
 	// remain attached to that connection while it is sealed.
 	c.clearVote()
+	c.clearForgeFlow()
+	c.clearNewForgeSelectArm()
+	c.clearSuicidePassword()
 	c.clearCompose()
 	// `first_ignore` is descriptor-local in the legacy server. Clear it at the
 	// connection boundary so a closed descriptor cannot retain names while a
@@ -2381,6 +3714,33 @@ func (c *worldConnection) Close(ctx context.Context) {
 	c.closed = true
 	c.ready = false
 	_ = c.game.cleanup.Retry(ctx, 5*time.Second)
+}
+
+// publishCastTarget delivers locate_player's private scrye notice to the
+// exact online target. C print(crt_ptr->fd) is independent of the caster-room
+// broadcast_rom, so this path does not require the target to share a room.
+func (g *WorldConnector) publishCastTarget(after world.State, result world.CastResult) {
+	if result.TargetID == "" || result.TargetText == "" {
+		return
+	}
+	target, ok := after.Players[result.TargetID]
+	if !ok || !target.Online {
+		return
+	}
+	if result.TargetName != "" && target.Body.Name != result.TargetName {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		if connection.lease.ActorID != result.TargetID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- result.TargetText:
+		default:
+		}
+	}
 }
 
 func (g *WorldConnector) snapshot(ctx context.Context) (world.State, bool) {

@@ -8,6 +8,7 @@ import {
   getMobileViewportHeight,
   shouldDeferTerminalSubmission,
   shouldDeferTerminalResize,
+  shouldYieldTerminalKey,
 } from "@/lib/terminal-focus";
 import { validateGatewayUrl } from "@/lib/gateway-url";
 
@@ -135,6 +136,25 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       const hasSelection = () =>
         term.hasSelection() || Boolean(window.getSelection()?.toString());
 
+      const testApi = {
+        hasSelection,
+        getSelection: () =>
+          term.getSelection() || window.getSelection()?.toString() || "",
+        selectAll: () => {
+          term.selectAll();
+        },
+        viewportY: () => term.buffer.active.viewportY,
+        baseY: () => term.buffer.active.baseY,
+        scrollLines: (count: number) => {
+          term.scrollLines(count);
+        },
+      };
+      Object.defineProperty(window, "__muhanTerminal", {
+        configurable: true,
+        enumerable: false,
+        get: () => (disposed ? undefined : testApi),
+      });
+
       const focusTerminal = () => {
         const activeElement = document.activeElement;
         if (
@@ -230,7 +250,16 @@ export function ClassicTerminal({ url }: { url: string | null }) {
       const observer = new ResizeObserver(resize);
       observer.observe(element);
 
-      term.attachCustomKeyEventHandler((event) => event.key !== "Tab");
+      term.attachCustomKeyEventHandler(
+        (event) =>
+          !shouldYieldTerminalKey({
+            key: event.key,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            altKey: event.altKey,
+            hasSelection: hasSelection(),
+          }),
+      );
       processTerminalData = (value: string) => {
         const currentSocket = socket;
         if (
@@ -406,6 +435,7 @@ export function ClassicTerminal({ url }: { url: string | null }) {
         activeSocket?.close(1000, "component disposed");
         fit.dispose();
         term.dispose();
+        delete (window as Window & { __muhanTerminal?: unknown }).__muhanTerminal;
       };
 
       if (address) connect();

@@ -271,7 +271,7 @@ func (s State) DropItem(actorID, name string, occurrence int) (State, ItemMutati
 	if err := next.Validate(); err != nil {
 		return State{}, ItemMutationResult{}, err
 	}
-	return next, ItemMutationResult{ItemName: plan.Source.Items[id].Object.Name, Action: "drop"}, nil
+	return next, ItemMutationResult{ItemName: plan.Destination.Items[id].Object.Name, Action: "drop"}, nil
 }
 
 // DropAllItems ports drop_all_rom for canonical inventory roots. Quest/event

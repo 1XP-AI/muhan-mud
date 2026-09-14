@@ -5,6 +5,22 @@ import (
 	"strings"
 )
 
+const (
+	ShopListNotShopAction   = "not-shop"
+	ShopListNoStockAction   = "no-stock"
+	ShopListNotShopResponse = "여기는 상점이 아닙니다."
+	ShopListNoStockResponse = "살 물건이 없습니다."
+	ShopListHeaderResponse  = "상품들:"
+
+	ShopSaleSoldAction         = "sell-shop-item"
+	ShopSaleNotPawnAction      = "not-pawn"
+	ShopSaleAskWhatAction      = "ask-what"
+	ShopSaleNotHoldingAction   = "not-holding"
+	ShopSaleNotPawnResponse    = "여기는 전당포가 아닙니다."
+	ShopSaleAskWhatResponse    = "무엇을 파시려구요?"
+	ShopSaleNotHoldingResponse = "당신은 그런 물건을 갖고 있지 않습니다."
+)
+
 // RoomPawnFlag is RPAWNS from src/mtype.h.  A pawn shop uses the same
 // sequential storage-room convention documented by docs/rom_stor: the room
 // immediately after the pawn shop must be a canonical, non-teleportable
@@ -34,9 +50,10 @@ type ShopListing struct {
 	Weight   int    `json:"weight"`
 }
 
-// ShopListResult is read-only. Response is intentionally plain text rather
-// than ANSI/obj_str output: the source formatting depends on an unported
-// descriptor/title layer, while item order and exact value are deterministic.
+// ShopListResult is the durable `품목` receipt. Response matches command7.c:list
+// prints (Go may use \r\n). IDs stay in the receipt for audit/replay and are
+// not rendered. A non-RSHOPP room and a missing rom_num+1 storage room are
+// successful typed responses, not command failures.
 type ShopListResult struct {
 	Action        string        `json:"action"`
 	ShopRoomID    int16         `json:"shop_room_id"`
@@ -87,26 +104,45 @@ type ShopSaleResult struct {
 	Response              string `json:"response"`
 }
 
+// pawnShopRoom is the C RPAWNS gate. Non-pawn rooms, including RSHOPP shop
+// rooms, are a successful "여기는 전당포가 아닙니다." receipt — not the list/buy
+// 상점 text and not a command error. Actor inventory is not required for this
+// print; unmigrated items are checked only after a name is present.
+func (s State) pawnShopRoom(actorID string) (PlayerState, RoomState, ShopSaleResult, bool, error) {
+	if err := s.Validate(); err != nil {
+		return PlayerState{}, RoomState{}, ShopSaleResult{}, false, err
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 || actor.Body.Name == "" {
+		return PlayerState{}, RoomState{}, ShopSaleResult{}, false, fmt.Errorf("online pawn-shop actor absent")
+	}
+	shop, ok := s.Rooms[actor.Body.RoomID]
+	if !ok {
+		return PlayerState{}, RoomState{}, ShopSaleResult{}, false, fmt.Errorf("pawn shop room absent")
+	}
+	if !flag(shop.Resource.Flags[:], RoomPawnFlag) {
+		return actor, shop, ShopSaleResult{
+			Action:     ShopSaleNotPawnAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopSaleNotPawnResponse,
+		}, true, nil
+	}
+	return actor, shop, ShopSaleResult{}, false, nil
+}
+
 // pawnShopStorage is deliberately separate from shopStorage in
 // shop_transaction.go: purchase and sale have different room flags and must
 // not silently widen one another's admission boundary.
 func (s State) pawnShopStorage(actorID string) (PlayerState, RoomState, RoomState, error) {
-	if err := s.Validate(); err != nil {
+	actor, shop, printed, handled, err := s.pawnShopRoom(actorID)
+	if err != nil {
 		return PlayerState{}, RoomState{}, RoomState{}, err
 	}
-	actor, ok := s.Players[actorID]
-	if !ok || !actor.Online || actor.Body.Type != 0 || actor.Body.Name == "" {
-		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("online pawn-shop actor absent")
+	if handled {
+		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("%s", printed.Response)
 	}
 	if actor.Items == nil {
 		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("online player with migrated items required")
-	}
-	shop, ok := s.Rooms[actor.Body.RoomID]
-	if !ok {
-		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("pawn shop room absent")
-	}
-	if !flag(shop.Resource.Flags[:], RoomPawnFlag) {
-		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("여기는 전당포가 아닙니다")
 	}
 	if actor.Body.RoomID == 32767 {
 		return PlayerState{}, RoomState{}, RoomState{}, fmt.Errorf("pawn storage room identity overflow")
@@ -119,15 +155,44 @@ func (s State) pawnShopStorage(actorID string) (PlayerState, RoomState, RoomStat
 	return actor, shop, storage, nil
 }
 
-// ListShopItems reads the source-defined RSHOPP/RNOTEL storage in canonical
-// inventory order. C's list handler does not apply the normal room-object
-// visibility filter, so this bounded projection lists every valid storage
-// root. It rejects malformed/negative stock instead of exposing guessed
-// prices or falling back to legacy Resource.Objects.
+// ListShopItems is the bounded Go port of command7.c:list (`품목`). C returns 0
+// after printing the shop-or-not and missing-storage lines, so those are
+// typed receipts here rather than command errors. Pawn-only rooms keep the
+// shop text; this slice does not guess RPAWNS messages. load_rom(rom_num+1)
+// missing is "살 물건이 없습니다.". Empty first_obj prints only "상품들:" —
+// C's empty while-loop, not an invented "없음." catalog. Unmigrated
+// storage.Items and malformed stock fail closed. Buy still uses shopStorage
+// in shop_transaction.go; list does not require RNOTEL or actor inventory.
 func (s State) ListShopItems(actorID string) (ShopListResult, error) {
-	_, shop, storage, err := s.shopStorage(actorID)
-	if err != nil {
+	if err := s.Validate(); err != nil {
 		return ShopListResult{}, err
+	}
+	actor, ok := s.Players[actorID]
+	if !ok || !actor.Online || actor.Body.Type != 0 || actor.Body.Name == "" {
+		return ShopListResult{}, fmt.Errorf("online shop actor absent")
+	}
+	shop, ok := s.Rooms[actor.Body.RoomID]
+	if !ok {
+		return ShopListResult{}, fmt.Errorf("shop room absent")
+	}
+	if !flag(shop.Resource.Flags[:], RoomShopFlag) {
+		return ShopListResult{
+			Action:     ShopListNotShopAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopListNotShopResponse,
+		}, nil
+	}
+	if actor.Body.RoomID == 32767 {
+		return ShopListResult{}, fmt.Errorf("shop storage room identity overflow")
+	}
+	storageID := actor.Body.RoomID + 1
+	storage, ok := s.Rooms[storageID]
+	if !ok {
+		return ShopListResult{
+			Action:     ShopListNoStockAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopListNoStockResponse,
+		}, nil
 	}
 	if storage.Items == nil {
 		return ShopListResult{}, fmt.Errorf("canonical shop storage required")
@@ -160,15 +225,11 @@ func (s State) ListShopItems(actorID string) (ShopListResult, error) {
 }
 
 func renderShopListing(items []ShopListing) string {
-	if len(items) == 0 {
-		return "상품들:\r\n  없음.\r\n"
-	}
 	var out strings.Builder
-	out.WriteString("상품들:")
+	out.WriteString(ShopListHeaderResponse)
 	for _, item := range items {
 		fmt.Fprintf(&out, "\r\n   %-30s   가격: %d", item.ItemName, item.Price)
 	}
-	out.WriteString("\r\n")
 	return out.String()
 }
 
@@ -276,7 +337,8 @@ func (s State) QuoteShopSale(actorID, itemID string) (ShopSaleQuote, error) {
 // QuoteShopSaleByName keeps the client-facing command boundary deterministic
 // without exposing canonical IDs. It accepts exact case-insensitive direct
 // inventory names and an explicit one-based occurrence; legacy prefix/key
-// matching is intentionally fail-closed until it has a source fixture.
+// matching is intentionally fail-closed until it has a source fixture. C
+// return(0) prints live on SellShopItemByName, not on this quote.
 func (s State) QuoteShopSaleByName(actorID, name string, occurrence int) (ShopSaleQuote, error) {
 	actor, _, _, err := s.pawnShopStorage(actorID)
 	if err != nil {
@@ -304,6 +366,13 @@ func shopSalePoorQuality(object LegacyObject) bool {
 // branch is admitted: command7.c's time/RNG branch is not durable and is
 // explicitly left for a future source fixture.
 func (s State) SellShopItem(actorID, itemID string) (State, ShopSaleResult, error) {
+	_, _, printed, handled, err := s.pawnShopRoom(actorID)
+	if err != nil {
+		return State{}, ShopSaleResult{}, err
+	}
+	if handled {
+		return s.clone(), printed, nil
+	}
 	quote, err := s.QuoteShopSale(actorID, itemID)
 	if err != nil {
 		return State{}, ShopSaleResult{}, err
@@ -359,7 +428,7 @@ func (s State) SellShopItem(actorID, itemID string) (State, ShopSaleResult, erro
 		return State{}, ShopSaleResult{}, err
 	}
 	return next, ShopSaleResult{
-		Action:                "sell-shop-item",
+		Action:                ShopSaleSoldAction,
 		ShopRoomID:            quote.ShopRoomID,
 		StorageRoomID:         quote.StorageRoomID,
 		ItemID:                quote.ItemID,
@@ -378,11 +447,49 @@ func (s State) SellShopItem(actorID, itemID string) (State, ShopSaleResult, erro
 	}, nil
 }
 
-// SellShopItemByName is the parser-facing form of SellShopItem.
+// SellShopItemByName is the terminal 팔아 reducer. C order is preserved:
+// non-RPAWNS, then missing name, then F_CLR PHIDDN, then find_obj on player
+// first_obj. Those three prints are receipts; named leftover still reveals
+// the actor because command7.c:244 clears hide before find_obj. Gold/storage
+// success still go through SellShopItem. Prefix/key matching stays closed.
 func (s State) SellShopItemByName(actorID, name string, occurrence int) (State, ShopSaleResult, error) {
-	quote, err := s.QuoteShopSaleByName(actorID, name, occurrence)
+	if occurrence < 1 {
+		return State{}, ShopSaleResult{}, fmt.Errorf("invalid item occurrence")
+	}
+	actor, shop, printed, handled, err := s.pawnShopRoom(actorID)
 	if err != nil {
 		return State{}, ShopSaleResult{}, err
 	}
-	return s.SellShopItem(actorID, quote.ItemID)
+	if handled {
+		return s.clone(), printed, nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return s.clone(), ShopSaleResult{
+			Action:     ShopSaleAskWhatAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopSaleAskWhatResponse,
+		}, nil
+	}
+	if actor.Items == nil {
+		return State{}, ShopSaleResult{}, fmt.Errorf("online player with migrated items required")
+	}
+	// command7.c:244 F_CLR(ply_ptr, PHIDDN) after cmnd->num >= 2 and before
+	// find_obj, so a later missing object still reveals the actor.
+	revealed := s.clone()
+	revealedPlayer := revealed.Players[actorID]
+	revealedPlayer.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
+	revealed.Players[actorID] = revealedPlayer
+	detect := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
+	itemID, err := selectInventoryRoot(*actor.Items, name, occurrence, func(object LegacyObject) bool {
+		return detect || !flag(object.Flags[:], objectInvisibleFlag)
+	})
+	if err != nil {
+		return revealed, ShopSaleResult{
+			Action:     ShopSaleNotHoldingAction,
+			ShopRoomID: shop.Resource.ID,
+			Response:   ShopSaleNotHoldingResponse,
+		}, nil
+	}
+	return s.SellShopItem(actorID, itemID)
 }

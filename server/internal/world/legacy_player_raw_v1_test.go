@@ -302,6 +302,41 @@ func TestLegacyPlayerSnapshotRawV1ContractIsExplicit(t *testing.T) {
 	}
 }
 
+func TestLegacyPlayerPasswordMatchesUsesNativeFieldWithoutPublishing(t *testing.T) {
+	portable := readPlayerSnapshotFixture(t, "player_snapshot_v1_legacy_decoder_minimal.hex")
+	snapshot, err := DecodePlayerSnapshotV1(portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := encodeLegacyPlayerRawV1Fixture(t, snapshot)
+	matched, err := LegacyPlayerPasswordMatches(raw, []byte("legacy-secret"))
+	if err != nil || !matched {
+		t.Fatalf("stored password rejected: %v", err)
+	}
+	matched, err = LegacyPlayerPasswordMatches(raw, []byte("wrong-secret"))
+	if err != nil || matched {
+		t.Fatal("wrong password accepted")
+	}
+	matched, err = LegacyPlayerPasswordMatches(raw, nil)
+	if err != nil || matched {
+		t.Fatal("empty password granted ownership")
+	}
+	canonical, err := CanonicalPlayerSnapshotFromLegacyRaw(raw, []byte("legacy-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(canonical, []byte("legacy-secret")) {
+		t.Fatal("native password entered the portable projection")
+	}
+	got, err := DecodePlayerSnapshotV1(canonical)
+	if err != nil || !reflect.DeepEqual(got, snapshot) {
+		t.Fatalf("canonical snapshot drifted: %v", err)
+	}
+	if _, err := CanonicalPlayerSnapshotFromLegacyRaw(raw, []byte("wrong-secret")); !errors.Is(err, ErrLegacyPlayerPassword) {
+		t.Fatalf("wrong password err=%v", err)
+	}
+}
+
 func TestLegacyPlayerSnapshotRawV1InspectionCloneOwnsSource(t *testing.T) {
 	portable := readPlayerSnapshotFixture(t, "player_snapshot_v1_legacy_decoder_minimal.hex")
 	snapshot, err := DecodePlayerSnapshotV1(portable)

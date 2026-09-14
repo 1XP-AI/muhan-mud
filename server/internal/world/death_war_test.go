@@ -1,6 +1,9 @@
 package world
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestDeathWarLossAndLeaderDefeat(t *testing.T) {
 	war := FamilyWar{Active: 2*16 + 3, CalledBy: 3, CalledAgainst: 2}
@@ -37,5 +40,22 @@ func TestPeaceDeathDoesNotCancelPendingDeclaration(t *testing.T) {
 	next, defeated := war.AfterPlayerDeath(p)
 	if next != war || defeated || !war.AllowsDeathLoss(2, 3) {
 		t.Fatal("peace treated as active war")
+	}
+}
+
+func TestFamilyDefeatBroadcastsUsesCatalogName(t *testing.T) {
+	events, err := FamilyDefeatBroadcasts(deathFamilyCatalog(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFamilyDefeatBroadcasts(t, events, "청룡")
+}
+
+func TestFamilyDefeatBroadcastsRejectsMissingCatalog(t *testing.T) {
+	if _, err := FamilyDefeatBroadcasts(FamilyCatalog{}, 2); !errors.Is(err, ErrFamilyCatalogUnavailable) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := FamilyDefeatBroadcasts(deathFamilyCatalog(), 4); !errors.Is(err, ErrFamilyCatalogInvalid) {
+		t.Fatalf("unknown family err=%v", err)
 	}
 }

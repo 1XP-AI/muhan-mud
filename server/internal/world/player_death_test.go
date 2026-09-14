@@ -1,6 +1,7 @@
 package world
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -89,5 +90,72 @@ func TestPlayerDeathWarLeaderAndSurvival(t *testing.T) {
 		if len(s.Players["b"].PlayerEnemies) != 1 || s.War.Active == 0 {
 			t.Fatal("input alias")
 		}
+	}
+}
+
+func deathFamilyCatalog() FamilyCatalog {
+	return FamilyCatalog{Families: map[int16]FamilyDefinition{
+		2: {ID: 2, Name: "청룡", Boss: "Alice"},
+		3: {ID: 3, Name: "백호", Boss: "Bob"},
+	}}
+}
+
+func warBossPlayerDeathFixture() State {
+	s := playerDeathFixture()
+	s.War = &FamilyWar{Active: 2*16 + 3, CalledBy: 2, CalledAgainst: 3}
+	v := s.Players["a"]
+	v.Body.Daily[9].Max = 2
+	v.Body.Flags[7] |= 2
+	s.Players["a"] = v
+	attacker := PlayerState{Body: LegacyMonster{Name: "Bob", RoomID: 1}, Online: true, PlayerEnemies: []string{"a"}}
+	attacker.Body.Daily[9].Max = 3
+	s.Players["b"] = attacker
+	r := s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "b")
+	s.Rooms[1] = r
+	return s
+}
+
+func assertFamilyDefeatBroadcasts(t *testing.T, events []FamilyWarEvent, name string) {
+	t.Helper()
+	want := []FamilyWarEvent{
+		{AllPlayers: true, Text: FamilyWarBossDiedText(name)},
+		{AllPlayers: true, Text: FamilyWarDefeatedText(name)},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%+v want=%+v", events, want)
+	}
+}
+
+func TestPlanPlayerDeathWarBossEmitsCatalogDefeatBroadcasts(t *testing.T) {
+	s := warBossPlayerDeathFixture()
+	before := s.clone()
+	next, result, err := s.PlanPlayerDeath("a", "b", 100, SceneOptions{}, nil, func(lo, hi int) int { return lo }, nil, deathFamilyCatalog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.FamilyDefeated || *next.War != (FamilyWar{}) {
+		t.Fatalf("result=%+v war=%+v", result, next.War)
+	}
+	assertFamilyDefeatBroadcasts(t, result.Events, "청룡")
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("planner mutated input")
+	}
+}
+
+func TestPlanPlayerDeathWarBossRejectsMissingCatalog(t *testing.T) {
+	s := warBossPlayerDeathFixture()
+	next, result, err := s.PlanPlayerDeath("a", "b", 100, SceneOptions{}, nil, func(lo, hi int) int { return lo }, nil, FamilyCatalog{})
+	if !errors.Is(err, ErrFamilyCatalogUnavailable) || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, PlayerDeathResult{}) {
+		t.Fatalf("missing catalog next=%+v result=%+v err=%v", next, result, err)
+	}
+}
+
+func TestPlanPlayerDeathRejectsUnmigratedWar(t *testing.T) {
+	s := playerDeathFixture()
+	s.War = nil
+	next, result, err := s.PlanPlayerDeath("a", "a", 100, SceneOptions{}, nil, func(lo, hi int) int { return lo }, nil)
+	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, PlayerDeathResult{}) {
+		t.Fatalf("unmigrated war next=%+v result=%+v err=%v", next, result, err)
 	}
 }

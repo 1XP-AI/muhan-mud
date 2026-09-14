@@ -88,7 +88,7 @@ func TestPlanAndApplyNPCFollowerChasePreservesCOrderAndAtomicState(t *testing.T)
 		t.Fatalf("active order=%v want=%v", got, want)
 	}
 	n1 := next.NPCs["n1"]
-	if n1.Body.RoomID != 2 || flag(n1.Body.Flags[:], npcPermanentFlag) {
+	if n1.Body.RoomID != 2 || flag(n1.Body.Flags[:], npcPermanentFlag) || n1.PermanentOrigin != nil {
 		t.Fatalf("permanent NPC not moved/cleared: %+v", next.NPCs["n1"])
 	}
 	if next.NPCs["n2"].Body.RoomID != 2 {
@@ -209,6 +209,158 @@ func TestApplyNPCFollowerChaseRejectsStaleProposalWithoutPartialState(t *testing
 	next, err := changed.ApplyNPCFollowerChase(plan)
 	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(changed, before) {
 		t.Fatalf("stale proposal leaked: next=%+v err=%v changed=%v", next, err, !reflect.DeepEqual(changed, before))
+	}
+}
+
+func TestPlanNPCGoChaseRequiresMFOLLOSkipsMDMFOLAndUsesThreshold10(t *testing.T) {
+	s := npcChaseFixture()
+	mdm := s.NPCs["n2"]
+	mdm.Body.Flags[npcFollowFlag/8] |= 1 << (npcFollowFlag % 8)
+	mdm.Body.Flags[npcDMFollowFlag/8] |= 1 << (npcDMFollowFlag % 8)
+	s.NPCs["n2"] = mdm
+
+	plan, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil || !plan.SkipPermanentTimer || len(plan.Moves) != 1 || plan.Moves[0].NPCID != "n1" || plan.Moves[0].PermanentTimerWrite {
+		t.Fatalf("go chase plan=%+v err=%v", plan, err)
+	}
+
+	miss, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 11 })
+	if err != nil || len(miss.Moves) != 0 {
+		t.Fatalf("threshold 10 still chased: plan=%+v err=%v", miss, err)
+	}
+	command2, err := s.PlanNPCFollowerChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 11 })
+	if err != nil || len(command2.Moves) == 0 {
+		t.Fatalf("command2 threshold 15 should still chase: plan=%+v err=%v", command2, err)
+	}
+}
+
+func TestPlanAndApplyNPCGoChaseClearsPermanentWithoutTimerWrite(t *testing.T) {
+	s := npcChaseFixture()
+	before := s.clone()
+	plan, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil || len(plan.Moves) != 1 || plan.Moves[0].PermanentTimerWrite || !plan.SkipPermanentTimer {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	next, err := s.ApplyNPCFollowerChase(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("apply mutated source state")
+	}
+	moved := next.NPCs["n1"]
+	if moved.Body.RoomID != 2 || flag(moved.Body.Flags[:], npcPermanentFlag) {
+		t.Fatalf("go chase did not move/clear permanent: %+v", moved)
+	}
+	if moved.PermanentOrigin != nil {
+		t.Fatalf("F_CLR(MPERMT) left PermanentOrigin=%+v", moved.PermanentOrigin)
+	}
+	if got := next.Rooms[1].Resource.PermanentMonsters[0].LastTime; got != 90 {
+		t.Fatalf("die_perm_crt timer wrote on go chase: last=%d", got)
+	}
+	replay, err := next.ApplyNPCFollowerChase(plan)
+	if err == nil || !reflect.DeepEqual(replay, State{}) {
+		t.Fatalf("same chase proposal recommitted: next=%+v err=%v", replay, err)
+	}
+}
+
+func TestNPCGoChaseFanoutEventsUsesVacatedRoomFirstMonOrder(t *testing.T) {
+	post := npcChaseFixture()
+	plan, err := post.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := post.ApplyNPCFollowerChase(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := post.clone()
+	actor := pre.Players["a"]
+	actor.Body.RoomID = 1
+	pre.Players["a"] = actor
+	src := pre.Rooms[1]
+	src.PlayerIDs = []string{"a"}
+	dst := pre.Rooms[2]
+	dst.PlayerIDs = nil
+	pre.Rooms[1], pre.Rooms[2] = src, dst
+	events := NPCGoChaseFanoutEvents(pre, after, "a")
+	if len(events) != 1 || events[0].RoomID != 1 || events[0].Text != NPCGoChaseRoomText("Alpha", "Renamed Player") {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestApplyNPCGoChaseClearsPermanentOriginSoNextDirectionalChaseSucceeds(t *testing.T) {
+	s := npcChaseFixture()
+	n1 := s.NPCs["n1"]
+	n1.Enemies[0].Damage = -1
+	s.NPCs["n1"] = n1
+	player := s.Players["a"]
+	player.Body.Class = 4
+	player.Body.HPMax = 30
+	player.Body.HPCurrent = 30
+	s.Players["a"] = player
+
+	plan, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	chased, err := s.ApplyNPCFollowerChase(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := chased.NPCs["n1"]
+	if flag(moved.Body.Flags[:], npcPermanentFlag) || moved.PermanentOrigin != nil {
+		t.Fatalf("go chase left permanence npc=%+v origin=%+v", moved.Body.Flags, moved.PermanentOrigin)
+	}
+
+	room2 := chased.Rooms[2]
+	room2.Resource.Name = "중간"
+	room2.Resource.Exits = []LegacyExit{{Name: "북", Destination: 3}}
+	chased.Rooms[2] = room2
+	chased.Rooms[3] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 3, Name: "광장"}}}
+
+	next, result, err := chased.DirectionalStep(TransferInput{
+		ActorID: "a",
+		Movement: MovementInput{
+			Prefix:      "북",
+			Occurrence:  1,
+			Destination: &LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 3, Name: "광장"}},
+			Now:         200,
+		},
+	}, nil, func(low, high int) int {
+		if low != 1 || high != 50 {
+			t.Fatalf("unexpected chase roll %d..%d", low, high)
+		}
+		return 1
+	}, nil)
+	if err != nil {
+		t.Fatalf("next directional step fail-closed after leftover origin: %v", err)
+	}
+	if next.Players["a"].Body.RoomID != 3 || next.NPCs["n1"].Body.RoomID != 3 {
+		t.Fatalf("MFOLLO did not chase after MPERMT clear players=%+v npcs=%+v", next.Players["a"].Body.RoomID, next.NPCs["n1"].Body.RoomID)
+	}
+	if result.NPCChase == nil || len(result.NPCChase.Moves) != 1 || result.NPCChase.Moves[0].NPCID != "n1" {
+		t.Fatalf("directional chase missing: %+v", result.NPCChase)
+	}
+	followed := next.NPCs["n1"]
+	if followed.PermanentOrigin != nil || flag(followed.Body.Flags[:], npcPermanentFlag) {
+		t.Fatalf("second chase restored permanence: %+v", followed)
+	}
+}
+
+func TestPlanNPCGoChaseRejectsNilEnemiesAndActiveOrder(t *testing.T) {
+	s := npcChaseFixture()
+	npc := s.NPCs["n3"]
+	npc.Enemies = nil
+	s.NPCs["n3"] = npc
+	if _, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 }); err == nil {
+		t.Fatal("nil Enemies did not fail closed")
+	}
+
+	s = npcChaseFixture()
+	s.ActiveNPCIDs = nil
+	if _, err := s.PlanNPCGoChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 }); err == nil {
+		t.Fatal("nil ActiveNPCIDs did not fail closed")
 	}
 }
 

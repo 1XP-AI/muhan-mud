@@ -22,7 +22,8 @@ type ShopPurchaseCommand struct {
 }
 
 // ParseShopPurchaseLine admits the exact C aliases for the bounded shop slice:
-// `사 <exact stock name> [positive occurrence]` and `구입` with the same shape.
+// `사` / `구입` with no name (command7.c:buy cmnd->num < 2) and
+// `사 <exact stock name> [positive occurrence]` / `구입` with the same shape.
 // Matching remains exact (case-insensitive for consistency with other
 // canonical item commands); prefix/key and merchant forms fail closed.
 func ParseShopPurchaseLine(line string) (ShopPurchaseCommand, bool) {
@@ -36,17 +37,21 @@ func ParseShopPurchaseLine(line string) (ShopPurchaseCommand, bool) {
 		}
 	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || len(tokens) < 2 || len(tokens) > 3 {
+	if err != nil || len(tokens) < 1 || len(tokens) > 3 {
 		return ShopPurchaseCommand{}, false
 	}
 	if tokens[0] != "사" && tokens[0] != "구입" {
 		return ShopPurchaseCommand{}, false
 	}
+	command := ShopPurchaseCommand{Occurrence: 1}
+	if len(tokens) == 1 {
+		return command, true
+	}
 	name := strings.TrimSpace(tokens[1])
 	if name == "" {
 		return ShopPurchaseCommand{}, false
 	}
-	command := ShopPurchaseCommand{Name: name, Occurrence: 1}
+	command.Name = name
 	if len(tokens) == 3 {
 		occurrence, ok := positiveShopPurchaseOccurrence(tokens[2])
 		if !ok {

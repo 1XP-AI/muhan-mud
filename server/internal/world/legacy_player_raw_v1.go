@@ -7,6 +7,7 @@ package world
 // published by the API.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -24,6 +25,8 @@ const (
 	legacyPlayerRawV1CreatureBytes = 1952
 	legacyPlayerRawV1ObjectBytes   = 376
 	legacyPlayerRawV1CountBytes    = 4
+	legacyPlayerRawV1PasswordOff   = 240
+	legacyPlayerRawV1PasswordLen   = 15
 	legacyPlayerRawV1MaxList       = 4096
 	legacyPlayerRawV1MaxDepth      = 64
 	legacyPlayerRawV1MaxObjects    = 8192
@@ -39,6 +42,9 @@ var (
 	ErrLegacyPlayerSnapshotRawMalformed      = errors.New("malformed legacy player raw snapshot")
 	ErrLegacyPlayerSnapshotRawTruncated      = errors.New("truncated legacy player raw snapshot")
 	ErrLegacyPlayerSnapshotRawTrailingBytes  = errors.New("trailing legacy player raw snapshot bytes")
+	// ErrLegacyPlayerPassword is a credential mismatch against the native
+	// password field. It is not proof of identity by name.
+	ErrLegacyPlayerPassword = errors.New("legacy player password mismatch")
 )
 
 // ValidateLegacyPlayerSnapshotRawV1ABI checks the operator-supplied source
@@ -219,7 +225,7 @@ func decodeLegacyPlayerRawV1Creature(raw []byte) (PlayerSnapshotV1, error) {
 	}
 	// The password is intentionally validated and then discarded.  It is part
 	// of the native reader's structural contract but never part of CDTO.
-	if _, err := canonicalLegacyPlayerRawV1Fixed(raw[240:255]); err != nil {
+	if _, err := canonicalLegacyPlayerRawV1Fixed(raw[legacyPlayerRawV1PasswordOff : legacyPlayerRawV1PasswordOff+legacyPlayerRawV1PasswordLen]); err != nil {
 		return PlayerSnapshotV1{}, fmt.Errorf("%w: creature password", ErrLegacyPlayerSnapshotRawMalformed)
 	}
 	keys := [3][20]byte{}
@@ -368,6 +374,42 @@ func canonicalLegacyPlayerRawV1Fixed(raw []byte) ([]byte, error) {
 	canonical := make([]byte, len(raw))
 	copy(canonical, raw[:terminator+1])
 	return canonical, nil
+}
+
+// LegacyPlayerPasswordMatches compares a candidate with the NUL-terminated
+// native password field using C strcmp semantics. The password never enters
+// PlayerSnapshotV1. Malformed password fields fail closed rather than matching.
+func LegacyPlayerPasswordMatches(raw, password []byte) (bool, error) {
+	if len(raw) < legacyPlayerRawV1CreatureBytes {
+		return false, ErrLegacyPlayerSnapshotRawTruncated
+	}
+	stored, err := canonicalLegacyPlayerRawV1Fixed(raw[legacyPlayerRawV1PasswordOff : legacyPlayerRawV1PasswordOff+legacyPlayerRawV1PasswordLen])
+	if err != nil {
+		return false, fmt.Errorf("%w: creature password", ErrLegacyPlayerSnapshotRawMalformed)
+	}
+	end := bytes.IndexByte(stored, 0)
+	if end < 0 {
+		return false, fmt.Errorf("%w: creature password", ErrLegacyPlayerSnapshotRawMalformed)
+	}
+	return bytes.Equal(stored[:end], password), nil
+}
+
+// CanonicalPlayerSnapshotFromLegacyRaw verifies the native password, decodes
+// the audited C player file, and returns a canonical PlayerSnapshotV1 CDTO.
+// Ownership is not granted by name: a password mismatch is ErrLegacyPlayerPassword.
+func CanonicalPlayerSnapshotFromLegacyRaw(raw, password []byte) ([]byte, error) {
+	matched, err := LegacyPlayerPasswordMatches(raw, password)
+	if err != nil {
+		return nil, err
+	}
+	if !matched {
+		return nil, ErrLegacyPlayerPassword
+	}
+	snapshot, err := DecodeLegacyPlayerSnapshotRawV1(raw)
+	if err != nil {
+		return nil, err
+	}
+	return EncodePlayerSnapshotV1(snapshot)
 }
 
 func legacyPlayerRawV1I16(raw []byte, offset int) int16 {

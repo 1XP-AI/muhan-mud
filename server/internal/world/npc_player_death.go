@@ -34,7 +34,7 @@ type NPCPlayerDeathResult struct {
 // ownership, and non-canonical respawn state fail closed before a candidate is
 // returned.  Death-description, output formatting,
 // savegame, summon, and transport side effects remain outside this boundary.
-func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneOptions, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, NPCPlayerDeathResult, error) {
+func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneOptions, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error), families ...FamilyCatalog) (State, NPCPlayerDeathResult, error) {
 	zero := NPCPlayerDeathResult{}
 	if err := s.Validate(); err != nil {
 		return State{}, zero, err
@@ -159,6 +159,10 @@ func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneO
 	next.NPCs[npcID] = attacker
 
 	war, defeated := next.War.AfterPlayerDeath(victim.Body)
+	events, err := familyDefeatEvents(defeated, victim.Body.Daily[9].Max, families...)
+	if err != nil {
+		return State{}, zero, err
+	}
 	next.War = &war
 	views, err := next.RoomPlayers(source.Resource.ID)
 	if err != nil {
@@ -225,6 +229,7 @@ func (s State) PlanNPCPlayerDeath(npcID, victimID string, now int32, view SceneO
 			BroadcastDeath:           !survival,
 			FamilyDefeated:           defeated,
 			DeactivateSourceMonsters: departure.DeactivateMonsters,
+			Events:                   events,
 		},
 		NPCID: npcID, VictimID: victimID,
 	}, nil

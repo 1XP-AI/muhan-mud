@@ -1,6 +1,7 @@
 package world
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -75,15 +76,215 @@ func TestListShopItemsIsDeterministicReadOnlyAndUsesCanonicalStorage(t *testing.
 	if first.Action != "list-shop-items" || first.ShopRoomID != 200 || first.StorageRoomID != 201 || len(first.Items) != 1 || first.Items[0].ItemID != "stock" || first.Items[0].Price != 80 {
 		t.Fatalf("listing=%+v", first)
 	}
-	if !strings.Contains(first.Response, "기존 재고") || !strings.Contains(first.Response, "80") {
-		t.Fatalf("response=%q", first.Response)
+	want := ShopListHeaderResponse + "\r\n   " + fmt.Sprintf("%-30s", "기존 재고") + "   가격: 80"
+	if first.Response != want {
+		t.Fatalf("response=%q want=%q", first.Response, want)
+	}
+}
+
+func TestListShopItemsPrintsCNotShopForNonRSHOPPIncludingPawnOnly(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	room := s.Rooms[200]
+	room.Resource.Flags[RoomShopFlag/8] &^= 1 << (RoomShopFlag % 8)
+	s.Rooms[200] = room
+	before := s.clone()
+	result, err := s.ListShopItems("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != ShopListNotShopResponse || result.Action != ShopListNotShopAction || result.ShopRoomID != 200 || len(result.Items) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if strings.Contains(result.Response, "전당포") {
+		t.Fatalf("guessed pawn-shop message: %q", result.Response)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("not-shop list mutated snapshot")
 	}
 
-	room := s.Rooms[200]
-	room.Resource.Flags[RoomShopFlag/8] = 0
-	s.Rooms[200] = room
-	if _, err := s.ListShopItems("a"); err == nil {
-		t.Fatal("list accepted non-shop room")
+	plain := shopMarketplaceFixture(t, false)
+	plainRoom := plain.Rooms[200]
+	plainRoom.Resource.Flags = [8]byte{}
+	plain.Rooms[200] = plainRoom
+	plainResult, err := plain.ListShopItems("a")
+	if err != nil || plainResult.Response != ShopListNotShopResponse {
+		t.Fatalf("plain room result=%+v err=%v", plainResult, err)
+	}
+}
+
+func TestListShopItemsPrintsCNoStockWhenStorageRoomMissing(t *testing.T) {
+	s := shopMarketplaceFixture(t, false)
+	delete(s.Rooms, 201)
+	before := s.clone()
+	result, err := s.ListShopItems("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != ShopListNoStockResponse || result.Action != ShopListNoStockAction || result.ShopRoomID != 200 || result.StorageRoomID != 0 || len(result.Items) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("missing-storage list mutated snapshot")
+	}
+}
+
+func TestListShopItemsEmptyStoragePrintsCHeaderWithoutGuessedNone(t *testing.T) {
+	s := shopMarketplaceFixture(t, false)
+	room := s.Rooms[201]
+	room.Items = &ItemCollection{Items: map[string]Item{}}
+	s.Rooms[201] = room
+	result, err := s.ListShopItems("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != ShopListHeaderResponse || strings.Contains(result.Response, "없음") || len(result.Items) != 0 {
+		t.Fatalf("empty catalog=%+v", result)
+	}
+}
+
+func TestListShopItemsFailClosesUnmigratedStorageAndInvalidStock(t *testing.T) {
+	unmigrated := shopMarketplaceFixture(t, false)
+	room := unmigrated.Rooms[201]
+	room.Items = nil
+	unmigrated.Rooms[201] = room
+	if _, err := unmigrated.ListShopItems("a"); err == nil {
+		t.Fatal("nil storage Items unexpectedly listed")
+	}
+
+	broken := shopMarketplaceFixture(t, false)
+	brokenRoom := broken.Rooms[201]
+	delete(brokenRoom.Items.Items, "stock")
+	brokenRoom.Items.Inventory = []string{"missing"}
+	broken.Rooms[201] = brokenRoom
+	if _, err := broken.ListShopItems("a"); err == nil {
+		t.Fatal("invalid stock root unexpectedly listed")
+	}
+
+	negative := shopMarketplaceFixture(t, false)
+	negRoom := negative.Rooms[201]
+	item := negRoom.Items.Items["stock"]
+	item.Object.Value = -1
+	negRoom.Items.Items["stock"] = item
+	negative.Rooms[201] = negRoom
+	if _, err := negative.ListShopItems("a"); err == nil {
+		t.Fatal("negative stock value unexpectedly listed")
+	}
+}
+
+func TestSellShopItemPrintsCNotPawnForNonRPAWNSIncludingShopOnly(t *testing.T) {
+	s := shopMarketplaceFixture(t, false)
+	hidden := s.Players["a"]
+	hidden.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	s.Players["a"] = hidden
+	original := s.clone()
+	next, result, err := s.SellShopItem("a", "sword")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopSaleNotPawnAction || result.Response != ShopSaleNotPawnResponse || result.ShopRoomID != 200 || result.Payout != 0 || result.ItemID != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if strings.Contains(result.Response, "상점") {
+		t.Fatalf("guessed RSHOPP shop text: %q", result.Response)
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-pawn sale cloned or mutated")
+	}
+	nextPlayer := next.Players["a"]
+	if !flag(nextPlayer.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("not-pawn sale cleared PHIDDN")
+	}
+
+	plain := shopMarketplaceFixture(t, false)
+	plainRoom := plain.Rooms[200]
+	plainRoom.Resource.Flags = [8]byte{}
+	plain.Rooms[200] = plainRoom
+	_, plainResult, err := plain.SellShopItemByName("a", "검", 1)
+	if err != nil || plainResult.Response != ShopSaleNotPawnResponse || plainResult.Action != ShopSaleNotPawnAction {
+		t.Fatalf("plain room result=%+v err=%v", plainResult, err)
+	}
+}
+
+func TestSellShopItemByNamePrintsCAskWhatWhenNameMissing(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	hidden := s.Players["a"]
+	hidden.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	s.Players["a"] = hidden
+	original := s.clone()
+	next, result, err := s.SellShopItemByName("a", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopSaleAskWhatAction || result.Response != ShopSaleAskWhatResponse || result.ShopRoomID != 200 || result.Payout != 0 || result.ItemID != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("ask-what sale cloned or mutated")
+	}
+	if next.Players["a"].Body.Gold != 100 || !containsString(next.Players["a"].Items.Inventory, "sword") {
+		t.Fatalf("ask-what moved gold/item: %+v", next.Players["a"])
+	}
+	askWhatPlayer := next.Players["a"]
+	if !flag(askWhatPlayer.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("ask-what sale cleared PHIDDN")
+	}
+}
+
+func TestSellShopItemByNamePrintsCNotPawnBeforeAskWhat(t *testing.T) {
+	s := shopMarketplaceFixture(t, false)
+	_, result, err := s.SellShopItemByName("a", "", 1)
+	if err != nil || result.Response != ShopSaleNotPawnResponse || result.Action != ShopSaleNotPawnAction {
+		t.Fatalf("bare sell outside pawn=%+v err=%v", result, err)
+	}
+	if strings.Contains(result.Response, "상점") {
+		t.Fatalf("guessed RSHOPP shop text: %q", result.Response)
+	}
+}
+
+func TestSellShopItemByNamePrintsCNotHoldingWhenNameMissingFromInventory(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	hidden := s.Players["a"]
+	hidden.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	s.Players["a"] = hidden
+	original := s.clone()
+	next, result, err := s.SellShopItemByName("a", "방패", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopSaleNotHoldingAction || result.Response != ShopSaleNotHoldingResponse || result.ShopRoomID != 200 || result.Payout != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if next.Players["a"].Body.Gold != 100 || !containsString(next.Players["a"].Items.Inventory, "sword") {
+		t.Fatalf("not-holding moved gold/item: %+v", next.Players["a"])
+	}
+	nextPlayer := next.Players["a"]
+	if flag(nextPlayer.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("not-holding leftover did not F_CLR PHIDDN")
+	}
+	originalPlayer := original.Players["a"]
+	if !flag(originalPlayer.Body.Flags[:], playerHiddenStateFlag) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-holding mutated source snapshot")
+	}
+
+	_, prefix, err := s.SellShopItemByName("a", "검술", 1)
+	if err != nil || prefix.Response != ShopSaleNotHoldingResponse {
+		t.Fatalf("prefix name=%+v err=%v", prefix, err)
+	}
+	_, occ, err := s.SellShopItemByName("a", "검", 2)
+	if err != nil || occ.Response != ShopSaleNotHoldingResponse {
+		t.Fatalf("missing occurrence=%+v err=%v", occ, err)
+	}
+}
+
+func TestSellShopItemByNameFailClosesUnmigratedItems(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	actor := s.Players["a"]
+	actor.Items = nil
+	s.Players["a"] = actor
+	original := s.clone()
+	next, result, err := s.SellShopItemByName("a", "검", 1)
+	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, ShopSaleResult{}) || !reflect.DeepEqual(s, original) {
+		t.Fatalf("unmigrated items sold: next=%+v result=%+v err=%v", next, result, err)
 	}
 }
 
@@ -104,7 +305,7 @@ func TestSellShopItemMovesRootCreditsExactValueAndNormalizesTemporaryFlags(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Action != "sell-shop-item" || result.ItemID != "sword" || result.Payout != 50 || result.GoldBefore != 100 || result.GoldAfter != 150 || result.CarriedWeightAfter != 3 || !result.TemporaryBefore || !result.StoragePermanentAfter {
+	if result.Action != ShopSaleSoldAction || result.ItemID != "sword" || result.Payout != 50 || result.GoldBefore != 100 || result.GoldAfter != 150 || result.CarriedWeightAfter != 3 || !result.TemporaryBefore || !result.StoragePermanentAfter {
 		t.Fatalf("result=%+v", result)
 	}
 	player := next.Players["a"]
@@ -120,6 +321,23 @@ func TestSellShopItemMovesRootCreditsExactValueAndNormalizesTemporaryFlags(t *te
 	}
 	if !reflect.DeepEqual(s, before) {
 		t.Fatal("sale mutated source snapshot")
+	}
+
+	named := before.clone()
+	nextByName, namedResult, err := named.SellShopItemByName("a", "검", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namedResult.Action != ShopSaleSoldAction || namedResult.ItemID != "sword" || namedResult.Payout != 50 || namedResult.GoldAfter != 150 {
+		t.Fatalf("by-name result=%+v", namedResult)
+	}
+	namedNext := nextByName.Players["a"]
+	if flag(namedNext.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("successful 팔아 did not F_CLR PHIDDN")
+	}
+	namedSource := named.Players["a"]
+	if !flag(namedSource.Body.Flags[:], playerHiddenStateFlag) {
+		t.Fatal("successful 팔아 mutated source PHIDDN")
 	}
 }
 
@@ -189,9 +407,6 @@ func TestQuoteShopSaleRejectsUnsafeAndAmbiguousBranchesBeforeMutation(t *testing
 	duplicate.Rooms[201] = room
 	if _, err := duplicate.QuoteShopSale("a", "sword"); err == nil {
 		t.Fatal("duplicate ownership unexpectedly accepted")
-	}
-	if _, _, err := duplicate.SellShopItemByName("a", "검", 2); err == nil {
-		t.Fatal("duplicate occurrence unexpectedly accepted")
 	}
 
 	good := shopMarketplaceFixture(t, true)

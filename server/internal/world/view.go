@@ -3,11 +3,14 @@ package world
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Explicit inputs to the environment portion of display_rom. Dynamic players,
-// NPCs, items and combat are separate pending sections, not silently omitted
-// by a completed look command. Time/light are supplied by the world loop.
+// NPCs and items are separate sections. Combat-in-progress notices are
+// appended by CurrentScene/SceneAt after these non-combat blocks.
+// Time/light are supplied by the world loop. command2.c look-through-exit
+// uses the same filters via SceneAt.
 type ViewOptions struct {
 	Hour                                                        int
 	Race, Class                                                 byte
@@ -122,4 +125,41 @@ func RenderRoomMonsters(monsters []LegacyMonster, detectInvisible, knowAlignment
 		out.WriteByte('\n')
 	}
 	return out.String()
+}
+
+// display_rom combat notices use %M%j after list_obj. Monster %M is the
+// name plus optional (주문); player %M is name, optional (*), then 님.
+func combatMonsterLabel(name string, magic bool) string {
+	if !magic {
+		return name
+	}
+	return name + "(주문)"
+}
+
+func combatPlayerLabel(name string, invisible bool) string {
+	if invisible {
+		return name + "(*)님"
+	}
+	return name + "님"
+}
+
+// combatHangulParticle matches io.c %j / under_han: 511-byte cap and a
+// trailing parenthesized suffix is stripped before the last Hangul jongseong
+// test. Invalid UTF-8 takes the open-syllable particle.
+func combatHangulParticle(text, withFinal, withoutFinal string) string {
+	if len(text) > 511 {
+		text = text[:511]
+	}
+	if strings.HasSuffix(text, ")") {
+		if at := strings.LastIndexByte(text, '('); at >= 0 {
+			text = text[:at]
+		}
+	}
+	if utf8.ValidString(text) {
+		last, _ := utf8.DecodeLastRuneInString(text)
+		if last >= 0xac00 && last <= 0xd7a3 && (last-0xac00)%28 != 0 {
+			return withFinal
+		}
+	}
+	return withoutFinal
 }

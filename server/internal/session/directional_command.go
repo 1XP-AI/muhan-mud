@@ -11,7 +11,13 @@ import (
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
-var ErrUnsupportedDirectionalLine = errors.New("line is not a direct movement command")
+// command2.c:move missing dest after load_rom returns the same room pointer.
+const DirectionalMapMissingResponse = "그쪽으로 지도가 없습니다. 신에게 연락해 주세요."
+
+var (
+	ErrUnsupportedDirectionalLine       = errors.New("line is not a direct movement command")
+	ErrDirectionalDestinationUnresolved = errors.New(DirectionalMapMissingResponse)
+)
 
 // ExecuteDirectionalLine is the durable command boundary for direct movement.
 // The client supplies only a line; room, destination, permissions, occupants,
@@ -19,6 +25,9 @@ var ErrUnsupportedDirectionalLine = errors.New("line is not a direct movement co
 // snapshot/config. The response is produced from the committed candidate and
 // is safe to replay from its receipt.
 func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, now int32, hour int, view world.SceneOptions, catalog world.SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (storage.WorldReceipt, error) {
+	if _, ok := ParseLookLine(line); ok || lastTokenIsLookVerb(line) || lineContainsLookVerb(line) {
+		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
+	}
 	token, ok := world.ParseDirectionalToken(line)
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
@@ -46,6 +55,7 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		}
 		var destination *world.LegacyRoom
 		index := world.SelectDirectionalExit(room.Resource.Exits, token)
+		destExists := false
 		if index >= 0 {
 			if target, ok := s.Rooms[room.Resource.Exits[index].Destination]; ok {
 				projected, projectErr := s.ProjectRoom(target.Resource.ID)
@@ -53,6 +63,7 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 					return nil, nil, projectErr
 				}
 				destination = &projected
+				destExists = true
 			}
 		}
 		input := world.TransferInput{
@@ -70,6 +81,9 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		next, step, reduceErr := s.DirectionalStep(input, catalog, roll, allocate)
 		if reduceErr != nil {
 			return nil, nil, reduceErr
+		}
+		if index >= 0 && !destExists && (step.Transfer.Movement.Moved || (!step.Transfer.Movement.Traversal.Stop && step.Death == nil)) {
+			return nil, nil, ErrDirectionalDestinationUnresolved
 		}
 		state, reduceErr := json.Marshal(next)
 		if reduceErr != nil {

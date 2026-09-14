@@ -1,13 +1,34 @@
 package world
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
 const (
 	tradeNamedObjectFlag = 47 // ONAMED: named objects cannot be traded.
 	tradeMiscObjectType  = 13 // MISC: damaged-shot guard does not apply.
+
+	TradeAskWhoAction   = "ask-who"
+	TradeUsageAction    = "usage"
+	TradeRejectedAction = "trade-rejected"
+	TradeNPCItemAction  = "trade-npc-item"
+
+	TradeAskWhoResponse = "누구와 교환하시려구요?\r\n"
+	TradeUsageResponse  = "사용법: <물건> <괴물이름> 교환\r\n"
+)
+
+var (
+	ErrTradeActorAbsent       = errors.New("online canonical trade actor absent")
+	ErrTradeItemsUnmigrated   = errors.New("canonical player inventory required")
+	ErrTradeOffersUnmigrated  = errors.New("canonical NPC trade offers required")
+	ErrTradeNPCUnresolved     = errors.New("unresolved NPC trade identity")
+	ErrTradeStaleProposal     = errors.New("stale or invalid trade proposal")
+	ErrTradeInvalidProposal   = errors.New("invalid trade proposal")
+	ErrTradeInvalidOccurrence = errors.New("invalid trade occurrence")
+	ErrTradeRewardAllocator   = errors.New("trade reward ID allocator required")
 )
 
 // NPCTradeResult is the durable response for one MTRADE attempt. Canonical
@@ -25,6 +46,22 @@ type NPCTradeResult struct {
 	Quest           byte   `json:"quest,omitempty"`
 	QuestExperience int32  `json:"quest_experience,omitempty"`
 	Response        string `json:"response"`
+	Changed         bool   `json:"changed,omitempty"`
+}
+
+// TradeProposal is one command10.c:trade candidate against one snapshot.
+// Reward IDs are allocated during Plan; Apply never calls the allocator.
+type TradeProposal struct {
+	Result         NPCTradeResult
+	Changed        bool
+	ActorID        string
+	ItemName       string
+	ItemOccurrence int
+	NPCName        string
+	NPCOccurrence  int
+
+	before State
+	next   State
 }
 
 func cloneNPCTradeOffers(in []NPCTradeOffer) []NPCTradeOffer {
@@ -146,7 +183,7 @@ func (s State) ImportNPCTradeOffers(catalog SpawnCatalog) (State, error) {
 
 func (s State) selectTradeNPC(actorID, name string, occurrence int) (string, bool, error) {
 	if occurrence < 1 {
-		return "", false, fmt.Errorf("invalid NPC occurrence")
+		return "", false, ErrTradeInvalidOccurrence
 	}
 	actor, ok := s.Players[actorID]
 	if !ok || !actor.Online || s.NPCs == nil {
@@ -164,7 +201,7 @@ func (s State) selectTradeNPC(actorID, name string, occurrence int) (string, boo
 	for _, id := range room.NPCIDs {
 		npc, exists := s.NPCs[id]
 		if !exists || id == "" || npc.Body.Type != 1 || npc.Body.RoomID != room.Resource.ID {
-			return "", false, fmt.Errorf("unresolved NPC trade identity")
+			return "", false, ErrTradeNPCUnresolved
 		}
 		if !strings.EqualFold(npc.Body.Name, name) {
 			continue
@@ -210,36 +247,132 @@ func tradeItemIDs(s State) map[string]struct{} {
 }
 
 func tradeRejected(s State, result NPCTradeResult) (State, NPCTradeResult, error) {
+	result.Changed = false
+	if result.Action == "" {
+		result.Action = TradeRejectedAction
+	}
 	return s.clone(), result, nil
 }
 
-// TradeNPCByName performs the canonical bounded trade transition. Only
-// explicit TradeOffers are admitted; Body.Carry is migration evidence and is
-// never guessed back into a live exchange. Semantic rejections return a
-// durable no-op candidate, while malformed/unmigrated state returns an error.
-func (s State) TradeNPCByName(actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, allocate ShopPurchaseItemIDAllocator) (State, NPCTradeResult, error) {
+func tradeActor(s State, actorID string) (PlayerState, error) {
 	if err := s.Validate(); err != nil {
-		return State{}, NPCTradeResult{}, err
+		return PlayerState{}, err
 	}
 	actor, ok := s.Players[actorID]
-	if !ok || !actor.Online || actor.Items == nil {
-		return State{}, NPCTradeResult{}, fmt.Errorf("online player with migrated items required")
+	if actorID == "" || !ok || !actor.Online {
+		return PlayerState{}, ErrTradeActorAbsent
 	}
+	room, ok := s.Rooms[actor.Body.RoomID]
+	if !ok || room.Resource.ID != actor.Body.RoomID || !containsString(room.PlayerIDs, actorID) {
+		return PlayerState{}, ErrTradeActorAbsent
+	}
+	return actor, nil
+}
+
+func tradeCanonicalItems(actor PlayerState) error {
+	if actor.Items == nil || len(actor.Body.Inventory) != 0 {
+		return ErrTradeItemsUnmigrated
+	}
+	return nil
+}
+
+func tradeUnchanged(s State, actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, result NPCTradeResult) TradeProposal {
+	result.Changed = false
+	return TradeProposal{
+		Result: result, Changed: false, ActorID: actorID,
+		ItemName: itemName, ItemOccurrence: itemOccurrence, NPCName: npcName, NPCOccurrence: npcOccurrence,
+		before: s, next: s.clone(),
+	}
+}
+
+func tradeChanged(s, next State, actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, result NPCTradeResult) TradeProposal {
+	result.Changed = true
+	return TradeProposal{
+		Result: result, Changed: true, ActorID: actorID,
+		ItemName: itemName, ItemOccurrence: itemOccurrence, NPCName: npcName, NPCOccurrence: npcOccurrence,
+		before: s, next: next,
+	}
+}
+
+// PlanTrade is command10.c:trade. Bare 교환 and `<item> 교환` are C's
+// cmnd->num < 2 / < 3 prints. The full suffix requires migrated inventory
+// and NPCTradeOffers; Body.Carry is never guessed back into a live exchange.
+func (s State) PlanTrade(actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, allocate ShopPurchaseItemIDAllocator) (TradeProposal, error) {
+	if _, err := tradeActor(s, actorID); err != nil {
+		return TradeProposal{}, err
+	}
+	itemName = strings.TrimSpace(itemName)
+	npcName = strings.TrimSpace(npcName)
+	if npcName == "" {
+		if itemName == "" {
+			return tradeUnchanged(s, actorID, itemName, itemOccurrence, npcName, npcOccurrence, NPCTradeResult{
+				Action: TradeAskWhoAction, Response: TradeAskWhoResponse,
+			}), nil
+		}
+		return tradeUnchanged(s, actorID, itemName, itemOccurrence, npcName, npcOccurrence, NPCTradeResult{
+			Action: TradeUsageAction, Response: TradeUsageResponse,
+		}), nil
+	}
+	if itemName == "" {
+		return TradeProposal{}, ErrTradeInvalidProposal
+	}
+	if itemOccurrence < 1 || npcOccurrence < 1 {
+		return TradeProposal{}, ErrTradeInvalidOccurrence
+	}
+	if err := tradeCanonicalItems(s.Players[actorID]); err != nil {
+		return TradeProposal{}, err
+	}
+	next, result, err := s.planTradeNPCByName(actorID, itemName, itemOccurrence, npcName, npcOccurrence, allocate)
+	if err != nil {
+		return TradeProposal{}, err
+	}
+	if result.Action == TradeNPCItemAction {
+		return tradeChanged(s, next, actorID, itemName, itemOccurrence, npcName, npcOccurrence, result), nil
+	}
+	return tradeUnchanged(s, actorID, itemName, itemOccurrence, npcName, npcOccurrence, result), nil
+}
+
+// ApplyTrade commits a previously planned trade. Reward allocation already
+// happened in Plan; replay/apply never invoke the allocator.
+func (s State) ApplyTrade(p TradeProposal) (State, NPCTradeResult, error) {
+	if p.ActorID == "" || !reflect.DeepEqual(s, p.before) {
+		return State{}, NPCTradeResult{}, ErrTradeStaleProposal
+	}
+	if err := p.next.Validate(); err != nil {
+		return State{}, NPCTradeResult{}, ErrTradeInvalidProposal
+	}
+	if p.Changed != (p.Result.Action == TradeNPCItemAction) || p.Result.Changed != p.Changed {
+		return State{}, NPCTradeResult{}, ErrTradeInvalidProposal
+	}
+	return p.next, p.Result, nil
+}
+
+// TradeNPCByName is the reducer-shaped convenience API for the suffix form.
+func (s State) TradeNPCByName(actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, allocate ShopPurchaseItemIDAllocator) (State, NPCTradeResult, error) {
+	proposal, err := s.PlanTrade(actorID, itemName, itemOccurrence, npcName, npcOccurrence, allocate)
+	if err != nil {
+		return State{}, NPCTradeResult{}, err
+	}
+	return s.ApplyTrade(proposal)
+}
+
+func (s State) planTradeNPCByName(actorID, itemName string, itemOccurrence int, npcName string, npcOccurrence int, allocate ShopPurchaseItemIDAllocator) (State, NPCTradeResult, error) {
+	actor := s.Players[actorID]
 	npcID, found, err := s.selectTradeNPC(actorID, npcName, npcOccurrence)
 	if err != nil {
 		return State{}, NPCTradeResult{}, err
 	}
 	if !found {
-		return tradeRejected(s, NPCTradeResult{Action: "trade-rejected", Response: "그것은 여기 없습니다.\r\n"})
+		return tradeRejected(s, NPCTradeResult{Action: TradeRejectedAction, Response: "그것은 여기 없습니다.\r\n"})
 	}
 	npc := s.NPCs[npcID]
-	base := NPCTradeResult{Action: "trade-rejected", NPCID: npcID, NPCName: npc.Body.Name}
+	base := NPCTradeResult{Action: TradeRejectedAction, NPCID: npcID, NPCName: npc.Body.Name}
 	if !flag(npc.Body.Flags[:], npcTradeFlag) {
 		base.Response = fmt.Sprintf("당신은 %s와 교역할 수 없습니다.\r\n", npc.Body.Name)
 		return tradeRejected(s, base)
 	}
 	if npc.TradeOffers == nil {
-		return State{}, NPCTradeResult{}, fmt.Errorf("canonical NPC trade offers required")
+		return State{}, NPCTradeResult{}, ErrTradeOffersUnmigrated
 	}
 	itemID, itemErr := selectInventoryRoot(*actor.Items, itemName, itemOccurrence, nil)
 	if itemErr != nil {
@@ -291,12 +424,12 @@ func (s State) TradeNPCByName(actorID, itemName string, itemOccurrence int, npcN
 		return State{}, NPCTradeResult{}, err
 	}
 	destination := plan.Source
-	result := NPCTradeResult{Action: "trade-npc-item", NPCID: npcID, NPCName: npc.Body.Name, OfferedItemID: itemID, OfferedItemName: offered.Object.Name}
+	result := NPCTradeResult{Action: TradeNPCItemAction, NPCID: npcID, NPCName: npc.Body.Name, OfferedItemID: itemID, OfferedItemName: offered.Object.Name, Changed: true}
 	if selected.Reward == nil {
 		result.Response = fmt.Sprintf("%s가 \"고맙습니다! %s 필요했는데 잘됐군요. 그런데 당신에게 줄게 없는데..\"라고 말합니다.\r\n", npc.Body.Name, offered.Object.Name)
 	} else {
 		if allocate == nil {
-			return State{}, NPCTradeResult{}, fmt.Errorf("trade reward ID allocator required")
+			return State{}, NPCTradeResult{}, ErrTradeRewardAllocator
 		}
 		used := tradeItemIDs(s)
 		uniqueAllocate := func() (string, error) {

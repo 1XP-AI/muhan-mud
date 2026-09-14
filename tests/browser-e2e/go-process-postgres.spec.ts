@@ -144,8 +144,65 @@ test("real Go process and PostgreSQL survive browser signup, world admission, an
   await page.goto("/");
   await expect(page).toHaveTitle("무한대전 · Web MUD");
   await expect(page.getByLabel("무한대전 게임 터미널")).toHaveCount(1);
+  await expect(page.locator(".auth-layout, .auth-panel, main input[type=email]")).toHaveCount(0);
+  await expect(page.getByText("웹 계정 이메일")).toHaveCount(0);
   await createCharacterAndEnterWorld(page);
   await reloginAndLook(page);
+
+  expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
+});
+
+test("Go+PG home xterm keeps Tab outside the terminal", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+
+  await page.goto("/");
+  await waitForLoginPrompt(page);
+  await expect(page.locator(".auth-layout, .auth-panel, main input[type=email]")).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.id = "outside-terminal";
+    button.type = "button";
+    button.textContent = "outside";
+    document.body.appendChild(button);
+  });
+  await page.keyboard.press("Tab");
+  await expect(page.locator("textarea.xterm-helper-textarea")).not.toBeFocused();
+  expect(
+    await page.evaluate(() => {
+      const terminal = document.querySelector('[aria-label="무한대전 게임 터미널"]');
+      const active = document.activeElement;
+      return Boolean(active && terminal && !terminal.contains(active));
+    }),
+  ).toBe(true);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator("textarea.xterm-helper-textarea")).not.toBeFocused();
+
+  expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
+});
+
+test("logged-in session moves with 북 and 가 동굴 through shipped Submit", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+
+  await loginExistingCharacter(page);
+  await expect(page.locator(".xterm-screen")).toContainText("[ 출구 : 북, 동굴 ]");
+  // Wait for a new unique scene so the previous prompt is ready. Login already
+  // printed the plaza description, so a second 봐/북 expect would race.
+  await submitAndWait(page, "가 동굴", "== 브라우저 동굴 ==");
+  await expect(page.locator(".xterm-screen")).toContainText("가 명령으로 들어온 테스트 동굴입니다.");
+  await submitAndWaitForNewOccurrence(page, "가 광장", "== 브라우저 광장 ==");
+  await submitAndWait(page, "북", "== 브라우저 북쪽 ==");
+  await expect(page.locator(".xterm-screen")).toContainText("북쪽으로 이동한 테스트 방입니다.");
+  await submitAndWaitForNewOccurrence(page, "남", "== 브라우저 광장 ==");
+  await expect(page.locator(".xterm-screen")).not.toContainText(existingGamePassword);
 
   expect(errors, `browser errors: ${errors.join(" | ")}`).toEqual([]);
 });

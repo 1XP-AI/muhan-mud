@@ -11,6 +11,14 @@ type FakeGateway = {
 declare global {
   interface Window {
     __muhanGateway?: FakeGateway;
+    __muhanTerminal?: {
+      hasSelection: () => boolean;
+      getSelection: () => string;
+      selectAll: () => void;
+      viewportY: () => number;
+      baseY: () => number;
+      scrollLines: (count: number) => void;
+    };
   }
 }
 
@@ -214,6 +222,112 @@ test("xterm preserves Korean composition and restores focus across mobile resize
   await expect.poll(() => page.evaluate(() => window.__muhanGateway?.messages ?? [])).toEqual([
     JSON.stringify({ type: "line", text: "한글" }),
   ]);
+});
+
+test("home route has a central xterm and no web login card", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.goto("/");
+
+  await expect(page.getByLabel("무한대전 게임 터미널")).toHaveCount(1);
+  await expect(page.getByRole("textbox", { name: "Terminal input" })).toBeFocused();
+  await expect(page.locator(".xterm-screen")).toContainText("무한대전 · 터미널 접속");
+  await expect(page.locator(".auth-layout, .auth-panel, .auth-story")).toHaveCount(0);
+  await expect(page.getByText("웹 계정 이메일")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "계정 만들기" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "성문 열기" })).toHaveCount(0);
+  await expect(page.locator("main input[type=email], main input[type=password], main button")).toHaveCount(0);
+});
+
+test("Tab leaves the terminal and window focus does not steal it back", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.goto("/");
+
+  const input = page.getByRole("textbox", { name: "Terminal input" });
+  await expect(input).toBeFocused();
+
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.id = "outside-terminal";
+    button.type = "button";
+    button.textContent = "outside";
+    document.body.appendChild(button);
+  });
+
+  await page.keyboard.press("Tab");
+  await expect(input).not.toBeFocused();
+  expect(
+    await page.evaluate(() => {
+      const terminal = document.querySelector('[aria-label="무한대전 게임 터미널"]');
+      const active = document.activeElement;
+      return Boolean(active && terminal && !terminal.contains(active));
+    }),
+  ).toBe(true);
+
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(input).not.toBeFocused();
+});
+
+test("text selection and copy survive pointerup and window focus", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await installFakeGateway(page);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toContainText("무한대전 · 터미널 접속");
+  await expect.poll(() => page.evaluate(() => Boolean(window.__muhanTerminal))).toBe(true);
+
+  await page.evaluate(() => window.__muhanTerminal?.selectAll());
+  await expect.poll(() => page.evaluate(() => window.__muhanTerminal?.getSelection() ?? "")).toContain("무한대전");
+
+  await page.evaluate(() => {
+    document
+      .querySelector('[aria-label="무한대전 게임 터미널"]')
+      ?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    window.dispatchEvent(new Event("focus"));
+  });
+  expect(await page.evaluate(() => window.__muhanTerminal?.getSelection() ?? "")).toContain("무한대전");
+
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("무한대전");
+});
+
+test("scrollback stays put on remote output and returns after a command", async ({ page }) => {
+  await installFakeGateway(page);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toContainText("이름을 입력하세요:");
+  await expect.poll(() => page.evaluate(() => Boolean(window.__muhanTerminal))).toBe(true);
+
+  await page.evaluate(() => {
+    const lines = Array.from({ length: 80 }, (_, index) => `scroll-line-${index}`).join("\r\n");
+    window.__muhanGateway?.emitView(`${lines}\r\n이름을 입력하세요: `);
+  });
+  await expect(page.locator(".xterm-screen")).toContainText("scroll-line-79");
+  await expect.poll(() => page.evaluate(() => (window.__muhanTerminal?.baseY() ?? 0) > 0)).toBe(true);
+
+  await page.evaluate(() => window.__muhanTerminal?.scrollLines(-40));
+  const whileReading = await page.evaluate(() => ({
+    viewportY: window.__muhanTerminal?.viewportY() ?? 0,
+    baseY: window.__muhanTerminal?.baseY() ?? 0,
+  }));
+  expect(whileReading.viewportY).toBeLessThan(whileReading.baseY);
+
+  await page.evaluate(() => {
+    window.__muhanGateway?.emitView("remote-output-while-reading\r\n이름을 입력하세요: ");
+  });
+  await expect.poll(() => page.evaluate(() => window.__muhanTerminal?.baseY() ?? 0)).toBeGreaterThan(
+    whileReading.baseY,
+  );
+  expect(await page.evaluate(() => window.__muhanTerminal?.viewportY() ?? -1)).toBe(whileReading.viewportY);
+  await expect(page.locator(".xterm-screen")).toContainText("scroll-line-20");
+  await expect(page.locator(".xterm-screen")).not.toContainText("remote-output-while-reading");
+
+  await page.keyboard.type("look");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".xterm-screen")).toContainText("받은 입력: look");
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const terminal = window.__muhanTerminal;
+      return terminal ? terminal.viewportY() === terminal.baseY() : false;
+    }),
+  ).toBe(true);
 });
 
 test("xterm bounds reconnects across repeated transient drops", async ({ page }) => {

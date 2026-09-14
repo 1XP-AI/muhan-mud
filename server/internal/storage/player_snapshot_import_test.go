@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -186,6 +187,41 @@ func TestPostgresPlayerSnapshotImportRollsBackIdentityAndEvidence(t *testing.T) 
 	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM mud_go.character_imports WHERE world_id=$1`, worldID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan evidence count=%d err=%v", count, err)
+	}
+}
+
+func TestSnapshotFromVerifiedLegacyPlayerFileRequiresPassword(t *testing.T) {
+	raw := make([]byte, 1952+4)
+	copy(raw[0:], "Alice")
+	copy(raw[240:], "pw1234")
+	raw[332] = 20
+	raw[334] = 20
+	raw[336] = 10
+	raw[338] = 10
+	binary.LittleEndian.PutUint16(raw[502:504], 1)
+	if _, err := SnapshotFromVerifiedLegacyPlayerFile(raw, []byte("wrong")); !errors.Is(err, ErrCredentials) {
+		t.Fatalf("name-only or wrong password err=%v", err)
+	}
+	if _, err := SnapshotFromVerifiedLegacyPlayerFile(raw, nil); !errors.Is(err, ErrCredentials) {
+		t.Fatal("empty password admitted")
+	}
+	canonical, err := SnapshotFromVerifiedLegacyPlayerFile(raw, []byte("pw1234"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(canonical, []byte("pw1234")) {
+		t.Fatal("native password entered the CDTO")
+	}
+	snapshot, err := world.DecodePlayerSnapshotV1(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := string(snapshot.Name[:bytes.IndexByte(snapshot.Name[:], 0)])
+	if name != "Alice" || snapshot.RoomNumber != 1 {
+		t.Fatalf("decoded snapshot name=%q room=%d", name, snapshot.RoomNumber)
+	}
+	if _, err := world.EncodePlayerSnapshotV1(snapshot); err != nil {
+		t.Fatal(err)
 	}
 }
 

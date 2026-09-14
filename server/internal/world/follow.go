@@ -245,9 +245,39 @@ func (s State) UnfollowNPCFromPlayer(npcID string) (State, error) {
 	return next, nil
 }
 
+// clearNPCFollowLock drops FollowingPlayerID together with persisted MDMFOL.
+// C discards in-memory monsters on process death; Go snapshots keep Body.Flags,
+// so logout and RecoverOffline must F_CLR bit 46 or *따르기 reappears after boot.
+func clearNPCFollowLock(npc NPCState) NPCState {
+	npc.FollowingPlayerID = ""
+	npc.Body = setNPCFlag(npc.Body, npcDMFollowFlag, false)
+	return npc
+}
+
+func (s State) requireResolvedNPCFollowers(actorID string, actor PlayerState) error {
+	if len(actor.NPCFollowerIDs) > 0 && s.ActiveNPCIDs == nil {
+		return fmt.Errorf("logout requires resolved NPC active order")
+	}
+	for _, npcID := range actor.NPCFollowerIDs {
+		npc, ok := s.NPCs[npcID]
+		if !ok {
+			return fmt.Errorf("NPC follower absent")
+		}
+		if npc.Enemies == nil {
+			return fmt.Errorf("logout requires resolved NPC follower enemies")
+		}
+		if npc.FollowingPlayerID != actorID {
+			return fmt.Errorf("NPC following edge is not reciprocal")
+		}
+	}
+	return nil
+}
+
 // DetachPlayerRelationships follows uninit_ply's relationship cleanup. It is
 // used before logout/recovery so a stale socket cannot leave a persisted group
-// edge pointing at an offline player.
+// edge pointing at an offline player. MDMFOL is cleared with the reciprocal
+// first_fol edge because Go persists NPC flags; C's in-memory monster would
+// otherwise keep following after the socket is gone.
 func (s State) DetachPlayerRelationships(actorID string) (State, error) {
 	if err := s.Validate(); err != nil {
 		return State{}, err
@@ -282,13 +312,11 @@ func (s State) DetachPlayerRelationships(actorID string) (State, error) {
 		next.Players[followerID] = follower
 	}
 	actor.FollowerIDs = nil
+	if err := next.requireResolvedNPCFollowers(actorID, actor); err != nil {
+		return State{}, err
+	}
 	for _, npcID := range append([]string(nil), actor.NPCFollowerIDs...) {
-		npc, ok := next.NPCs[npcID]
-		if !ok {
-			return State{}, fmt.Errorf("NPC follower absent")
-		}
-		npc.FollowingPlayerID = ""
-		next.NPCs[npcID] = npc
+		next.NPCs[npcID] = clearNPCFollowLock(next.NPCs[npcID])
 	}
 	actor.NPCFollowerIDs = nil
 	actor.FollowerRefs = nil

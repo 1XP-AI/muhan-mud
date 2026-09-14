@@ -21,6 +21,70 @@ func itemMutationFixture(t *testing.T) State {
 	return s
 }
 
+func swordFloorFixture(t *testing.T) State {
+	t.Helper()
+	s := npcAttackFixture(t)
+	s.NPCs = nil
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	room.Items = &ItemCollection{Items: map[string]Item{
+		"floor-sword": {Object: LegacyObject{Name: "검"}},
+	}, Inventory: []string{"floor-sword"}}
+	s.Rooms[1] = room
+	player := s.Players["a"]
+	player.Items = &ItemCollection{Items: map[string]Item{}}
+	s.Players["a"] = player
+	return s
+}
+
+func TestTakeAndDropSwordKeepsActorRoomAndFailsClosed(t *testing.T) {
+	s := swordFloorFixture(t)
+	taken, result, err := s.TakeItem("a", "검", 1)
+	if err != nil || result.Action != "take" || result.ItemName != "검" {
+		t.Fatalf("take result=%+v err=%v", result, err)
+	}
+	if taken.Players["a"].Body.RoomID != 1 {
+		t.Fatalf("take moved actor room=%d", taken.Players["a"].Body.RoomID)
+	}
+	if containsID(taken.Rooms[1].Items.Inventory, "floor-sword") || !containsID(taken.Players["a"].Items.Inventory, "floor-sword") {
+		t.Fatalf("take locations room=%+v player=%+v", taken.Rooms[1].Items, taken.Players["a"].Items)
+	}
+
+	dropped, result, err := taken.DropItem("a", "검", 1)
+	if err != nil || result.Action != "drop" || result.ItemName != "검" {
+		t.Fatalf("drop result=%+v err=%v", result, err)
+	}
+	if dropped.Players["a"].Body.RoomID != 1 {
+		t.Fatalf("drop moved actor room=%d", dropped.Players["a"].Body.RoomID)
+	}
+	if !containsID(dropped.Rooms[1].Items.Inventory, "floor-sword") || containsID(dropped.Players["a"].Items.Inventory, "floor-sword") {
+		t.Fatalf("drop locations room=%+v player=%+v", dropped.Rooms[1].Items, dropped.Players["a"].Items)
+	}
+
+	if next, _, err := s.TakeItem("a", "없는검", 1); err == nil || !reflect.DeepEqual(next, State{}) {
+		t.Fatalf("missing take committed next=%+v err=%v", next, err)
+	}
+	if next, _, err := taken.DropItem("a", "없는검", 1); err == nil || !reflect.DeepEqual(next, State{}) {
+		t.Fatalf("missing drop committed next=%+v err=%v", next, err)
+	}
+
+	unmigratedPlayer := swordFloorFixture(t)
+	player := unmigratedPlayer.Players["a"]
+	player.Items = nil
+	unmigratedPlayer.Players["a"] = player
+	if next, _, err := unmigratedPlayer.TakeItem("a", "검", 1); err == nil || !reflect.DeepEqual(next, State{}) {
+		t.Fatalf("unmigrated player take committed next=%+v err=%v", next, err)
+	}
+
+	unmigratedRoom := swordFloorFixture(t)
+	room := unmigratedRoom.Rooms[1]
+	room.Items = nil
+	unmigratedRoom.Rooms[1] = room
+	if next, _, err := unmigratedRoom.TakeItem("a", "검", 1); err == nil || !reflect.DeepEqual(next, State{}) {
+		t.Fatalf("unmigrated room take committed next=%+v err=%v", next, err)
+	}
+}
+
 func TestTakeAndDropItemMoveWholeCanonicalSubtree(t *testing.T) {
 	s := itemMutationFixture(t)
 	next, result, err := s.TakeItem("a", "가방", 1)
@@ -137,7 +201,7 @@ func TestTakeAndDropContainedRootsPreserveContainerOwnership(t *testing.T) {
 	r.Items.Items["floor-bag"] = bag
 	s.Rooms[1] = r
 
-	next, result, err := s.TakeContainedItem("a", "가방", "보석", 1)
+	next, result, err := s.TakeContainedItem("a", "가방", "보석", 1, 1)
 	if err != nil || result.Action != "take-contained" || result.ItemName != "보석" || len(next.Rooms[1].Items.Items) != 2 || !containsID(next.Players["a"].Items.Inventory, "floor-gem") {
 		t.Fatalf("take contained result=%+v room=%+v player=%+v err=%v", result, next.Rooms[1].Items, next.Players["a"].Items, err)
 	}
@@ -150,7 +214,7 @@ func TestTakeAndDropContainedRootsPreserveContainerOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, result, err = next.DropContainedItem("a", "보석", "가방", 1)
+	next, result, err = next.DropContainedItem("a", "보석", "가방", 1, 1)
 	if err != nil || result.Action != "drop-contained" || !containsID(next.Players["a"].Items.Inventory, "floor-bag") {
 		t.Fatalf("drop contained result=%+v player=%+v err=%v", result, next.Players["a"].Items, err)
 	}

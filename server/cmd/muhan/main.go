@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
-	"github.com/1XP-Inc/muhan-mud/server/internal/session"
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/transport"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
@@ -693,7 +692,7 @@ func main() {
 			}()
 			workers.Wait()
 		}()
-		mux.Handle("/ws", transport.NewGameHandler(ctx, session.NewWorldAccounts(repo, writer, *worldID), strings.Split(origin, ","), connector))
+		mux.Handle("/ws", transport.NewGameHandler(ctx, newGameAccounts(repo, writer, nil, writer, *worldID), strings.Split(origin, ","), connector))
 	} else {
 		close(workerDone)
 		mux.Handle("/ws", transport.NewHandler(ctx, repo, strings.Split(origin, ",")))

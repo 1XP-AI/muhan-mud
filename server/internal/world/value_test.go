@@ -141,3 +141,163 @@ func TestQuoteValueByNameRejectsMalformedCanonicalGraphAndNegativeValue(t *testi
 		t.Fatal("negative item value accepted")
 	}
 }
+
+func hideValueActor(s *State) {
+	actor := s.Players["actor"]
+	actor.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	s.Players["actor"] = actor
+}
+
+func valueActorHidden(s State) bool {
+	actor := s.Players["actor"]
+	return flag(actor.Body.Flags[:], playerHiddenStateFlag)
+}
+
+func TestValueByNamePrintsCNotServiceWithoutClearingPHIDDN(t *testing.T) {
+	state := valueTestState([8]byte{}, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 100}},
+	}, "sword"))
+	hideValueActor(&state)
+	original := state.clone()
+	next, result, err := state.ValueByName("actor", "검", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ValueNotServiceAction || result.Response != ValueNotServiceResponse || result.RoomID != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !valueActorHidden(next) {
+		t.Fatal("not-service cleared PHIDDN")
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(state, original) {
+		t.Fatal("not-service mutated or diverged from source")
+	}
+}
+
+func TestValueByNamePrintsCAskWhatWithoutClearingPHIDDN(t *testing.T) {
+	var flags [8]byte
+	flags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	state := valueTestState(flags, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 100}},
+	}, "sword"))
+	hideValueActor(&state)
+	original := state.clone()
+	next, result, err := state.ValueByName("actor", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ValueAskWhatAction || result.Response != ValueAskWhatResponse || result.RoomID != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !valueActorHidden(next) {
+		t.Fatal("ask-what cleared PHIDDN")
+	}
+	if !reflect.DeepEqual(next, original) || !reflect.DeepEqual(state, original) {
+		t.Fatal("ask-what mutated or diverged from source")
+	}
+}
+
+func TestValueByNamePrintsCNotServiceBeforeAskWhat(t *testing.T) {
+	state := valueTestState([8]byte{}, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 100}},
+	}, "sword"))
+	_, result, err := state.ValueByName("actor", "", 1)
+	if err != nil || result.Action != ValueNotServiceAction || result.Response != ValueNotServiceResponse {
+		t.Fatalf("bare value outside service room=%+v err=%v", result, err)
+	}
+}
+
+func TestValueByNamePrintsCNotHoldingAfterClearingPHIDDN(t *testing.T) {
+	var flags [8]byte
+	flags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	state := valueTestState(flags, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 100}},
+	}, "sword"))
+	hideValueActor(&state)
+	original := state.clone()
+	next, result, err := state.ValueByName("actor", "방패", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ValueNotHoldingAction || result.Response != ValueNotHoldingResponse || result.ItemID != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if valueActorHidden(next) {
+		t.Fatal("not-holding leftover did not F_CLR PHIDDN")
+	}
+	if !valueActorHidden(original) || !reflect.DeepEqual(state, original) {
+		t.Fatal("not-holding mutated source snapshot")
+	}
+	if !containsString(next.Players["actor"].Items.Inventory, "sword") {
+		t.Fatal("not-holding moved inventory")
+	}
+
+	_, prefix, err := state.ValueByName("actor", "검술", 1)
+	if err != nil || prefix.Response != ValueNotHoldingResponse {
+		t.Fatalf("prefix name=%+v err=%v", prefix, err)
+	}
+	_, occ, err := state.ValueByName("actor", "검", 2)
+	if err != nil || occ.Response != ValueNotHoldingResponse {
+		t.Fatalf("missing occurrence=%+v err=%v", occ, err)
+	}
+}
+
+func TestValueByNamePawnCapsRepairQuarterAndClearsPHIDDN(t *testing.T) {
+	var pawnFlags [8]byte
+	pawnFlags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	pawn := valueTestState(pawnFlags, valueTestItems(map[string]Item{
+		"first":  {Object: LegacyObject{Name: "검", Value: 300001}},
+		"second": {Object: LegacyObject{Name: "검", Value: 99}},
+	}, "first", "second"))
+	hideValueActor(&pawn)
+	before := pawn.clone()
+	next, result, err := pawn.ValueByName("actor", "검", 1)
+	if err != nil || result.Action != ValueQuotedAction || result.Mode != ValueModePawn || result.Quote != 100000 || result.ItemID != "first" || !strings.Contains(result.Response, "100000냥") {
+		t.Fatalf("pawn result=%+v err=%v", result, err)
+	}
+	if valueActorHidden(next) {
+		t.Fatal("successful pawn value did not F_CLR PHIDDN")
+	}
+	if !valueActorHidden(before) || !reflect.DeepEqual(pawn, before) {
+		t.Fatal("successful pawn value mutated source")
+	}
+	_, second, err := pawn.ValueByName("actor", "검", 2)
+	if err != nil || second.Quote != 49 || second.ItemID != "second" {
+		t.Fatalf("pawn occurrence 2=%+v err=%v", second, err)
+	}
+
+	var repairFlags [8]byte
+	repairFlags[RoomRepairFlag/8] |= 1 << (RoomRepairFlag % 8)
+	repair := valueTestState(repairFlags, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 101}},
+	}, "sword"))
+	hideValueActor(&repair)
+	_, repairResult, err := repair.ValueByName("actor", "검", 1)
+	if err != nil || repairResult.Mode != ValueModeRepair || repairResult.Quote != 25 || !strings.Contains(repairResult.Response, "25냥") {
+		t.Fatalf("repair result=%+v err=%v", repairResult, err)
+	}
+
+	bothFlags := pawnFlags
+	bothFlags[RoomRepairFlag/8] |= 1 << (RoomRepairFlag % 8)
+	both := valueTestState(bothFlags, valueTestItems(map[string]Item{
+		"sword": {Object: LegacyObject{Name: "검", Value: 100}},
+	}, "sword"))
+	_, bothResult, err := both.ValueByName("actor", "검", 1)
+	if err != nil || bothResult.Mode != ValueModePawn || bothResult.Quote != 50 {
+		t.Fatalf("both-flag result=%+v err=%v", bothResult, err)
+	}
+}
+
+func TestValueByNameFailClosesUnmigratedItems(t *testing.T) {
+	var flags [8]byte
+	flags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	state := valueTestState(flags, nil)
+	actor := state.Players["actor"]
+	actor.Body.Inventory = []LegacyObject{{Name: "legacy", Value: 1}}
+	state.Players["actor"] = actor
+	original := state.clone()
+	next, result, err := state.ValueByName("actor", "legacy", 1)
+	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, ValueResult{}) || !reflect.DeepEqual(state, original) {
+		t.Fatalf("unmigrated items valued: next=%+v result=%+v err=%v", next, result, err)
+	}
+}

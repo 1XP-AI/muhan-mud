@@ -44,6 +44,34 @@ var LegacyRoomCompatibilityPolicy = LegacyRoomAdmissionPolicy{
 	AllowHeaderIDPathMismatch:    true,
 }
 
+// LegacyRoomTrailingDataPolicy admits leftover bytes after the known room
+// sequence. Original source bytes stay in Evidence; only the prefix through
+// Consumed is decoded. It does not admit invalid EUC-KR or missing text
+// terminators and does not weaken DecodeLegacyRoom.
+var LegacyRoomTrailingDataPolicy = LegacyRoomAdmissionPolicy{
+	AllowTrailingData: true,
+}
+
+// LegacyRoomMissingTextTerminatorPolicy admits fixed-width C text fields that
+// fill their array without a NUL. Original source bytes stay in Evidence;
+// Inspect/Admit read the unterminated field only to the C field boundary.
+// It does not admit invalid EUC-KR or trailing data and does not weaken
+// DecodeLegacyRoom.
+var LegacyRoomMissingTextTerminatorPolicy = LegacyRoomAdmissionPolicy{
+	AllowMissingTextTerminator: true,
+}
+
+// LegacyRoomInvalidEUCKRPolicy admits NUL-terminated text that is not strict
+// EUC-KR. Original source bytes stay in Evidence; Inspect/Admit decode with
+// U+FFFD substitution only and must not invent Hangul. Mixed r03/r03388 is
+// admitted here because invalid-euc-kr is the first issue class; the companion
+// missing-text-terminator remains recorded evidence and is read only to the C
+// field boundary. This policy does not set AllowMissingTextTerminator or
+// AllowTrailingData and does not weaken DecodeLegacyRoom.
+var LegacyRoomInvalidEUCKRPolicy = LegacyRoomAdmissionPolicy{
+	AllowInvalidEUCKR: true,
+}
+
 func (p LegacyRoomAdmissionPolicy) allows(issue LegacyIssue) bool {
 	switch issue.Kind {
 	case "invalid-euc-kr":
@@ -89,11 +117,38 @@ func AdmitLegacyRoom(raw []byte, policy LegacyRoomAdmissionPolicy) (LegacyRoomAd
 		return LegacyRoomAdmission{}, err
 	}
 	for _, issue := range report.Issues {
-		if !policy.allows(issue) {
-			return LegacyRoomAdmission{}, LegacyRoomAdmissionError{Issue: issue}
+		if policy.allows(issue) {
+			continue
+		}
+		if issue.Kind == "missing-text-terminator" && policy.AllowInvalidEUCKR && invalidEUCKRAdmissionIssues(report.Issues) {
+			continue
+		}
+		return LegacyRoomAdmission{}, LegacyRoomAdmissionError{Issue: issue}
+	}
+	room := cloneRoom(report.Room)
+	if policy.AllowTrailingData && trailingDataOnlyIssues(report.Issues) && report.Consumed > 0 && report.Consumed < len(raw) {
+		decoded, err := DecodeLegacyRoom(append([]byte(nil), raw[:report.Consumed]...))
+		if err != nil {
+			return LegacyRoomAdmission{}, err
+		}
+		room = decoded
+	}
+	if policy.AllowMissingTextTerminator && missingTextTerminatorOnlyIssues(report.Issues) {
+		if err := requireUnterminatedTextAtCFieldBoundary(raw, report.Issues); err != nil {
+			return LegacyRoomAdmission{}, err
 		}
 	}
-	for _, monster := range report.Room.Monsters {
+	if policy.AllowInvalidEUCKR && invalidEUCKRAdmissionIssues(report.Issues) {
+		if err := requireInvalidEUCKRSubstitution(raw, report.Issues); err != nil {
+			return LegacyRoomAdmission{}, err
+		}
+		if hasMissingTextTerminatorIssue(report.Issues) {
+			if err := requireUnterminatedTextAtCFieldBoundary(raw, report.Issues); err != nil {
+				return LegacyRoomAdmission{}, err
+			}
+		}
+	}
+	for _, monster := range room.Monsters {
 		if !legacyEmptyMonsterPlaceholder(monster) {
 			continue
 		}
@@ -103,7 +158,6 @@ func AdmitLegacyRoom(raw []byte, policy LegacyRoomAdmissionPolicy) (LegacyRoomAd
 			return LegacyRoomAdmission{}, LegacyRoomAdmissionError{Issue: issue}
 		}
 	}
-	room := cloneRoom(report.Room)
 	kept := room.Monsters[:0]
 	for _, monster := range room.Monsters {
 		if !legacyEmptyMonsterPlaceholder(monster) {
@@ -410,6 +464,54 @@ func writeLegacyManifestInt(h interface{ Write([]byte) (int, error) }, value int
 
 func cloneLegacyIssues(issues []LegacyIssue) []LegacyIssue {
 	return append([]LegacyIssue(nil), issues...)
+}
+
+func trailingDataOnlyIssues(issues []LegacyIssue) bool {
+	if len(issues) == 0 {
+		return false
+	}
+	for _, issue := range issues {
+		if issue.Kind != "trailing-data" {
+			return false
+		}
+	}
+	return true
+}
+
+func missingTextTerminatorOnlyIssues(issues []LegacyIssue) bool {
+	if len(issues) == 0 {
+		return false
+	}
+	for _, issue := range issues {
+		if issue.Kind != "missing-text-terminator" {
+			return false
+		}
+	}
+	return true
+}
+
+func invalidEUCKRAdmissionIssues(issues []LegacyIssue) bool {
+	hasInvalid := false
+	for _, issue := range issues {
+		switch issue.Kind {
+		case "invalid-euc-kr":
+			hasInvalid = true
+		case "missing-text-terminator":
+			// Mixed r03388 companion only. This is not AllowMissingTextTerminator.
+		default:
+			return false
+		}
+	}
+	return hasInvalid
+}
+
+func hasMissingTextTerminatorIssue(issues []LegacyIssue) bool {
+	for _, issue := range issues {
+		if issue.Kind == "missing-text-terminator" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasLegacyBodyException(issues []LegacyIssue) bool {

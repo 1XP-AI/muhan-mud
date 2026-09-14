@@ -65,17 +65,56 @@ func TestParseValueLineAdmitsAliasesAndPositiveOccurrence(t *testing.T) {
 	if command, ok := ParseValueLine("가격 검 2"); !ok || command.Alias != "가격" || command.Name != "검" || command.Occurrence != 2 {
 		t.Fatalf("parsed=%+v ok=%t", command, ok)
 	}
-	for _, line := range []string{"value 검", "가치", "가치 검 0", "가치 검 -1", "가치 검 x", "가치 검 1 extra"} {
+	if command, ok := ParseValueLine("가치"); !ok || command.Alias != "가치" || command.Name != "" || command.Occurrence != 1 {
+		t.Fatalf("bare 가치=%+v ok=%t", command, ok)
+	}
+	if command, ok := ParseValueLine("가격"); !ok || command.Alias != "가격" || command.Name != "" || command.Occurrence != 1 {
+		t.Fatalf("bare 가격=%+v ok=%t", command, ok)
+	}
+	parsed, err := ParseCommand("가치")
+	if err != nil || parsed.Kind != CommandValue {
+		t.Fatalf("ParseCommand bare 가치=%+v err=%v", parsed, err)
+	}
+	parsed, err = ParseCommand("가격")
+	if err != nil || parsed.Kind != CommandValue {
+		t.Fatalf("ParseCommand bare 가격=%+v err=%v", parsed, err)
+	}
+	for _, line := range []string{"value 검", "가치 검 0", "가치 검 -1", "가치 검 x", "가치 검 1 extra"} {
 		if _, ok := ParseValueLine(line); ok {
 			t.Fatalf("unsupported value line accepted: %q", line)
 		}
 	}
 }
 
+func valueCommandMutatedFixture(t *testing.T, roomFlag int, mutate func(*world.State)) []byte {
+	t.Helper()
+	s, err := world.DecodeState(valueCommandFixture(t, roomFlag))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutate != nil {
+		mutate(&s)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func hideValueCommandActor(s *world.State) {
+	actor := s.Players["actor"]
+	actor.Body.Flags[1/8] |= 1 << (1 % 8) // PHIDDN
+	s.Players["actor"] = actor
+}
+
+func valueCommandActorHidden(s world.State) bool {
+	return s.Players["actor"].Body.Flags[1/8]&(1<<(1%8)) != 0
+}
+
 func TestExecuteValueLinePersistsTypedReadOnlyResultAndReplays(t *testing.T) {
-	store := &departureStore{state: valueCommandFixture(t, world.RoomPawnFlag)}
+	store := &departureStore{state: valueCommandMutatedFixture(t, world.RoomPawnFlag, hideValueCommandActor)}
 	owners, lease := admitValueOwner(t)
-	before := append([]byte(nil), store.state...)
 
 	first, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-1", lease, "가격 검 2")
 	if err != nil || first.Replayed || store.commits != 1 {
@@ -85,16 +124,21 @@ func TestExecuteValueLinePersistsTypedReadOnlyResultAndReplays(t *testing.T) {
 	if err := json.Unmarshal(first.Response, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Action != "value" || result.Mode != world.ValueModePawn || result.ItemID != "sword-2" || result.Occurrence != 2 || result.Quote != 100000 || !strings.Contains(result.Response, "100000냥") {
+	if result.Action != world.ValueQuotedAction || result.Mode != world.ValueModePawn || result.ItemID != "sword-2" || result.Occurrence != 2 || result.Quote != 100000 || !strings.Contains(result.Response, "100000냥") {
 		t.Fatalf("result=%+v", result)
 	}
-	if string(store.state) != string(before) {
-		t.Fatal("value changed the world snapshot")
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["actor"].Items.Items["sword-2"].Object.Value != 300001 || valueCommandActorHidden(saved) {
+		t.Fatalf("saved=%+v err=%v", saved, err)
 	}
 
 	replay, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-1", lease, "가격 검 2")
 	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+	replayed, err := world.DecodeState(store.state)
+	if err != nil || valueCommandActorHidden(replayed) || replayed.Players["actor"].Items.Items["sword-2"].Object.Value != 300001 {
+		t.Fatalf("replay re-cleared or re-committed: %+v err=%v commits=%d", replayed, err, store.commits)
 	}
 }
 
@@ -111,5 +155,109 @@ func TestExecuteValueLineSupportsRepairQuoteAndFailsBeforeReceipt(t *testing.T) 
 	}
 	if _, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-bad", lease, "가치 검 0"); err == nil || store.commits != 1 {
 		t.Fatalf("malformed command committed: err=%v commits=%d", err, store.commits)
+	}
+}
+
+func TestExecuteValueLineNotServiceSucceedsWithCResponseAndReplays(t *testing.T) {
+	store := &departureStore{state: valueCommandMutatedFixture(t, 0, func(s *world.State) {
+		room := s.Rooms[1]
+		room.Resource.Flags = [8]byte{}
+		s.Rooms[1] = room
+		hideValueCommandActor(s)
+	})}
+	owners, lease := admitValueOwner(t)
+	before := append([]byte(nil), store.state...)
+	first, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-not-service", lease, "가치 검")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.ValueResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.ValueNotServiceResponse || result.Action != world.ValueNotServiceAction {
+		t.Fatalf("result=%+v", result)
+	}
+	if string(store.state) != string(before) {
+		t.Fatal("not-service value changed world snapshot")
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !valueCommandActorHidden(saved) {
+		t.Fatalf("not-service cleared PHIDDN: %+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-not-service", lease, "가치 검")
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteValueLineAskWhatSucceedsWithCResponseAndReplays(t *testing.T) {
+	store := &departureStore{state: valueCommandMutatedFixture(t, world.RoomPawnFlag, hideValueCommandActor)}
+	owners, lease := admitValueOwner(t)
+	before := append([]byte(nil), store.state...)
+	first, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-ask-what", lease, "가치")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.ValueResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.ValueAskWhatResponse || result.Action != world.ValueAskWhatAction {
+		t.Fatalf("result=%+v", result)
+	}
+	if string(store.state) != string(before) {
+		t.Fatal("ask-what value changed world snapshot")
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !valueCommandActorHidden(saved) {
+		t.Fatalf("ask-what cleared PHIDDN: %+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-ask-what", lease, "가치")
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteValueLineNotHoldingClearsPHIDDNAndReplays(t *testing.T) {
+	store := &departureStore{state: valueCommandMutatedFixture(t, world.RoomPawnFlag, hideValueCommandActor)}
+	owners, lease := admitValueOwner(t)
+	first, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-not-holding", lease, "가치 방패")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.ValueResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Response != world.ValueNotHoldingResponse || result.Action != world.ValueNotHoldingAction {
+		t.Fatalf("result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || valueCommandActorHidden(saved) || len(saved.Players["actor"].Items.Inventory) != 2 {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-not-holding", lease, "가치 방패")
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+	replayed, err := world.DecodeState(store.state)
+	if err != nil || valueCommandActorHidden(replayed) || len(replayed.Players["actor"].Items.Inventory) != 2 {
+		t.Fatalf("replay re-cleared or re-committed: %+v err=%v commits=%d", replayed, err, store.commits)
+	}
+}
+
+func TestExecuteValueLineUnmigratedItemsFailClosed(t *testing.T) {
+	store := &departureStore{state: valueCommandMutatedFixture(t, world.RoomPawnFlag, func(s *world.State) {
+		actor := s.Players["actor"]
+		actor.Items = nil
+		s.Players["actor"] = actor
+	})}
+	owners, lease := admitValueOwner(t)
+	if _, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-unmigrated", lease, "가치 검"); err == nil {
+		t.Fatal("unmigrated items unexpectedly valued")
+	}
+	if store.commits != 0 {
+		t.Fatalf("fail-closed value committed=%d", store.commits)
 	}
 }

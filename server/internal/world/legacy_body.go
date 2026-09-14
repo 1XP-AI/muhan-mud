@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"strings"
+
 	"golang.org/x/text/encoding/korean"
 )
 
@@ -77,6 +79,10 @@ type LegacyIssue struct {
 	Offset int
 }
 
+// legacyCFixedTextFieldBytes is the C char[80] text field width used by
+// object name/description/use_output and matching monster/room text arrays.
+const legacyCFixedTextFieldBytes = 80
+
 // LegacyInspection is migration evidence only, never permission to admit a
 // room to the game. Invalid text uses replacement characters in the preview;
 // Source retains every original byte, including non-semantic trailing data.
@@ -142,15 +148,77 @@ func (r *roomReader) text(b []byte, offset int) string {
 				kind = "missing-text-terminator"
 			}
 			*r.issues = append(*r.issues, LegacyIssue{Kind: kind, Offset: offset})
-			decoded, decodeErr := korean.EUCKR.NewDecoder().Bytes(b[:end])
+			decoded, decodeErr := decodeLegacyEUCKRPreview(b[:end])
 			if decodeErr == nil {
-				return string(decoded)
+				return decoded
 			}
 		}
 		r.fail("invalid EUC-KR text")
 	}
 	return text
 }
+
+// decodeLegacyEUCKRPreview is the documented substitution for invalid-euc-kr
+// admission. Invalid sequences become U+FFFD; the mapping must not invent
+// Hangul from bytes outside the EUC-KR table. Original source bytes stay in
+// Evidence.Source.
+func decodeLegacyEUCKRPreview(raw []byte) (string, error) {
+	decoded, err := korean.EUCKR.NewDecoder().Bytes(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+func requireInvalidEUCKRSubstitution(raw []byte, issues []LegacyIssue) error {
+	found := false
+	for _, issue := range issues {
+		if issue.Kind != "invalid-euc-kr" {
+			continue
+		}
+		found = true
+		if issue.Offset < 0 || issue.Offset >= len(raw) {
+			return fmt.Errorf("%w at byte %d: invalid-euc-kr field is outside source", ErrLegacyRoom, issue.Offset)
+		}
+		end := bytes.IndexByte(raw[issue.Offset:], 0)
+		if end < 0 {
+			return fmt.Errorf("%w at byte %d: invalid-euc-kr field has no NUL", ErrLegacyRoom, issue.Offset)
+		}
+		preview, err := decodeLegacyEUCKRPreview(raw[issue.Offset : issue.Offset+end])
+		if err != nil {
+			return fmt.Errorf("%w at byte %d: %v", ErrLegacyRoom, issue.Offset, err)
+		}
+		if !strings.ContainsRune(preview, '\ufffd') {
+			return fmt.Errorf("%w at byte %d: invalid-euc-kr decoded without U+FFFD substitution", ErrLegacyRoom, issue.Offset)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: invalid-euc-kr conversion without issues", ErrLegacyRoom)
+	}
+	return nil
+}
+
+func requireUnterminatedTextAtCFieldBoundary(raw []byte, issues []LegacyIssue) error {
+	found := false
+	for _, issue := range issues {
+		if issue.Kind != "missing-text-terminator" {
+			continue
+		}
+		found = true
+		if issue.Offset < 0 || issue.Offset+legacyCFixedTextFieldBytes > len(raw) {
+			return fmt.Errorf("%w at byte %d: unterminated field exceeds C field boundary", ErrLegacyRoom, issue.Offset)
+		}
+		field := raw[issue.Offset : issue.Offset+legacyCFixedTextFieldBytes]
+		if bytes.IndexByte(field, 0) >= 0 {
+			return fmt.Errorf("%w at byte %d: unterminated field contains NUL before C field boundary", ErrLegacyRoom, issue.Offset)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: missing-text-terminator conversion without issues", ErrLegacyRoom)
+	}
+	return nil
+}
+
 func (r *roomReader) object(depth int) LegacyObject {
 	if depth > 64 || r.objects >= 8192 {
 		r.fail("object tree limit")

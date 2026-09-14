@@ -12,6 +12,31 @@ export interface MobileLineSubmissionState {
   composing: boolean;
 }
 
+export interface TerminalKeyEvent {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  hasSelection: boolean;
+}
+
+/**
+ * Browser shortcuts the terminal must not swallow: Tab out of xterm, and copy
+ * when a selection exists. Returning true means xterm should ignore the key.
+ */
+export function shouldYieldTerminalKey({
+  key,
+  ctrlKey,
+  metaKey,
+  altKey,
+  hasSelection,
+}: TerminalKeyEvent): boolean {
+  if (key === "Tab") return true;
+  const copy =
+    (ctrlKey || metaKey) && !altKey && key.toLowerCase() === "c";
+  return copy && hasSelection;
+}
+
 /** Do not steal focus while IME composition, selection, or tab switching is active. */
 export function canRestoreTerminalFocus({
   disposed,

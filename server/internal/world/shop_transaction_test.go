@@ -3,6 +3,7 @@ package world
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -249,5 +250,91 @@ func TestBuyShopItemRejectsDuplicateIDsAllocatorFailureAndMalformedPrice(t *test
 				t.Fatalf("accepted/partially applied %s: next=%+v result=%+v err=%v", tc.name, next, result, err)
 			}
 		})
+	}
+}
+
+func TestBuyShopItemPrintsCNotShopForNonRSHOPPIncludingPawnOnly(t *testing.T) {
+	s := shopTransactionFixture(t)
+	room := s.Rooms[100]
+	room.Resource.Flags = [8]byte{}
+	room.Resource.Flags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	s.Rooms[100] = room
+	original := s.clone()
+	called := false
+	next, result, err := s.BuyShopItem("a", "stock-sword", func() (string, error) {
+		called = true
+		return "should-not-allocate", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopPurchaseNotShopAction || result.Response != ShopPurchaseNotShopResponse || result.ShopRoomID != 100 || result.Event != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if strings.Contains(result.Response, "전당포") {
+		t.Fatalf("guessed pawn-shop message: %q", result.Response)
+	}
+	if called || !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-shop buy cloned, allocated, or mutated")
+	}
+
+	plain := shopTransactionFixture(t)
+	plainRoom := plain.Rooms[100]
+	plainRoom.Resource.Flags = [8]byte{}
+	plain.Rooms[100] = plainRoom
+	_, plainResult, err := plain.BuyShopItem("a", "stock-sword", sequenceShopAllocator("unused"))
+	if err != nil || plainResult.Response != ShopPurchaseNotShopResponse {
+		t.Fatalf("plain room result=%+v err=%v", plainResult, err)
+	}
+}
+
+func TestBuyShopItemPrintsCNoStockWhenStorageRoomMissing(t *testing.T) {
+	s := shopTransactionFixture(t)
+	delete(s.Rooms, 101)
+	original := s.clone()
+	called := false
+	next, result, err := s.BuyShopItem("a", "stock-sword", func() (string, error) {
+		called = true
+		return "should-not-allocate", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopPurchaseNoStockAction || result.Response != ShopPurchaseNoStockResponse || result.ShopRoomID != 100 || result.StorageRoomID != 0 || result.Event != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if called || !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("missing-storage buy cloned, allocated, or mutated")
+	}
+}
+
+func TestBuyShopItemPrintsCNotSoldWhenStockMissingFromStorage(t *testing.T) {
+	s := shopTransactionFixture(t)
+	original := s.clone()
+	called := false
+	next, result, err := s.BuyShopItem("a", "missing", func() (string, error) {
+		called = true
+		return "should-not-allocate", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != ShopPurchaseNotSoldAction || result.Response != ShopPurchaseNotSoldResponse || result.StockID != "missing" || result.Event != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if called || !reflect.DeepEqual(next, original) || !reflect.DeepEqual(s, original) {
+		t.Fatal("not-sold buy cloned, allocated, or mutated")
+	}
+}
+
+func TestBuyShopItemFailClosesUnmigratedStorage(t *testing.T) {
+	s := shopTransactionFixture(t)
+	room := s.Rooms[101]
+	room.Items = nil
+	s.Rooms[101] = room
+	original := s.clone()
+	next, result, err := s.BuyShopItem("a", "stock-sword", sequenceShopAllocator("unused"))
+	if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, ShopPurchaseResult{}) || !reflect.DeepEqual(s, original) {
+		t.Fatalf("unmigrated storage bought: next=%+v result=%+v err=%v", next, result, err)
 	}
 }

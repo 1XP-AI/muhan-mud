@@ -16,17 +16,21 @@ import (
 var ErrUnsupportedCastLine = errors.New("line is not an implemented cast command")
 
 // CastCommand keeps the original Korean command boundary separate from the
-// source spell index.  An empty spell is the original `주문` prompt; target
-// forms remain unsupported until targeted spell state is migrated.
+// source spell index.  An empty spell is the original `주문` prompt.  A third
+// token is admitted only when the spell uniquely resolves to SLOCAT / 천리안
+// or SSUMMO / 소환.
 type CastCommand struct {
 	SpellName string
+	Target    string
 }
 
 type castLineRequest struct {
 	Kind      string `json:"kind"`
 	Line      string `json:"line"`
 	SpellName string `json:"spell_name"`
+	Target    string `json:"target,omitempty"`
 	Now       int32  `json:"now"`
+	Hour      int    `json:"hour"`
 }
 
 type CastOptions = world.CastOptions
@@ -43,15 +47,15 @@ func validCastLine(line string) bool {
 	return true
 }
 
-// ParseCastLine admits the original `주문` prompt and its self-target form
-// `주문 <주문명>`.  A third token is deliberately rejected rather than
-// routing a targeted spell to a self-only reducer.
+// ParseCastLine admits the original `주문` prompt, its self-target form
+// `주문 <주문명>`, and the targeted forms `주문 천리안 <name>` / `주문 소환 <name>`.
+// Other three-token casts stay rejected so they cannot reach a self-only reducer.
 func ParseCastLine(line string) (CastCommand, bool) {
 	if !validCastLine(line) {
 		return CastCommand{}, false
 	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
-	if err != nil || len(tokens) < 1 || len(tokens) > 2 || tokens[0] != "주문" {
+	if err != nil || len(tokens) < 1 || tokens[0] != "주문" {
 		return CastCommand{}, false
 	}
 	if len(tokens) == 1 {
@@ -60,7 +64,13 @@ func ParseCastLine(line string) (CastCommand, bool) {
 	if tokens[1] == "" || strings.TrimSpace(tokens[1]) != tokens[1] {
 		return CastCommand{}, false
 	}
-	return CastCommand{SpellName: tokens[1]}, true
+	if len(tokens) == 2 {
+		return CastCommand{SpellName: tokens[1]}, true
+	}
+	if len(tokens) != 3 || tokens[2] == "" || strings.TrimSpace(tokens[2]) != tokens[2] || !world.IsTargetedCastSpell(tokens[1]) {
+		return CastCommand{}, false
+	}
+	return CastCommand{SpellName: tokens[1], Target: tokens[2]}, true
 }
 
 func IsCastLine(line string) bool {
@@ -76,7 +86,8 @@ func (o *Ownership) ExecuteCastLineWithOptions(ctx context.Context, store engine
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedCastLine
 	}
-	payload, err := json.Marshal(castLineRequest{Kind: "cast", Line: line, SpellName: command.SpellName, Now: options.Now})
+	options.Target = command.Target
+	payload, err := json.Marshal(castLineRequest{Kind: "cast", Line: line, SpellName: command.SpellName, Target: command.Target, Now: options.Now, Hour: options.Hour})
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
@@ -102,6 +113,6 @@ func (o *Ownership) ExecuteCastLineWithOptions(ctx context.Context, store engine
 	})
 }
 
-func (o *Ownership) ExecuteCastLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, now int32, roll func(int, int) int) (storage.WorldReceipt, error) {
-	return o.ExecuteCastLineWithOptions(ctx, store, worldID, commandID, lease, line, CastOptions{Now: now, Roll: roll})
+func (o *Ownership) ExecuteCastLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, now int32, hour int, roll func(int, int) int) (storage.WorldReceipt, error) {
+	return o.ExecuteCastLineWithOptions(ctx, store, worldID, commandID, lease, line, CastOptions{Now: now, Hour: hour, Roll: roll})
 }
