@@ -59,9 +59,16 @@ docker start "$container" >/dev/null
 
 ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
-    ready=1
-    break
+  if docker exec -e PGPASSWORD="$password" "$container" \
+      psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+    # initdb accepts one connection burst then restarts; require a second
+    # query so CREATE DATABASE does not hit a vanished unix socket.
+    sleep 1
+    if docker exec -e PGPASSWORD="$password" "$container" \
+        psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
   fi
   [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]] || break
   sleep 1

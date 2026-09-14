@@ -28,6 +28,23 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 	if _, ok := ParseLookLine(line); ok || lastTokenIsLookVerb(line) || lineContainsLookVerb(line) {
 		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
 	}
+	// C parse() last-token 주워/버려/꺼내/넣어 is get/drop, not move. Live
+	// Submit classifies those as CommandItemMutation first; a direct
+	// ExecuteDirectionalLine bypass still has to refuse them or
+	// ParseDirectionalToken(fields[0]) would walk east on `동 버려`.
+	// A mutation verb in the middle (`동 버려 extra`) is fail-closed
+	// CommandUnknown on ParseCommand; this deny-list still has to
+	// refuse the same bypass or fields[0] would walk.
+	if lastTokenIsItemMutationVerb(line) || lineContainsItemMutationVerb(line) {
+		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
+	}
+	// C parse() last-token 소지품/장비/장 is inventory/equipment, not
+	// move. Live Submit classifies those as CommandItems first; a
+	// direct ExecuteDirectionalLine bypass still has to refuse them
+	// or ParseDirectionalToken(fields[0]) would walk east on `동 소지품`.
+	if lastTokenIsItemsVerb(line) {
+		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
+	}
 	token, ok := world.ParseDirectionalToken(line)
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
@@ -104,4 +121,28 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		response, reduceErr := json.Marshal(responseText)
 		return state, response, reduceErr
 	})
+}
+
+func lastTokenIsItemMutationVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	return isItemMutationVerb(tokens[len(tokens)-1])
+}
+
+func lastTokenIsItemsVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	return isItemsVerb(tokens[len(tokens)-1])
+}
+
+func lineContainsItemMutationVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil {
+		return false
+	}
+	return tokensContainItemMutationVerb(tokens)
 }

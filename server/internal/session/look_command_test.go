@@ -86,7 +86,7 @@ func TestParseLookLineAcceptsBareAndExitTarget(t *testing.T) {
 	if !ok || northExtra.Target != "북" || northExtra.Occurrence != 1 {
 		t.Fatalf("north extra last-token=%+v ok=%v", northExtra, ok)
 	}
-	for _, line := range []string{"", "보아 동", "봐 동 extra", "봐 동 0", "봐 동 -1", "봐\n동", "봐 동\x00", "동 봐 extra"} {
+	for _, line := range []string{"", "보아 동", "봐 동 extra", "봐 동 0", "봐 동 -1", "봐\n동", "봐 동\x00", "동 봐 extra", "동 0 봐", "동 -1 봐"} {
 		if _, ok := ParseLookLine(line); ok {
 			t.Fatalf("unsupported look line accepted: %q", line)
 		}
@@ -197,6 +197,54 @@ func TestParseCommandDirectionThenLookVerbPeeksWithoutMoving(t *testing.T) {
 	}
 }
 
+func TestParseCommandLastTokenInvalidOccurrenceDoesNotPeekOrMove(t *testing.T) {
+	for _, tt := range []struct {
+		line, id string
+	}{
+		{"동 0 봐", "look-east-zero"},
+		{"동 -1 봐", "look-east-neg"},
+	} {
+		t.Run(tt.line, func(t *testing.T) {
+			s := lookCommandFixture()
+			raw, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &departureStore{state: raw}
+			var owners Ownership
+			lease, err := owners.Acquire("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := owners.Admit(lease, func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := ParseCommand(tt.line)
+			if err != nil || parsed.Kind != CommandLook {
+				t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandLook", tt.line, parsed, err)
+			}
+			command, ok := ParseLookLine(tt.line)
+			if ok && command.Target == "동" && command.Occurrence == 1 {
+				t.Fatalf("invalid occurrence peeked as 1: %+v", command)
+			}
+			first, execErr := owners.ExecuteLookLine(context.Background(), store, "w", tt.id, lease, tt.line, 12)
+			if !errors.Is(execErr, ErrUnsupportedLookLine) || store.commits != 0 {
+				var scene string
+				_ = json.Unmarshal(first.Response, &scene)
+				t.Fatalf("ExecuteLookLine(%q) peeked or committed: receipt=%+v scene=%q err=%v commits=%d", tt.line, first, scene, execErr, store.commits)
+			}
+			saved, decodeErr := world.DecodeState(store.state)
+			if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+				t.Fatalf("invalid occurrence moved actor: %+v err=%v", saved.Players["a"], decodeErr)
+			}
+			replay, replayErr := owners.ExecuteLookLine(context.Background(), store, "w", tt.id, lease, tt.line, 12)
+			if !errors.Is(replayErr, ErrUnsupportedLookLine) || replay.Replayed || store.commits != 0 {
+				t.Fatalf("replay committed: receipt=%+v err=%v commits=%d", replay, replayErr, store.commits)
+			}
+		})
+	}
+}
+
 func TestExecuteLookLinePeeksExitDestinationAndReplays(t *testing.T) {
 	s := lookCommandFixture()
 	raw, err := json.Marshal(s)
@@ -254,6 +302,97 @@ func TestExecuteLookLineClosedExitPersistsAndReplays(t *testing.T) {
 	replay, err := owners.ExecuteLookLine(context.Background(), store, "w", "look-closed", lease, "보다 동", 12)
 	if err != nil || !replay.Replayed || store.commits != 1 {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteLookLineLastTokenExtraMatchesPrefixClosedBlindNomap(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		id   string
+		prep func(world.State) world.State
+		want string
+	}{
+		{
+			name: "closed",
+			id:   "look-closed-extra",
+			prep: func(s world.State) world.State {
+				room := s.Rooms[1]
+				room.Resource.Exits[0].Flags[0] |= 8
+				s.Rooms[1] = room
+				return s
+			},
+			want: world.LookClosedResponse,
+		},
+		{
+			name: "blind",
+			id:   "look-blind-extra",
+			prep: func(s world.State) world.State {
+				actor := s.Players["a"]
+				actor.Body.Flags[42/8] |= 1 << (42 % 8) // PBLIND
+				s.Players["a"] = actor
+				return s
+			},
+			want: world.LookBlindResponse,
+		},
+		{
+			name: "nomap",
+			id:   "look-nomap-extra",
+			prep: func(s world.State) world.State {
+				room := s.Rooms[1]
+				room.Resource.Exits[0].Destination = 1
+				s.Rooms[1] = room
+				return s
+			},
+			want: world.LookNoMapResponse,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.prep(lookCommandFixture())
+			raw, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prefixStore := &departureStore{state: append([]byte(nil), raw...)}
+			extraStore := &departureStore{state: append([]byte(nil), raw...)}
+			var prefixOwners, extraOwners Ownership
+			prefixLease, err := prefixOwners.Acquire("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := prefixOwners.Admit(prefixLease, func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			extraLease, err := extraOwners.Acquire("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := extraOwners.Admit(extraLease, func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			prefix := executeParsedLookLine(t, &prefixOwners, prefixStore, prefixLease, tt.id+"-prefix", "보다 동")
+			extra := executeParsedLookLine(t, &extraOwners, extraStore, extraLease, tt.id, "동 junk 봐")
+			if prefix.Replayed || extra.Replayed || prefixStore.commits != 1 || extraStore.commits != 1 {
+				t.Fatalf("first prefix=%+v extra=%+v prefixCommits=%d extraCommits=%d", prefix, extra, prefixStore.commits, extraStore.commits)
+			}
+			var prefixText, extraText string
+			if err := json.Unmarshal(prefix.Response, &prefixText); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(extra.Response, &extraText); err != nil {
+				t.Fatal(err)
+			}
+			if prefixText != tt.want || extraText != tt.want || extraText != prefixText {
+				t.Fatalf("prefix=%q extra=%q want %q", prefixText, extraText, tt.want)
+			}
+			saved, decodeErr := world.DecodeState(extraStore.state)
+			if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+				t.Fatalf("extra-token look moved actor: %+v err=%v", saved.Players["a"], decodeErr)
+			}
+			replay := executeParsedLookLine(t, &extraOwners, extraStore, extraLease, tt.id, "동 junk 봐")
+			if !replay.Replayed || extraStore.commits != 1 || string(replay.Response) != string(extra.Response) {
+				t.Fatalf("replay=%+v commits=%d", replay, extraStore.commits)
+			}
+		})
 	}
 }
 

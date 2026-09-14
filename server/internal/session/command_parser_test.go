@@ -24,6 +24,14 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"점수", CommandStatus},
 		{"따라 Alice", CommandFollow},
 		{"장", CommandItems},
+		{"소지품", CommandItems},
+		{"장비", CommandItems},
+		{"검 소지품", CommandItems},
+		{"검 장비", CommandItems},
+		{"검 장", CommandItems},
+		{"동 소지품", CommandItems},
+		{"동 장비", CommandItems},
+		{"동 장", CommandItems},
 		{"\"안녕 세계", CommandSay},
 		{"누구", CommandSocial},
 		{"무리", CommandSocial},
@@ -45,6 +53,12 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"보석 가방 넣어", CommandItemMutation},
 		{"입어 갑옷", CommandEquipment},
 		{"입금 100냥", CommandBank},
+		{"250냥 입금", CommandBank},
+		{"모두 출금", CommandBank},
+		{"검 보관물", CommandBank},
+		{"검 받아", CommandBank},
+		{"동 보관물", CommandBank},
+		{"동 받아", CommandBank},
 		{"끝", CommandQuit},
 		{"시간", CommandRead},
 		{"저장", CommandSave},
@@ -242,6 +256,68 @@ func TestParseCommandLookVerbInMiddleWithNonLookLastTokenIsNeverDirectional(t *t
 		}
 		if got.Kind != CommandUnknown && got.Kind != CommandLook {
 			t.Fatalf("ParseCommand(%q)=%+v want CommandUnknown or CommandLook", line, got)
+		}
+	}
+}
+
+func TestParseCommandLastTokenBankIsNeverDirectional(t *testing.T) {
+	for _, tt := range []struct {
+		line string
+		kind string
+		name string
+		all  bool
+		amt  int64
+	}{
+		{"250냥 입금", "money", "", false, 250},
+		{"모두 출금", "money", "", true, 0},
+		{"검 보관물", "deposit-item", "검", false, 0},
+		{"검 받아", "withdraw-item", "검", false, 0},
+		{"동 보관물", "deposit-item", "동", false, 0},
+		{"동 받아", "withdraw-item", "동", false, 0},
+	} {
+		got, err := ParseCommand(tt.line)
+		if err != nil || got.Kind != CommandBank {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandBank not directional", tt.line, got, err)
+		}
+		action, ok := parseBankLine(tt.line)
+		if !ok || action.kind != tt.kind || action.name != tt.name || action.all != tt.all || action.amount != tt.amt {
+			t.Fatalf("parseBankLine(%q)=%+v ok=%v want kind=%s name=%s all=%t amt=%d", tt.line, action, ok, tt.kind, tt.name, tt.all, tt.amt)
+		}
+	}
+	for _, line := range []string{"동 입금 extra", "북 출금 junk"} {
+		got, err := ParseCommand(line)
+		if err != nil {
+			t.Fatalf("ParseCommand(%q) err=%v", line, err)
+		}
+		if got.Kind == CommandDirectional {
+			t.Fatalf("ParseCommand(%q)=%+v want fail-closed unknown or bank, not CommandDirectional", line, got)
+		}
+		if got.Kind != CommandUnknown && got.Kind != CommandBank {
+			t.Fatalf("ParseCommand(%q)=%+v want CommandUnknown or CommandBank", line, got)
+		}
+	}
+}
+
+func TestParseCommandLastTokenItemsIsNeverDirectional(t *testing.T) {
+	for _, line := range []string{"검 소지품", "검 장비", "검 장", "동 소지품", "동 장비", "동 장", "소지품", "장비", "장"} {
+		got, err := ParseCommand(line)
+		if err != nil || got.Kind != CommandItems {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandItems not directional", line, got, err)
+		}
+		if _, ok := itemsCommand(line); !ok {
+			t.Fatalf("itemsCommand(%q)=false", line)
+		}
+	}
+	for _, line := range []string{"동 소지품 extra", "북 장 junk"} {
+		got, err := ParseCommand(line)
+		if err != nil {
+			t.Fatalf("ParseCommand(%q) err=%v", line, err)
+		}
+		if got.Kind == CommandDirectional {
+			t.Fatalf("ParseCommand(%q)=%+v want fail-closed unknown or items, not CommandDirectional", line, got)
+		}
+		if got.Kind != CommandUnknown && got.Kind != CommandItems {
+			t.Fatalf("ParseCommand(%q)=%+v want CommandUnknown or CommandItems", line, got)
 		}
 	}
 }

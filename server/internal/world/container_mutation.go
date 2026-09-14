@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func selectContainerRoot(c ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
+func selectNamedContainer(c ItemCollection, ids []string, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
 	if occurrence < 1 {
 		return "", fmt.Errorf("invalid container occurrence")
 	}
@@ -14,31 +14,46 @@ func selectContainerRoot(c ItemCollection, name string, occurrence int, visible 
 		return "", fmt.Errorf("container name required")
 	}
 	found := 0
-	check := func(id string) (string, bool) {
-		item, ok := c.Items[id]
-		if !ok || !flag(item.Object.Flags[:], itemContainerFlag) || !strings.EqualFold(item.Object.Name, name) || (visible != nil && !visible(item.Object)) {
-			return "", false
-		}
-		found++
-		if found == occurrence {
-			return id, true
-		}
-		return "", false
-	}
-	for _, id := range c.Inventory {
-		if selected, ok := check(id); ok {
-			return selected, nil
-		}
-	}
-	for _, id := range c.Ready {
+	for _, id := range ids {
 		if id == "" {
 			continue
 		}
-		if selected, ok := check(id); ok {
-			return selected, nil
+		item, ok := c.Items[id]
+		if !ok || !flag(item.Object.Flags[:], itemContainerFlag) || !strings.EqualFold(item.Object.Name, name) || (visible != nil && !visible(item.Object)) {
+			continue
+		}
+		found++
+		if found == occurrence {
+			return id, nil
 		}
 	}
 	return "", fmt.Errorf("container not found")
+}
+
+// selectContainerRoot walks one inventory list, matching C find_obj on a
+// single otag chain. Ready/worn is a separate match space.
+func selectContainerRoot(c ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
+	return selectNamedContainer(c, c.Inventory, name, occurrence, visible)
+}
+
+func selectReadyContainerRoot(c ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
+	return selectNamedContainer(c, c.Ready[:], name, occurrence, visible)
+}
+
+// resolveContainerRoot matches C get/drop container lookup: player inventory
+// find_obj(val), then room inventory find_obj(val), then worn ready[] with a
+// fresh match counter.
+func resolveContainerRoot(player, room ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (string, string, error) {
+	if id, err := selectContainerRoot(player, name, occurrence, visible); err == nil {
+		return id, "player", nil
+	}
+	if id, err := selectContainerRoot(room, name, occurrence, visible); err == nil {
+		return id, "room", nil
+	}
+	if id, err := selectReadyContainerRoot(player, name, occurrence, visible); err == nil {
+		return id, "player", nil
+	}
+	return "", "", fmt.Errorf("container not found")
 }
 
 func selectContainedRoot(c ItemCollection, containerID, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
@@ -120,9 +135,9 @@ func adjustContainerCount(c *ItemCollection, containerID string, delta int16) {
 }
 
 // TakeContainedItem ports get <container> <item> for direct canonical child
-// roots. Player containers take precedence over floor containers, matching C's
-// find_obj order (str[1]/val[1] container, str[2]/val[2] item); the move
-// preserves IDs and nested descendants.
+// roots. Container lookup is player inventory, then room inventory, then worn
+// ready[] — each a separate occurrence space (C find_obj then worn fallback).
+// Item selection uses str[2]/val[2]; the move preserves IDs and nested descendants.
 func (s State) TakeContainedItem(actorID, containerName, itemName string, occurrence, containerOccurrence int) (State, ItemMutationResult, error) {
 	s, p, room, err := s.itemMutationContext(actorID)
 	if err != nil {
@@ -138,12 +153,7 @@ func (s State) TakeContainedItem(actorID, containerName, itemName string, occurr
 	visible := func(object LegacyObject) bool {
 		return detect || (!flag(object.Flags[:], objectInvisibleFlag) && !flag(object.Flags[:], objectHiddenFlag))
 	}
-	containerID, err := selectContainerRoot(*p.Items, containerName, containerOccurrence, visible)
-	owner := "player"
-	if err != nil {
-		containerID, err = selectContainerRoot(*room.Items, containerName, containerOccurrence, visible)
-		owner = "room"
-	}
+	containerID, owner, err := resolveContainerRoot(*p.Items, *room.Items, containerName, containerOccurrence, visible)
 	if err != nil {
 		return State{}, ItemMutationResult{}, err
 	}
@@ -210,7 +220,8 @@ func (s State) TakeContainedItem(actorID, containerName, itemName string, occurr
 }
 
 // DropContainedItem ports drop <item> <container> for direct inventory roots.
-// Item selection uses C val[1]; container selection uses str[2]/val[2].
+// Item selection uses C val[1]; container selection uses str[2]/val[2] with
+// the same inventory/room/worn occurrence spaces as get().
 // Container destruction/devouring is deliberately fail-closed until its C
 // side effects have a separate reducer.
 func (s State) DropContainedItem(actorID, itemName, containerName string, occurrence, containerOccurrence int) (State, ItemMutationResult, error) {
@@ -231,12 +242,7 @@ func (s State) DropContainedItem(actorID, itemName, containerName string, occurr
 	if protected && p.Body.Class < playerDMClass {
 		return State{}, ItemMutationResult{}, fmt.Errorf("임무/이벤트 물건은 버릴 수 없습니다")
 	}
-	containerID, err := selectContainerRoot(*p.Items, containerName, containerOccurrence, visible)
-	owner := "player"
-	if err != nil {
-		containerID, err = selectContainerRoot(*room.Items, containerName, containerOccurrence, visible)
-		owner = "room"
-	}
+	containerID, owner, err := resolveContainerRoot(*p.Items, *room.Items, containerName, containerOccurrence, visible)
 	if err != nil {
 		return State{}, ItemMutationResult{}, err
 	}

@@ -200,6 +200,28 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
+	// C parse() takes the last token as the verb, so `250냥 입금` /
+	// `모두 출금` / `검 보관물` / `검 받아` are bank rather than unknown
+	// first-token names. Classify them before ParseDirectionalToken,
+	// which would otherwise treat a leading cardinal (`동 보관물`) as
+	// movement. A bank verb in the middle with a non-bank last token
+	// (`동 입금 extra`) is fail-closed unknown.
+	if IsBankLine(trimmed) {
+		parsed.Kind = CommandBank
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	// C parse() takes the last token as the verb, so `검 소지품` /
+	// `검 장비` / `검 장` are inventory/equipment rather than unknown
+	// first-token names. Classify them before ParseDirectionalToken,
+	// which would otherwise treat a leading cardinal (`동 장`) as
+	// movement. An items verb in the middle with a non-items last token
+	// (`동 소지품 extra`) is fail-closed unknown.
+	if IsItemsLine(trimmed) {
+		parsed.Kind = CommandItems
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
 	if IsForgeLine(trimmed) {
 		parsed.Kind = CommandForge
 		parsed.Tokens = legacyTokens(trimmed)
@@ -524,6 +546,14 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Kind = CommandLook
 		return parsed, nil
 	}
+	if isItemsVerb(tokens[len(tokens)-1]) {
+		parsed.Kind = CommandItems
+		return parsed, nil
+	}
+	if isBankVerb(tokens[len(tokens)-1]) {
+		parsed.Kind = CommandUnknown
+		return parsed, nil
+	}
 	if _, ok := world.ParseDirectionalToken(trimmed); ok {
 		// C parse() last token is the verb. A look alias in the middle
 		// (`동 봐 extra`) is neither look() nor move(); fail closed.
@@ -533,6 +563,16 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		}
 		// Same for get/drop: `동 버려 extra` is not move().
 		if tokensContainItemMutationVerb(tokens) {
+			parsed.Kind = CommandUnknown
+			return parsed, nil
+		}
+		// Same for bank: `동 입금 extra` is not move().
+		if tokensContainBankVerb(tokens) {
+			parsed.Kind = CommandUnknown
+			return parsed, nil
+		}
+		// Same for inventory/equipment: `동 소지품 extra` is not move().
+		if tokensContainItemsVerb(tokens) {
 			parsed.Kind = CommandUnknown
 			return parsed, nil
 		}
@@ -596,6 +636,24 @@ func tokensContainLookVerb(tokens []string) bool {
 func tokensContainItemMutationVerb(tokens []string) bool {
 	for _, token := range tokens {
 		if isItemMutationVerb(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokensContainBankVerb(tokens []string) bool {
+	for _, token := range tokens {
+		if isBankVerb(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokensContainItemsVerb(tokens []string) bool {
+	for _, token := range tokens {
+		if isItemsVerb(token) {
 			return true
 		}
 	}

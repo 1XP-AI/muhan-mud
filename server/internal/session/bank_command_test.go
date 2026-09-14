@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
@@ -71,6 +72,8 @@ func TestParseBankLine(t *testing.T) {
 		{"잔액", world.BankBalance, false, 0},
 		{"입금 12냥", world.BankDeposit, false, 12},
 		{"출금 모두", world.BankWithdraw, true, 0},
+		{"250냥 입금", world.BankDeposit, false, 250},
+		{"모두 출금", world.BankWithdraw, true, 0},
 	}
 	for _, tc := range cases {
 		got, ok := parseBankLine(tc.line)
@@ -81,6 +84,42 @@ func TestParseBankLine(t *testing.T) {
 	if got, ok := parseBankLine("보관물"); !ok || got.kind != "inventory" {
 		t.Fatalf("bank inventory command not parsed: %+v ok=%t", got, ok)
 	}
+	deposit, ok := parseBankLine("검 보관물")
+	if !ok || deposit.kind != "deposit-item" || deposit.name != "검" || deposit.occurrence != 1 {
+		t.Fatalf("last-token deposit item=%+v ok=%t", deposit, ok)
+	}
+	withdraw, ok := parseBankLine("검 받아")
+	if !ok || withdraw.kind != "withdraw-item" || withdraw.name != "검" || withdraw.occurrence != 1 {
+		t.Fatalf("last-token withdraw item=%+v ok=%t", withdraw, ok)
+	}
+	both, ok := parseBankLine("보관물 받아")
+	if !ok || both.kind != "withdraw-item" || both.name != "보관물" {
+		t.Fatalf("last-token wins=%+v ok=%t", both, ok)
+	}
+	for _, line := range []string{"", "검", "동 입금 extra", "입금 250냥 extra"} {
+		if _, ok := parseBankLine(line); ok {
+			t.Fatalf("accepted %q", line)
+		}
+	}
+}
+
+func executeParsedBankLine(t *testing.T, owners *Ownership, store *departureStore, lease SessionLease, commandID, line string) storage.WorldReceipt {
+	t.Helper()
+	parsed, err := ParseCommand(line)
+	if err != nil {
+		t.Fatalf("ParseCommand(%q) err=%v", line, err)
+	}
+	if parsed.Kind == CommandDirectional {
+		t.Fatalf("ParseCommand(%q)=CommandDirectional", line)
+	}
+	if parsed.Kind != CommandBank {
+		t.Fatalf("ParseCommand(%q)=%+v want CommandBank", line, parsed)
+	}
+	receipt, execErr := owners.ExecuteBankLine(context.Background(), store, "w", commandID, lease, line)
+	if execErr != nil {
+		t.Fatalf("ExecuteBankLine(%q) err=%v", line, execErr)
+	}
+	return receipt
 }
 
 func TestExecuteBankLinePersistsAndReplays(t *testing.T) {
@@ -150,5 +189,55 @@ func TestExecuteBankLineMovesItemsAndListsBank(t *testing.T) {
 	saved, err := world.DecodeState(store.state)
 	if err != nil || len(saved.BankAccounts["a"].Items.Inventory) != 0 || !bankTestHasID(saved.Players["a"].Items.Inventory, "sword") {
 		t.Fatalf("item state=%+v err=%v", saved, err)
+	}
+}
+
+func TestExecuteBankLineLastTokenMoneyWithoutMoving(t *testing.T) {
+	store := &departureStore{state: bankCommandFixture()}
+	owners, lease := admitBankOwner(t)
+	first := executeParsedBankLine(t, owners, store, lease, "bank-suffix-deposit-1", "250냥 입금")
+	if first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "250") {
+		t.Fatalf("deposit=%q commits=%d replayed=%t", first.Response, store.commits, first.Replayed)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 1 || saved.Players["a"].Body.Gold != 750 || saved.BankAccounts["a"].Balance != 250 {
+		t.Fatalf("deposit moved or mutated=%+v err=%v", saved.Players["a"], err)
+	}
+	replay := executeParsedBankLine(t, owners, store, lease, "bank-suffix-deposit-1", "250냥 입금")
+	if !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v commits=%d", replay, store.commits)
+	}
+	withdraw := executeParsedBankLine(t, owners, store, lease, "bank-suffix-withdraw-1", "모두 출금")
+	if withdraw.Replayed || store.commits != 2 || !strings.Contains(string(withdraw.Response), "250") {
+		t.Fatalf("withdraw=%q commits=%d replayed=%t", withdraw.Response, store.commits, withdraw.Replayed)
+	}
+	saved, err = world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 1 || saved.Players["a"].Body.Gold != 1000 || saved.BankAccounts["a"].Balance != 0 {
+		t.Fatalf("withdraw moved or mutated=%+v err=%v", saved.Players["a"], err)
+	}
+}
+
+func TestExecuteBankLineLastTokenItemsWithoutMoving(t *testing.T) {
+	store := &departureStore{state: bankCommandItemFixture()}
+	owners, lease := admitBankOwner(t)
+	first := executeParsedBankLine(t, owners, store, lease, "bank-suffix-item-1", "검 보관물")
+	if first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "검") {
+		t.Fatalf("deposit item=%q commits=%d replayed=%t", first.Response, store.commits, first.Replayed)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 1 || bankTestHasID(saved.Players["a"].Items.Inventory, "sword") || !bankTestHasID(saved.BankAccounts["a"].Items.Inventory, "sword") {
+		t.Fatalf("deposit item moved or mutated player=%+v bank=%+v err=%v", saved.Players["a"], saved.BankAccounts["a"], err)
+	}
+	replay := executeParsedBankLine(t, owners, store, lease, "bank-suffix-item-1", "검 보관물")
+	if !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("deposit replay=%+v commits=%d", replay, store.commits)
+	}
+	withdraw := executeParsedBankLine(t, owners, store, lease, "bank-suffix-item-2", "검 받아")
+	if withdraw.Replayed || store.commits != 2 || !strings.Contains(string(withdraw.Response), "검") {
+		t.Fatalf("withdraw item=%q commits=%d replayed=%t", withdraw.Response, store.commits, withdraw.Replayed)
+	}
+	saved, err = world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 1 || !bankTestHasID(saved.Players["a"].Items.Inventory, "sword") || bankTestHasID(saved.BankAccounts["a"].Items.Inventory, "sword") {
+		t.Fatalf("withdraw item moved or mutated player=%+v bank=%+v err=%v", saved.Players["a"], saved.BankAccounts["a"], err)
 	}
 }

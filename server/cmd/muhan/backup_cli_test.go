@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -45,6 +46,13 @@ func TestValidateBackupRestoreFlagsRequiresAnExplicitBoundedMode(t *testing.T) {
 				return "", "", false, "world", "backup", 4, false, true
 			},
 			err: "cannot be combined",
+		},
+		{
+			name: "force still requires restore identity and path",
+			args: func() (string, string, bool, string, string, int64, bool, bool) {
+				return "", "", false, "", "", -1, false, true
+			},
+			err: "restore mode requires",
 		},
 		{
 			name: "expected revision rejects values below sentinel",
@@ -204,6 +212,41 @@ func TestReadWorldBackupFilePreservesStorageChecksumAndFormatValidation(t *testi
 	}
 	if _, err := readWorldBackupFile(path); err == nil {
 		t.Fatal("checksum-tampered backup accepted")
+	}
+}
+
+func TestRestoreWorldBackupRejectsIdentityMismatchWithoutDatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "world.backup")
+	snapshot := storage.WorldSnapshot{
+		Revision: 3,
+		State:    []byte(`{"Version":1,"Rooms":{},"Players":{}}`),
+	}
+	backup, err := storage.NewWorldBackup("cli-world", snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := backup.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = restoreWorldBackup(context.Background(), nil, backupRestoreOptions{
+		mode:         backupRestoreImport,
+		restoreWorld: "other-world",
+		restoreFile:  path,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("identity mismatch err=%v", err)
+	}
+	if err := runBackupRestore(context.Background(), nil, backupRestoreOptions{
+		mode:        backupRestoreExport,
+		backupWorld: "cli-world",
+		backupFile:  path,
+	}); err == nil || !strings.Contains(err.Error(), "nil postgres store") {
+		t.Fatalf("nil store export err=%v", err)
 	}
 }
 

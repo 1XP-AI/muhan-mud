@@ -164,7 +164,7 @@ func (p *Postgres) RestoreWorldBackup(ctx context.Context, backup WorldBackup, o
 	if err != nil {
 		return err
 	}
-	if err = p.checkWriter(backup.WorldID, epoch); err != nil {
+	if err = p.admitRestoreWriter(backup.WorldID, epoch); err != nil {
 		return err
 	}
 	if !options.Force {
@@ -191,4 +191,14 @@ func (p *Postgres) RestoreWorldBackup(ctx context.Context, backup WorldBackup, o
 		return err
 	}
 	return tx.Commit()
+}
+
+// admitRestoreWriter fences a claimed handle that no longer holds the current
+// generation. An unbound operator store is the recovery path: Force restore
+// advances writer_epoch so a live or SIGKILL'd writer cannot continue.
+func (p *Postgres) admitRestoreWriter(worldID string, epoch int64) error {
+	if p.writerWorld == "" {
+		return nil
+	}
+	return p.checkWriter(worldID, epoch)
 }

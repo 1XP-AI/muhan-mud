@@ -263,3 +263,140 @@ func TestParseCommandLookVerbInMiddleDoesNotExecuteDirectionalOrMove(t *testing.
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
+
+func TestExecuteDirectionalLineRejectsLastTokenItemMutationWithoutCommit(t *testing.T) {
+	store := &departureStore{state: directionalCardinalCommandFixture()}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		line string
+		id   string
+	}{
+		{"동 주워", "item-dir-east-take"},
+		{"동 버려", "item-dir-east-drop"},
+		{"동 꺼내", "item-dir-east-get"},
+		{"동 넣어", "item-dir-east-put"},
+		{"동 junk extra 버려", "item-dir-east-extra-drop"},
+		{"북 foo extra 주워", "item-dir-north-extra-take"},
+	} {
+		if _, execErr := owners.ExecuteDirectionalLine(context.Background(), store, "w", tt.id, lease, tt.line, 100, 12, world.SceneOptions{}, nil, nil, nil); !errors.Is(execErr, ErrUnsupportedDirectionalLine) || store.commits != 0 {
+			t.Fatalf("last-token item mutation %q moved: %v commits=%d", tt.line, execErr, store.commits)
+		}
+		saved, decodeErr := world.DecodeState(store.state)
+		if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+			t.Fatalf("last-token item mutation %q changed RoomID: %+v err=%v", tt.line, saved.Players["a"], decodeErr)
+		}
+	}
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-item-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("move after item reject=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 2 {
+		t.Fatalf("move after item reject RoomID=%+v err=%v", saved.Players["a"], err)
+	}
+	replay, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-item-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteDirectionalLineRejectsLastTokenItemsWithoutCommit(t *testing.T) {
+	store := &departureStore{state: directionalCardinalCommandFixture()}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		line string
+		id   string
+	}{
+		{"동 소지품", "items-dir-east-inv"},
+		{"동 장비", "items-dir-east-eq"},
+		{"동 장", "items-dir-east-eq-alias"},
+		{"북 소지품", "items-dir-north-inv"},
+		{"동 junk extra 소지품", "items-dir-east-extra-inv"},
+		{"북 foo extra 장비", "items-dir-north-extra-eq"},
+		{"북 foo extra 장", "items-dir-north-extra-eq-alias"},
+	} {
+		parsed, parseErr := ParseCommand(tt.line)
+		if parseErr != nil || parsed.Kind != CommandItems {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandItems, not directional", tt.line, parsed, parseErr)
+		}
+		if _, execErr := owners.ExecuteDirectionalLine(context.Background(), store, "w", tt.id, lease, tt.line, 100, 12, world.SceneOptions{}, nil, nil, nil); !errors.Is(execErr, ErrUnsupportedDirectionalLine) || store.commits != 0 {
+			t.Fatalf("last-token items %q moved: %v commits=%d", tt.line, execErr, store.commits)
+		}
+		saved, decodeErr := world.DecodeState(store.state)
+		if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+			t.Fatalf("last-token items %q changed RoomID: %+v err=%v", tt.line, saved.Players["a"], decodeErr)
+		}
+	}
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-items-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("move after items reject=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 2 {
+		t.Fatalf("move after items reject RoomID=%+v err=%v", saved.Players["a"], err)
+	}
+	replay, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-items-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteDirectionalLineRejectsMidVerbItemMutationWithoutCommit(t *testing.T) {
+	store := &departureStore{state: directionalCardinalCommandFixture()}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		line string
+		id   string
+	}{
+		{"동 버려 extra", "item-mid-east"},
+		{"북 주워 junk", "item-mid-north"},
+	} {
+		parsed, parseErr := ParseCommand(tt.line)
+		if parseErr != nil || parsed.Kind == CommandDirectional {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandUnknown, not CommandDirectional", tt.line, parsed, parseErr)
+		}
+		if parsed.Kind != CommandUnknown {
+			t.Fatalf("ParseCommand(%q)=%+v want CommandUnknown", tt.line, parsed)
+		}
+		if _, execErr := owners.ExecuteDirectionalLine(context.Background(), store, "w", tt.id, lease, tt.line, 100, 12, world.SceneOptions{}, nil, nil, nil); !errors.Is(execErr, ErrUnsupportedDirectionalLine) || store.commits != 0 {
+			t.Fatalf("mid-verb item mutation %q moved: %v commits=%d", tt.line, execErr, store.commits)
+		}
+		saved, decodeErr := world.DecodeState(store.state)
+		if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+			t.Fatalf("mid-verb item mutation %q changed RoomID: %+v err=%v", tt.line, saved.Players["a"], decodeErr)
+		}
+	}
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-item-mid-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("move after item mid reject=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 2 {
+		t.Fatalf("move after item mid reject RoomID=%+v err=%v", saved.Players["a"], err)
+	}
+	replay, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "move-after-item-mid-reject", lease, "북", 100, 12, world.SceneOptions{}, nil, nil, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}

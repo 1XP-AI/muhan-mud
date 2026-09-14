@@ -865,3 +865,158 @@ func TestExecuteItemMutationLineDropsNthItemIntoNthContainerAndReplays(t *testin
 		t.Fatalf("drop replay mutated player=%+v err=%v", replayed.Players["a"].Items, err)
 	}
 }
+
+func sessionContainerBag(contents []string) world.Item {
+	return world.Item{Object: world.LegacyObject{Name: "가방", Flags: [8]byte{0: 1 << 6}, ShotsMax: 3, ShotsCurrent: int16(len(contents))}, Contents: append([]string(nil), contents...)}
+}
+
+func inventoryAndWornBagTakeFixture() world.State {
+	s, err := world.DecodeState(followCommandFixture())
+	if err != nil {
+		panic(err)
+	}
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	room.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	s.Rooms[1] = room
+	player := s.Players["a"]
+	player.Items = &world.ItemCollection{Items: map[string]world.Item{
+		"inv-bag":    sessionContainerBag([]string{"inv-gem-1", "inv-gem-2", "inv-gem-3"}),
+		"worn-bag":   sessionContainerBag([]string{"worn-gem-1", "worn-gem-2", "worn-gem-3"}),
+		"inv-gem-1":  {Object: world.LegacyObject{Name: "보석"}},
+		"inv-gem-2":  {Object: world.LegacyObject{Name: "보석"}},
+		"inv-gem-3":  {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-1": {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-2": {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-3": {Object: world.LegacyObject{Name: "보석"}},
+	}, Inventory: []string{"inv-bag"}, Ready: [20]string{0: "worn-bag"}}
+	s.Players["a"] = player
+	s.NPCs = nil
+	return s
+}
+
+func inventoryAndWornBagDropFixture() world.State {
+	s, err := world.DecodeState(followCommandFixture())
+	if err != nil {
+		panic(err)
+	}
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	room.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	s.Rooms[1] = room
+	player := s.Players["a"]
+	player.Items = &world.ItemCollection{Items: map[string]world.Item{
+		"inv-bag":  sessionContainerBag(nil),
+		"worn-bag": sessionContainerBag(nil),
+		"gem-1":    {Object: world.LegacyObject{Name: "보석"}},
+		"gem-2":    {Object: world.LegacyObject{Name: "보석"}},
+		"gem-3":    {Object: world.LegacyObject{Name: "보석"}},
+	}, Inventory: []string{"inv-bag", "gem-1", "gem-2", "gem-3"}, Ready: [20]string{0: "worn-bag"}}
+	s.Players["a"] = player
+	s.NPCs = nil
+	return s
+}
+
+func twoWornBagTakeFixture() world.State {
+	s, err := world.DecodeState(followCommandFixture())
+	if err != nil {
+		panic(err)
+	}
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	room.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	s.Rooms[1] = room
+	player := s.Players["a"]
+	player.Items = &world.ItemCollection{Items: map[string]world.Item{
+		"worn-bag-1":   sessionContainerBag([]string{"worn-gem-1-1"}),
+		"worn-bag-2":   sessionContainerBag([]string{"worn-gem-2-1", "worn-gem-2-2", "worn-gem-2-3"}),
+		"worn-gem-1-1": {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-2-1": {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-2-2": {Object: world.LegacyObject{Name: "보석"}},
+		"worn-gem-2-3": {Object: world.LegacyObject{Name: "보석"}},
+	}, Ready: [20]string{0: "worn-bag-1", 1: "worn-bag-2"}}
+	s.Players["a"] = player
+	s.NPCs = nil
+	return s
+}
+
+func twoWornBagDropFixture() world.State {
+	s, err := world.DecodeState(followCommandFixture())
+	if err != nil {
+		panic(err)
+	}
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	room.Items = &world.ItemCollection{Items: map[string]world.Item{}}
+	s.Rooms[1] = room
+	player := s.Players["a"]
+	player.Items = &world.ItemCollection{Items: map[string]world.Item{
+		"worn-bag-1": sessionContainerBag(nil),
+		"worn-bag-2": sessionContainerBag(nil),
+		"gem-1":      {Object: world.LegacyObject{Name: "보석"}},
+		"gem-2":      {Object: world.LegacyObject{Name: "보석"}},
+		"gem-3":      {Object: world.LegacyObject{Name: "보석"}},
+	}, Inventory: []string{"gem-1", "gem-2", "gem-3"}, Ready: [20]string{0: "worn-bag-1", 1: "worn-bag-2"}}
+	s.Players["a"] = player
+	s.NPCs = nil
+	return s
+}
+
+func TestExecuteItemMutationLineDoesNotCountWornAsInventoryOccurrence(t *testing.T) {
+	owners, store, lease := admitItemMutation(t, inventoryAndWornBagTakeFixture())
+	if _, err := owners.ExecuteItemMutationLine(context.Background(), store, "w", "item-worn-occ-take-miss", lease, "가방 2 보석 3 꺼내"); err == nil || store.commits != 0 {
+		t.Fatalf("took worn as inventory #2 err=%v commits=%d", err, store.commits)
+	}
+	taken, err := world.DecodeState(store.state)
+	if err != nil || taken.Players["a"].Body.RoomID != 1 || collectionHasInventoryID(taken.Players["a"].Items, "worn-gem-3") || collectionHasInventoryID(taken.Players["a"].Items, "inv-gem-3") {
+		t.Fatalf("miss mutated player=%+v err=%v", taken.Players["a"].Items, err)
+	}
+	dropOwners, dropStore, dropLease := admitItemMutation(t, inventoryAndWornBagDropFixture())
+	if _, err := dropOwners.ExecuteItemMutationLine(context.Background(), dropStore, "w", "item-worn-occ-drop-miss", dropLease, "보석 3 가방 2 버려"); err == nil || dropStore.commits != 0 {
+		t.Fatalf("dropped into worn as inventory #2 err=%v commits=%d", err, dropStore.commits)
+	}
+}
+
+func TestExecuteItemMutationLineTakesFromNthWornContainerAndReplays(t *testing.T) {
+	owners, store, lease := admitItemMutation(t, twoWornBagTakeFixture())
+	first := executeParsedItemMutationLine(t, owners, store, lease, "item-worn-val1-val2-take-1", "가방 2 보석 3 꺼내")
+	if first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "주웠습니다") || !strings.Contains(string(first.Response), "보석") {
+		t.Fatalf("take from 2nd worn=%q commits=%d replayed=%t", first.Response, store.commits, first.Replayed)
+	}
+	taken, err := world.DecodeState(store.state)
+	if err != nil || taken.Players["a"].Body.RoomID != 1 {
+		t.Fatalf("take from 2nd worn moved actor=%+v err=%v", taken.Players["a"], err)
+	}
+	if collectionHasInventoryID(taken.Players["a"].Items, "worn-gem-1-1") || collectionHasInventoryID(taken.Players["a"].Items, "worn-gem-2-1") || collectionHasInventoryID(taken.Players["a"].Items, "worn-gem-2-2") || !collectionHasInventoryID(taken.Players["a"].Items, "worn-gem-2-3") {
+		t.Fatalf("took wrong worn gem player=%+v", taken.Players["a"].Items)
+	}
+	if !collectionHasContainedID(taken.Players["a"].Items, "worn-bag-1", "worn-gem-1-1") || collectionHasContainedID(taken.Players["a"].Items, "worn-bag-2", "worn-gem-2-3") {
+		t.Fatalf("worn bags after take=%+v", taken.Players["a"].Items)
+	}
+	replay := executeParsedItemMutationLine(t, owners, store, lease, "item-worn-val1-val2-take-1", "가방 2 보석 3 꺼내")
+	if !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("worn take replay=%+v commits=%d", replay, store.commits)
+	}
+}
+
+func TestExecuteItemMutationLineDropsIntoNthWornContainerAndReplays(t *testing.T) {
+	owners, store, lease := admitItemMutation(t, twoWornBagDropFixture())
+	first := executeParsedItemMutationLine(t, owners, store, lease, "item-worn-val1-val2-drop-1", "보석 3 가방 2 버려")
+	if first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "버렸습니다") {
+		t.Fatalf("drop into 2nd worn=%q commits=%d replayed=%t", first.Response, store.commits, first.Replayed)
+	}
+	dropped, err := world.DecodeState(store.state)
+	if err != nil || dropped.Players["a"].Body.RoomID != 1 {
+		t.Fatalf("drop into 2nd worn moved actor=%+v err=%v", dropped.Players["a"], err)
+	}
+	if !collectionHasInventoryID(dropped.Players["a"].Items, "gem-1") || !collectionHasInventoryID(dropped.Players["a"].Items, "gem-2") || collectionHasInventoryID(dropped.Players["a"].Items, "gem-3") {
+		t.Fatalf("dropped wrong gem inventory=%+v", dropped.Players["a"].Items)
+	}
+	if collectionHasContainedID(dropped.Players["a"].Items, "worn-bag-1", "gem-3") || !collectionHasContainedID(dropped.Players["a"].Items, "worn-bag-2", "gem-3") {
+		t.Fatalf("dropped into first worn bag player=%+v", dropped.Players["a"].Items)
+	}
+	replay := executeParsedItemMutationLine(t, owners, store, lease, "item-worn-val1-val2-drop-1", "보석 3 가방 2 버려")
+	if !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("worn drop replay=%+v commits=%d", replay, store.commits)
+	}
+}

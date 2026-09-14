@@ -24,53 +24,88 @@ type bankAction struct {
 	all        bool
 }
 
+func isBankVerb(token string) bool {
+	switch token {
+	case "잔액", "보관물", "받아", "입금", "출금":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseBankLine admits prefix `입금 250냥` / `보관물 검` and C parse() last-token
+// `250냥 입금` / `모두 출금` / `검 보관물` / `검 받아`. Last-token verbs win when
+// both ends are bank aliases. Prefix extras stay fail-closed.
 func parseBankLine(line string) (bankAction, bool) {
 	fields := strings.Fields(line)
-	if len(fields) == 1 && fields[0] == "잔액" {
+	if len(fields) == 0 {
+		return bankAction{}, false
+	}
+	verb := fields[0]
+	rest := fields[1:]
+	if isBankVerb(fields[len(fields)-1]) {
+		verb = fields[len(fields)-1]
+		rest = fields[:len(fields)-1]
+	} else if !isBankVerb(verb) {
+		return bankAction{}, false
+	}
+	return parseBankVerbRest(verb, rest)
+}
+
+func parseBankVerbRest(verb string, rest []string) (bankAction, bool) {
+	if verb == "잔액" {
+		if len(rest) != 0 {
+			return bankAction{}, false
+		}
 		return bankAction{kind: "balance", operation: world.BankBalance}, true
 	}
-	if len(fields) == 1 && fields[0] == "보관물" {
+	if verb == "보관물" && len(rest) == 0 {
 		return bankAction{kind: "inventory", occurrence: 1}, true
 	}
-	if len(fields) == 2 && (fields[0] == "보관물" || fields[0] == "받아") {
-		if fields[1] == "모두" {
+	if len(rest) == 1 && (verb == "보관물" || verb == "받아") {
+		if rest[0] == "모두" {
 			kind := "withdraw-items"
-			if fields[0] == "보관물" {
+			if verb == "보관물" {
 				kind = "deposit-items"
 			}
-			return bankAction{kind: kind, name: fields[1], all: true, occurrence: 1}, true
+			return bankAction{kind: kind, name: rest[0], all: true, occurrence: 1}, true
 		}
 		kind := "withdraw-item"
-		if fields[0] == "보관물" {
+		if verb == "보관물" {
 			kind = "deposit-item"
 		}
-		return bankAction{kind: kind, name: fields[1], occurrence: 1}, true
+		return bankAction{kind: kind, name: rest[0], occurrence: 1}, true
 	}
-	if len(fields) == 3 && (fields[0] == "보관물" || fields[0] == "받아") {
-		occurrence, err := strconv.Atoi(fields[2])
-		if err != nil || occurrence < 1 || fields[1] == "모두" {
+	if len(rest) == 2 && (verb == "보관물" || verb == "받아") {
+		occurrence, err := strconv.Atoi(rest[1])
+		if err != nil || occurrence < 1 || rest[0] == "모두" {
 			return bankAction{}, false
 		}
 		kind := "withdraw-item"
-		if fields[0] == "보관물" {
+		if verb == "보관물" {
 			kind = "deposit-item"
 		}
-		return bankAction{kind: kind, name: fields[1], occurrence: occurrence}, true
+		return bankAction{kind: kind, name: rest[0], occurrence: occurrence}, true
 	}
-	if len(fields) != 2 || (fields[0] != "입금" && fields[0] != "출금") {
+	if len(rest) != 1 || (verb != "입금" && verb != "출금") {
 		return bankAction{}, false
 	}
-	amount, all, err := world.ParseBankAmount(fields[1])
+	amount, all, err := world.ParseBankAmount(rest[0])
 	if err != nil {
 		return bankAction{}, false
 	}
 	action := bankAction{kind: "money", amount: amount, all: all, occurrence: 1}
-	if fields[0] == "입금" {
+	if verb == "입금" {
 		action.operation = world.BankDeposit
 	} else {
 		action.operation = world.BankWithdraw
 	}
 	return action, true
+}
+
+func IsBankLine(line string) bool {
+	_, ok := parseBankLine(line)
+	return ok
 }
 
 // ExecuteBankLine owns bank money and canonical item-graph commands. Every

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,70 @@ func TestWorldBackupRejectsInvalidStateBeforeRestore(t *testing.T) {
 	}
 }
 
+func TestNewWorldBackupRejectsInvalidIdentityAndState(t *testing.T) {
+	if _, err := NewWorldBackup("", backupFixtureSnapshot()); err == nil {
+		t.Fatal("empty world ID accepted")
+	}
+	if _, err := NewWorldBackup(strings.Repeat("w", 129), backupFixtureSnapshot()); err == nil {
+		t.Fatal("overlong world ID accepted")
+	}
+	negative := backupFixtureSnapshot()
+	negative.Revision = -1
+	if _, err := NewWorldBackup("backup-world", negative); err == nil {
+		t.Fatal("negative revision accepted")
+	}
+	arrayState := backupFixtureSnapshot()
+	arrayState.State = json.RawMessage(`[]`)
+	if _, err := NewWorldBackup("backup-world", arrayState); err == nil {
+		t.Fatal("array state accepted")
+	}
+	emptyState := backupFixtureSnapshot()
+	emptyState.State = json.RawMessage(``)
+	if _, err := NewWorldBackup("backup-world", emptyState); err == nil {
+		t.Fatal("empty state accepted")
+	}
+	if _, err := ParseWorldBackup(nil); err == nil {
+		t.Fatal("empty backup accepted")
+	}
+	if _, err := ParseWorldBackup([]byte(`{`)); err == nil {
+		t.Fatal("truncated backup accepted")
+	}
+}
+
+func TestRestoreWorldBackupRejectsNilStore(t *testing.T) {
+	backup, err := NewWorldBackup("backup-world", backupFixtureSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var store *Postgres
+	if err := store.RestoreWorldBackup(context.Background(), backup, WorldBackupOptions{Force: true}); err == nil {
+		t.Fatal("nil store restore accepted")
+	}
+	empty := &Postgres{}
+	if err := empty.RestoreWorldBackup(context.Background(), backup, WorldBackupOptions{Force: true}); err == nil {
+		t.Fatal("nil db restore accepted")
+	}
+}
+
+func TestAdmitRestoreWriterAllowsUnboundOperatorAndFencesRetiredHandle(t *testing.T) {
+	unbound := &Postgres{}
+	if err := unbound.admitRestoreWriter("w", 4); err != nil {
+		t.Fatalf("operator restore fenced: %v", err)
+	}
+	current := &Postgres{writerWorld: "w", writerEpoch: 4}
+	if err := current.admitRestoreWriter("w", 4); err != nil {
+		t.Fatal(err)
+	}
+	retired := &Postgres{writerWorld: "w", writerEpoch: 3}
+	if err := retired.admitRestoreWriter("w", 4); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("retired writer restore err=%v", err)
+	}
+	wrongWorld := &Postgres{writerWorld: "other", writerEpoch: 4}
+	if err := wrongWorld.admitRestoreWriter("w", 4); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("wrong-world writer restore err=%v", err)
+	}
+}
+
 func TestPostgresWorldBackupRestoreFencesReceipts(t *testing.T) {
 	dsn := os.Getenv("MUHAN_BACKUP_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -150,6 +215,44 @@ func TestPostgresWorldBackupRestoreFencesReceipts(t *testing.T) {
 	}
 	if _, err := store.CommitWorldCommand(ctx, worldID, "after-force", json.RawMessage(`{"actor":"a"}`), 0, json.RawMessage(`{"Version":1,"Rooms":{},"Players":{}}`), json.RawMessage(`{"ok":true}`)); !errors.Is(err, ErrWriterFenced) {
 		t.Fatalf("pre-restore writer remained usable: %v", err)
+	}
+
+	writer, err := store.ClaimWorldWriter(ctx, worldID, "backup-claim-"+worldID)
+	if err != nil || writer.writerEpoch != 2 {
+		t.Fatalf("claim after force restore writer=%+v err=%v", writer, err)
+	}
+	if err := store.RestoreWorldBackup(ctx, backup, WorldBackupOptions{Force: true}); err != nil {
+		t.Fatalf("unbound operator force restore after writer claim: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT writer_epoch FROM mud_go.worlds WHERE id=$1`, worldID).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	if epoch != 3 {
+		t.Fatalf("operator force restore writer epoch=%d, want 3", epoch)
+	}
+	postClaimState := json.RawMessage(`{"Version":1,"Rooms":{},"Players":{}}`)
+	postClaimResponse := json.RawMessage(`{"ok":true}`)
+	if _, err := writer.CommitWorldCommand(ctx, worldID, "after-claim-force", json.RawMessage(`{"actor":"a"}`), backup.Revision, postClaimState, postClaimResponse); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("claimed writer survived operator force restore: %v", err)
+	}
+	if err := writer.RestoreWorldBackup(ctx, backup, WorldBackupOptions{Force: true}); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("retired writer restored after fencing: %v", err)
+	}
+	successor, err := store.ClaimWorldWriter(ctx, worldID, "backup-claim-successor-"+worldID)
+	if err != nil || successor.writerEpoch != 4 {
+		t.Fatalf("successor writer=%+v err=%v", successor, err)
+	}
+	request := json.RawMessage(`{"actor":"a"}`)
+	first, err := successor.CommitWorldCommand(ctx, worldID, "post-operator-restore", request, backup.Revision, postClaimState, postClaimResponse)
+	if err != nil || first.Revision != backup.Revision+1 || first.Replayed {
+		t.Fatalf("post-restore receipt=%+v err=%v", first, err)
+	}
+	replay, err := successor.CommitWorldCommand(ctx, worldID, "post-operator-restore", request, backup.Revision, postClaimState, postClaimResponse)
+	if err != nil || !replay.Replayed || replay.Revision != first.Revision {
+		t.Fatalf("duplicate command lost or reapplied: %+v err=%v", replay, err)
+	}
+	if _, err := successor.CommitWorldCommand(ctx, worldID, "post-operator-restore", json.RawMessage(`{"actor":"tampered"}`), backup.Revision, postClaimState, postClaimResponse); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("duplicate command identity accepted: %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
@@ -12,8 +13,21 @@ import (
 
 var ErrUnsupportedItemsLine = errors.New("line is not an implemented items command")
 
+func isItemsVerb(token string) bool {
+	switch token {
+	case "소지품", "장비", "장":
+		return true
+	default:
+		return false
+	}
+}
+
 func itemsCommand(line string) (string, bool) {
-	switch line {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil || len(tokens) == 0 || len(tokens) > 7 {
+		return "", false
+	}
+	switch tokens[len(tokens)-1] {
 	case "소지품":
 		return "inventory", true
 	case "장비", "장":
@@ -21,6 +35,11 @@ func itemsCommand(line string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func IsItemsLine(line string) bool {
+	_, ok := itemsCommand(line)
+	return ok
 }
 
 // ExecuteItemsLine connects the read-only inventory/equipment projections to

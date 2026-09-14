@@ -728,32 +728,8 @@ func lookPlayerResponse(actor LegacyMonster, target lookAtTarget) string {
 	return "당신은 " + rendered + lookAtObjectParticle(rendered) + " 봅니다.\r\n"
 }
 
-// command3.c:equip_list print order and labels, not MAXWEAR index order.
-var lookEquipListSlots = []struct {
-	index int
-	label string
-}{
-	{6, "[ 머리 ]"},
-	{18, "[ 얼굴 ]"},
-	{3, "[  목  ]"},
-	{4, "[  목  ]"},
-	{0, "[  몸  ]"},
-	{1, "[  팔  ]"},
-	{5, "[  손  ]"},
-	{8, "[손가락]"},
-	{9, "[손가락]"},
-	{10, "[손가락]"},
-	{11, "[손가락]"},
-	{12, "[손가락]"},
-	{13, "[손가락]"},
-	{14, "[손가락]"},
-	{15, "[손가락]"},
-	{2, "[ 다리 ]"},
-	{7, "[  발  ]"},
-	{16, "[쥔물건]"},
-	{17, "[ 방패 ]"},
-	{19, "[ 무기 ]"},
-}
+// lookEquipListSlots shares command3.c:equip_list order/labels with PlayerEquipment.
+var lookEquipListSlots = equipListSlots
 
 func lookSelfInspectResponse(s State, actorID string, actor PlayerState) (string, error) {
 	marriage, err := lookMarriageLine(actor.Body)

@@ -73,3 +73,44 @@ func TestExecutorReducerFailureDoesNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type failClosedCommandStore struct {
+	readErr        error
+	loads, commits int
+}
+
+func (f *failClosedCommandStore) ReadWorldReceipt(context.Context, string, string, json.RawMessage) (storage.WorldReceipt, error) {
+	return storage.WorldReceipt{}, f.readErr
+}
+func (f *failClosedCommandStore) LoadWorld(context.Context, string) (storage.WorldSnapshot, error) {
+	f.loads++
+	return storage.WorldSnapshot{State: json.RawMessage(`{"hp":30}`)}, nil
+}
+func (f *failClosedCommandStore) CommitWorldCommand(context.Context, string, string, json.RawMessage, int64, json.RawMessage, json.RawMessage) (storage.WorldReceipt, error) {
+	f.commits++
+	return storage.WorldReceipt{}, nil
+}
+
+func TestExecutorDoesNotReduceWhenWriterIsFenced(t *testing.T) {
+	store := &failClosedCommandStore{readErr: storage.ErrWriterFenced}
+	calls := 0
+	_, err := Execute(context.Background(), store, "world", "command", json.RawMessage(`{"actor":"a"}`), func(json.RawMessage) (json.RawMessage, json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"hp":1}`), json.RawMessage(`{"ok":true}`), nil
+	})
+	if !errors.Is(err, storage.ErrWriterFenced) || calls != 0 || store.loads != 0 || store.commits != 0 {
+		t.Fatalf("fenced writer still executed: calls=%d loads=%d commits=%d err=%v", calls, store.loads, store.commits, err)
+	}
+}
+
+func TestExecutorDoesNotReduceOnDuplicateCommandIdentityConflict(t *testing.T) {
+	store := &failClosedCommandStore{readErr: storage.ErrCommandConflict}
+	calls := 0
+	_, err := Execute(context.Background(), store, "world", "command", json.RawMessage(`{"actor":"a"}`), func(json.RawMessage) (json.RawMessage, json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"hp":1}`), json.RawMessage(`{"ok":true}`), nil
+	})
+	if !errors.Is(err, storage.ErrCommandConflict) || calls != 0 || store.loads != 0 || store.commits != 0 {
+		t.Fatalf("duplicate command identity still executed: calls=%d loads=%d commits=%d err=%v", calls, store.loads, store.commits, err)
+	}
+}

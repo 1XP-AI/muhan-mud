@@ -1,8 +1,22 @@
 # Muhan MUD 포팅 핸드오프
 
+## STOP — 사용자가 재개하기 전까지 오케스트레이션 금지
+
+**STOP.** 새 Orca 워커를 시작하지 마라. `worker-start` / `check --wait` / `check --ack` / 새 dispatch 금지. 사용자가 명시적으로 재개하기 전에는 이슈 close, 커밋/푸시, Helm, `src/frp.new` 터치 금지. 상세 카드: `docs/porting-research/orchestrator-resume.md`.
+
+스냅샷:
+- HEAD **`c46579a`** (`c46579a3d02c74df39c3fad0c47b5bc92486f914`) `private/codex/mud-identity-foundation`
+- dirty (`src/frp.new` 제외): HANDOFF.md, docs/porting-research/orchestrator-resume.md, scripts/run-go-backup-restore-local.sh, server/cmd/muhan/backup_cli_test.go, server/internal/engine/command_test.go, session/{bank_command,bank_command_test,command_parser,command_parser_test,directional_command,directional_command_test,item_mutation_command_test,items_command,items_command_test,look_command,look_command_test}.go, storage/{backup,backup_test,writer_test}.go, transport/world_connector_item_mutation_test.go, world/{container_mutation,container_mutation_test,look,player_items,player_items_test}.go
+- in-flight 리뷰 **`ctx_579d4464699d` / `task_99bc07fe3614`** (directional 소지품 reject). 파일 `{SCRATCH}/pr-g3-dir-items-reject-review.txt` 존재, no P0/P1. nextAction release — STOP 동안 실행하지 말 것
+- unacked **`delivery_b984e9df5ff3`** heartbeat (replayed) — ack 하지 말 것
+- stuck G0 **`task_7a36af246be8` / `ctx_583060c51aa5`** — worker_done 위조 금지
+- GitHub OPEN **#1, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12**. CLOSED #2 only
+
+---
+
 ## 오케스트레이터 핸드오프 — 2026-09-14 (다른 에이전트 재개용)
 
-이 섹션이 다음 에이전트의 시작점이다. 아래 슬라이스 로그는 이력이다.
+이 섹션은 이전 재개용이다. 현재 권위는 위의 「STOP」과 `docs/porting-research/orchestrator-resume.md`다.
 
 ### 작업 트리 (clone/worktree/reset/rebase 금지)
 

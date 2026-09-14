@@ -4,10 +4,46 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/1XP-Inc/muhan-mud/server/internal/game"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/1XP-Inc/muhan-mud/server/internal/game"
 )
+
+func TestCheckWriterFencesRetiredGenerationWithoutPostgres(t *testing.T) {
+	unbound := &Postgres{}
+	if err := unbound.checkWriter("w", 0); err != nil {
+		t.Fatalf("unbound epoch 0: %v", err)
+	}
+	if err := unbound.checkWriter("w", 1); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("unbound epoch 1: %v", err)
+	}
+	current := &Postgres{writerWorld: "w", writerEpoch: 2}
+	if err := current.checkWriter("w", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.checkWriter("w", 1); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("retired writer: %v", err)
+	}
+	if err := current.checkWriter("other", 2); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("wrong world: %v", err)
+	}
+}
+
+func TestClaimWorldWriterRejectsBoundHandleAndInvalidClaimWithoutPostgres(t *testing.T) {
+	bound := &Postgres{writerWorld: "w", writerEpoch: 1}
+	if _, err := bound.ClaimWorldWriter(context.Background(), "w", "boot-b"); !errors.Is(err, ErrWriterFenced) {
+		t.Fatalf("bound handle reclaimed: %v", err)
+	}
+	root := &Postgres{}
+	if _, err := root.ClaimWorldWriter(context.Background(), "w", ""); err == nil {
+		t.Fatal("empty claim accepted")
+	}
+	if _, err := root.ClaimWorldWriter(context.Background(), "w", strings.Repeat("c", 129)); err == nil {
+		t.Fatal("overlong claim accepted")
+	}
+}
 
 func TestPostgresWriterGenerationRejectsPreviousServer(t *testing.T) {
 	dsn := os.Getenv("MUHAN_WRITER_TEST_DATABASE_URL")

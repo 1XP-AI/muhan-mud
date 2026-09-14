@@ -66,8 +66,11 @@ func parseLookRest(rest []string) (LookCommand, bool) {
 // (`봐 동`) or the C parse() last token (`동 봐` / `늑대 봐`). Optionally one
 // prefix and a positive occurrence. Last-token verbs win when both ends
 // are look aliases. Extra tokens after a last-token verb peek the first
-// remaining arg (`동 junk 봐` → 동), matching look()'s str[1]/val[1];
-// prefix extras and controls stay fail-closed.
+// remaining arg (`동 junk 봐` → 동), matching look()'s str[1]/val[1].
+// A last-token C number that is not a positive occurrence (`동 0 봐` /
+// `동 -1 봐`) is val[1]; find_ext never hits val<1, so it is fail-closed
+// rather than peeked as occurrence 1. Prefix extras and controls stay
+// fail-closed.
 func ParseLookLine(line string) (LookCommand, bool) {
 	if !validLookLine(line) {
 		return LookCommand{}, false
@@ -88,19 +91,40 @@ func ParseLookLine(line string) (LookCommand, bool) {
 	return LookCommand{}, false
 }
 
+func looksLikeLookOccurrence(token string) bool {
+	if token == "" {
+		return false
+	}
+	digits := token
+	if token[0] == '-' {
+		if len(token) == 1 {
+			return false
+		}
+		digits = token[1:]
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func parseLookLastTokenRest(rest []string) (LookCommand, bool) {
 	if len(rest) == 0 {
 		return LookCommand{}, true
 	}
-	if len(rest) >= 2 {
-		if occurrence, ok := parseLookAtOccurrence(rest[1]); ok {
-			command, ok := parseLookRest(rest[:1])
-			if !ok {
-				return LookCommand{}, false
-			}
-			command.Occurrence = occurrence
-			return command, true
+	if len(rest) >= 2 && looksLikeLookOccurrence(rest[1]) {
+		occurrence, ok := parseLookAtOccurrence(rest[1])
+		if !ok {
+			return LookCommand{}, false
 		}
+		command, ok := parseLookRest(rest[:1])
+		if !ok {
+			return LookCommand{}, false
+		}
+		command.Occurrence = occurrence
+		return command, true
 	}
 	return parseLookRest(rest[:1])
 }
