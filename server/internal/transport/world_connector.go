@@ -575,13 +575,15 @@ func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line st
 		return session.NotepadAppendInvalidLineResponse, true, nil
 	}
 	if strings.HasPrefix(line, ".") {
-		// Admission is checked again immediately before entering the durable
-		// retry gate. A canonical append/clear can race this connection after
-		// the last body line, so a limit discovered only by ExecuteNotepadAppend
-		// must not strand the draft in commitPending mode.
-		if fits, checked := c.notepadDraftFitsCurrentLimits(ctx, draft.lines); checked && !fits {
-			c.clearNotepad()
-			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		if !draft.commitPending {
+			// The first dot must admit against the latest canonical state before
+			// entering the durable command boundary. A later dot is a retry of
+			// the same command and must reach Execute first so its receipt can be
+			// replayed even when the committed append now fills the limits.
+			if fits, checked := c.notepadDraftFitsCurrentLimits(ctx, draft.lines); checked && !fits {
+				c.clearNotepad()
+				return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+			}
 		}
 		draft.commitPending = true
 		receipt, err := c.game.owners.ExecuteNotepadAppendWithVerb(

@@ -363,6 +363,125 @@ func (s *notepadFlakyStore) CommitWorldCommand(_ context.Context, _ string, comm
 	return *s.receipt, nil
 }
 
+// notepadSavedBeforeErrorStore models a commit whose state and receipt are
+// durable even though the caller sees a commit error and the immediate
+// recovery read is unavailable. A later read must replay that receipt.
+type notepadSavedBeforeErrorStore struct {
+	mu           sync.Mutex
+	state        json.RawMessage
+	receipt      *storage.WorldReceipt
+	command      string
+	commits      int
+	reads        int
+	readCommands []string
+}
+
+func (s *notepadSavedBeforeErrorStore) ReadWorldReceipt(_ context.Context, _ string, command string, _ json.RawMessage) (storage.WorldReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reads++
+	s.readCommands = append(s.readCommands, command)
+	switch s.reads {
+	case 1:
+		return storage.WorldReceipt{}, sql.ErrNoRows
+	case 2:
+		return storage.WorldReceipt{}, errors.New("receipt read unavailable")
+	}
+	if s.receipt == nil || s.command != command {
+		return storage.WorldReceipt{}, sql.ErrNoRows
+	}
+	receipt := *s.receipt
+	receipt.Replayed = true
+	return receipt, nil
+}
+
+func (s *notepadSavedBeforeErrorStore) LoadWorld(context.Context, string) (storage.WorldSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return storage.WorldSnapshot{State: append(json.RawMessage(nil), s.state...)}, nil
+}
+
+func (s *notepadSavedBeforeErrorStore) CommitWorldCommand(_ context.Context, _ string, command string, _ json.RawMessage, revision int64, state, response json.RawMessage) (storage.WorldReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commits++
+	s.state = append(json.RawMessage(nil), state...)
+	s.command = command
+	s.receipt = &storage.WorldReceipt{Revision: revision + 1, Response: append(json.RawMessage(nil), response...)}
+	return storage.WorldReceipt{}, errors.New("commit response lost after save")
+}
+
+func (s *notepadSavedBeforeErrorStore) snapshot() (json.RawMessage, int, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append(json.RawMessage(nil), s.state...), s.commits, append([]string(nil), s.readCommands...)
+}
+
+func TestWorldConnectorNotepadRetriesSavedCommitByReceiptBeforeLimitPreflight(t *testing.T) {
+	initial := notepadStateWithBytes(world.MaxNotepadBytes - world.MaxNotepadLineBytes - 1)
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &notepadSavedBeforeErrorStore{state: raw}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*메모 a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+	line := strings.Repeat("z", world.MaxNotepadLineBytes)
+	if output, err := connection.Submit(context.Background(), line); err != nil || output != world.NotepadAppendContinuePrompt {
+		t.Fatalf("body output=%q err=%v", output, err)
+	}
+	commandID := connection.notepad.commandID
+	output, err := connection.Submit(context.Background(), ".")
+	if err != nil || output != session.NotepadAppendRetryResponse || connection.notepad == nil || !connection.notepad.commitPending {
+		t.Fatalf("saved-before-error output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+	if state, commits, commands := store.snapshot(); commits != 1 || bytes.Equal(state, raw) || len(commands) != 2 || commands[0] != commandID || commands[1] != commandID {
+		t.Fatalf("saved-before-error state/receipt commits=%d reads=%d commands=%v commandID=%q", commits, len(commands), commands, commandID)
+	}
+
+	output, err = connection.Submit(context.Background(), ".")
+	if err != nil || output != world.NotepadAppendResponse || connection.notepad != nil {
+		t.Fatalf("receipt replay output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || notepadDraftBytes(saved.Notepad) != world.MaxNotepadBytes || len(saved.Notepad) == 0 || saved.Notepad[len(saved.Notepad)-1] != line {
+		t.Fatalf("replayed saved=%+v bytes=%d err=%v", saved.Notepad, notepadDraftBytes(saved.Notepad), err)
+	}
+	if _, commits, commands := store.snapshot(); commits != 1 || len(commands) != 3 || commands[2] != commandID {
+		t.Fatalf("receipt replay duplicated mutation commits=%d reads=%d commands=%v", commits, len(commands), commands)
+	}
+}
+
+func TestWorldConnectorNotepadDotRejectsCanonicalLimitChange(t *testing.T) {
+	initial := notepadConnectorFixture(10)
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &connectorCommandStore{state: raw}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+	if output, err := connection.Submit(context.Background(), "final-line"); err != nil || output != world.NotepadAppendContinuePrompt || connection.notepad == nil {
+		t.Fatalf("body output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+
+	changed := notepadStateWithBytes(world.MaxNotepadBytes)
+	setNotepadStoreState(t, store, changed)
+	before, _ := store.snapshot()
+	output, err := connection.Submit(context.Background(), ".")
+	if err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil {
+		t.Fatalf("dot canonical rejection output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+	after, commits := store.snapshot()
+	if commits != 0 || !bytes.Equal(after, before) {
+		t.Fatalf("dot canonical rejection mutated state commits=%d state_changed=%v", commits, !bytes.Equal(after, before))
+	}
+}
+
 func TestWorldConnectorNotepadRetriesSameDurableBoundaryAfterLostCommitResponse(t *testing.T) {
 	initial := notepadConnectorFixture(10)
 	raw, err := json.Marshal(initial)
