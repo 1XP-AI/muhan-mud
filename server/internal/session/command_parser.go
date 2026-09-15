@@ -33,6 +33,7 @@ const (
 	CommandSave
 	CommandMail
 	CommandMemo
+	CommandNotepad
 	CommandBoard
 	CommandInfo
 	CommandHelp
@@ -395,6 +396,11 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	}
 	if IsMailSendLine(trimmed) {
 		parsed.Kind = CommandMailSend
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsNotepadLine(trimmed) {
+		parsed.Kind = CommandNotepad
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}

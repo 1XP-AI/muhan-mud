@@ -52,6 +52,11 @@ type State struct {
 	// recipient's immutable player ID. Memo writers never consult or construct
 	// a raw player path and never carry credentials.
 	Memos map[string][]CharacterMemo
+	// Nil means the legacy DM notepad has not been imported. A nonnil slice is
+	// the canonical ordered file-line projection; an empty nonnil slice means
+	// the legacy file is absent. Lines contain no newline terminator so the
+	// projection remains pointer-free and can be rendered deterministically.
+	Notepad []string
 	// Nil is pre-migration. Canonical NPC bodies are owned here, not by rooms.
 	NPCs map[string]NPCState
 	// Global C first_active order. Nil is unresolved; [] is known inactive.
@@ -130,6 +135,9 @@ func (s State) Validate() error {
 		return err
 	}
 	if err := s.validateMemos(); err != nil {
+		return err
+	}
+	if err := s.validateNotepad(); err != nil {
 		return err
 	}
 	if s.Boards != nil {
@@ -513,6 +521,9 @@ func (s State) clone() State {
 		for recipientID, records := range s.Memos {
 			next.Memos[recipientID] = copyMemos(records)
 		}
+	}
+	if s.Notepad != nil {
+		next.Notepad = append([]string{}, s.Notepad...)
 	}
 	if s.Boards != nil {
 		boards := s.Boards.Clone()

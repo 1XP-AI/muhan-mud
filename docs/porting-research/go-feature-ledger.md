@@ -1,5 +1,12 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-15 G3 `notepad` 수직 slice 및 `group` 표시 parity
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `post.c:notepad`의 `*notepad`/`*메모`, view·append·clear·invalid option·`noteedit` dot continuation | `CommandNotepad`가 exact 두 alias를 중앙 분류하고, `State.Notepad`의 nil migration marker와 ordered line projection을 `PlanNotepad`/`ApplyNotepad`·JSON clone/validate로 고정한다. session은 CARETAKER actor를 canonical snapshot에서 확인하고, transport는 79-byte UTF-8-safe connection-local buffer를 `.`에서만 durable receipt로 제출한다. raw `POSTPATH`/파일 경로/credential는 state·payload·authority로 사용하지 않는다. | Luna max `task_76627974420b`/`ctx_1189481fa7f3` 및 `task_953d12c6cfe3`/`ctx_5d0578a24d87` 병렬 구현 후 coordinator 독립 검증. notepad world/session/transport targeted race, session·transport 전체 race, vet·gofmt·diff-check PASS. 기존 `TestRoomBodyCorpus` 63건과 NPC respawn combat notice 2건은 별도 baseline 실패. DM_pad 원본 import·운영 PG/복구·전체 C 출력/브라우저·배포는 미완료 |
+| `command4.c:group`의 following leader·mixed `first_fol` 순서·PDMINV skip | `PlayerGroup`가 canonical mixed order와 following-edge leader를 유지하고 canonical NPC follower의 `PDMINV`도 숨긴다. | world `PlayerGroup` race·vet·gofmt·diff-check PASS. nil `FollowerRefs` category fallback, 그룹 구성/mutation·full C 출력·PG/E2E는 미완료 |
+
 ## 2026-09-15 G4 실제 rooms/NPC/item full-data dry-run
 
 | 원작/운영 경계 | Go 검증 결과 | 검증/남은 조건 |
@@ -948,8 +955,9 @@ enabled_rows=343 unique_aliases=341 positive_ids=154 handlers=174 special_-2_row
 특수 행(343에 미포함): `눌러`/`밀어`는 `cmdfn=0` → `special_cmd`. sentinel `@` 1행.
 주석 명령 `은신술`/`가입`/`탈퇴`/`전수`/`변수나한권`/`sneak`는 등록 기능으로 세지 않으며 유지·제외는 사용자 승인 대기.
 
-Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결 223 / 부분 24 / 미연결 96.
-미연결 45 handler는 주로 DM(`dm1.c`–`dm6.c`)과 `notepad`.
+Handler 합계: 연결 109 / 부분 21 / 미연결 44. 등록 행 합계: 연결 223 / 부분 26 / 미연결 94.
+미연결 44 handler는 주로 DM(`dm1.c`–`dm6.c`)이다. `notepad`는 bounded
+world/session/transport slice가 연결됐지만 원본 import·운영 경계가 남아 `부분`으로 집계한다.
 
 ### 계정·월드·전투·NPC·경제·마법·사회·관리·저장 계약
 
@@ -961,7 +969,7 @@ Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결
 | NPC | talk ACTION/ATTACK/CAST/GIVE bounded. tick/chase/maintenance/resource는 scheduler. 미이관 catalog는 fail-closed | `command8.c:talk_action`, `update.c` | `world/npc_talk.go` `npc_combat_round.go` `npc_chase.go` | `server/internal/world/npc_talk_test.go` | focused race 기록 있음. 이번 레인은 원장만 | NPC identity graph import | 원본 talk corpus 전수, 리젠/침공 타이머 운영 연결 |
 | 경제 | 상점 품목/구매/판매/가치/수리/교환/상인 구입·선택. 은행은 operator-owned PG import까지. 라이브 gold/graph parity는 별도 | `command7.c`/`bank.c` | `world/bank.go` shop/merchant/trade/repair, `world/forge.go`, `world/newforge.go` | `server/internal/session/bank_command_test.go`, `server/internal/session/forge_command_test.go`, `server/internal/session/newforge_command_test.go` | bank import race 기록 있음. 이번 레인은 원장만 | kind-8/raw locator | 라이브 이체, 대량 계좌 대조, 상점/거래 catalog |
 | 마법 | `spllist` 56 + 활성 `ospell` 20. 플레이어 self-cast 다수와 NPC CAST 일부 연결. 대상/맵/공격 주문과 전체 spell effect는 미연결 | `global.c:spllist/ospell`, `magic1.c`–`magic8.c` | `world/cast.go` `spell_catalog.go` | `server/internal/session/cast_command_test.go` | focused race 기록 있음. 이번 레인은 원장만 | spell bit/timer canonical | 대상 주문, `[엔터]` continuation, zap/전주문 DM |
-| 사회 | 말/잡담/환호/그룹말/패거리/결혼/투표/우편/게시판/메모/초대/감정표현. 패거리공지·선전포고·기억 연결 | `command4.c`/`post.c`/`action.c`/`command11.c`/`command12.c` | family_*/marriage/vote/mail/board/emote | `server/internal/session/family_news_command_test.go`, `server/internal/session/family_war_command_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | social file → canonical | 패거리 보상, 운영 news/war import, 전체 C 출력 |
+| 사회 | 말/잡담/환호/그룹말/패거리/결혼/투표/우편/게시판/메모/notepad/초대/감정표현. 패거리공지·선전포고·기억 연결 | `command4.c`/`post.c`/`action.c`/`command11.c`/`command12.c` | family_*/marriage/vote/mail/board/emote/notepad | `server/internal/session/family_news_command_test.go`, `server/internal/session/family_war_command_test.go`, `server/internal/world/notepad_test.go`, `server/internal/transport/world_connector_notepad_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | social file → canonical | 패거리 보상, 운영 news/war/notepad import, 전체 C 출력 |
 | 관리 | cmdno 101–147 `*` 명령은 클래스 게이트가 계약. 현재 Go는 `*active`/`*활성`, `*enemy`/`*적`, `*charm`/`*최면`, `*떨어져라`/`*침공`을 bounded 연결. 나머지 DM은 미연결 | `dm1.c`–`dm6.c`/`update.c` | `world/dm_active.go`, `world/dm_enemy.go`, `world/dm_charm.go`, `world/dm_family.go` | `server/internal/world/dm_active_test.go`, `server/internal/world/dm_enemy_test.go`, `server/internal/world/dm_charm_test.go`, `server/internal/world/dm_family_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | 특권 명령 별도 suite | NPC producer/tick/AI·공격·추종·리젠, teleport/save/reload/shutdown 등 나머지 DM handler |
 | 저장 | PostgreSQL가 영속 권위. command ID+상태 버전 트랜잭션. raw C struct를 DB에 직접 복사하지 않음. runtime descriptor/RNG는 비영속 | `mstruct.h` `player_store.c` `files1.c` | storage/world snapshot import | player/bank snapshot 테스트 | 로컬 PG 선택 실행 기록 있음. 이번 레인은 원장만 | PlayerSnapshotV1/object graph | 운영 백업·복구, 대량 플레이어 대조, live bank |
 
@@ -1057,7 +1065,7 @@ Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결
 | `get` | 5 | 4 | `src/command2.c:697` | 연결 | CommandItemMutation; session item mutation + world item graph | `server/internal/session/item_mutation_command_test.go` | 중첩/OINVIS/장비 일부 fail-closed |
 | `give` | 47 | 1 | `src/command8.c:31` | 연결 | CommandGive; world/give.go | `server/internal/session/give_command_test.go`, `server/internal/world/give_test.go` | NPC GIVE talk와 별개 |
 | `go` | 30 | 2 | `src/command6.c:76` | 부분 | CommandGo; world/go.go + npc_chase.go | `server/internal/session/go_command_test.go`, `server/internal/world/go_test.go`, `server/internal/world/npc_chase_test.go` | command6 MFOLLO chase(threshold 10, no die_perm_crt). 특수 입구 전수·닫힘/비행/시간/성별 입장 미완료 |
-| `group` | 20 | 2 | `src/command4.c:832` | 부분 | CommandSocial; session social/group | `server/internal/session/social_command_test.go` | 그룹 구성 전수 미완료 |
+| `group` | 20 | 2 | `src/command4.c:832` | 부분 | CommandSocial; session social/group | `server/internal/session/social_command_test.go`, `server/internal/world/social_group_command_test.go` | NPC PDMINV·mixed display bounded. nil `FollowerRefs` fallback·그룹 구성 전수 미완료 |
 | `gtalk` | 57 | 3 | `src/command10.c:244` | 연결 | CommandGroupTalk; world/group_talk.go | `server/internal/world/group_talk_test.go` | 그룹 멤버십 전수 미완료 |
 | `haste` | 64 | 1 | `src/command9.c:87` | 연결 | CommandRangerPray/Haste; world/ranger_pray.go | `server/internal/session/ranger_pray_command_test.go`, `server/internal/world/ranger_pray_test.go` | 활보법 bounded |
 | `health` | 15 | 2 | `src/command4.c:45` | 부분 | CommandStatus; session status/health | `server/internal/session/status_command_test.go` | 전체 점수 필드 parity 미완료 |
@@ -1087,7 +1095,7 @@ Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결
 | `moon_set` | 153 | 1 | `src/command8.c:1124` | 연결 | CommandMoonSet; world/moon_set.go | `server/internal/session/moon_set_command_test.go`, `server/internal/world/moon_set_test.go` | EQUAL prefix/OINVIS·장비/중첩 미완료 |
 | `move` | 1 | 45 | `src/command2.c:287` | 연결 | CommandDirectional; session/directional_command.go + world/movement.go | `server/internal/session/directional_command_test.go`, `server/internal/world/movement_test.go` | 약어·깨진 바이트 alias는 source 바이트 유지. 함정/추종/입장은 별도 reducer |
 | `newforge` | 85 | 1 | `src/command7.c:871` | 부분 | CommandNewForge; world/newforge.go | `server/internal/session/newforge_command_test.go`, `server/internal/world/newforge_test.go`, `server/internal/transport/world_connector_newforge_test.go` | 무기만들기 first prompt/gate + select_newarm case 2-6(900-904, 에메랄드/티타늄/일루션 forge2, 담금질 shots/sum, 이름 3-20바이트, 예 접두 금화 차감·add_obj_crt). 상점/거래 catalog는 미완료 |
-| `notepad` | 136 | 2 | `src/post.c:201` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *notepad. Go 없음 |
+| `notepad` | 136 | 2 | `src/post.c:201` | 부분 | CommandNotepad; world/notepad.go + session/notepad_command.go + transport continuation | `server/internal/world/notepad_test.go`, `server/internal/session/notepad_command_test.go`, `server/internal/transport/world_connector_notepad_test.go` | exact alias·CARETAKER·view/append/clear·79-byte/dot·receipt/replay bounded. DM_pad import·운영 PG/복구·전체 C 출력 미완료 |
 | `obj_compare` | 96 | 1 | `src/command12.c:21` | 연결 | CommandCompare; session object_compare | `server/internal/session/object_compare_command_test.go` | 비교 bounded |
 | `openexit` | 31 | 1 | `src/command6.c:365` | 연결 | CommandDoor; world/doors.go | `server/internal/world/doors_test.go` | 열쇠/함정 전수 미완료 |
 | `out_family` | 148 | 1 | `src/command11.c:662` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go` | 패거리탈퇴. out_family 심볼명 없음(PlanFamilyLeave) |
@@ -1466,8 +1474,8 @@ Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결
 | 316 | 134 | `*전주문` | `dm_cast` | `src/dm4.c:176` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 317 | 135 | `*group` | `dm_group` | `src/dm4.c:419` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 318 | 135 | `*그룹` | `dm_group` | `src/dm4.c:419` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
-| 319 | 136 | `*notepad` | `notepad` | `src/post.c:201` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *notepad. Go 없음 |
-| 320 | 136 | `*메모` | `notepad` | `src/post.c:201` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *notepad. Go 없음 |
+| 319 | 136 | `*notepad` | `notepad` | `src/post.c:201` | 부분 | CommandNotepad; world/session/transport notepad | `server/internal/world/notepad_test.go`, `server/internal/session/notepad_command_test.go`, `server/internal/transport/world_connector_notepad_test.go` | bounded 연결. DM_pad import·전체 C 출력 미완료 |
+| 320 | 136 | `*메모` | `notepad` | `src/post.c:201` | 부분 | CommandNotepad; world/session/transport notepad | `server/internal/world/notepad_test.go`, `server/internal/session/notepad_command_test.go`, `server/internal/transport/world_connector_notepad_test.go` | bounded 연결. DM_pad import·전체 C 출력 미완료 |
 | 321 | 137 | `*delete` | `dm_delete` | `src/dm5.c:104` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 322 | 137 | `*지우기` | `dm_delete` | `src/dm5.c:104` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 323 | 138 | `*oname` | `dm_obj_name` | `src/dm4.c:546` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |

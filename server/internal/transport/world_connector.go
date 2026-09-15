@@ -408,6 +408,7 @@ type worldConnection struct {
 	// canonical receipt only after the connection has completed the prompts.
 	vote           *voteDraft
 	compose        *composeDraft
+	notepad        *notepadDraft
 	passwordChange session.PasswordChanger
 	passwordSecret bool
 	// ignore is command9.c's connection-local first_ignore list. It is never
@@ -478,6 +479,16 @@ type composeDraft struct {
 	familyName string
 }
 
+// notepadDraft is the connection-local post.c noteedit buffer. It remains
+// outside State and receipts until the line beginning with `.` submits the
+// complete buffer under one stable command ID.
+type notepadDraft struct {
+	commandID     string
+	verb          string
+	lines         []string
+	commitPending bool
+}
+
 // Events is an optional asynchronous room-output stream. The WebSocket
 // transport consumes it with one writer lock, while non-WebSocket test
 // connectors can continue to implement only Submit/Close.
@@ -508,6 +519,96 @@ func (c *worldConnection) clearCompose() {
 	c.compose.timestamp = time.Time{}
 	c.compose.kind = 0
 	c.compose = nil
+}
+
+func (c *worldConnection) clearNotepad() {
+	if c.notepad == nil {
+		return
+	}
+	c.notepad.lines = nil
+	c.notepad.verb = ""
+	c.notepad.commandID = ""
+	c.notepad = nil
+}
+
+// submitNotepadLine consumes the bounded post.c editor before history,
+// aliases or the ordinary parser. Only the terminating `.` reaches the
+// durable command boundary; all previous lines remain connection-local.
+func (c *worldConnection) submitNotepadLine(ctx context.Context, line string) (string, bool, error) {
+	if c.notepad != nil {
+		return c.submitNotepadContinuation(ctx, line)
+	}
+	command, ok := session.ParseNotepadLine(line)
+	if !ok || command.Action != world.NotepadAppend {
+		return "", false, nil
+	}
+	state, ok := c.game.snapshot(ctx)
+	if !ok {
+		return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+	}
+	proposal, err := state.PlanNotepad(c.lease.ActorID, command.Verb, command.Option)
+	if err != nil {
+		return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+	}
+	if proposal.Action != world.NotepadAppend {
+		// An unauthorized canonical actor follows post.c's ordinary unknown
+		// command response without entering a continuation.
+		return proposal.Response, true, nil
+	}
+	c.notepad = &notepadDraft{
+		commandID: "notepad-append-" + rand.Text(),
+		verb:      command.Verb,
+	}
+	c.lastCommand = strings.TrimLeft(line, " ")
+	return proposal.Response, true, nil
+}
+
+func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line string) (string, bool, error) {
+	draft := c.notepad
+	if draft == nil {
+		return "", false, nil
+	}
+	if draft.commitPending && line != "." {
+		return session.NotepadAppendRetryResponse, true, nil
+	}
+	if err := world.ValidateNotepadLine(line); err != nil {
+		return session.NotepadAppendInvalidLineResponse, true, nil
+	}
+	if strings.HasPrefix(line, ".") {
+		draft.commitPending = true
+		receipt, err := c.game.owners.ExecuteNotepadAppendWithVerb(
+			ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease, draft.verb, draft.lines,
+		)
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+				return "", true, err
+			}
+			return session.NotepadAppendRetryResponse, true, nil
+		}
+		var result world.NotepadResult
+		if err := json.Unmarshal(receipt.Response, &result); err != nil || result.Response == "" ||
+			(result.Action != world.NotepadAppend && result.Action != world.NotepadUnknown) {
+			return session.NotepadAppendRetryResponse, true, nil
+		}
+		c.clearNotepad()
+		return result.Response, true, nil
+	}
+	canonical := world.TruncateNotepadLine(line)
+	if len(draft.lines)+2 > world.MaxNotepadLines || notepadDraftBytes(draft.lines)+len(canonical)+1+len(world.NotepadHeaderLine)+2 > world.MaxNotepadBytes {
+		c.clearNotepad()
+		return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+	}
+	draft.lines = append(draft.lines, canonical)
+	return world.NotepadAppendContinuePrompt, true, nil
+}
+
+func notepadDraftBytes(lines []string) int {
+	total := 0
+	for _, line := range lines {
+		total += len(line) + 1
+	}
+	return total
 }
 
 // submitComposeLine consumes the connection-local editor before history,
@@ -1797,6 +1898,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return output, nil
 	}
+	if output, handled, err := c.submitNotepadLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	// Start `암호` before history expansion. The command is connection-local,
 	// so its line and all subsequent credential lines must not become the `!`
 	// history entry.
@@ -1949,6 +2059,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 		return output, nil
 	}
+	if output, handled, err := c.submitNotepadLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
 	now, hour := c.game.config.Clock()
 	before, beforeOK := c.game.snapshot(ctx)
 	if beforeOK {
@@ -1964,6 +2083,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	// vote alias. Keep that expansion inside the continuation boundary so a
 	// vote prompt is never routed to the ordinary parser.
 	if output, handled, err := c.submitVoteLine(ctx, line); handled {
+		if err != nil {
+			if !c.game.owners.Owns(c.lease) {
+				c.ready = false
+			}
+			return "", err
+		}
+		return output, nil
+	}
+	if output, handled, err := c.submitNotepadLine(ctx, line); handled {
 		if err != nil {
 			if !c.game.owners.Owns(c.lease) {
 				c.ready = false
@@ -2088,6 +2216,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	saveCommand := false
 	mailCommand := false
 	memoCommand := false
+	notepadCommand := false
 	boardCommand := false
 	titleCommand := false
 	infoCommand := false
@@ -2392,6 +2521,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandMemo:
 		memoCommand = true
 		receipt, err = c.game.owners.ExecuteMemoLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandNotepad:
+		notepadCommand = true
+		receipt, err = c.game.owners.ExecuteNotepadLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandBoard:
 		boardCommand = true
 		receipt, err = c.game.owners.ExecuteBoardLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -2505,6 +2637,8 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, session.ErrUnsupportedSaveLine) ||
 		errors.Is(err, session.ErrUnsupportedMailLine) ||
 		errors.Is(err, session.ErrUnsupportedMemoLine) ||
+		errors.Is(err, session.ErrUnsupportedNotepadLine) ||
+		errors.Is(err, session.ErrNotepadAppendContinuationRequired) ||
 		errors.Is(err, world.ErrMemoStateUnresolved) ||
 		errors.Is(err, world.ErrMemoActorAbsent) ||
 		errors.Is(err, world.ErrMemoTargetRequired) ||
@@ -2522,6 +2656,18 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrMemoStaleProposal) ||
 		errors.Is(err, world.ErrMemoInvalidProposal) ||
 		errors.Is(err, world.ErrMemoTargetNameNonCanonical) ||
+		errors.Is(err, world.ErrNotepadStateUnresolved) ||
+		errors.Is(err, world.ErrNotepadStateInvalid) ||
+		errors.Is(err, world.ErrNotepadActorAbsent) ||
+		errors.Is(err, world.ErrNotepadUnauthorized) ||
+		errors.Is(err, world.ErrNotepadInvalidVerb) ||
+		errors.Is(err, world.ErrNotepadInvalidOption) ||
+		errors.Is(err, world.ErrNotepadAppendContinuation) ||
+		errors.Is(err, world.ErrNotepadLineInvalid) ||
+		errors.Is(err, world.ErrNotepadLineTooLong) ||
+		errors.Is(err, world.ErrNotepadLimit) ||
+		errors.Is(err, world.ErrNotepadStaleProposal) ||
+		errors.Is(err, world.ErrNotepadInvalidProposal) ||
 		errors.Is(err, session.ErrUnsupportedBoardLine) ||
 		errors.Is(err, session.ErrUnsupportedTitleLine) ||
 		errors.Is(err, session.ErrUnsupportedReadLine) ||
@@ -3712,6 +3858,11 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}
+	} else if notepadCommand {
+		var result world.NotepadResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
 	} else if boardCommand {
 		if err = json.Unmarshal(receipt.Response, &output); err != nil {
 			// Keep the original receipt error for a malformed response.
@@ -3755,6 +3906,7 @@ func (c *worldConnection) Close(ctx context.Context) {
 	c.clearNewForgeSelectArm()
 	c.clearSuicidePassword()
 	c.clearCompose()
+	c.clearNotepad()
 	// `first_ignore` is descriptor-local in the legacy server. Clear it at the
 	// connection boundary so a closed descriptor cannot retain names while a
 	// cleanup retry is pending.

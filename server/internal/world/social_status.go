@@ -315,6 +315,9 @@ func (s State) PlayerGroup(actorID string) (string, error) {
 			if !exists {
 				return "", fmt.Errorf("group NPC follower absent")
 			}
+			if flag(npc.Body.Flags[:], playerDMInvisibleFlag) {
+				continue
+			}
 			name, hp, mp = npc.Body.Name, npc.Body.HPCurrent, npc.Body.MPCurrent
 		default:
 			return "", fmt.Errorf("unknown group follower kind")
