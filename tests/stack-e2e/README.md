@@ -11,6 +11,35 @@ protocol regression tests. Values other than zero/one are rejected.
 The local lane is separate from the CI-only script below; it publishes no
 host ports, mounts no host files/socket, and cleans only its created resources.
 
+## Go terminal-only local lane
+
+The same disposable wrapper has a bounded Go lane for the shipped central xterm
+page and the existing real Go+PostgreSQL browser assertions:
+
+```bash
+STACK_E2E_LOCAL_LANE=go bash scripts/run-stack-e2e-local-docker.sh --allow-disposable
+```
+
+This command archives the committed `HEAD` before building
+`tests/stack-e2e/Dockerfile.go-local`; working-tree files are never copied into
+the image. The image and runner compile `server/cmd/muhan` and
+`server/cmd/muhan-browser-e2e` as UID/GID `10001`, then the runner starts the
+real Go WebSocket process and Next page in one disposable container. PostgreSQL
+is a fresh tmpfs-backed `postgres:17-alpine` container, and the runner shares
+only its private network namespace, so the lane publishes no host ports, uses
+no host mounts or Docker socket, and does not start a relay, fake WebSocket, or
+Auth service.
+
+The lane executes
+`tests/browser-e2e/go-process-postgres.spec.ts` through its existing
+`playwright.go-process-postgres.config.ts`, including signup/game-password
+login, existing-character admission and duplicate-session denial,
+reconnect/persistence, movement, Korean composition, and mobile viewport
+coverage. After cleanup the wrapper prints a retained scratch directory whose
+`go-terminal-stack-artifacts` subdirectory contains the redacted Playwright log,
+JSON report, and failure traces when produced. This lane is opt-in; omitting
+`STACK_E2E_LOCAL_LANE` preserves the default legacy C/Node lane and its tests.
+
 `../../scripts/run-stack-e2e.sh` creates a uniquely named, internal-only
 Docker network, disposable PostgreSQL 17 container, and PostgREST container.
 It applies `bootstrap_contract.sql` and the identity, handoff, snapshot-eligibility,

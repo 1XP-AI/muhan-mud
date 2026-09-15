@@ -1,0 +1,39 @@
+FROM golang:1.27.1-bookworm AS go
+FROM node:22-bookworm
+
+COPY --from=go /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=local
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gcc postgresql-client && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@10.15.1
+
+WORKDIR /repo
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+# Dependency installation happens in the frozen archive before any runtime
+# process starts. The internal-only test network is intentionally created
+# later by the host wrapper, so this build has no runtime network dependency.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json ./web/package.json
+COPY services/gateway/package.json ./services/gateway/package.json
+COPY services/character-inventory-importer/package.json ./services/character-inventory-importer/package.json
+COPY services/m4-file-snapshot-manifest-relay/package.json ./services/m4-file-snapshot-manifest-relay/package.json
+COPY services/onboarding-reconciler/package.json ./services/onboarding-reconciler/package.json
+RUN pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+
+COPY . .
+RUN useradd --uid 10001 --create-home muhan-test \
+  && mkdir -p /repo/.go-cache /repo/.go-mod-cache /repo/.go-build \
+  && chown -R 10001:10001 /repo /home/muhan-test /opt/playwright
+USER 10001:10001
+ENV HOME=/home/muhan-test GOCACHE=/repo/.go-cache GOMODCACHE=/repo/.go-mod-cache
+
+# Compile both the production Go terminal server and its disposable fixture
+# helper as the same non-root UID used when the lane executes. The runner
+# rebuilds from this warmed cache so source/build evidence remains in scope.
+RUN cd /repo/server \
+  && go mod download \
+  && go build -race -o /repo/.go-build/muhan ./cmd/muhan \
+  && go build -race -o /repo/.go-build/seed ./cmd/muhan-browser-e2e
+
+ENTRYPOINT ["bash", "/repo/tests/stack-e2e/run-go-local-container.sh"]
