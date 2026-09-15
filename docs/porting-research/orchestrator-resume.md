@@ -1,5 +1,11 @@
 # RESUMED — 2026-09-15 사용자 명시적 재개
 
+## CURRENT CHECKPOINT — 2026-09-15
+
+현재 HEAD는 `12f522f`이며 `private/codex/mud-identity-foundation`에 push됐다. PR #13은 Project #1 `In Progress` 항목으로 연결되고 `Refs #1`, `Refs #3`–`Refs #12`를 추적한다. #12 Go terminal-only lane은 Luna Max worker_done·coordinator 독립 검증·release 후 네 소유 파일을 commit/push했으며, shell/Playwright-list/scope/protected-file 검증은 PASS했다. Docker BuildKit은 호스트 파일시스템 100%와 metadata I/O 오류로 막혀 #12는 OPEN이다. 현재 active/reclaimable worker는 0개이며 `src.frp.new`는 기존 dirty 해시를 보존한다.
+
+**이 아래의 기존 재개 기록과 현재 값이 충돌하면 이 CURRENT CHECKPOINT를 따른다.**
+
 현재 정책 보정: 검증이 끝난 독립 slice는 파일 소유 범위를 확인한 뒤 로컬 checkpoint commit과 `private/codex/mud-identity-foundation` push로 보존한다. 기존 dirty 변경과 `src/frp.new`는 별도로 보호하며, 아래의 과거 capacity 대기·commit/push 미수행 문구는 이 보정 이후의 현재 작업에는 적용하지 않는다. HEAD는 `30740f0`이고 upstream 차이는 `0/0`이다. PR #13 (`https://github.com/1XP-Inc/muhan-mud/pull/13`)은 Project #1 `In Progress` 항목으로 추가되어 `Refs #1`, `Refs #3`–`Refs #12`를 추적하며 현재 `REVIEW_REQUIRED`다. #11 actual rooms/NPC/item dry-run `ctx_1c5d3f67da39` / `task_94a473d75945`는 worker_done·coordinator 검증·release 완료했다. Astra는 비용 정책상 사용하지 않는다.
 
 현재 active task: #12 실제 Go terminal-only disposable browser lane `task_a332fb7991c8` / `ctx_b6f398bc2185` (gpt-5.6-luna max). 소유 범위는 local Docker runner/Dockerfile/script/docs이며, legacy Node/C lane과 제품·Go·migration 코드는 수정하지 않는다. 진단 선행 task `task_734330383ef2` / `ctx_eeb48d78446b`는 no-source-change 보고서 검증 및 release 완료했다.

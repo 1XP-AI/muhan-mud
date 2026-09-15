@@ -1,5 +1,11 @@
 # Muhan MUD 포팅 핸드오프
 
+## CURRENT CHECKPOINT — 2026-09-15
+
+현재 HEAD는 `12f522f`이며 `private/codex/mud-identity-foundation`에 push됐다. PR #13은 Project #1 `In Progress` 항목으로 연결되고 `Refs #1`, `Refs #3`–`Refs #12`를 추적한다. #12 Go terminal-only lane은 Luna Max worker_done·coordinator 독립 검증·release 후 네 소유 파일을 commit/push했으며, shell/Playwright-list/scope/protected-file 검증은 PASS했다. Docker BuildKit은 호스트 파일시스템 100%와 metadata I/O 오류로 막혀 #12와 모든 미완료 이슈는 OPEN으로 유지한다. 현재 active/reclaimable worker는 0개이며 `src.frp.new`는 기존 dirty 해시를 보존한다.
+
+**이 아래의 기존 재개 기록과 현재 값이 충돌하면 이 CURRENT CHECKPOINT를 따른다.**
+
 ## RESUMED — 2026-09-15 사용자 명시적 재개
 
 사용자가 GitHub Project 기반 작업 재개와 goal 생성을 명시했다. 현재 권위는 이 블록이며, 과거 STOP은 해제되었다. live 루트는 `/Users/jjangg96/Documents/1xp/muhan-mud.nosync`, 브랜치는 `codex/mud-identity-foundation`, HEAD는 **`30740f0`**다.
