@@ -176,11 +176,11 @@ func readPlayerSnapshotImportRecord(baseDir, worldID string, record playerSnapsh
 	if record.SnapshotFile == "" {
 		return storage.PlayerSnapshotImport{}, zero, errors.New("snapshot_file is required")
 	}
-	snapshotPath := record.SnapshotFile
-	if !filepath.IsAbs(snapshotPath) {
-		snapshotPath = filepath.Join(baseDir, snapshotPath)
+	if !validRelativeSnapshotPath(record.SnapshotFile) {
+		return storage.PlayerSnapshotImport{}, zero, errors.New("snapshot_file must be a private relative path")
 	}
-	snapshotRaw, err := readPrivateBoundedFile(filepath.Clean(snapshotPath), maxPlayerSnapshotFileBytes, errPlayerSnapshotFileNotPrivate, errPlayerSnapshotFileNotRegular, errPlayerSnapshotFileTooLarge)
+	snapshotPath := filepath.Join(baseDir, filepath.FromSlash(record.SnapshotFile))
+	snapshotRaw, err := readPrivateBoundedFile(snapshotPath, maxPlayerSnapshotFileBytes, errPlayerSnapshotFileNotPrivate, errPlayerSnapshotFileNotRegular, errPlayerSnapshotFileTooLarge)
 	if err != nil {
 		return storage.PlayerSnapshotImport{}, zero, fmt.Errorf("snapshot_file: %w", err)
 	}
@@ -281,12 +281,32 @@ func readPrivateBoundedFile(path string, maxBytes int64, notPrivate, notRegular,
 		return nil, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
+		return nil, notRegular
+	}
+	if opened.Mode().Perm() != 0o600 {
+		return nil, notPrivate
+	}
+	if opened.Size() <= 0 || opened.Size() > maxBytes {
+		return nil, tooLarge
+	}
 	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(raw) == 0 || int64(len(raw)) > maxBytes {
 		return nil, tooLarge
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(opened, after) || after.Size() != int64(len(raw)) {
+		return nil, errors.New("private file changed during read")
 	}
 	return raw, nil
 }

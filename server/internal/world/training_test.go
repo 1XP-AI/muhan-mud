@@ -137,6 +137,19 @@ func TestTrainingSupportsMultipleLevels(t *testing.T) {
 	}
 }
 
+func TestTrainingAppliesSignedNegativeStatAtSourceCycleBoundary(t *testing.T) {
+	body := LegacyMonster{Class: 4, Level: 3, Experience: 384, Gold: 100, HPMax: 62, HPCurrent: 12, MPMax: 51, MPCurrent: 13, Stats: [5]byte{10, 255, 12, 13, 14}}
+	s := trainingState(body, trainingRoomFlags(body.Class, true))
+	next, result, err := s.Train("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := next.Players["alice"].Body
+	if result.LevelsGained != 1 || actor.Level != 4 || int(int8(actor.Stats[1])) != 0 || actor.HPMax != 65 || actor.MPMax != 51 || actor.HPCurrent != 65 || actor.MPCurrent != 51 {
+		t.Fatalf("actor=%+v result=%+v", actor, result)
+	}
+}
+
 func TestTrainingConvertsInvincibleAndCaretakerWithFamilyFailClosed(t *testing.T) {
 	invBody := LegacyMonster{Class: 4, Level: 100, Experience: 7984959, Gold: 500000}
 	inv := trainingState(invBody, trainingRoomFlags(invBody.Class, true))

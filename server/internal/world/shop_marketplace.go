@@ -1,6 +1,7 @@
 package world
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -234,9 +235,9 @@ func renderShopListing(items []ShopListing) string {
 }
 
 // QuoteShopSale validates the canonical direct inventory root and exact C
-// pawn-shop payout without changing the snapshot. C's find_obj visibility
-// gate is the only visibility admitted here: OINVIS requires PDINVI, while
-// OHIDDN/prefix/key matching remain outside this bounded slice.
+// pawn-shop payout without changing the snapshot. C's find_obj visibility and
+// display-name/key prefix gates are applied by the name boundary before this
+// identity-bound quote; OINVIS requires PDINVI.
 func (s State) QuoteShopSale(actorID, itemID string) (ShopSaleQuote, error) {
 	actor, shop, storage, err := s.pawnShopStorage(actorID)
 	if err != nil {
@@ -335,17 +336,16 @@ func (s State) QuoteShopSale(actorID, itemID string) (ShopSaleQuote, error) {
 }
 
 // QuoteShopSaleByName keeps the client-facing command boundary deterministic
-// without exposing canonical IDs. It accepts exact case-insensitive direct
-// inventory names and an explicit one-based occurrence; legacy prefix/key
-// matching is intentionally fail-closed until it has a source fixture. C
-// return(0) prints live on SellShopItemByName, not on this quote.
+// without exposing canonical IDs. It accepts the source find_obj display-name
+// and key[0..2] prefixes over direct inventory roots and an explicit one-based
+// occurrence. C return(0) prints live on SellShopItemByName, not on this quote.
 func (s State) QuoteShopSaleByName(actorID, name string, occurrence int) (ShopSaleQuote, error) {
 	actor, _, _, err := s.pawnShopStorage(actorID)
 	if err != nil {
 		return ShopSaleQuote{}, err
 	}
 	detect := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
-	itemID, err := selectInventoryRoot(*actor.Items, name, occurrence, func(object LegacyObject) bool {
+	itemID, err := selectShopItemRoot(*actor.Items, name, occurrence, func(object LegacyObject) bool {
 		return detect || !flag(object.Flags[:], objectInvisibleFlag)
 	})
 	if err != nil {
@@ -451,7 +451,7 @@ func (s State) SellShopItem(actorID, itemID string) (State, ShopSaleResult, erro
 // non-RPAWNS, then missing name, then F_CLR PHIDDN, then find_obj on player
 // first_obj. Those three prints are receipts; named leftover still reveals
 // the actor because command7.c:244 clears hide before find_obj. Gold/storage
-// success still go through SellShopItem. Prefix/key matching stays closed.
+// success still go through SellShopItem.
 func (s State) SellShopItemByName(actorID, name string, occurrence int) (State, ShopSaleResult, error) {
 	if occurrence < 1 {
 		return State{}, ShopSaleResult{}, fmt.Errorf("invalid item occurrence")
@@ -481,10 +481,13 @@ func (s State) SellShopItemByName(actorID, name string, occurrence int) (State, 
 	revealedPlayer.Body.Flags[playerHiddenStateFlag/8] &^= 1 << (playerHiddenStateFlag % 8)
 	revealed.Players[actorID] = revealedPlayer
 	detect := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
-	itemID, err := selectInventoryRoot(*actor.Items, name, occurrence, func(object LegacyObject) bool {
+	itemID, err := selectShopItemRoot(*actor.Items, name, occurrence, func(object LegacyObject) bool {
 		return detect || !flag(object.Flags[:], objectInvisibleFlag)
 	})
 	if err != nil {
+		if !errors.Is(err, errShopItemNotFound) {
+			return State{}, ShopSaleResult{}, err
+		}
 		return revealed, ShopSaleResult{
 			Action:     ShopSaleNotHoldingAction,
 			ShopRoomID: shop.Resource.ID,

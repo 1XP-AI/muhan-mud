@@ -219,3 +219,119 @@ func TestApplyReadScrollRejectsReceiptTamperingAndStaleRoom(t *testing.T) {
 		t.Fatal("stale apply mutated state")
 	}
 }
+
+func TestReadScrollSelectorUsesLegacyEqualVisibilityPrecedenceAndReadyFallback(t *testing.T) {
+	scroll := func(object LegacyObject) LegacyObject {
+		object.Type = readScrollType
+		object.MagicPower = 1
+		object.ShotsCurrent = 1
+		return object
+	}
+
+	hidden := scroll(LegacyObject{Name: "Hidden Selector Scroll", Keys: [3]string{"hidden-prefix", "", ""}})
+	hidden.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+
+	s := readScrollTestState(scroll(LegacyObject{Name: "unused"}), false)
+	actor := s.Players["alice"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"display": {
+				Object: scroll(LegacyObject{Name: "Display Prefix Scroll"}),
+			},
+			"key0": {
+				Object: scroll(LegacyObject{Name: "Key Zero Scroll", Keys: [3]string{"slot-zero", "", ""}}),
+			},
+			"key1": {
+				Object: scroll(LegacyObject{Name: "Key One Scroll", Keys: [3]string{"", "slot-one", ""}}),
+			},
+			"key2": {
+				Object: scroll(LegacyObject{Name: "Key Two Scroll", Keys: [3]string{"", "", "slot-two"}}),
+			},
+			"mixed": {
+				Object: scroll(LegacyObject{Name: "Mixed Display", Keys: [3]string{"prefix-mixed", "prefix-mixed-alias", "prefix-mixed-third"}}),
+			},
+			"mixed-second": {
+				Object: scroll(LegacyObject{Name: "Another Mixed Scroll", Keys: [3]string{"prefix-mixed-second", "", ""}}),
+			},
+			"hidden": {Object: hidden},
+			"precedence-inventory": {
+				Object: scroll(LegacyObject{Name: "Precedence Inventory"}),
+			},
+			"precedence-ready": {
+				Object: scroll(LegacyObject{Name: "Precedence Ready"}),
+			},
+			"independent-inventory": {
+				Object: scroll(LegacyObject{Name: "Independent Inventory"}),
+			},
+			"independent-ready-one": {
+				Object: scroll(LegacyObject{Name: "Independent Ready One"}),
+			},
+			"independent-ready-two": {
+				Object: scroll(LegacyObject{Name: "Independent Ready Two"}),
+			},
+		},
+		Inventory: []string{
+			"display", "key0", "key1", "key2", "mixed", "mixed-second", "hidden",
+			"precedence-inventory", "independent-inventory",
+		},
+		Ready: [20]string{
+			3:  "precedence-ready",
+			7:  "independent-ready-one",
+			11: "independent-ready-two",
+		},
+	}
+	s.Players["alice"] = actor
+
+	plan := func(name string, occurrence int) ScrollProposal {
+		t.Helper()
+		proposal, err := s.PlanReadScroll("alice", name, occurrence, ScrollOptions{Now: 1, Roll: func(int, int) int { return 1 }})
+		if err != nil {
+			t.Fatalf("selector %q occurrence %d: %v", name, occurrence, err)
+		}
+		return proposal
+	}
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "DISPLAY PREFIX", want: "display"},
+		{name: "SLOT-ZERO", want: "key0"},
+		{name: "SLOT-ONE", want: "key1"},
+		{name: "SLOT-TWO", want: "key2"},
+	} {
+		proposal := plan(tc.name, 1)
+		if proposal.ItemID != tc.want || proposal.Location != ScrollInventoryRoot {
+			t.Fatalf("selector %q proposal=%+v want item=%q inventory", tc.name, proposal, tc.want)
+		}
+	}
+
+	mixed := plan("PREFIX-MIXED", 2)
+	if mixed.ItemID != "mixed-second" || mixed.Location != ScrollInventoryRoot {
+		t.Fatalf("matching multiple fields counted more than once proposal=%+v", mixed)
+	}
+
+	if _, err := s.PlanReadScroll("alice", "HIDDEN", 1, ScrollOptions{Now: 1, Roll: func(int, int) int {
+		t.Fatal("invisible root consumed RNG without PDINVI")
+		return 1
+	}}); !errors.Is(err, ErrReadScrollMissingItem) {
+		t.Fatalf("invisible root selected without PDINVI: %v", err)
+	}
+	actor = s.Players["alice"]
+	actor.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["alice"] = actor
+	hiddenProposal := plan("hidden", 1)
+	if hiddenProposal.ItemID != "hidden" {
+		t.Fatalf("PDINVI did not reveal hidden root proposal=%+v", hiddenProposal)
+	}
+
+	precedence := plan("precedence", 1)
+	if precedence.ItemID != "precedence-inventory" || precedence.Location != ScrollInventoryRoot {
+		t.Fatalf("ready root overrode direct Inventory precedence proposal=%+v", precedence)
+	}
+
+	independent := plan("independent", 2)
+	if independent.ItemID != "independent-ready-two" || independent.Location != ScrollReadySlot || independent.ReadySlot != 11 {
+		t.Fatalf("Ready fallback did not reset occurrence independently proposal=%+v", independent)
+	}
+}

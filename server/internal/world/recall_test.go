@@ -2,6 +2,7 @@ package world
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -47,7 +48,7 @@ func TestIsRecallCastSpellMatchesSourcePrefix(t *testing.T) {
 		t.Fatal("non-recall tokens matched SRECAL")
 	}
 	if IsTargetedCastSpell("귀환") || IsTargetedCastSpell("귀") {
-		t.Fatal("self-only SRECAL must not admit a three-token targeted form")
+		t.Fatal("SRECAL targeting is admitted by the recall-specific parser boundary")
 	}
 }
 
@@ -190,11 +191,383 @@ func TestPlanApplyRecallMissingSquareFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPlanApplyRecallTargetedFormFailsClosed(t *testing.T) {
+func TestPlanApplyRecallTargetedFormMovesTarget(t *testing.T) {
 	s := recallTestState()
-	_, err := s.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bob"})
-	if !errors.Is(err, ErrCastSpellUnavailable) {
-		t.Fatalf("err=%v", err)
+	actor := s.Players["a"]
+	actor.Body.RoomID = 2
+	s.Players["a"] = actor
+	s.Players["b"] = PlayerState{Body: LegacyMonster{
+		Name: "Bob", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2,
+		Stats: [5]byte{12, 12, 12, 18, 18}, HPMax: 90, HPCurrent: 73,
+		MPMax: 40, MPCurrent: 21, Spells: [16]byte{3},
+	}, Online: true}
+	s.Players["c"] = PlayerState{Body: LegacyMonster{
+		Name: "Carol", Type: 0, Class: castFighterClass, Level: 4, RoomID: 1,
+		HPMax: 80, HPCurrent: 80,
+	}, Online: true}
+	s.Rooms[1] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1, Name: "숲"}}, PlayerIDs: []string{"c"}}
+	s.Rooms[2] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2, Name: "마을"}}, PlayerIDs: []string{"a", "b"}}
+	p, err := s.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, result, err := s.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded || result.TargetID != "b" || result.TargetName != "Bob" || result.MPDelta != -30 {
+		t.Fatalf("result=%+v", result)
+	}
+	if next.Players["a"].Body.RoomID != 2 || next.Players["a"].Body.MPCurrent != 10 {
+		t.Fatalf("caster moved or wrong MP: %+v", next.Players["a"].Body)
+	}
+	if next.Players["b"].Body.RoomID != 1 || next.Players["b"].Body.HPCurrent != 73 || next.Players["b"].Body.MPCurrent != 21 {
+		t.Fatalf("target body=%+v", next.Players["b"].Body)
+	}
+	if len(next.Rooms[2].PlayerIDs) != 1 || next.Rooms[2].PlayerIDs[0] != "a" || len(next.Rooms[1].PlayerIDs) != 2 || next.Rooms[1].PlayerIDs[0] != "b" || next.Rooms[1].PlayerIDs[1] != "c" || next.Rooms[1].Resource.BeenHere != 1 {
+		t.Fatalf("occupancy source=%v dest=%v been=%d", next.Rooms[2].PlayerIDs, next.Rooms[1].PlayerIDs, next.Rooms[1].Resource.BeenHere)
+	}
+	if result.Response != "귀환 주문을 Bob에게 외웠습니다.\r\n" || result.TargetText != "Alice이 당신에게 귀환 주문을 외웠습니다.\r\n" || result.Event == nil || result.Event.RoomID != 2 || result.Event.ExcludeActorID != "a" || result.Event.ExcludeTargetID != "b" || result.Event.Text != "Alice이 Bob에게 귀환 주문을 외웠습니다." {
+		t.Fatalf("messages result=%+v", result)
+	}
+	if _, _, err := next.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+		t.Fatalf("stale err=%v", err)
+	}
+}
+
+func recallDuplicateTargetState() State {
+	state := recallTestState()
+	actor := state.Players["a"]
+	actor.Body.RoomID = 2
+	state.Players["a"] = actor
+	state.Players["b"] = PlayerState{Body: LegacyMonster{
+		Name: "Bob", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2,
+		HPMax: 90, HPCurrent: 70,
+	}, Online: true}
+	state.Players["c"] = PlayerState{Body: LegacyMonster{
+		Name: "Bob", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2,
+		HPMax: 90, HPCurrent: 60,
+	}, Online: true}
+	state.Players["d"] = PlayerState{Body: LegacyMonster{
+		Name: "Bobby", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2,
+		HPMax: 90, HPCurrent: 50,
+	}, Online: true}
+	state.Rooms[1] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1, Name: "숲"}}}
+	state.Rooms[2] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2, Name: "마을"}}, PlayerIDs: []string{"a", "c", "b", "d"}}
+	return state
+}
+
+func TestPlanApplyRecallTargetOccurrenceUsesAuthoritativeRoomOrder(t *testing.T) {
+	first := recallDuplicateTargetState()
+	p, err := first.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TargetID != "c" || p.TargetOccurrence != 1 || p.TargetName != "Bo" {
+		t.Fatalf("first occurrence proposal=%+v", p)
+	}
+	next, result, err := first.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded || result.TargetID != "c" || next.Players["c"].Body.RoomID != recallTargetRoom || next.Players["b"].Body.RoomID != 2 {
+		t.Fatalf("first occurrence result=%+v c=%+v b=%+v", result, next.Players["c"].Body, next.Players["b"].Body)
+	}
+
+	second := recallDuplicateTargetState()
+	p, err = second.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TargetID != "b" || p.TargetOccurrence != 2 {
+		t.Fatalf("second occurrence proposal=%+v", p)
+	}
+	next, result, err = second.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded || result.TargetID != "b" || next.Players["b"].Body.RoomID != recallTargetRoom || next.Players["c"].Body.RoomID != 2 {
+		t.Fatalf("second occurrence result=%+v b=%+v c=%+v", result, next.Players["b"].Body, next.Players["c"].Body)
+	}
+}
+
+func TestPlanApplyRecallTargetOccurrenceCountsVisibleMatchesOnly(t *testing.T) {
+	state := recallDuplicateTargetState()
+	hidden := state.Players["c"]
+	setSettingFlag(&hidden.Body, recallInvisibleFlag, true)
+	state.Players["c"] = hidden
+	p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TargetID != "b" {
+		t.Fatalf("hidden first match counted: proposal=%+v", p)
+	}
+
+	detector := state.Players["a"]
+	setSettingFlag(&detector.Body, recallDetectInvisibleFlag, true)
+	state.Players["a"] = detector
+	p, err = state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TargetID != "c" {
+		t.Fatalf("detect-invisible did not select first match: proposal=%+v", p)
+	}
+}
+
+func TestPlanApplyRecallTargetOccurrenceOutOfRangeIsDeterministicNoOp(t *testing.T) {
+	state := recallDuplicateTargetState()
+	p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TargetOccurrence != 4 || p.Attempted || p.Response != recallTargetMissingText {
+		t.Fatalf("out-of-range proposal=%+v", p)
+	}
+	next, result, err := state.ApplyCast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Succeeded || result.Attempted || result.Broadcast || result.Changed || result.TargetID != "" || result.MPDelta != 0 || result.Response != recallTargetMissingText || !reflect.DeepEqual(next.Players, state.Players) || !recallIDsEqual(next.Rooms[2].PlayerIDs, state.Rooms[2].PlayerIDs) || !recallIDsEqual(next.Rooms[1].PlayerIDs, state.Rooms[1].PlayerIDs) || next.Rooms[1].Resource.BeenHere != state.Rooms[1].Resource.BeenHere || next.Rooms[2].Resource.BeenHere != state.Rooms[2].Resource.BeenHere {
+		t.Fatalf("out-of-range mutated state/result=%+v next=%+v", result, next)
+	}
+}
+
+func TestApplyRecallTargetOccurrenceRejectsStaleRoomOrder(t *testing.T) {
+	state := recallDuplicateTargetState()
+	p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := state.Rooms[2]
+	room.PlayerIDs = []string{"a", "b", "c", "d"}
+	state.Rooms[2] = room
+	if _, _, err := state.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+		t.Fatalf("room-order stale proposal err=%v", err)
+	}
+}
+
+func TestApplyRecallTargetOccurrenceNoOpRejectsStaleRoomOrder(t *testing.T) {
+	state := recallDuplicateTargetState()
+	p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := state.Rooms[2]
+	room.PlayerIDs = []string{"a", "b", "c", "d"}
+	state.Rooms[2] = room
+	if _, _, err := state.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+		t.Fatalf("out-of-range room-order stale proposal err=%v", err)
+	}
+}
+
+func TestApplyRecallTargetOccurrenceRejectsStaleIdentityAndBody(t *testing.T) {
+	t.Run("target-body", func(t *testing.T) {
+		state := recallDuplicateTargetState()
+		p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := state.Players["b"]
+		target.Body.HPCurrent--
+		state.Players["b"] = target
+		if _, _, err := state.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+			t.Fatalf("target body stale proposal err=%v", err)
+		}
+	})
+
+	t.Run("occurrence-binding", func(t *testing.T) {
+		state := recallDuplicateTargetState()
+		p, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo", Occurrence: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.TargetOccurrence = 1
+		if _, _, err := state.ApplyCast(p); !errors.Is(err, ErrCastStaleProposal) {
+			t.Fatalf("occurrence stale proposal err=%v", err)
+		}
+	})
+}
+
+func TestPlanRecallRejectsNegativeTargetOccurrence(t *testing.T) {
+	state := recallDuplicateTargetState()
+	if _, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bob", Occurrence: -1}); err == nil {
+		t.Fatal("negative target occurrence admitted")
+	}
+}
+
+func TestPlanApplyRecallTargetedResolutionUsesRoomOrderAndFailsClosed(t *testing.T) {
+	newState := func() State {
+		state := recallTestState()
+		actor := state.Players["a"]
+		actor.Body.RoomID = 2
+		state.Players["a"] = actor
+		state.Players["b"] = PlayerState{Body: LegacyMonster{Name: "Bob", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2}, Online: true}
+		state.Players["c"] = PlayerState{Body: LegacyMonster{Name: "Carl", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2}, Online: true}
+		state.Rooms[1] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1, Name: "숲"}}}
+		state.Rooms[2] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2, Name: "마을"}}, PlayerIDs: []string{"a", "c", "b"}}
+		return state
+	}
+	for _, tc := range []struct {
+		name   string
+		query  string
+		mutate func(*State)
+	}{
+		{name: "missing", query: "Bob", mutate: func(s *State) {
+			delete(s.Players, "b")
+			room := s.Rooms[2]
+			room.PlayerIDs = []string{"a", "c"}
+			s.Rooms[2] = room
+		}},
+		{name: "wrong-room", query: "Bob", mutate: func(s *State) {
+			target := s.Players["b"]
+			target.Body.RoomID = 1
+			s.Players["b"] = target
+			room := s.Rooms[2]
+			room.PlayerIDs = []string{"a", "c"}
+			s.Rooms[2] = room
+			room = s.Rooms[1]
+			room.PlayerIDs = []string{"b"}
+			s.Rooms[1] = room
+		}},
+		{name: "offline", query: "Bob", mutate: func(s *State) {
+			target := s.Players["b"]
+			target.Online = false
+			s.Players["b"] = target
+			room := s.Rooms[2]
+			room.PlayerIDs = []string{"a", "c"}
+			s.Rooms[2] = room
+		}},
+		{name: "invalid", query: "Bob\n", mutate: func(*State) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newState()
+			tc.mutate(&state)
+			beforeRoom := state.Rooms[2].PlayerIDs
+			proposal, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: tc.query})
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, result, err := state.ApplyCast(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Succeeded || result.Attempted || result.Broadcast || result.Changed || result.TargetID != "" || result.MPDelta != 0 || result.Response != recallTargetMissingText {
+				t.Fatalf("unexpected target result=%+v", result)
+			}
+			if !recallIDsEqual(next.Rooms[2].PlayerIDs, beforeRoom) || next.Players["a"].Body.MPCurrent != state.Players["a"].Body.MPCurrent {
+				t.Fatalf("target no-op mutated state: room=%v mp=%d", next.Rooms[2].PlayerIDs, next.Players["a"].Body.MPCurrent)
+			}
+		})
+	}
+
+	state := newState()
+	target := state.Players["c"]
+	target.Body.Name = "Bobby"
+	state.Players["c"] = target
+	proposal, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.TargetID != "c" || proposal.TargetName != "Bo" || proposal.Response != recallTargetCasterText("Bobby") {
+		t.Fatalf("room-order target=%+v", proposal)
+	}
+}
+
+func mustRecallProposal(t *testing.T, s State, target string) CastProposal {
+	t.Helper()
+	p, err := s.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func recallTargetGateState() State {
+	state := recallTestState()
+	actor := state.Players["a"]
+	actor.Body.RoomID = 2
+	state.Players["a"] = actor
+	state.Players["b"] = PlayerState{Body: LegacyMonster{
+		Name: "Bob", Type: 0, Class: castFighterClass, Level: 4, RoomID: 2,
+		HPMax: 90, HPCurrent: 90, MPMax: 40, MPCurrent: 20,
+	}, Online: true}
+	state.Rooms[1] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1, Name: "숲"}}}
+	state.Rooms[2] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2, Name: "마을"}}, PlayerIDs: []string{"a", "b"}}
+	return state
+}
+
+func TestPlanApplyRecallTargetedGatesFollowSourceOrder(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*State)
+		want   string
+	}{
+		{name: "mana", mutate: func(s *State) {
+			actor := s.Players["a"]
+			actor.Body.MPCurrent = 29
+			s.Players["a"] = actor
+		}, want: recallManaResponse},
+		{name: "class", mutate: func(s *State) {
+			actor := s.Players["a"]
+			actor.Body.Class = castMageClass
+			s.Players["a"] = actor
+		}, want: recallClassResponse},
+		{name: "unlearned", mutate: func(s *State) {
+			actor := s.Players["a"]
+			actor.Body.Spells = [16]byte{}
+			s.Players["a"] = actor
+		}, want: recallUnlearnedResponse},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := recallTargetGateState()
+			tc.mutate(&state)
+			proposal, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bob"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, result, err := state.ApplyCast(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Succeeded || result.Attempted || result.Broadcast || result.MPDelta != 0 || result.Response != tc.want {
+				t.Fatalf("target gate result=%+v", result)
+			}
+			if next.Players["a"].Body.RoomID != 2 || next.Players["a"].Body.MPCurrent != state.Players["a"].Body.MPCurrent || next.Players["b"].Body.RoomID != 2 {
+				t.Fatalf("target gate mutated state actor=%+v target=%+v", next.Players["a"].Body, next.Players["b"].Body)
+			}
+		})
+	}
+}
+
+func TestPlanRecallTargetedDestinationLoadFailureHasNoPartialMutation(t *testing.T) {
+	state := recallTargetGateState()
+	delete(state.Rooms, recallTargetRoom)
+	beforeActor := state.Players["a"]
+	beforeTarget := state.Players["b"]
+	beforeSource := append([]string(nil), state.Rooms[2].PlayerIDs...)
+	if _, err := state.PlanCast("a", "귀환", CastOptions{Now: 100, Hour: 12, Target: "Bob"}); !errors.Is(err, ErrCastSpellUnavailable) {
+		t.Fatalf("destination failure err=%v", err)
+	}
+	if !reflect.DeepEqual(state.Players["a"], beforeActor) || !reflect.DeepEqual(state.Players["b"], beforeTarget) || !recallIDsEqual(state.Rooms[2].PlayerIDs, beforeSource) {
+		t.Fatalf("destination failure mutated actor=%+v target=%+v source=%v", state.Players["a"], state.Players["b"], state.Rooms[2].PlayerIDs)
+	}
+}
+
+func TestApplyRecallTargetedDestinationLoadFailureHasNoPartialMutation(t *testing.T) {
+	state := recallTargetGateState()
+	proposal := mustRecallProposal(t, state, "Bob")
+	delete(state.Rooms, recallTargetRoom)
+	beforeActor := state.Players["a"]
+	beforeTarget := state.Players["b"]
+	beforeSource := append([]string(nil), state.Rooms[2].PlayerIDs...)
+	if _, _, err := state.ApplyCast(proposal); !errors.Is(err, ErrCastStaleProposal) {
+		t.Fatalf("destination apply failure err=%v", err)
+	}
+	if !reflect.DeepEqual(state.Players["a"], beforeActor) || !reflect.DeepEqual(state.Players["b"], beforeTarget) || !recallIDsEqual(state.Rooms[2].PlayerIDs, beforeSource) {
+		t.Fatalf("destination apply failure mutated actor=%+v target=%+v source=%v", state.Players["a"], state.Players["b"], state.Rooms[2].PlayerIDs)
 	}
 }
 

@@ -116,6 +116,9 @@ const (
 	CommandDMFamily
 	CommandMoonSet
 	CommandDMFollow
+	CommandDMActive
+	CommandDMEnemy
+	CommandDMCharm
 	CommandZap
 	CommandGo
 	CommandForge
@@ -338,6 +341,21 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
+	if IsDMActiveLine(line) {
+		parsed.Kind = CommandDMActive
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsDMEnemyLine(line) {
+		parsed.Kind = CommandDMEnemy
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
+	if IsDMCharmLine(line) {
+		parsed.Kind = CommandDMCharm
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
 	if IsFamilyTalkLine(trimmed) {
 		parsed.Kind = CommandFamilyTalk
 		parsed.Tokens = legacyTokens(trimmed)
@@ -531,6 +549,14 @@ func ParseCommand(line string) (ParsedCommand, error) {
 		parsed.Tokens = legacyTokens(trimmed)
 		return parsed, nil
 	}
+	// command5.c's social status parser admits bare `누구` plus exactly one
+	// optional lowercase `l`. Use the owning parser with the original line so
+	// controls/newlines cannot be accepted after TrimSpace normalizes them.
+	if IsSocialLine(line) {
+		parsed.Kind = CommandSocial
+		parsed.Tokens = legacyTokens(trimmed)
+		return parsed, nil
+	}
 	tokens, err := tokenizeLegacy(trimmed)
 	if err != nil {
 		return ParsedCommand{}, err
@@ -616,6 +642,12 @@ func ParseCommand(line string) (ParsedCommand, error) {
 	// Keep malformed variants containing controls (for example a newline)
 	// from becoming a password operation merely because TrimSpace hid them.
 	if parsed.Kind == CommandPassword && !IsPasswordLine(line) {
+		parsed.Kind = CommandUnknown
+	}
+	// Valid social status lines return through IsSocialLine above. A generic
+	// social fallback therefore means the original line was normalized by
+	// TrimSpace (for example `누구\n`) and must remain fail-closed.
+	if parsed.Kind == CommandSocial && !IsSocialLine(line) {
 		parsed.Kind = CommandUnknown
 	}
 	if isSingleTokenKind(parsed.Kind) && len(tokens) != 1 {

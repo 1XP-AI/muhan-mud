@@ -170,3 +170,27 @@ func TestExecuteTradeLineRejectsUnmigratedBeforeReceipt(t *testing.T) {
 		t.Fatalf("prefix err=%v commits=%d", err, store.commits)
 	}
 }
+
+func TestExecuteTradeLineUsesCaseFoldedNameAndKeyPrefixes(t *testing.T) {
+	s, err := world.DecodeState(tradeCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	npc := s.NPCs["npc"]
+	npc.Body.Keys[0] = "vendor"
+	s.NPCs["npc"] = npc
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners, lease := admitShopMarketplaceOwner(t)
+	first, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-prefix-selector", lease, "APPLE VEND 교환")
+	if err != nil || first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "보상검") {
+		t.Fatalf("prefix first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	replay, err := owners.ExecuteTradeLine(context.Background(), store, "w", "trade-prefix-selector", lease, "APPLE VEND 교환")
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("prefix replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}

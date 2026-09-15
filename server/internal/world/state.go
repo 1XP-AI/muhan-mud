@@ -106,6 +106,11 @@ type PlayerState struct {
 	Items *ItemCollection
 	// Player-only enemy identities; NPC relationships require their own IDs.
 	PlayerEnemies []string
+	// CharmRefs is the canonical ordered first_charm projection for this
+	// player. Nil means the legacy charm relation is unresolved; a nonnil
+	// empty slice is a known empty list. Entries retain C add_charm_crt's
+	// head-insertion order and resolve only through immutable player/NPC IDs.
+	CharmRefs []EntityRef
 }
 
 // Validate checks cross-room referential integrity, not all gameplay rules.
@@ -116,6 +121,9 @@ func (s State) Validate() error {
 		return fmt.Errorf("unsupported or incomplete world snapshot")
 	}
 	if err := s.validateNPCs(); err != nil {
+		return err
+	}
+	if err := s.validateCharmRelations(); err != nil {
 		return err
 	}
 	if err := s.validateMailboxes(); err != nil {
@@ -577,6 +585,9 @@ func (s State) clone() State {
 	for id, player := range s.Players {
 		player.Aliases = clonePlayerAliases(player.Aliases)
 		player.PlayerEnemies = append([]string(nil), player.PlayerEnemies...)
+		if player.CharmRefs != nil {
+			player.CharmRefs = append([]EntityRef{}, player.CharmRefs...)
+		}
 		player.FollowerIDs = append([]string(nil), player.FollowerIDs...)
 		if player.NPCFollowerIDs != nil {
 			player.NPCFollowerIDs = append([]string{}, player.NPCFollowerIDs...)

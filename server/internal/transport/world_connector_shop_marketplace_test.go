@@ -348,6 +348,33 @@ func TestWorldConnectorSubmitShopSellNotHoldingClearsPHIDDNAndReplayDoesNotRecom
 	}
 }
 
+func TestWorldConnectorSubmitShopSellKeySelectorUsesVisibleOccurrenceAndReplays(t *testing.T) {
+	state := shopSellConnectorState(t, func(s *world.State) {
+		player := s.Players["a"]
+		invisible := [8]byte{}
+		invisible[2/8] |= 1 << (2 % 8) // OINVIS
+		player.Items.Items["sale-hidden"] = world.Item{Object: world.LegacyObject{Name: "숨은물건", Keys: [3]string{"needle", "", ""}, Type: 13, Value: 100, Weight: 1, Flags: invisible}}
+		player.Items.Items["sale-visible-first"] = world.Item{Object: world.LegacyObject{Name: "보이는첫물건", Keys: [3]string{"needle", "", ""}, Type: 13, Value: 100, Weight: 1}}
+		player.Items.Items["sale-visible-second"] = world.Item{Object: world.LegacyObject{Name: "보이는둘째물건", Keys: [3]string{"needle", "", ""}, Type: 13, Value: 100, Weight: 1}}
+		player.Items.Inventory = append(player.Items.Inventory, "sale-hidden", "sale-visible-first", "sale-visible-second")
+		s.Players["a"] = player
+	})
+	store, actor, _ := shopListConnectorReady(t, state)
+	first, err := actor.Submit(context.Background(), "팔아 needle 2")
+	if err != nil || first != "당신은 보이는둘째물건을(를) 팔고 50냥을 받았습니다.\r\n" || store.commits != 1 {
+		t.Fatalf("first=%q err=%v commits=%d", first, err, store.commits)
+	}
+	savedRaw, commits := store.snapshot()
+	saved, err := world.DecodeState(savedRaw)
+	if err != nil || commits != 1 || saved.Players["a"].Body.Gold != 150 || shopSellHasItem(saved.Players["a"].Items.Inventory, "sale-visible-second") || !shopSellHasItem(saved.Rooms[201].Items.Inventory, "sale-visible-second") {
+		t.Fatalf("saved=%+v err=%v commits=%d", saved, err, commits)
+	}
+	replay, err := actor.Submit(context.Background(), "팔아 needle 2")
+	if err != nil || replay != first || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func shopSellHasItem(ids []string, want string) bool {
 	for _, id := range ids {
 		if id == want {

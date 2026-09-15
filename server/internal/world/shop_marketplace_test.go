@@ -440,3 +440,72 @@ func TestSellShopItemRejectsMalformedStorageAndKeepsCanonicalIdentity(t *testing
 		t.Fatal("sold canonical ID/name changed")
 	}
 }
+
+func TestShopSaleByNameMatchesLegacyDisplayAndKeyPrefixesInCanonicalOrder(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	player := s.Players["a"]
+	player.Items.Items["sale-display-prefix"] = Item{Object: LegacyObject{Name: "장검", Type: 13, Value: 100, Weight: 1}}
+	player.Items.Items["sale-key-zero"] = Item{Object: LegacyObject{Name: "도구0", Keys: [3]string{"needle-zero", "", ""}, Type: 13, Value: 100, Weight: 1}}
+	player.Items.Items["sale-key-one"] = Item{Object: LegacyObject{Name: "도구1", Keys: [3]string{"", "needle-one", ""}, Type: 13, Value: 100, Weight: 1}}
+	player.Items.Items["sale-key-two"] = Item{Object: LegacyObject{Name: "도구2", Keys: [3]string{"", "", "needle-two"}, Type: 13, Value: 100, Weight: 1}}
+	player.Items.Items["sale-duplicate-first"] = Item{Object: LegacyObject{Name: "동일검", Type: 13, Value: 100, Weight: 1}}
+	player.Items.Items["sale-duplicate-second"] = Item{Object: LegacyObject{Name: "동일창", Keys: [3]string{"", "same", ""}, Type: 13, Value: 100, Weight: 1}}
+	player.Items.Inventory = append(player.Items.Inventory, "sale-display-prefix", "sale-key-zero", "sale-key-one", "sale-key-two", "sale-duplicate-first", "sale-duplicate-second")
+	s.Players["a"] = player
+
+	for _, tc := range []struct {
+		selector string
+		wantID   string
+	}{
+		{selector: "장", wantID: "sale-display-prefix"},
+		{selector: "needle-zero", wantID: "sale-key-zero"},
+		{selector: "needle-one", wantID: "sale-key-one"},
+		{selector: "needle-two", wantID: "sale-key-two"},
+	} {
+		t.Run(tc.selector, func(t *testing.T) {
+			quote, err := s.QuoteShopSaleByName("a", tc.selector, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if quote.ItemID != tc.wantID {
+				t.Fatalf("selector=%q quote=%+v want item=%q", tc.selector, quote, tc.wantID)
+			}
+		})
+	}
+	quote, err := s.QuoteShopSaleByName("a", "동일", 2)
+	if err != nil || quote.ItemID != "sale-duplicate-second" {
+		t.Fatalf("duplicate prefix occurrence quote=%+v err=%v", quote, err)
+	}
+	next, result, err := s.SellShopItemByName("a", "needle-one", 1)
+	if err != nil || result.ItemID != "sale-key-one" || result.Payout != 50 || next.Players["a"].Body.Gold != 150 {
+		t.Fatalf("key-prefix sale next=%+v result=%+v err=%v", next.Players["a"], result, err)
+	}
+
+	_, result, err = s.SellShopItemByName("a", "does-not-match", 1)
+	if err != nil || result.Action != ShopSaleNotHoldingAction {
+		t.Fatalf("non-matching selector result=%+v err=%v", result, err)
+	}
+}
+
+func TestShopSaleByNameSkipsInvisibleMatchingRootsUnlessDetectInvisible(t *testing.T) {
+	s := shopMarketplaceFixture(t, true)
+	player := s.Players["a"]
+	invisible := [8]byte{}
+	invisible[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	player.Items.Items["sale-hidden-needle"] = Item{Object: LegacyObject{Name: "숨은물건", Keys: [3]string{"needle", "", ""}, Type: 13, Value: 100, Weight: 1, Flags: invisible}}
+	player.Items.Items["sale-visible-needle"] = Item{Object: LegacyObject{Name: "보이는물건", Keys: [3]string{"needle", "", ""}, Type: 13, Value: 100, Weight: 1}}
+	player.Items.Inventory = append(player.Items.Inventory, "sale-hidden-needle", "sale-visible-needle")
+	s.Players["a"] = player
+
+	quote, err := s.QuoteShopSaleByName("a", "needle", 1)
+	if err != nil || quote.ItemID != "sale-visible-needle" {
+		t.Fatalf("invisible root was not skipped quote=%+v err=%v", quote, err)
+	}
+	player = s.Players["a"]
+	player.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["a"] = player
+	quote, err = s.QuoteShopSaleByName("a", "needle", 1)
+	if err != nil || quote.ItemID != "sale-hidden-needle" {
+		t.Fatalf("PDINVI did not admit first invisible root quote=%+v err=%v", quote, err)
+	}
+}

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Repair uses the original command8.c object and room bits.  The canonical
+// Repair uses the original command8.c object and room bits. The canonical
 // graph admits only direct inventory roots for this bounded slice; equipped
 // and nested occurrence resolution remains a separate command boundary.
 const (
@@ -132,7 +132,8 @@ func repairItem(actor PlayerState, name string, occurrence int) (string, Item, e
 	if name == "" || strings.TrimSpace(name) != name {
 		return "", Item{}, fmt.Errorf("item name required")
 	}
-	id, err := selectInventoryRoot(*actor.Items, name, occurrence, nil)
+	detectInvisible := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
+	id, _, err := selectValueRepairInventoryRoot(*actor.Items, name, occurrence, detectInvisible, false)
 	if err != nil {
 		return "", Item{}, err
 	}
@@ -203,8 +204,8 @@ func validRepairResponse(proposal RepairProposal) bool {
 // Those three prints are receipts and do not F_CLR PHIDDN. command8.c
 // clears hide only after find_obj succeeds. Cost value/4, ONOFIX, type,
 // shots, and gold still go through PlanRepair/ApplyRepair. Prefix/key
-// matching stays closed. Unmigrated nil Items fail closed after the
-// room gate.
+// matching follows the bounded EQUAL port. Unmigrated nil Items fail closed
+// after the room gate.
 func (s State) RepairByName(actorID, name string, occurrence int, roll func(int, int) int) (State, RepairResult, error) {
 	if err := s.Validate(); err != nil {
 		return State{}, RepairResult{}, err
@@ -244,7 +245,8 @@ func (s State) RepairByName(actorID, name string, occurrence int, roll func(int,
 	if err := actor.Items.Validate(); err != nil {
 		return State{}, RepairResult{}, err
 	}
-	if _, err := selectInventoryRoot(*actor.Items, name, occurrence, nil); err != nil {
+	detectInvisible := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
+	if _, _, err := selectValueRepairInventoryRoot(*actor.Items, name, occurrence, detectInvisible, false); err != nil {
 		return s.clone(), RepairResult{
 			Action:     RepairNotHoldingAction,
 			RoomID:     actor.Body.RoomID,

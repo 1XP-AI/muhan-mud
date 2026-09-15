@@ -33,6 +33,28 @@ func TestRaiseLevelPreservesOriginalFourthLevelRecalculation(t *testing.T) {
 	}
 }
 
+func TestRaiseLevelAllowsRepresentableNegativeLegacyStat(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		stat      byte
+		wantValue int
+	}{
+		{name: "minus one", stat: 255, wantValue: 0},
+		{name: "minimum signed char", stat: 128, wantValue: -127},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := LegacyMonster{Class: 4, Level: 3, HPMax: 62, MPMax: 51, Stats: [5]byte{10, test.stat, 12, 13, 14}}
+			got, err := RaisePlayerLevel(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Level != 4 || int(int8(got.Stats[1])) != test.wantValue {
+				t.Fatalf("got level=%d dex=%d raw=%d want level=4 dex=%d", got.Level, int(int8(got.Stats[1])), got.Stats[1], test.wantValue)
+			}
+		})
+	}
+}
+
 func TestRaiseLevelRejectsOverflow(t *testing.T) {
 	for _, p := range []LegacyMonster{{Class: 4, Level: 255}, {Class: 0}, {Class: 4, Level: 2, HPMax: 32767}, {Class: 4, Level: 3, Stats: [5]byte{10, 127, 10, 10, 10}}} {
 		got, err := RaisePlayerLevel(p)

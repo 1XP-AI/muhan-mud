@@ -34,6 +34,7 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"동 장", CommandItems},
 		{"\"안녕 세계", CommandSay},
 		{"누구", CommandSocial},
+		{"누구 l", CommandSocial},
 		{"무리", CommandSocial},
 		{"주워 가방", CommandItemMutation},
 		{"검 주워", CommandItemMutation},
@@ -125,6 +126,30 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		got, err := ParseCommand(tt.line)
 		if err != nil || got.Kind != tt.kind {
 			t.Fatalf("ParseCommand(%q)=%+v err=%v want kind=%d", tt.line, got, err, tt.kind)
+		}
+	}
+}
+
+func TestParseCommandSocialStatusKeepsTheExactWhoLongBoundary(t *testing.T) {
+	for _, line := range []string{"누구", "누구 l", " 누구 l ", "그룹", "무리"} {
+		got, err := ParseCommand(line)
+		if err != nil || got.Kind != CommandSocial {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want CommandSocial", line, got, err)
+		}
+	}
+	for _, line := range []string{
+		"누구 L",
+		"누구 x",
+		"누구 l l",
+		"누구 l extra",
+		"누구\n",
+		"누구\x00",
+		"그룹 l",
+		"무리 l",
+	} {
+		got, err := ParseCommand(line)
+		if err != nil || got.Kind == CommandSocial {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want fail-closed non-social", line, got, err)
 		}
 	}
 }

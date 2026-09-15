@@ -2055,6 +2055,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	familyWarCommand := false
 	dmFamilyCommand := false
 	dmFollowCommand := false
+	dmActiveCommand := false
+	dmEnemyCommand := false
+	dmCharmCommand := false
 	moonSetCommand := false
 	zapCommand := false
 	forgeCommand := false
@@ -2185,6 +2188,15 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	case session.CommandDMFollow:
 		dmFollowCommand = true
 		receipt, err = c.game.owners.ExecuteDMFollowLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandDMActive:
+		dmActiveCommand = true
+		receipt, err = c.game.owners.ExecuteDMActiveLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandDMEnemy:
+		dmEnemyCommand = true
+		receipt, err = c.game.owners.ExecuteDMEnemyLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
+	case session.CommandDMCharm:
+		dmCharmCommand = true
+		receipt, err = c.game.owners.ExecuteDMCharmLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
 	case session.CommandMoonSet:
 		moonSetCommand = true
 		receipt, err = c.game.owners.ExecuteMoonSetLine(ctx, c.game.config.Store, c.game.config.WorldID, commandID, c.lease, line)
@@ -2411,6 +2423,17 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 	}
 	if errors.Is(err, world.ErrGoDestinationUnresolved) {
 		return world.GoMapMissingResponse, nil
+	}
+	// list_charm's prompt and find_who miss are C-shaped non-durable
+	// boundaries. They intentionally do not create a world receipt.
+	if errors.Is(err, world.ErrDMCharmTargetRequired) {
+		return world.DMCharmPromptResponse, nil
+	}
+	if errors.Is(err, world.ErrDMCharmTargetAbsent) {
+		if command, ok := session.ParseDMCharmLine(line); ok && command.Target != "" {
+			return fmt.Sprintf("%s은 없습니다.\n", command.Target), nil
+		}
+		return "아직 구현되지 않은 명령입니다.\r\n", nil
 	}
 	if errors.Is(err, session.ErrUnsupportedLookLine) ||
 		errors.Is(err, session.ErrUnsupportedDirectionalLine) ||
@@ -2715,6 +2738,39 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		errors.Is(err, world.ErrDMFollowNotReciprocal) ||
 		errors.Is(err, world.ErrDMFollowStaleProposal) ||
 		errors.Is(err, world.ErrDMFollowInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedDMActiveLine) ||
+		errors.Is(err, world.ErrDMActiveActorAbsent) ||
+		errors.Is(err, world.ErrDMActiveStateInvalid) ||
+		errors.Is(err, world.ErrDMActiveNPCUnresolved) ||
+		errors.Is(err, world.ErrDMActiveIdentityUnresolved) ||
+		errors.Is(err, world.ErrDMActiveInvalidVerb) ||
+		errors.Is(err, world.ErrDMActiveStaleProposal) ||
+		errors.Is(err, world.ErrDMActiveInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedDMEnemyLine) ||
+		errors.Is(err, world.ErrDMEnemyActorAbsent) ||
+		errors.Is(err, world.ErrDMEnemyStateInvalid) ||
+		errors.Is(err, world.ErrDMEnemyNPCUnresolved) ||
+		errors.Is(err, world.ErrDMEnemyIdentityUnresolved) ||
+		errors.Is(err, world.ErrDMEnemyRelationsUnresolved) ||
+		errors.Is(err, world.ErrDMEnemyTargetRequired) ||
+		errors.Is(err, world.ErrDMEnemyTargetAbsent) ||
+		errors.Is(err, world.ErrDMEnemyTargetNameInvalid) ||
+		errors.Is(err, world.ErrDMEnemyInvalidOccurrence) ||
+		errors.Is(err, world.ErrDMEnemyInvalidVerb) ||
+		errors.Is(err, world.ErrDMEnemyStaleProposal) ||
+		errors.Is(err, world.ErrDMEnemyInvalidProposal) ||
+		errors.Is(err, session.ErrUnsupportedDMCharmLine) ||
+		errors.Is(err, world.ErrDMCharmActorAbsent) ||
+		errors.Is(err, world.ErrDMCharmStateInvalid) ||
+		errors.Is(err, world.ErrDMCharmRelationsUnresolved) ||
+		errors.Is(err, world.ErrDMCharmIdentityUnresolved) ||
+		errors.Is(err, world.ErrDMCharmTargetRequired) ||
+		errors.Is(err, world.ErrDMCharmTargetAbsent) ||
+		errors.Is(err, world.ErrDMCharmTargetAmbiguous) ||
+		errors.Is(err, world.ErrDMCharmTargetNameInvalid) ||
+		errors.Is(err, world.ErrDMCharmInvalidVerb) ||
+		errors.Is(err, world.ErrDMCharmStaleProposal) ||
+		errors.Is(err, world.ErrDMCharmInvalidProposal) ||
 		errors.Is(err, session.ErrUnsupportedMoonSetLine) ||
 		errors.Is(err, world.ErrMoonSetActorAbsent) ||
 		errors.Is(err, world.ErrMoonSetCanonicalInventoryNeeded) ||
@@ -3477,6 +3533,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		}
 	} else if dmFollowCommand {
 		var result world.DMFollowResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if dmActiveCommand {
+		var result world.DMActiveResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if dmEnemyCommand {
+		var result world.DMEnemyResult
+		if err = json.Unmarshal(receipt.Response, &result); err == nil {
+			output = result.Response
+		}
+	} else if dmCharmCommand {
+		var result world.DMCharmResult
 		if err = json.Unmarshal(receipt.Response, &result); err == nil {
 			output = result.Response
 		}

@@ -306,9 +306,9 @@ func TestPlanZapGatesClassPermissionTargetAndFailClosed(t *testing.T) {
 			t.Fatalf("p=%+v err=%v", p, err)
 		}
 	})
-	t.Run("missing exact name", func(t *testing.T) {
+	t.Run("missing selector", func(t *testing.T) {
 		s := zapState(zapWand("회복봉", 1, 1), false)
-		p, err := s.PlanZap("a", "회복", 1, "", 1, ZapOptions{Now: 1})
+		p, err := s.PlanZap("a", "없는이름", 1, "", 1, ZapOptions{Now: 1})
 		if err != nil || p.Action != ZapMissing || p.Response != ZapMissingResponse {
 			t.Fatalf("p=%+v err=%v", p, err)
 		}
@@ -469,5 +469,145 @@ func TestPlanZapReadyOccurrenceAndCanonicalInventory(t *testing.T) {
 	_, err := s.PlanZap("a", "회복봉", 1, "", 1, ZapOptions{Now: 1})
 	if !errors.Is(err, ErrZapActorAbsent) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func zapNamedWand(name string, keys [3]string) LegacyObject {
+	object := zapWand(name, 1, 1)
+	object.Keys = keys
+	return object
+}
+
+func TestPlanZapSelectorMatchesCEqualPrefixesAcrossDirectRoots(t *testing.T) {
+	s := zapState(zapWand("unused", 1, 1), false)
+	actor := s.Players["a"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"display":   {Object: zapNamedWand("회복봉원본", [3]string{"display-alias", "", ""})},
+			"key0":      {Object: zapNamedWand("전혀다른이름0", [3]string{"HEAL-ZERO", "", ""})},
+			"key1":      {Object: zapNamedWand("전혀다른이름1", [3]string{"", "HeAl-OnE", ""})},
+			"key2":      {Object: zapNamedWand("전혀다른이름2", [3]string{"", "", "hEaL-tWo"})},
+			"container": {Object: LegacyObject{Name: "가방"}, Contents: []string{"nested"}},
+			"nested":    {Object: zapNamedWand("nested-heal", [3]string{"nested-heal", "", ""})},
+		},
+		Inventory: []string{"display", "key0", "key1", "key2", "container"},
+	}
+	s.Players["a"] = actor
+
+	cases := []struct {
+		name     string
+		selector string
+		wantID   string
+	}{
+		{name: "display prefix", selector: "회복", wantID: "display"},
+		{name: "key zero prefix", selector: "heal-zero", wantID: "key0"},
+		{name: "key one case fold", selector: "heal-one", wantID: "key1"},
+		{name: "key two case fold", selector: "HEAL-TWO", wantID: "key2"},
+		{name: "nested item excluded", selector: "nested-heal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantID == "" {
+				p, err := s.PlanZap("a", tc.selector, 1, "", 1, ZapOptions{Now: 100})
+				if err != nil || p.Action != ZapMissing || p.Response != ZapMissingResponse {
+					t.Fatalf("nested selector proposal=%+v err=%v", p, err)
+				}
+				return
+			}
+			p := zapMustPlan(t, s, tc.selector, 1, "", 1, 100, 1, 1)
+			if p.ItemID != tc.wantID || p.Location != ZapInventoryRoot || p.Occurrence != 1 {
+				t.Fatalf("selector=%q proposal=%+v", tc.selector, p)
+			}
+		})
+	}
+}
+
+func TestPlanZapSelectorUsesIndependentReadyFallbackOccurrence(t *testing.T) {
+	s := zapState(zapWand("unused", 1, 1), false)
+	actor := s.Players["a"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"direct": {Object: zapNamedWand("Healing Direct", [3]string{"", "", ""})},
+			"ready1": {Object: zapNamedWand("Healing Ready One", [3]string{"", "", ""})},
+			"ready2": {Object: zapNamedWand("Healing Ready Two", [3]string{"", "", ""})},
+		},
+		Inventory: []string{"direct"},
+	}
+	actor.Items.Ready[3] = "ready1"
+	actor.Items.Ready[8] = "ready2"
+	s.Players["a"] = actor
+
+	p := zapMustPlan(t, s, "healing", 1, "", 1, 100, 1, 1)
+	if p.ItemID != "direct" || p.Location != ZapInventoryRoot || p.ReadySlot != -1 {
+		t.Fatalf("direct precedence proposal=%+v", p)
+	}
+	p = zapMustPlan(t, s, "healing", 2, "", 1, 100, 1, 1)
+	if p.ItemID != "ready2" || p.Location != ZapReadySlot || p.ReadySlot != 8 {
+		t.Fatalf("independent ready occurrence proposal=%+v", p)
+	}
+	p, err := s.PlanZap("a", "healing", 3, "", 1, ZapOptions{Now: 100})
+	if err != nil || p.Action != ZapMissing || p.Response != ZapMissingResponse {
+		t.Fatalf("ready occurrence leaked across fallback proposal=%+v err=%v", p, err)
+	}
+}
+
+func TestPlanZapSelectorHonorsOINVISAndPDINVIForInventoryAndReady(t *testing.T) {
+	newItems := func(hiddenID, visibleID string, hidden, visible LegacyObject) *ItemCollection {
+		return &ItemCollection{
+			Items: map[string]Item{
+				hiddenID:  {Object: hidden},
+				visibleID: {Object: visible},
+			},
+			Inventory: []string{hiddenID, visibleID},
+		}
+	}
+	hidden := zapNamedWand("Healing Hidden", [3]string{"", "", ""})
+	setObjectFlag(&hidden.Flags, objectInvisibleFlag, true)
+	visible := zapNamedWand("Healing Visible", [3]string{"", "", ""})
+	s := zapState(zapWand("unused", 1, 1), false)
+	actor := s.Players["a"]
+	actor.Items = newItems("hidden", "visible", hidden, visible)
+	s.Players["a"] = actor
+
+	p := zapMustPlan(t, s, "healing", 1, "", 1, 100, 1, 1)
+	if p.ItemID != "visible" || p.Occurrence != 1 {
+		t.Fatalf("ordinary actor exposed hidden root proposal=%+v", p)
+	}
+	p, err := s.PlanZap("a", "healing", 2, "", 1, ZapOptions{Now: 100})
+	if err != nil || p.Action != ZapMissing {
+		t.Fatalf("hidden root counted as visible occurrence proposal=%+v err=%v", p, err)
+	}
+	actor = s.Players["a"]
+	setSettingFlag(&actor.Body, playerDetectInvisibleFlag, true)
+	s.Players["a"] = actor
+	p = zapMustPlan(t, s, "healing", 1, "", 1, 100, 1, 1)
+	if p.ItemID != "hidden" {
+		t.Fatalf("PDINVI did not reveal hidden inventory root proposal=%+v", p)
+	}
+
+	hiddenReady := zapNamedWand("Ready Healing Hidden", [3]string{"", "", ""})
+	setObjectFlag(&hiddenReady.Flags, objectInvisibleFlag, true)
+	visibleReady := zapNamedWand("Ready Healing Visible", [3]string{"", "", ""})
+	s = zapState(zapWand("unused", 1, 1), false)
+	actor = s.Players["a"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"hidden-ready":  {Object: hiddenReady},
+			"visible-ready": {Object: visibleReady},
+		},
+	}
+	actor.Items.Ready[2] = "hidden-ready"
+	actor.Items.Ready[5] = "visible-ready"
+	s.Players["a"] = actor
+	p = zapMustPlan(t, s, "ready", 1, "", 1, 100, 1, 1)
+	if p.ItemID != "visible-ready" || p.ReadySlot != 5 {
+		t.Fatalf("ordinary actor exposed hidden ready root proposal=%+v", p)
+	}
+	actor = s.Players["a"]
+	setSettingFlag(&actor.Body, playerDetectInvisibleFlag, true)
+	s.Players["a"] = actor
+	p = zapMustPlan(t, s, "ready", 1, "", 1, 100, 1, 1)
+	if p.ItemID != "hidden-ready" || p.ReadySlot != 2 {
+		t.Fatalf("PDINVI did not reveal hidden ready root proposal=%+v", p)
 	}
 }

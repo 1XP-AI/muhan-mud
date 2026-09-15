@@ -57,10 +57,11 @@ type ValueQuote = ValueResult
 // computes the exact pawn/repair quote without returning a candidate State.
 // Command receipts, C leftover prints, and F_CLR PHIDDN are ValueByName.
 //
-// The selector is deliberately narrower than legacy find_obj: it accepts an
-// exact (case-insensitive) display name and a positive one-based occurrence,
-// and searches only direct canonical Inventory roots in stored order. Prefix,
-// key, equipped, legacy, and nested-object selection are not guessed.
+// The selector is deliberately narrower than legacy find_obj: it accepts a
+// case-insensitive prefix of the display name or one of the three keys and a
+// positive one-based occurrence, and searches only direct canonical Inventory
+// roots in stored order. Equipped, legacy, and nested-object selection are not
+// guessed.
 func (s State) QuoteValueByName(actorID, name string, occurrence int) (ValueResult, error) {
 	if err := s.Validate(); err != nil {
 		return ValueResult{}, err
@@ -184,7 +185,7 @@ func computeValueQuote(mode ValueMode, itemValue int32) (int64, error) {
 // find_obj on player first_obj. Those three prints are receipts; named
 // leftover still reveals the actor because command7.c:312 clears hide
 // before find_obj. A successful quote keeps inventory and gold unchanged
-// but still F_CLR PHIDDN. Prefix/key matching stays closed.
+// but still F_CLR PHIDDN. Prefix/key matching follows the bounded EQUAL port.
 func (s State) ValueByName(actorID, name string, occurrence int) (State, ValueResult, error) {
 	actor, room, printed, handled, err := s.valueServiceRoom(actorID)
 	if err != nil {
@@ -245,14 +246,36 @@ func (s State) ValueByName(actorID, name string, occurrence int) (State, ValueRe
 	}, nil
 }
 
-func selectValueInventoryRoot(c ItemCollection, name string, occurrence int, detectInvisible bool) (string, Item, error) {
+// equalInventorySelector ports EQUAL's display-name/key prefix alternatives.
+// equalFoldPrefix supplies the UTF-8-safe, case-insensitive prefix comparison
+// shared by the existing canonical selector boundary.
+func equalInventorySelector(object LegacyObject, selector string) bool {
+	if equalFoldPrefix(object.Name, selector) {
+		return true
+	}
+	for _, key := range object.Keys {
+		if equalFoldPrefix(key, selector) {
+			return true
+		}
+	}
+	return false
+}
+
+// selectValueRepairInventoryRoot is shared only by the value and repair
+// command boundaries. It intentionally does not replace selectInventoryRoot:
+// other commands retain their existing selector contracts. Each Inventory ID
+// is visited once, so matching both a name and a key cannot consume two
+// occurrences. rejectContents preserves value's existing parent-root policy;
+// repair passes false because its existing reducer repairs/removes the whole
+// selected parent subtree.
+func selectValueRepairInventoryRoot(c ItemCollection, name string, occurrence int, detectInvisible, rejectContents bool) (string, Item, error) {
 	if err := c.Validate(); err != nil {
 		return "", Item{}, err
 	}
 	found := 0
 	for _, id := range c.Inventory {
 		item, ok := c.Items[id]
-		if !ok || id == "" || !strings.EqualFold(item.Object.Name, name) {
+		if !ok || id == "" || !equalInventorySelector(item.Object, name) {
 			continue
 		}
 		if flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible {
@@ -261,7 +284,7 @@ func selectValueInventoryRoot(c ItemCollection, name string, occurrence int, det
 		// ItemCollection keeps nested ownership in Contents IDs. A direct root
 		// that owns a subtree is still a nested graph and is rejected rather
 		// than valuing only its parent or silently traversing its children.
-		if len(item.Contents) != 0 {
+		if rejectContents && len(item.Contents) != 0 {
 			continue
 		}
 		found++
@@ -270,6 +293,10 @@ func selectValueInventoryRoot(c ItemCollection, name string, occurrence int, det
 		}
 	}
 	return "", Item{}, errValueItemAbsent
+}
+
+func selectValueInventoryRoot(c ItemCollection, name string, occurrence int, detectInvisible bool) (string, Item, error) {
+	return selectValueRepairInventoryRoot(c, name, occurrence, detectInvisible, true)
 }
 
 func renderValueResponse(mode ValueMode, itemName string, quote int64) string {

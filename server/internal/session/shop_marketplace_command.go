@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
 	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
@@ -15,8 +17,7 @@ import (
 
 // ErrUnsupportedShopLine is returned before a receipt for aliases/argument
 // forms outside the bounded C command contract. In particular, English list /
-// sell aliases, prefix/key matching, and merchant-NPC purchase are not
-// guessed from the source.
+// sell aliases and merchant-NPC purchase are not guessed from the source.
 var ErrUnsupportedShopLine = errors.New("line is not an implemented shop marketplace command")
 
 // ErrUnsupportedShopMarketplaceLine is a descriptive alias for callers that
@@ -30,10 +31,18 @@ type shopMarketplaceAction struct {
 }
 
 // parseShopMarketplaceLine admits only the exact global.c aliases: 품목 for
-// list and 팔아 / 팔아 <exact-name> [occurrence] for sell. Bare 팔아 is C's
-// cmnd->num < 2 ask-what print. The occurrence is explicit and one-based;
-// implicit legacy prefix/key selection remains fail-closed.
+// list and 팔아 / 팔아 <selector> [occurrence] for sell. Bare 팔아 is C's
+// cmnd->num < 2 ask-what print. The occurrence is explicit and one-based; the
+// world reducer applies source display-name/key prefix matching.
 func parseShopMarketplaceLine(line string) (shopMarketplaceAction, bool) {
+	if !utf8.ValidString(line) {
+		return shopMarketplaceAction{}, false
+	}
+	for _, r := range line {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return shopMarketplaceAction{}, false
+		}
+	}
 	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
 	if err != nil {
 		return shopMarketplaceAction{}, false

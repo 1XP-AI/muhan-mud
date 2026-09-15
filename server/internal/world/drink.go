@@ -202,15 +202,16 @@ func selectDrinkRoot(actor PlayerState, name string, occurrence int) (string, It
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical drink inventory root absent")
 		}
-		if strings.EqualFold(item.Object.Name, name) {
+		if equalInventorySelector(item.Object, name) {
 			found++
 			if found == occurrence {
 				return id, item, DrinkInventoryRoot, -1, nil
 			}
 		}
 	}
-	// magic1.c falls back to ready slots when find_obj did not resolve the
-	// requested occurrence. Keep the same one-based occurrence semantics.
+	// find_obj owns its own match counter. magic1.c therefore starts a fresh
+	// positive occurrence count for the Ready fallback after Inventory fails.
+	found = 0
 	for slot, id := range actor.Items.Ready {
 		if id == "" {
 			continue
@@ -219,7 +220,7 @@ func selectDrinkRoot(actor PlayerState, name string, occurrence int) (string, It
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical ready item absent")
 		}
-		if strings.EqualFold(item.Object.Name, name) {
+		if equalInventorySelector(item.Object, name) {
 			found++
 			if found == occurrence {
 				return id, item, DrinkReadySlot, slot, nil

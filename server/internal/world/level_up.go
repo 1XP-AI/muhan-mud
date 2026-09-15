@@ -29,10 +29,13 @@ func RaisePlayerLevel(player LegacyMonster) (LegacyMonster, error) {
 	} else if p.Level%4 == 0 {
 		index := levelStatCycle[p.Class][(int(p.Level)-2)%10]
 		value := int(int8(p.Stats[index])) + 1
-		if value < 0 || value > 127 {
+		// Stats are signed legacy chars stored as raw bytes. Negative values
+		// remain representable in C and must not be treated as a new cap;
+		// only a result outside the signed-char range is unsupported.
+		if value < -128 || value > 127 {
 			return LegacyMonster{}, fmt.Errorf("level-up stat overflow")
 		}
-		p.Stats[index] = byte(value)
+		p.Stats[index] = byte(int8(value))
 	}
 	if p.Level == 1 || p.Level%4 == 0 {
 		hp = initial[0] + gains[0]*(int(p.Level)-1)/2

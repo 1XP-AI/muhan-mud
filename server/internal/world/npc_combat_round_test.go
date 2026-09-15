@@ -125,6 +125,173 @@ func TestNPCCombatRoundUsesOnlyHitAndDamageRNG(t *testing.T) {
 	}
 }
 
+func TestNPCCombatRoundPoisonerRollSetsPlayerPoison(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch high {
+		case 20, 6:
+			return high
+		case 100:
+			return 15
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil || !proposal.Hit || !proposal.Poisoned || proposal.Damage != 6 || proposal.PlayerHPAfter != 34 {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPlayer := next.Players["a"]
+	if !result.Poisoned || !flag(nextPlayer.Body.Flags[:], 16) {
+		t.Fatalf("result=%+v player flags=%#x", result, next.Players["a"].Body.Flags)
+	}
+}
+
+func TestNPCCombatRoundPoisonRollAboveThresholdLeavesExistingPoisonUnchanged(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	player.Body.Flags[16/8] |= 1 << (16 % 8) // PPOISN already set
+	s.Players["a"] = player
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch high {
+		case 20, 6:
+			return high
+		case 100:
+			return 16
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil || proposal.Poisoned {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPlayer := next.Players["a"]
+	if result.Poisoned || !flag(nextPlayer.Body.Flags[:], 16) {
+		t.Fatalf("result=%+v player flags=%#x", result, next.Players["a"].Body.Flags)
+	}
+}
+
+func TestNPCCombatRoundDoesNotRollPoisonOnMissOrNonPoisoner(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		poisoner   bool
+		hitRoll    int
+		wantHit    bool
+		wantPoison bool
+		wantCalls  [][2]int
+	}{
+		{name: "miss poisoner", poisoner: true, hitRoll: 1, wantCalls: [][2]int{{1, 20}}},
+		{name: "hit non-poisoner", hitRoll: 20, wantHit: true, wantCalls: [][2]int{{1, 20}, {1, 6}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Thaco = 20
+			if tc.poisoner {
+				npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+			}
+			s.NPCs["wolf-id"] = npc
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				switch high {
+				case 20:
+					return tc.hitRoll
+				case 6:
+					return 6
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil || proposal.Hit != tc.wantHit || proposal.Poisoned != tc.wantPoison {
+				t.Fatalf("proposal=%+v err=%v", proposal, err)
+			}
+			if !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("RNG calls=%v want=%v", calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundRejectsInvalidPoisonRNGWithoutChangingState(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	s.NPCs["wolf-id"] = npc
+	before := s.clone()
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		if high == 100 {
+			return 101
+		}
+		return high
+	})
+	if err == nil || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) || !reflect.DeepEqual(s, before) {
+		t.Fatalf("invalid poison RNG was not fail-closed: proposal=%+v err=%v changed=%v", proposal, err, !reflect.DeepEqual(s, before))
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+}
+
+func TestNPCCombatRoundRejectsTamperedPoisonCandidateAtomically(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	s.NPCs["wolf-id"] = npc
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		if high == 100 {
+			return 15
+		}
+		return high
+	})
+	if err != nil || !proposal.Poisoned {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+
+	tampered := proposal
+	tampered.Poisoned = false
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered poison outcome accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+
+	tampered = proposal
+	player := tampered.next.Players["a"]
+	player.Body.Flags[16/8] &^= 1 << (16 % 8)
+	tampered.next.Players["a"] = player
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered poison state accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+}
+
 func TestNPCCombatRoundPreservesNPCStealthOnHitAndMiss(t *testing.T) {
 	for _, tc := range []struct {
 		name string

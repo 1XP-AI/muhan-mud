@@ -131,7 +131,7 @@ func selectBurnRoot(actor PlayerState, name string, occurrence int) (string, Ite
 	detectInvisible := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
 	for _, id := range actor.Items.Inventory {
 		item, ok := actor.Items.Items[id]
-		if !ok || !strings.EqualFold(item.Object.Name, name) || (flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible) {
+		if !ok || !equalInventorySelector(item.Object, name) || (flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible) {
 			continue
 		}
 		found++

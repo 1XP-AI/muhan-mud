@@ -31,7 +31,7 @@ func selectInventoryRoot(c ItemCollection, name string, occurrence int, visible 
 	found := 0
 	for _, id := range c.Inventory {
 		item := c.Items[id]
-		if !strings.EqualFold(item.Object.Name, name) || (visible != nil && !visible(item.Object)) {
+		if !equalInventorySelector(item.Object, name) || (visible != nil && !visible(item.Object)) {
 			continue
 		}
 		found++

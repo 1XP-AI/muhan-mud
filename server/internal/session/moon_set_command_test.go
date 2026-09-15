@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
@@ -93,7 +95,7 @@ func TestExecuteMoonSetLineBindsAndReplaysWithoutDuplicateCommit(t *testing.T) {
 	if err := owners.Admit(lease, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	first, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-1", lease, "초인의 돌 2 기억")
+	first, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-1", lease, "초인의 2 기억")
 	if err != nil || first.Replayed || store.commits != 1 {
 		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
 	}
@@ -112,12 +114,91 @@ func TestExecuteMoonSetLineBindsAndReplaysWithoutDuplicateCommit(t *testing.T) {
 	if item.Object.Value != 7 || item.Object.Keys[1] != "숲" || item.Object.Description != "숲의 광경이 어른거립니다." {
 		t.Fatalf("saved item=%+v", item.Object)
 	}
-	replay, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-1", lease, "초인의 돌 2 기억")
+	replay, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-1", lease, "초인의 2 기억")
 	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 	if _, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-bad", lease, "기억 돌"); !errors.Is(err, ErrUnsupportedMoonSetLine) {
 		t.Fatalf("unsupported err=%v", err)
+	}
+}
+
+func TestExecuteMoonSetLineResolvesKeyPrefixAndReplays(t *testing.T) {
+	state, err := world.DecodeState(moonSetCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := state.Players["actor"]
+	item := actor.Items.Items["stone-1"]
+	item.Object.Name = "이름 없는 돌"
+	item.Object.Keys[0] = "귀환석"
+	actor.Items.Items["stone-1"] = item
+	state.Players["actor"] = actor
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-key", lease, "귀환 기억")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.MoonSetResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.MoonSetBind || result.ItemID != "stone-1" || !result.Changed {
+		t.Fatalf("result=%+v", result)
+	}
+	replay, err := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-key", lease, "귀환 기억")
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteMoonSetLineMissingAndOutOfRangeCommitNoopReceipts(t *testing.T) {
+	initial := moonSetCommandFixture(t)
+	store := &departureStore{state: initial}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	wantState, err := world.DecodeState(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for number, line := range []string{"없는키 기억", "초인의 돌 99 기억"} {
+		number++
+		receipt, executeErr := owners.ExecuteMoonSetLine(context.Background(), store, "w", "moon-set-noop-"+strconv.Itoa(number), lease, line)
+		if executeErr != nil || receipt.Replayed || store.commits != number {
+			t.Fatalf("line=%q receipt=%+v err=%v commits=%d", line, receipt, executeErr, store.commits)
+		}
+		var result world.MoonSetResult
+		if err := json.Unmarshal(receipt.Response, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Action != world.MoonSetMissing || result.Changed || result.ItemID != "" || len(result.Events) != 0 {
+			t.Fatalf("line=%q result=%+v", line, result)
+		}
+		saved, err := world.DecodeState(store.state)
+		if err != nil || !reflect.DeepEqual(saved, wantState) {
+			t.Fatalf("line=%q saved state changed err=%v", line, err)
+		}
 	}
 }
 

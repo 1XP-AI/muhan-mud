@@ -250,6 +250,24 @@ func turnTargetVisible(actor, target LegacyMonster) bool {
 	return !flag(target.Flags[:], turnNPCInvisibleFlag) || flag(actor.Flags[:], turnActorDetectFlag)
 }
 
+// turnCreaturePrefixMatch is the local turn boundary for creature.c's EQUAL.
+// Each field is an alternative, so a root matching its display name and one or
+// more keys still contributes exactly one occurrence to find_crt's counter.
+func turnCreaturePrefixMatch(target LegacyMonster, query string) bool {
+	if query == "" || !utf8.ValidString(query) {
+		return false
+	}
+	if equalFoldPrefix(target.Name, query) {
+		return true
+	}
+	for _, key := range target.Keys {
+		if equalFoldPrefix(key, query) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s State) selectTurnNPC(actorID, query string, occurrence int) (turnResolution, error) {
 	if occurrence < 1 {
 		return turnResolution{}, fmt.Errorf("turn target occurrence must be positive")
@@ -270,7 +288,7 @@ func (s State) selectTurnNPC(actorID, query string, occurrence int) (turnResolut
 		if id == "" || !ok || npc.Body.Type != turnMonsterType || npc.Body.RoomID != room.Resource.ID || !validTurnName(npc.Body.Name) {
 			return turnResolution{}, fmt.Errorf("%w: unresolved canonical turn NPC identity", ErrTurnNPCStateUnresolved)
 		}
-		if !strings.EqualFold(npc.Body.Name, query) || !turnTargetVisible(actor.Body, npc.Body) {
+		if !turnCreaturePrefixMatch(npc.Body, query) || !turnTargetVisible(actor.Body, npc.Body) {
 			continue
 		}
 		found++

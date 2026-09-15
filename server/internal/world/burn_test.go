@@ -47,6 +47,83 @@ func burnObject(s State, id string) Item {
 	return s.Players["actor"].Items.Items[id]
 }
 
+func TestSelectBurnRootMatchesLegacyEqualPrefixesOnceInDirectInventoryOrder(t *testing.T) {
+	s := burnStateFixture(t)
+	actor := s.Players["actor"]
+	actor.Items.Items["display-prefix"] = Item{Object: LegacyObject{Name: "Torch Lantern"}}
+	actor.Items.Items["key-zero-prefix"] = Item{Object: LegacyObject{
+		Name: "Plain Token", Keys: [3]string{"Alpha Token", "", ""},
+	}}
+	actor.Items.Items["key-one-prefix"] = Item{Object: LegacyObject{
+		Name: "Plain Token One", Keys: [3]string{"", "Beta Token", ""},
+	}}
+	actor.Items.Items["key-two-prefix"] = Item{Object: LegacyObject{
+		Name: "Plain Token Two", Keys: [3]string{"", "", "Gamma Token"},
+	}}
+	actor.Items.Items["mixed-first"] = Item{Object: LegacyObject{
+		Name: "Needle Mixed", Keys: [3]string{"Needle Alias", "", ""},
+	}}
+	actor.Items.Items["mixed-second"] = Item{Object: LegacyObject{Name: "Needle Second"}}
+	actor.Items.Items["order-first"] = Item{Object: LegacyObject{Name: "Order First"}}
+	actor.Items.Items["order-second"] = Item{Object: LegacyObject{Name: "Order Second"}}
+	actor.Items.Items["shadow-hidden"] = Item{Object: LegacyObject{Name: "Shadow Hidden"}}
+	hidden := actor.Items.Items["shadow-hidden"]
+	setObjectFlag(&hidden.Object.Flags, objectInvisibleFlag, true)
+	actor.Items.Items["shadow-hidden"] = hidden
+	actor.Items.Items["shadow-visible"] = Item{Object: LegacyObject{Name: "Shadow Visible"}}
+	ready := actor.Items.Items["sword"]
+	ready.Object = LegacyObject{Name: "Ready Only"}
+	actor.Items.Items["sword"] = ready
+	actor.Items.Inventory = append(actor.Items.Inventory,
+		"display-prefix", "key-zero-prefix", "key-one-prefix", "key-two-prefix",
+		"mixed-first", "mixed-second", "order-first", "order-second",
+		"shadow-hidden", "shadow-visible",
+	)
+	s.Players["actor"] = actor
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		selector   string
+		occurrence int
+		wantID     string
+		detect     bool
+		wantErr    bool
+	}{
+		{name: "display prefix", selector: "TORCH", occurrence: 1, wantID: "display-prefix"},
+		{name: "key zero prefix", selector: "ALPHA", occurrence: 1, wantID: "key-zero-prefix"},
+		{name: "key one prefix", selector: "BETA", occurrence: 1, wantID: "key-one-prefix"},
+		{name: "key two prefix", selector: "GAMMA", occurrence: 1, wantID: "key-two-prefix"},
+		{name: "mixed fields count one root", selector: "NEEDLE", occurrence: 1, wantID: "mixed-first"},
+		{name: "mixed fields preserve next occurrence", selector: "NEEDLE", occurrence: 2, wantID: "mixed-second"},
+		{name: "inventory order occurrence one", selector: "ORDER", occurrence: 1, wantID: "order-first"},
+		{name: "inventory order occurrence two", selector: "ORDER", occurrence: 2, wantID: "order-second"},
+		{name: "invisible skipped", selector: "SHADOW", occurrence: 1, wantID: "shadow-visible"},
+		{name: "invisible admitted with detection", selector: "SHADOW", occurrence: 1, wantID: "shadow-hidden", detect: true},
+		{name: "ready-only rejected", selector: "READY", occurrence: 1, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			caseActor := actor
+			if tc.detect {
+				setSettingFlag(&caseActor.Body, playerDetectInvisibleFlag, true)
+			}
+			id, item, err := selectBurnRoot(caseActor, tc.selector, tc.occurrence)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("selector accepted ready-only root: id=%q item=%+v", id, item)
+				}
+				return
+			}
+			if err != nil || id != tc.wantID {
+				t.Fatalf("selector=%q occurrence=%d id=%q item=%+v err=%v", tc.selector, tc.occurrence, id, item, err)
+			}
+		})
+	}
+}
+
 func TestPlanAndApplyBurnUsesOrderedDirectRootAndAwardsExactlyOnce(t *testing.T) {
 	before := burnStateFixture(t)
 	original := before

@@ -130,6 +130,180 @@ func TestStudySelectsExactDirectInventoryOccurrenceAndIgnoresNestedRoot(t *testi
 	}
 }
 
+func TestStudySelectorUsesPrefixKeysAndDirectPrecedenceOverReady(t *testing.T) {
+	s := studyStateFixture(4, 10)
+	player := s.Players["alice"]
+	player.Items = &ItemCollection{
+		Items: map[string]Item{
+			"direct": {Object: LegacyObject{Name: "비법서원본", Keys: [3]string{"direct-scroll", "", ""}, Type: studyScrollType, MagicPower: 1}},
+			"key":    {Object: LegacyObject{Name: "전혀다른표시", Keys: [3]string{"secret-scroll", "", ""}, Type: studyScrollType, MagicPower: 3}},
+			"ready":  {Object: LegacyObject{Name: "Ready Scroll", Keys: [3]string{"ready-scroll", "", ""}, Type: studyScrollType, MagicPower: 2}},
+		},
+		Inventory: []string{"direct", "key"},
+	}
+	player.Items.Ready[4] = "ready"
+	s.Players["alice"] = player
+
+	proposal, err := s.PlanStudy("alice", "비법", 1)
+	if err != nil || proposal.ItemID != "direct" || proposal.Location != StudyInventoryRoot || proposal.ReadySlot != -1 {
+		t.Fatalf("direct prefix selector proposal=%+v err=%v", proposal, err)
+	}
+	proposal, err = s.PlanStudy("alice", "SECRET", 1)
+	if err != nil || proposal.ItemID != "key" || proposal.SpellIndex != 2 {
+		t.Fatalf("case-insensitive key selector proposal=%+v err=%v", proposal, err)
+	}
+	proposal, err = s.PlanStudy("alice", "ready", 1)
+	if err != nil || proposal.ItemID != "ready" || proposal.Location != StudyReadySlot || proposal.ReadySlot != 4 {
+		t.Fatalf("ready prefix fallback proposal=%+v err=%v", proposal, err)
+	}
+}
+
+func TestStudySelectorHidesInvisibleObjectsAndCountsVisibleOccurrences(t *testing.T) {
+	s := studyStateFixture(4, 10)
+	player := s.Players["alice"]
+	hidden := LegacyObject{Name: "숨은스크롤", Keys: [3]string{"Scroll", "", ""}, Type: studyScrollType, MagicPower: 1}
+	setObjectFlag(&hidden.Flags, objectInvisibleFlag, true)
+	player.Items = &ItemCollection{
+		Items: map[string]Item{
+			"hidden":   {Object: hidden},
+			"visible1": {Object: LegacyObject{Name: "보이는첫번째", Keys: [3]string{"Scroll", "", ""}, Type: studyScrollType, MagicPower: 2}},
+			"visible2": {Object: LegacyObject{Name: "보이는두번째", Keys: [3]string{"Scroll", "", ""}, Type: studyScrollType, MagicPower: 3}},
+		},
+		Inventory: []string{"hidden", "visible1", "visible2"},
+	}
+	s.Players["alice"] = player
+
+	proposal, err := s.PlanStudy("alice", "SCROLL", 1)
+	if err != nil || proposal.ItemID != "visible1" || proposal.SpellIndex != 1 {
+		t.Fatalf("invisible object counted proposal=%+v err=%v", proposal, err)
+	}
+	proposal, err = s.PlanStudy("alice", "scroll", 2)
+	if err != nil || proposal.ItemID != "visible2" || proposal.SpellIndex != 2 {
+		t.Fatalf("visible occurrence proposal=%+v err=%v", proposal, err)
+	}
+	if _, err := s.PlanStudy("alice", "scroll", 3); !errors.Is(err, ErrStudyMissingItem) {
+		t.Fatalf("hidden object exposed as occurrence: %v", err)
+	}
+
+	player = s.Players["alice"]
+	player.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["alice"] = player
+	proposal, err = s.PlanStudy("alice", "scroll", 1)
+	if err != nil || proposal.ItemID != "hidden" {
+		t.Fatalf("PDINVI did not reveal first invisible object proposal=%+v err=%v", proposal, err)
+	}
+}
+
+func TestStudyReadyFallbackUsesIndependentPositiveOccurrenceAndRemovesReadyRoot(t *testing.T) {
+	s := studyStateFixture(4, 10)
+	player := s.Players["alice"]
+	player.Items = &ItemCollection{
+		Items: map[string]Item{
+			"direct": {Object: LegacyObject{Name: "직접물건", Keys: [3]string{"learn", "", ""}, Type: 5}},
+			"ready1": {Object: LegacyObject{Name: "Ready One", Keys: [3]string{"learn", "", ""}, Type: studyScrollType, MagicPower: 1}},
+			"ready2": {Object: LegacyObject{Name: "Ready Two", Keys: [3]string{"learn", "", ""}, Type: studyScrollType, MagicPower: 2}},
+		},
+		Inventory: []string{"direct"},
+	}
+	player.Items.Ready[3] = "ready1"
+	player.Items.Ready[8] = "ready2"
+	s.Players["alice"] = player
+
+	proposal, err := s.PlanStudy("alice", "LEARN", 2)
+	if err != nil || proposal.ItemID != "ready2" || proposal.Location != StudyReadySlot || proposal.ReadySlot != 8 {
+		t.Fatalf("independent ready occurrence proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyStudy(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := next.Players["alice"]
+	if result.Learned == false || got.Items.Ready[8] != "" || got.Items.Ready[3] != "ready1" || !containsString(got.Items.Inventory, "direct") {
+		t.Fatalf("ready root removal changed wrong owner result=%+v items=%+v", result, got.Items)
+	}
+	if _, ok := got.Items.Items["ready2"]; ok || !flag(got.Body.Spells[:], 1) {
+		t.Fatalf("ready root or spell bit not committed items=%+v spells=%v", got.Items, got.Body.Spells)
+	}
+	if _, _, err := next.ApplyStudy(proposal); err == nil {
+		t.Fatal("ready study proposal replayed against committed state")
+	}
+}
+
+func TestStudyReadyAlignmentFallbackTransfersRootAndNestedSubtreeOnce(t *testing.T) {
+	s := studyStateFixture(4, 10)
+	player := s.Players["alice"]
+	player.Body.Alignment = -200
+	root := LegacyObject{Name: "악한비법", Keys: [3]string{"bad-scroll", "", ""}, Type: studyScrollType, MagicPower: 1}
+	root.Flags[studyGoodOnlyFlag/8] |= 1 << (studyGoodOnlyFlag % 8)
+	player.Items = &ItemCollection{
+		Items: map[string]Item{
+			"keep":  {Object: LegacyObject{Name: "남은물건", Type: 5}},
+			"root":  {Object: root, Contents: []string{"child"}},
+			"child": {Object: LegacyObject{Name: "자식물건", Type: 5}},
+		},
+		Inventory: []string{"keep"},
+	}
+	player.Items.Ready[6] = "root"
+	s.Players["alice"] = player
+
+	proposal, err := s.PlanStudy("alice", "BAD", 1)
+	if err != nil || !proposal.MoveToRoom || proposal.Location != StudyReadySlot || proposal.ReadySlot != 6 {
+		t.Fatalf("ready alignment proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyStudy(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := next.Players["alice"]
+	if !result.MovedToRoom || result.Learned || got.Items.Ready[6] != "" || !containsString(got.Items.Inventory, "keep") || len(got.Items.Items) != 1 {
+		t.Fatalf("ready source after transfer result=%+v items=%+v", result, got.Items)
+	}
+	floor := next.Rooms[1].Items
+	if floor == nil || !containsString(floor.Inventory, "root") || floor.Items["root"].Contents[0] != "child" || len(floor.Items) != 3 {
+		t.Fatalf("ready destination after transfer=%+v", floor)
+	}
+	body := next.Players["alice"].Body
+	if flag(body.Spells[:], 0) {
+		t.Fatal("alignment rejection learned a spell")
+	}
+	if s.Players["alice"].Items.Ready[6] != "root" || containsString(s.Rooms[1].Items.Inventory, "root") {
+		t.Fatal("ready transfer mutated input state")
+	}
+}
+
+func TestStudyRemovesSelectedDirectRootAndNestedSubtreeOnce(t *testing.T) {
+	s := studyStateFixture(4, 10)
+	player := s.Players["alice"]
+	player.Items = &ItemCollection{
+		Items: map[string]Item{
+			"keep":  {Object: LegacyObject{Name: "남은물건", Type: 5}},
+			"root":  {Object: LegacyObject{Name: "비법서", Keys: [3]string{"spellbook", "", ""}, Type: studyScrollType, MagicPower: 1}, Contents: []string{"child"}},
+			"child": {Object: LegacyObject{Name: "자식비법", Type: 5}},
+		},
+		Inventory: []string{"keep", "root"},
+	}
+	s.Players["alice"] = player
+
+	proposal, err := s.PlanStudy("alice", "SPELL", 1)
+	if err != nil || proposal.ItemID != "root" || proposal.Location != StudyInventoryRoot {
+		t.Fatalf("nested direct proposal=%+v err=%v", proposal, err)
+	}
+	next, _, err := s.ApplyStudy(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := next.Players["alice"].Items
+	if got == nil || len(got.Items) != 1 || got.Items["keep"].Object.Name != "남은물건" || len(got.Inventory) != 1 || got.Inventory[0] != "keep" {
+		t.Fatalf("selected root subtree was not removed once: %+v", got)
+	}
+	if _, ok := got.Items["root"]; ok {
+		t.Fatal("selected root remained")
+	}
+	if _, ok := got.Items["child"]; ok {
+		t.Fatal("selected nested child remained")
+	}
+}
+
 func TestStudyRejectsBlindAndAllSourceAdmissionGates(t *testing.T) {
 	cases := []struct {
 		name   string

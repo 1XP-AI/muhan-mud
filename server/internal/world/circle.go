@@ -200,8 +200,8 @@ func circleVisible(actor, target LegacyMonster) bool {
 }
 
 // selectCircleTarget preserves circle's monster-first, then player fallback
-// order.  The bounded command accepts exact display names only; prefix/key and
-// occurrence parsing remain outside this slice. Room slices, rather than map
+// order. The bounded command accepts C EQUAL-style display/key prefixes; prefix
+// occurrence parsing remains outside this slice. Room slices, rather than map
 // iteration, are authoritative for duplicate-name selection.
 func (s State) selectCircleTarget(actorID, name string) (circleResolution, error) {
 	actor, room, err := circleActor(s, actorID)
@@ -222,7 +222,7 @@ func (s State) selectCircleTarget(actorID, name string) (circleResolution, error
 		if npc.Body.Class > circleMaxClass {
 			return circleResolution{}, fmt.Errorf("circle NPC class outside canonical table")
 		}
-		if strings.EqualFold(npc.Body.Name, name) && circleVisible(actor.Body, npc.Body) {
+		if legacyCreaturePrefixMatch(npc.Body, name) && circleVisible(actor.Body, npc.Body) {
 			return circleResolution{targetID: id, targetKind: CircleTargetNPC, target: npc.Body}, nil
 		}
 	}
@@ -239,7 +239,7 @@ func (s State) selectCircleTarget(actorID, name string) (circleResolution, error
 		if player.Body.Class > circleMaxClass {
 			return circleResolution{}, fmt.Errorf("circle player class outside canonical table")
 		}
-		if id == actorID || !strings.EqualFold(player.Body.Name, name) || !circleVisible(actor.Body, player.Body) {
+		if id == actorID || !legacyCreaturePrefixMatch(player.Body, name) || !circleVisible(actor.Body, player.Body) {
 			continue
 		}
 		return circleResolution{targetID: id, targetKind: CircleTargetPlayer, target: player.Body}, nil

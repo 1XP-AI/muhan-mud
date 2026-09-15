@@ -302,6 +302,86 @@ func TestPlanNPCCombatTickRejectsUnknownUnresolvedAndBadRNGAtomically(t *testing
 	}
 }
 
+func TestRunNPCCombatTickPersistsPoisonAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	npc := state.NPCs["npc-b"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	state.NPCs["npc-b"] = npc
+	state.ActiveNPCIDs = []string{"npc-b"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	now := int32(103)
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-poison-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return now, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			switch high {
+			case 20, 4:
+				return high
+			case 100:
+				return 15
+			default:
+				t.Fatalf("unexpected random request %d..%d", low, high)
+				return 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, ran, err := connector.RunNPCCombatTick(context.Background(), 20*time.Second)
+	if err != nil || !ran || first.Replayed {
+		t.Fatalf("first=%+v ran=%v err=%v", first, ran, err)
+	}
+	if rollCalls != 3 {
+		t.Fatalf("first attack RNG calls=%d, want hit/damage/poison", rollCalls)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Hit || !summary.Attacks[0].Poisoned || summary.Attacks[0].Damage != 4 || summary.Attacks[0].PlayerHP != 26 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPlayer := saved.Players["player-b"]
+	if savedPlayer.Body.Flags[16/8]&(1<<(16%8)) == 0 {
+		t.Fatalf("saved player omitted PPOISN: flags=%#x", savedPlayer.Body.Flags)
+	}
+
+	replayCalls := 0
+	restarted, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-poison-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return now, 12 },
+		Roll: func(_, high int) int {
+			replayCalls++
+			return high
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, ran, err := restarted.RunNPCCombatTick(context.Background(), 20*time.Second)
+	if err != nil || !ran || !replay.Replayed {
+		t.Fatalf("replay=%+v ran=%v err=%v", replay, ran, err)
+	}
+	if replayCalls != 0 || rollCalls != 3 {
+		t.Fatalf("replay consumed RNG: replayCalls=%d firstCalls=%d", replayCalls, rollCalls)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
 func TestRunNPCCombatTickPersistsSkipsAndReplaysExactSlot(t *testing.T) {
 	state := npcCombatTickFixture(t)
 	now := int32(103)
@@ -399,6 +479,9 @@ func TestRunNPCCombatPhaseRejectsStaleCommandAndErrorIsAtomic(t *testing.T) {
 
 func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 	state := npcCombatLethalTickFixture(t)
+	npc := state.NPCs["npc-b"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	state.NPCs["npc-b"] = npc
 	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
 	now := int32(100)
 	rollCalls := 0
@@ -409,6 +492,9 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 		Clock:       func() (int32, int) { return now, 12 },
 		Roll: func(low, high int) int {
 			rollCalls++
+			if high == 100 {
+				return 15
+			}
 			return high
 		},
 	})
@@ -421,7 +507,7 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 		t.Fatalf("receipt=%+v commits=%d err=%v", receipt, store.commits, err)
 	}
 	summary := decodeNPCCombatTickSummary(t, receipt.Response)
-	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || summary.Attacks[0].PlayerHP >= 1 ||
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || !summary.Attacks[0].Poisoned || summary.Attacks[0].PlayerHP >= 1 ||
 		len(summary.FailClosed) != 0 || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
 		t.Fatalf("summary=%+v", summary)
 	}
@@ -439,12 +525,12 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 		len(saved.NPCs["npc-b"].Enemies) != 0 || !reflect.DeepEqual(saved.ActiveNPCIDs, []string{"npc-b"}) {
 		t.Fatalf("saved lethal state=%+v", saved)
 	}
-	if rollCalls != 2 {
-		t.Fatalf("attack RNG calls=%d, want exactly hit/damage", rollCalls)
+	if rollCalls != 3 {
+		t.Fatalf("attack RNG calls=%d, want exactly hit/damage/poison", rollCalls)
 	}
 
 	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-lethal", 5, 100)
-	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 2 {
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 3 {
 		t.Fatalf("replay=%+v commits=%d RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
 	}
 	if !bytes.Equal(replay.Response, receipt.Response) {

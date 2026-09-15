@@ -54,6 +54,31 @@ func TestDoorKeyUnlockAndLockUseSourceOrdering(t *testing.T) {
 	}
 }
 
+func TestDoorKeyUsesLegacyPrefixesAndIgnoresLegacyBodyInventory(t *testing.T) {
+	s := doorKeyFixture(true)
+	actor := s.Players["a"]
+	item := actor.Items.Items["key-1"]
+	item.Object.Name = "Brass Key"
+	item.Object.Keys[0] = "North Key"
+	actor.Items.Items["key-1"] = item
+	s.Players["a"] = actor
+
+	proposal, err := s.PlanDoorKey("a", DoorUnlock, "북", "north", 10, nil)
+	if err != nil || !proposal.Changed || proposal.Response != "## 찰칵 ##\r\n" {
+		t.Fatalf("unlock by key proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyDoorKey(proposal)
+	if err != nil || !result.Broadcast || next.Players["a"].Items.Items["key-1"].Object.ShotsCurrent != 1 {
+		t.Fatalf("unlock by key next=%+v result=%+v err=%v", next, result, err)
+	}
+
+	legacyActor := actor
+	legacyActor.Body.Inventory = []LegacyObject{{Name: "legacy-key", Type: doorKeyObjectType, DiceCount: 7, ShotsCurrent: 2}}
+	if _, err := findDoorKey(legacyActor, "legacy"); err == nil {
+		t.Fatal("legacy body inventory leaked into canonical lookup")
+	}
+}
+
 func TestDoorKeyFailuresDoNotMutate(t *testing.T) {
 	s := doorKeyFixture(true)
 	for _, tc := range []struct {

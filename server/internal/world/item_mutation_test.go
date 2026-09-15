@@ -37,6 +37,101 @@ func swordFloorFixture(t *testing.T) State {
 	return s
 }
 
+func TestSelectInventoryRootUsesLegacyEqualFieldsAndStoredOrder(t *testing.T) {
+	c := ItemCollection{
+		Items: map[string]Item{
+			"display": {Object: LegacyObject{Name: "DisplayName"}},
+			"key0":    {Object: LegacyObject{Name: "OtherZero", Keys: [3]string{"ZeroAlias", "", ""}}},
+			"key1":    {Object: LegacyObject{Name: "OtherOne", Keys: [3]string{"", "OneAlias", ""}}},
+			"key2":    {Object: LegacyObject{Name: "OtherTwo", Keys: [3]string{"", "", "TwoAlias"}}},
+			"mixed":   {Object: LegacyObject{Name: "MixedRoot", Keys: [3]string{"MixedKey", "", ""}}},
+			"mixed-2": {Object: LegacyObject{Name: "LaterRoot", Keys: [3]string{"MixedLater", "", ""}}},
+			"hidden":  {Object: LegacyObject{Name: "HiddenRoot", Keys: [3]string{"ShieldAlias", "", ""}}},
+			"visible": {Object: LegacyObject{Name: "VisibleRoot", Keys: [3]string{"ShieldVisible", "", ""}}},
+			"parent":  {Object: LegacyObject{Name: "ParentRoot"}, Contents: []string{"nested"}},
+			"nested":  {Object: LegacyObject{Name: "NestedRoot", Keys: [3]string{"NestedAlias", "", ""}}},
+			"ready":   {Object: LegacyObject{Name: "ReadyRoot", Keys: [3]string{"ReadyAlias", "", ""}}},
+		},
+		Inventory: []string{"display", "key0", "key1", "key2", "mixed", "mixed-2", "hidden", "visible", "parent"},
+		Ready:     [20]string{0: "ready"},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+
+	for _, tc := range []struct {
+		query      string
+		occurrence int
+		want       string
+	}{
+		{query: "display", occurrence: 1, want: "display"},
+		{query: "zero", occurrence: 1, want: "key0"},
+		{query: "one", occurrence: 1, want: "key1"},
+		{query: "two", occurrence: 1, want: "key2"},
+		{query: "mixed", occurrence: 1, want: "mixed"},
+		{query: "mixed", occurrence: 2, want: "mixed-2"},
+	} {
+		got, err := selectInventoryRoot(c, tc.query, tc.occurrence, nil)
+		if err != nil || got != tc.want {
+			t.Fatalf("selectInventoryRoot(%q, %d)=%q err=%v want=%q", tc.query, tc.occurrence, got, err, tc.want)
+		}
+	}
+
+	visibleCalls := make([]string, 0, 2)
+	got, err := selectInventoryRoot(c, "shield", 1, func(object LegacyObject) bool {
+		visibleCalls = append(visibleCalls, object.Name)
+		return object.Name != "HiddenRoot"
+	})
+	if err != nil || got != "visible" {
+		t.Fatalf("visibility selector=%q err=%v", got, err)
+	}
+	if want := []string{"HiddenRoot", "VisibleRoot"}; !reflect.DeepEqual(visibleCalls, want) {
+		t.Fatalf("visibility callback calls=%v want=%v", visibleCalls, want)
+	}
+
+	for _, tc := range []struct {
+		query      string
+		occurrence int
+	}{
+		{query: "mixed", occurrence: 0},
+		{query: "mixed", occurrence: -1},
+		{query: "mixed", occurrence: 3},
+		{query: "ready", occurrence: 1},
+		{query: "nested", occurrence: 1},
+	} {
+		if got, err := selectInventoryRoot(c, tc.query, tc.occurrence, nil); err == nil {
+			t.Fatalf("selectInventoryRoot(%q, %d)=%q unexpectedly succeeded", tc.query, tc.occurrence, got)
+		}
+	}
+}
+
+func TestTakeAndDropUseLegacyInventoryPrefixes(t *testing.T) {
+	s := swordFloorFixture(t)
+	room := s.Rooms[1]
+	floorSword := room.Items.Items["floor-sword"]
+	floorSword.Object.Keys[0] = "BladeAlias"
+	room.Items.Items["floor-sword"] = floorSword
+	s.Rooms[1] = room
+
+	taken, result, err := s.TakeItem("a", "blade", 1)
+	if err != nil || result.Action != "take" || result.ItemName != "검" {
+		t.Fatalf("take by key result=%+v err=%v", result, err)
+	}
+
+	player := taken.Players["a"]
+	item := player.Items.Items["floor-sword"]
+	item.Object.Keys[1] = "DropAlias"
+	player.Items.Items["floor-sword"] = item
+	taken.Players["a"] = player
+	dropped, result, err := taken.DropItem("a", "drop", 1)
+	if err != nil || result.Action != "drop" || result.ItemName != "검" {
+		t.Fatalf("drop by key result=%+v err=%v", result, err)
+	}
+	if !containsID(dropped.Rooms[1].Items.Inventory, "floor-sword") || containsID(dropped.Players["a"].Items.Inventory, "floor-sword") {
+		t.Fatalf("drop by key locations room=%+v player=%+v", dropped.Rooms[1].Items.Inventory, dropped.Players["a"].Items.Inventory)
+	}
+}
+
 func TestTakeAndDropSwordKeepsActorRoomAndFailsClosed(t *testing.T) {
 	s := swordFloorFixture(t)
 	taken, result, err := s.TakeItem("a", "검", 1)

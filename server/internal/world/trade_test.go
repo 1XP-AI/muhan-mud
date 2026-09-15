@@ -292,3 +292,143 @@ func TestPlanTradeFailClosedUnmigratedNPCAndItems(t *testing.T) {
 		t.Fatalf("nil offers err=%v", err)
 	}
 }
+
+func TestSelectTradeInventoryRootMatchesEqualPrefixesOnceAndVisibility(t *testing.T) {
+	var invisible [8]byte
+	invisible[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	c := ItemCollection{
+		Items: map[string]Item{
+			"name":   {Object: LegacyObject{Name: "NeedleName"}},
+			"key0":   {Object: LegacyObject{Name: "ZeroAlias", Keys: [3]string{"needle-zero", "", ""}}},
+			"key1":   {Object: LegacyObject{Name: "OneAlias", Keys: [3]string{"", "needle-one", ""}}},
+			"key2":   {Object: LegacyObject{Name: "TwoAlias", Keys: [3]string{"", "", "needle-two"}}},
+			"mixed":  {Object: LegacyObject{Name: "NeedleMixed", Keys: [3]string{"needle-mixed", "", ""}}},
+			"hidden": {Object: LegacyObject{Name: "NeedleHidden", Keys: [3]string{"needle-hidden", "", ""}, Flags: invisible}},
+			"parent": {Object: LegacyObject{Name: "Box"}, Contents: []string{"child"}},
+			"child":  {Object: LegacyObject{Name: "NeedleChild", Keys: [3]string{"needle-child", "", ""}}},
+			"ready":  {Object: LegacyObject{Name: "ReadyNeedle", Keys: [3]string{"ready-needle", "", ""}}},
+		},
+		Inventory: []string{"name", "key0", "key1", "key2", "mixed", "hidden", "parent"},
+		Ready:     [20]string{0: "ready"},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		occurrence int
+		wantID     string
+	}{
+		{name: "NEEDLEN", occurrence: 1, wantID: "name"},
+		{name: "NEEDLE-ZERO", occurrence: 1, wantID: "key0"},
+		{name: "NEEDLE-ONE", occurrence: 1, wantID: "key1"},
+		{name: "NEEDLE-TWO", occurrence: 1, wantID: "key2"},
+		// mixed matches through both its display name and key[0], but is
+		// counted once after the four preceding roots.
+		{name: "NeEdLe", occurrence: 5, wantID: "mixed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := selectTradeInventoryRoot(c, tc.name, tc.occurrence, false)
+			if err != nil || id != tc.wantID {
+				t.Fatalf("selector=%q occurrence=%d id=%q err=%v want=%q", tc.name, tc.occurrence, id, err, tc.wantID)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name       string
+		occurrence int
+	}{
+		{name: "NEEDLE", occurrence: 6},
+		{name: "NEEDLE-CHILD", occurrence: 1},
+		{name: "READY", occurrence: 1},
+	} {
+		if _, err := selectTradeInventoryRoot(c, tc.name, tc.occurrence, false); err == nil {
+			t.Fatalf("ordinary selector=%q occurrence=%d unexpectedly matched hidden/nested/ready root", tc.name, tc.occurrence)
+		}
+	}
+	id, err := selectTradeInventoryRoot(c, "NEEDLE", 6, true)
+	if err != nil || id != "hidden" {
+		t.Fatalf("PDINVI hidden selector id=%q err=%v", id, err)
+	}
+}
+
+func TestSelectTradeNPCMatchesEqualPrefixesOrderAndVisibility(t *testing.T) {
+	s := tradeFixture(t, nil)
+	first := s.NPCs["merchant"]
+	first.Body.Name = "Keeper"
+	first.Body.Keys = [3]string{"vendor-first", "", ""}
+	first.Body.Flags[npcInvisibleFlag/8] |= 1 << (npcInvisibleFlag % 8)
+	s.NPCs["merchant"] = first
+	second := s.NPCs["merchant-2"]
+	second.Body.Name = "Keeper"
+	second.Body.Keys = [3]string{"vendor-second", "", ""}
+	second.TradeOffers[0].Wanted = first.TradeOffers[0].Wanted
+	s.NPCs["merchant-2"] = second
+
+	id, found, err := s.selectTradeNPC("actor", "VEND", 1)
+	if err != nil || !found || id != "merchant-2" {
+		t.Fatalf("ordinary hidden NPC id=%q found=%t err=%v", id, found, err)
+	}
+	actor := s.Players["actor"]
+	actor.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["actor"] = actor
+	id, found, err = s.selectTradeNPC("actor", "VEND", 1)
+	if err != nil || !found || id != "merchant" {
+		t.Fatalf("PDINVI NPC id=%q found=%t err=%v", id, found, err)
+	}
+
+	// find_crt skips caretaker-class PDMINV identities even for a detector.
+	first = s.NPCs["merchant"]
+	first.Body.Class = lookAtCaretakerClass
+	first.Body.Flags[playerDMInvisibleFlag/8] |= 1 << (playerDMInvisibleFlag % 8)
+	s.NPCs["merchant"] = first
+	id, found, err = s.selectTradeNPC("actor", "VEND", 1)
+	if err != nil || !found || id != "merchant-2" {
+		t.Fatalf("caretaker PDMINV NPC id=%q found=%t err=%v", id, found, err)
+	}
+
+	broken := s.clone()
+	room := broken.Rooms[200]
+	room.NPCIDs = append(room.NPCIDs, "missing")
+	broken.Rooms[200] = room
+	if _, _, err := broken.selectTradeNPC("actor", "VEND", 1); !errors.Is(err, ErrTradeNPCUnresolved) {
+		t.Fatalf("unresolved NPC err=%v", err)
+	}
+}
+
+func TestTradeUsesPrefixSelectorsButExactCatalogIdentity(t *testing.T) {
+	s := tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	npc := s.NPCs["merchant"]
+	npc.Body.Name = "Keeper"
+	npc.Body.Keys = [3]string{"vendor", "", ""}
+	s.NPCs["merchant"] = npc
+	item := s.Players["actor"].Items.Items["offered"]
+	item.Object.Keys[0] = "APPLE-ALIAS"
+	player := s.Players["actor"]
+	player.Items.Items["offered"] = item
+	s.Players["actor"] = player
+	next, result, err := s.TradeNPCByName("actor", "APP", 1, "VEND", 1, func() (string, error) {
+		t.Fatal("catalog mismatch allocated a reward")
+		return "unexpected", nil
+	})
+	if err != nil || result.OfferedItemID != "offered" || result.Action != TradeRejectedAction || !strings.Contains(result.Response, "난 그런거 필요없어요") {
+		t.Fatalf("prefix-selected exact mismatch next=%+v result=%+v err=%v", next, result, err)
+	}
+	if _, ok := next.Players["actor"].Items.Items["offered"]; !ok {
+		t.Fatal("catalog mismatch consumed the offered item")
+	}
+
+	// A case-folded display/key prefix selects the canonical root, after
+	// which the C name/key[0] identity remains exact and the exchange commits.
+	s = tradeFixture(t, &LegacyObject{Name: "보상검", Type: 13})
+	npc = s.NPCs["merchant"]
+	npc.Body.Name = "Keeper"
+	npc.Body.Keys = [3]string{"vendor", "", ""}
+	s.NPCs["merchant"] = npc
+	next, result, err = s.TradeNPCByName("actor", "APPLE", 1, "VEND", 1, func() (string, error) {
+		return "reward-prefix", nil
+	})
+	if err != nil || result.Action != TradeNPCItemAction || result.OfferedItemID != "offered" || next.Players["actor"].Items.Items["reward-prefix"].Object.Name != "보상검" {
+		t.Fatalf("prefix trade next=%+v result=%+v err=%v", next, result, err)
+	}
+}

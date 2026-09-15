@@ -46,6 +46,24 @@ func moonSetState() State {
 	}
 }
 
+func moonSetSelectorState() State {
+	s := moonSetState()
+	actor := s.Players["actor"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"both":        {Object: LegacyObject{Name: "달빛", Keys: [3]string{"달", "", ""}, Value: moonSetUnboundValue}},
+			"other":       {Object: LegacyObject{Name: "무관", Keys: [3]string{"없음", "", ""}, Value: moonSetUnboundValue}},
+			"key-zero":    {Object: LegacyObject{Name: "무기", Keys: [3]string{"달빛열쇠", "", ""}, Value: moonSetUnboundValue}},
+			"key-one":     {Object: LegacyObject{Name: "도구", Keys: [3]string{"", "달빛부적", ""}, Value: moonSetUnboundValue}},
+			"key-two":     {Object: LegacyObject{Name: "물건", Keys: [3]string{"", "", "달빛돌"}, Value: moonSetUnboundValue}},
+			"second-name": {Object: LegacyObject{Name: "달밤", Value: moonSetUnboundValue}},
+		},
+		Inventory: []string{"both", "other", "key-zero", "key-one", "key-two", "second-name"},
+	}
+	s.Players["actor"] = actor
+	return s
+}
+
 func TestPlanApplyMoonSetBindsUnboundInventoryRoot(t *testing.T) {
 	s := moonSetState()
 	proposal, err := s.PlanMoonSet("actor", "초인의 돌", 1)
@@ -133,6 +151,96 @@ func TestPlanMoonSetSelectsOccurrenceAndRejectsUnresolved(t *testing.T) {
 	}
 	if _, err := s.PlanMoonSet("missing", "초인의 돌", 1); !errors.Is(err, ErrMoonSetActorAbsent) {
 		t.Fatalf("absent err=%v", err)
+	}
+}
+
+func TestPlanMoonSetMatchesNameAndKeyPrefixesInInventoryOrder(t *testing.T) {
+	s := moonSetSelectorState()
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "달", want: "both"},
+		{name: "달빛열", want: "key-zero"},
+		{name: "달빛부", want: "key-one"},
+		{name: "달빛돌", want: "key-two"},
+	}
+	for _, tt := range tests {
+		proposal, err := s.PlanMoonSet("actor", tt.name, 1)
+		if err != nil || proposal.Action != MoonSetBind || proposal.ItemID != tt.want {
+			t.Fatalf("selector=%q proposal=%+v err=%v", tt.name, proposal, err)
+		}
+	}
+
+	for _, tt := range []struct {
+		occurrence int
+		want       string
+	}{{1, "both"}, {2, "key-zero"}, {3, "key-one"}, {4, "key-two"}, {5, "second-name"}} {
+		proposal, err := s.PlanMoonSet("actor", "달", tt.occurrence)
+		if err != nil || proposal.ItemID != tt.want || proposal.Occurrence != tt.occurrence {
+			t.Fatalf("occurrence=%d proposal=%+v err=%v", tt.occurrence, proposal, err)
+		}
+	}
+}
+
+func TestPlanMoonSetVisibilitySkipsHiddenRootsUnlessPDINVI(t *testing.T) {
+	hidden := moonSetSelectorState()
+	actor := hidden.Players["actor"]
+	item := actor.Items.Items["both"]
+	item.Object.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	actor.Items.Items["both"] = item
+	hidden.Players["actor"] = actor
+
+	ordinary, err := hidden.PlanMoonSet("actor", "달", 1)
+	if err != nil || ordinary.ItemID != "key-zero" || ordinary.Action != MoonSetBind {
+		t.Fatalf("ordinary hidden selection=%+v err=%v", ordinary, err)
+	}
+
+	detected := hidden.clone()
+	actor = detected.Players["actor"]
+	actor.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	detected.Players["actor"] = actor
+	proposal, err := detected.PlanMoonSet("actor", "달", 1)
+	if err != nil || proposal.ItemID != "both" || proposal.Action != MoonSetBind {
+		t.Fatalf("PDINVI hidden selection=%+v err=%v", proposal, err)
+	}
+}
+
+func TestPlanMoonSetMissingAndOutOfRangeRemainNoopReceipts(t *testing.T) {
+	s := moonSetSelectorState()
+	beforeBody := s.Players["actor"].Body
+	beforeItems := s.Players["actor"].Items.clone()
+	for _, tt := range []struct {
+		name       string
+		occurrence int
+	}{{"없는키", 1}, {"달", 99}} {
+		proposal, err := s.PlanMoonSet("actor", tt.name, tt.occurrence)
+		if err != nil || proposal.Action != MoonSetMissing || proposal.Changed || proposal.ItemID != "" || len(proposal.Events) != 0 {
+			t.Fatalf("name=%q occurrence=%d missing proposal=%+v err=%v", tt.name, tt.occurrence, proposal, err)
+		}
+	}
+	if !reflect.DeepEqual(s.Players["actor"].Body, beforeBody) || !reflect.DeepEqual(*s.Players["actor"].Items, beforeItems) {
+		t.Fatalf("missing lookup mutated actor state: before=%+v after=%+v", beforeItems, *s.Players["actor"].Items)
+	}
+}
+
+func TestPlanMoonSetRejectsMalformedCanonicalIdentity(t *testing.T) {
+	missingRoot := moonSetState()
+	actor := missingRoot.Players["actor"]
+	actor.Items.Inventory[0] = "missing"
+	missingRoot.Players["actor"] = actor
+	if _, err := missingRoot.PlanMoonSet("actor", "초인의", 1); err == nil {
+		t.Fatal("unresolved inventory root was accepted")
+	}
+
+	emptyName := moonSetState()
+	actor = emptyName.Players["actor"]
+	item := actor.Items.Items["stone-1"]
+	item.Object.Name = ""
+	actor.Items.Items["stone-1"] = item
+	emptyName.Players["actor"] = actor
+	if _, err := emptyName.PlanMoonSet("actor", "초인의", 1); err == nil {
+		t.Fatal("empty item identity was accepted")
 	}
 }
 

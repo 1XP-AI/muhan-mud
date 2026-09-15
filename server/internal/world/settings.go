@@ -142,13 +142,16 @@ func (s State) PlanSettings(actorID, action, key string, value *int32) (Settings
 			return proposal, nil
 		}
 		if key == "도망수치" {
-			v := int32(0)
+			// C's parser stores the default numeric value 1 for a string
+			// argument. Therefore an omitted threshold follows the same
+			// val==1 -> 10 branch as an explicit 1, rather than becoming 0.
+			v := int32(1)
 			if value != nil {
 				v = *value
 			}
 			if v == 1 {
 				v = 10
-			} else if v < 2 && v != 0 {
+			} else if v < 2 {
 				v = 2
 			}
 			proposal.Known, proposal.Kind, proposal.Bit = true, settingsWimpy, 14
@@ -156,7 +159,9 @@ func (s State) PlanSettings(actorID, action, key string, value *int32) (Settings
 			proposal.ExpectedValueSet = true
 			proposal.ExpectedValue = actor.Body.WimpyValue
 			proposal.DesiredValue = v
-			proposal.DesiredFlag = v != 0
+			// C sets PWIMPY before normalizing and the MAX(value, 2) clamp
+			// makes the resulting value non-zero for every set input.
+			proposal.DesiredFlag = true
 			return proposal, nil
 		}
 		if key == "패거리귀환" {

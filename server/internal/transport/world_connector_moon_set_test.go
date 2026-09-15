@@ -26,7 +26,7 @@ func connectorMoonSetState() world.State {
 				Body:   world.LegacyMonster{Name: "Alice", Type: 0, RoomID: 7},
 				Online: true,
 				Items: &world.ItemCollection{
-					Items:     map[string]world.Item{"stone": {Object: world.LegacyObject{Name: "초인의 돌", Value: 1001}}},
+					Items:     map[string]world.Item{"stone": {Object: world.LegacyObject{Name: "초인의 돌", Keys: [3]string{"귀환석", "", ""}, Value: 1001}}},
 					Inventory: []string{"stone"},
 				},
 			},
@@ -71,7 +71,7 @@ func TestWorldConnectorSubmitDispatchesMoonSetAndSuppressesReplay(t *testing.T) 
 		connector.connections[conn] = struct{}{}
 	}
 
-	output, err := connections["actor"].Submit(context.Background(), "초인의 돌 기억")
+	output, err := connections["actor"].Submit(context.Background(), "귀환 기억")
 	want := world.MoonSetBindResponse()
 	if err != nil || output != want || store.commits != 1 {
 		t.Fatalf("bind=%q err=%v commits=%d", output, err, store.commits)
@@ -93,7 +93,7 @@ func TestWorldConnectorSubmitDispatchesMoonSetAndSuppressesReplay(t *testing.T) 
 	default:
 	}
 
-	replay, err := connections["actor"].Submit(context.Background(), "초인의 돌 기억")
+	replay, err := connections["actor"].Submit(context.Background(), "귀환 기억")
 	if err != nil || replay != output {
 		t.Fatalf("replay=%q err=%v", replay, err)
 	}

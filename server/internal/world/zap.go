@@ -286,7 +286,7 @@ func selectZapRoot(actor PlayerState, name string, occurrence int) (string, Item
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical zap inventory root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) || !inventoryObjectVisible(item.Object, flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
 			continue
 		}
 		found++
@@ -294,6 +294,10 @@ func selectZapRoot(actor PlayerState, name string, occurrence int) (string, Item
 			return id, item, ZapInventoryRoot, -1, nil
 		}
 	}
+	// C find_obj owns its own match counter. magic1.c therefore starts the
+	// Ready fallback at occurrence one after direct Inventory lookup fails;
+	// Ready slots remain in ascending slot order and are root-only selectors.
+	found = 0
 	for slot, id := range actor.Items.Ready {
 		if id == "" {
 			continue
@@ -302,7 +306,7 @@ func selectZapRoot(actor PlayerState, name string, occurrence int) (string, Item
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical zap ready root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) || !inventoryObjectVisible(item.Object, flag(actor.Body.Flags[:], playerDetectInvisibleFlag)) {
 			continue
 		}
 		found++

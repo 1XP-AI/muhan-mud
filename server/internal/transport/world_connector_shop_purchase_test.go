@@ -43,20 +43,20 @@ func TestWorldConnectorSubmitDispatchesShopPurchaseByCanonicalNameAndAlias(t *te
 		t.Fatalf("commits=%d saved player=%+v", commits, saved.Players["actor-1"])
 	}
 
-	// Prefix-like input is a different exact name. C prints
-	// "그런 물건은 팔지 않습니다." and returns 0, so this is a receipt, not a
-	// guessed stock ID and not a command error.
+	// A display-name prefix resolves through the source selector contract while
+	// still allocating only the server-owned copied item identity.
 	secondState := shopPurchaseState(t)
-	secondStore, initialRaw := shopPurchaseStore(t, secondState)
+	secondStore, _ := shopPurchaseStore(t, secondState)
 	secondConnector := newShopPurchaseConnector(t, secondStore, func() (string, error) { return "unused", nil })
 	secondConnection := admitShopPurchaseConnection(t, secondConnector)
-	notSold, err := secondConnection.Submit(context.Background(), "사 방")
-	if err != nil || notSold != world.ShopPurchaseNotSoldResponse {
-		t.Fatalf("prefix-like stock name=%q err=%v", notSold, err)
+	prefixPurchase, err := secondConnection.Submit(context.Background(), "사 방")
+	if err != nil || prefixPurchase != "당신은 방패을(를) 샀습니다.\r\n" {
+		t.Fatalf("prefix stock name=%q err=%v", prefixPurchase, err)
 	}
 	stateRaw, _, _, _, _, commits := secondStore.snapshot()
-	if commits != 1 || string(stateRaw) != string(initialRaw) {
-		t.Fatalf("prefix name mutated or skipped receipt commits=%d", commits)
+	savedPrefix, err := world.DecodeState(stateRaw)
+	if err != nil || commits != 1 || savedPrefix.Players["actor-1"].Body.Gold != 30 || !shopPurchaseHasItem(savedPrefix.Players["actor-1"].Items.Inventory, "unused") {
+		t.Fatalf("prefix selector did not resolve canonical stock commits=%d state=%+v err=%v", commits, savedPrefix, err)
 	}
 }
 
@@ -100,6 +100,59 @@ func TestWorldConnectorSubmitShopPurchaseResolvesPositiveOccurrenceWithoutTrusti
 	if saved.Players["actor-1"].Body.Gold != 90 {
 		t.Fatalf("saved gold=%d", saved.Players["actor-1"].Body.Gold)
 	}
+}
+
+func TestWorldConnectorSubmitShopPurchaseKeySelectorSkipsInvisibleAndReplays(t *testing.T) {
+	state := shopPurchaseStateWithObserver(t, func(s *world.State) {
+		storage := s.Rooms[11]
+		invisible := [8]byte{}
+		invisible[2/8] |= 1 << (2 % 8) // OINVIS
+		storage.Items.Items["stock-hidden"] = world.Item{Object: world.LegacyObject{Name: "숨은물건", Keys: [3]string{"needle", "", ""}, Value: 10, Weight: 1, Flags: invisible}}
+		storage.Items.Items["stock-visible-first"] = world.Item{Object: world.LegacyObject{Name: "보이는첫물건", Keys: [3]string{"needle", "", ""}, Value: 11, Weight: 1}}
+		storage.Items.Items["stock-visible-second"] = world.Item{Object: world.LegacyObject{Name: "보이는둘째물건", Keys: [3]string{"needle", "", ""}, Value: 12, Weight: 1}}
+		storage.Items.Inventory = append(storage.Items.Inventory, "stock-hidden", "stock-visible-first", "stock-visible-second")
+		s.Rooms[11] = storage
+	})
+	allocated := 0
+	store, actor, observer := shopPurchaseSubmitReady(t, state, func() (string, error) {
+		allocated++
+		return "owned-selector", nil
+	})
+	first, err := actor.Submit(context.Background(), "사 needle 2")
+	if err != nil || first != "당신은 보이는둘째물건을(를) 샀습니다.\r\n" || store.commits != 1 || allocated != 1 {
+		t.Fatalf("first=%q err=%v commits=%d allocations=%d", first, err, store.commits, allocated)
+	}
+	select {
+	case event := <-observer.events:
+		if event != "\nAlice이 보이는둘째물건을(를) 샀습니다.\r\n" {
+			t.Fatalf("broadcast=%q", event)
+		}
+	default:
+		t.Fatal("selector purchase did not broadcast")
+	}
+	savedRaw, commits := store.snapshot()
+	saved, err := world.DecodeState(savedRaw)
+	if err != nil || commits != 1 || saved.Players["actor-1"].Body.Gold != 88 || !shopPurchaseHasItem(saved.Players["actor-1"].Items.Inventory, "owned-selector") {
+		t.Fatalf("saved=%+v err=%v commits=%d", saved, err, commits)
+	}
+	replay, err := actor.Submit(context.Background(), "사 needle 2")
+	if err != nil || replay != first || store.commits != 1 || allocated != 1 {
+		t.Fatalf("replay=%q err=%v commits=%d allocations=%d", replay, err, store.commits, allocated)
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("replay fanned out %q", event)
+	default:
+	}
+}
+
+func shopPurchaseHasItem(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 func shopPurchaseStateWithObserver(t *testing.T, mutate func(*world.State)) world.State {

@@ -77,7 +77,14 @@ func TestParseRepairLineAdmitsExactNameAndPositiveOccurrence(t *testing.T) {
 }
 
 func TestExecuteRepairLinePersistsStateAndReplaysWithoutRandom(t *testing.T) {
-	store := &departureStore{state: repairCommandFixture(t)}
+	store := &departureStore{state: repairCommandMutatedFixture(t, func(s *world.State) {
+		actor := s.Players["actor"]
+		item := actor.Items.Items["sword"]
+		item.Object.Name = "NeedleBlade"
+		item.Object.Keys[2] = "needle-key"
+		actor.Items.Items["sword"] = item
+		s.Players["actor"] = actor
+	})}
 	var owners Ownership
 	lease, err := owners.Acquire("actor")
 	if err != nil {
@@ -87,7 +94,8 @@ func TestExecuteRepairLinePersistsStateAndReplaysWithoutRandom(t *testing.T) {
 		t.Fatal(err)
 	}
 	rolls := []int{100, 1, 9}
-	first, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-1", lease, "수리 검", func(low, high int) int {
+	line := `수리 "NEEDLE"`
+	first, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-1", lease, line, func(low, high int) int {
 		if len(rolls) == 0 {
 			t.Fatal("repair replayed RNG during first execution")
 		}
@@ -105,7 +113,7 @@ func TestExecuteRepairLinePersistsStateAndReplaysWithoutRandom(t *testing.T) {
 	if err := json.Unmarshal(first.Response, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.ItemID != "sword" || result.Cost != 25 || result.GoldAfter != 75 || !result.AdjustmentCleared || result.ShotsCurrent != 9 || result.Response == "" {
+	if result.ItemID != "sword" || result.ItemName != "NeedleBlade" || result.Cost != 25 || result.GoldAfter != 75 || !result.AdjustmentCleared || result.ShotsCurrent != 9 || result.Response == "" {
 		t.Fatalf("result=%+v", result)
 	}
 	saved, err := world.DecodeState(store.state)
@@ -113,7 +121,7 @@ func TestExecuteRepairLinePersistsStateAndReplaysWithoutRandom(t *testing.T) {
 		t.Fatalf("saved=%+v err=%v", saved, err)
 	}
 
-	replay, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-1", lease, "수리 검", func(int, int) int { t.Fatal("repair replay consumed RNG"); return 1 })
+	replay, err := owners.ExecuteRepairLine(context.Background(), store, "w", "repair-1", lease, line, func(int, int) int { t.Fatal("repair replay consumed RNG"); return 1 })
 	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}

@@ -18,9 +18,16 @@ var ErrUnsupportedBuyStatesLine = errors.New("line is not an implemented buy-sta
 // BuyStatesCommand is the parser-facing form of command11.c:buy_states.
 // C parse() takes the last token as the verb, so prefix `향상 체력` is not
 // this command. This slice admits the bare prompt and a single suffix
-// selector; later apply tokens stay in the reducer fail-closed path.
+// selector; the world reducer owns all state and apply gates.
 type BuyStatesCommand struct {
 	Stat string
+}
+
+// BuyStatesOptions supplies a server-owned random source for the seven
+// admitted C apply branches. The terminal line never supplies or controls it;
+// a nil Roll preserves the old fail-closed first-gate behavior.
+type BuyStatesOptions struct {
+	Roll func(int, int) int
 }
 
 type buyStatesLineRequest struct {
@@ -75,7 +82,17 @@ func IsBuyStatesLine(line string) bool {
 	return ok
 }
 
+// ExecuteBuyStatesLine keeps the existing no-RNG API and therefore remains
+// fail-closed when a selected branch would need random state.
 func (o *Ownership) ExecuteBuyStatesLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
+	return o.ExecuteBuyStatesLineWithOptions(ctx, store, worldID, commandID, lease, line, BuyStatesOptions{})
+}
+
+// ExecuteBuyStatesLineWithOptions binds a server-owned Roll to the world
+// planner. ExecuteGame checks the durable command receipt before this reducer,
+// so a command-ID replay returns the recorded rolls/result without invoking
+// the reducer or Roll again.
+func (o *Ownership) ExecuteBuyStatesLineWithOptions(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, options BuyStatesOptions) (storage.WorldReceipt, error) {
 	command, ok := ParseBuyStatesLine(line)
 	if !ok {
 		return storage.WorldReceipt{}, ErrUnsupportedBuyStatesLine
@@ -89,7 +106,7 @@ func (o *Ownership) ExecuteBuyStatesLine(ctx context.Context, store engine.Comma
 		if err != nil {
 			return nil, nil, err
 		}
-		proposal, err := state.PlanBuyStates(actorID, command.Stat)
+		proposal, err := state.PlanBuyStatesWithOptions(actorID, command.Stat, world.BuyStatesOptions{Roll: options.Roll})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -107,4 +124,14 @@ func (o *Ownership) ExecuteBuyStatesLine(ctx context.Context, store engine.Comma
 		nextRaw, err := json.Marshal(next)
 		return nextRaw, response, err
 	})
+}
+
+// CommandLine spellings mirror the other session adapters without changing
+// parser or transport wiring in this bounded slice.
+func (o *Ownership) ExecuteBuyStatesCommandLine(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string) (storage.WorldReceipt, error) {
+	return o.ExecuteBuyStatesLine(ctx, store, worldID, commandID, lease, line)
+}
+
+func (o *Ownership) ExecuteBuyStatesCommandLineWithOptions(ctx context.Context, store engine.CommandStore, worldID, commandID string, lease SessionLease, line string, options BuyStatesOptions) (storage.WorldReceipt, error) {
+	return o.ExecuteBuyStatesLineWithOptions(ctx, store, worldID, commandID, lease, line, options)
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestQuoteShopPurchaseByNameRequiresExactNameAndPositiveOccurrence(t *testing.T) {
+func TestQuoteShopPurchaseByNameRequiresPositiveOccurrenceAndRejectsNonMatchingSelector(t *testing.T) {
 	s := shopTransactionFixture(t)
 	quote, err := s.QuoteShopPurchaseByName("a", "검", 2)
 	if err != nil {
@@ -20,7 +20,7 @@ func TestQuoteShopPurchaseByNameRequiresExactNameAndPositiveOccurrence(t *testin
 	}{
 		{name: "검", occ: 0},
 		{name: "검", occ: 3},
-		{name: "검술", occ: 1}, // prefix is not accepted
+		{name: "검술", occ: 1}, // no stock display-name/key has this prefix
 	} {
 		if _, err := s.QuoteShopPurchaseByName("a", tc.name, tc.occ); err == nil {
 			t.Fatalf("invalid name/occurrence accepted: %+v", tc)
@@ -28,6 +28,79 @@ func TestQuoteShopPurchaseByNameRequiresExactNameAndPositiveOccurrence(t *testin
 	}
 	if _, err := s.QuoteShopPurchaseByName("a", "검", 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestShopPurchaseByNameMatchesLegacyDisplayAndKeyPrefixesInCanonicalOrder(t *testing.T) {
+	s := shopTransactionFixture(t)
+	room := s.Rooms[101]
+	permanent := room.Items.Items["stock-sword"].Object.Flags
+	room.Items.Items["stock-display-prefix"] = Item{Object: LegacyObject{Name: "장검", Value: 70, Weight: 1, Flags: permanent}}
+	room.Items.Items["stock-key-zero"] = Item{Object: LegacyObject{Name: "도구0", Keys: [3]string{"needle-zero", "", ""}, Value: 71, Weight: 1, Flags: permanent}}
+	room.Items.Items["stock-key-one"] = Item{Object: LegacyObject{Name: "도구1", Keys: [3]string{"", "needle-one", ""}, Value: 72, Weight: 1, Flags: permanent}}
+	room.Items.Items["stock-key-two"] = Item{Object: LegacyObject{Name: "도구2", Keys: [3]string{"", "", "needle-two"}, Value: 73, Weight: 1, Flags: permanent}}
+	room.Items.Inventory = append(room.Items.Inventory, "stock-display-prefix", "stock-key-zero", "stock-key-one", "stock-key-two")
+	s.Rooms[101] = room
+
+	for _, tc := range []struct {
+		selector string
+		wantID   string
+	}{
+		{selector: "장", wantID: "stock-display-prefix"},
+		{selector: "needle-zero", wantID: "stock-key-zero"},
+		{selector: "needle-one", wantID: "stock-key-one"},
+		{selector: "needle-two", wantID: "stock-key-two"},
+	} {
+		t.Run(tc.selector, func(t *testing.T) {
+			quote, err := s.QuoteShopPurchaseByName("a", tc.selector, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if quote.StockID != tc.wantID {
+				t.Fatalf("selector=%q quote=%+v want stock=%q", tc.selector, quote, tc.wantID)
+			}
+		})
+	}
+
+	quote, err := s.QuoteShopPurchaseByName("a", "검", 2)
+	if err != nil || quote.StockID != "stock-sword-2" {
+		t.Fatalf("duplicate display-name occurrence quote=%+v err=%v", quote, err)
+	}
+	next, result, err := s.BuyShopItemByName("a", "needle-one", 1, sequenceShopAllocator("owned-key-one"))
+	if err != nil || result.StockID != "stock-key-one" || next.Players["a"].Body.Gold != 28 {
+		t.Fatalf("key-prefix buy next=%+v result=%+v err=%v", next.Players["a"], result, err)
+	}
+
+	called := false
+	_, result, err = s.BuyShopItemByName("a", "does-not-match", 1, func() (string, error) {
+		called = true
+		return "unexpected", nil
+	})
+	if err != nil || result.Action != ShopPurchaseNotSoldAction || called {
+		t.Fatalf("non-matching selector result=%+v err=%v allocator=%t", result, err, called)
+	}
+}
+
+func TestShopPurchaseByNameSkipsInvisibleMatchingRootsUnlessDetectInvisible(t *testing.T) {
+	s := shopTransactionFixture(t)
+	room := s.Rooms[101]
+	invisible := [8]byte{}
+	invisible[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	room.Items.Items["stock-hidden-needle"] = Item{Object: LegacyObject{Name: "숨은물건", Keys: [3]string{"needle", "", ""}, Value: 70, Weight: 1, Flags: invisible}}
+	room.Items.Items["stock-visible-needle"] = Item{Object: LegacyObject{Name: "보이는물건", Keys: [3]string{"needle", "", ""}, Value: 71, Weight: 1}}
+	room.Items.Inventory = append(room.Items.Inventory, "stock-hidden-needle", "stock-visible-needle")
+	s.Rooms[101] = room
+
+	quote, err := s.QuoteShopPurchaseByName("a", "needle", 1)
+	if err != nil || quote.StockID != "stock-visible-needle" {
+		t.Fatalf("invisible root was not skipped quote=%+v err=%v", quote, err)
+	}
+	actor := s.Players["a"]
+	actor.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["a"] = actor
+	quote, err = s.QuoteShopPurchaseByName("a", "needle", 1)
+	if err != nil || quote.StockID != "stock-hidden-needle" {
+		t.Fatalf("PDINVI did not admit first invisible root quote=%+v err=%v", quote, err)
 	}
 }
 

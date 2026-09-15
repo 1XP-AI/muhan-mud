@@ -254,6 +254,35 @@ func TestWorldConnectorSubmitValueQuotesAndReplayDoesNotFanOut(t *testing.T) {
 	}
 }
 
+func TestWorldConnectorSubmitValuePrefixAndKeySelectorReplaysWithoutDuplicateCommit(t *testing.T) {
+	store, actor, observer := valueConnectorReady(t, valueConnectorState(t, func(s *world.State) {
+		player := s.Players["a"]
+		first := player.Items.Items["sword-1"]
+		first.Object.Name = "NeedleFirst"
+		first.Object.Keys[0] = "needle-zero"
+		player.Items.Items["sword-1"] = first
+		second := player.Items.Items["sword-2"]
+		second.Object.Name = "SecondBlade"
+		second.Object.Keys[1] = "needle-one"
+		player.Items.Items["sword-2"] = second
+		s.Players["a"] = player
+	}))
+	line := `가격 "NEEDLE" 2`
+	output, err := actor.Submit(context.Background(), line)
+	if err != nil || !strings.Contains(output, "SecondBlade") || store.commits != 1 {
+		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	replay, err := actor.Submit(context.Background(), line)
+	if err != nil || replay != output || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("value selector fanned out %q", event)
+	default:
+	}
+}
+
 func TestWorldConnectorSubmitValueUnmigratedItemsFailClosed(t *testing.T) {
 	store, actor, _ := valueConnectorReady(t, valueConnectorState(t, func(s *world.State) {
 		actor := s.Players["a"]

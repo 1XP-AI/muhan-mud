@@ -148,14 +148,23 @@ func TestWorldConnectorSubmitRepairCParityAndReplayDoesNotFanOut(t *testing.T) {
 }
 
 func TestWorldConnectorSubmitRepairSuccessStillChargesAndReplays(t *testing.T) {
-	raw, err := json.Marshal(repairConnectorState(t, nil))
+	raw, err := json.Marshal(repairConnectorState(t, func(s *world.State) {
+		actor := s.Players["a"]
+		item := actor.Items.Items["sword"]
+		item.Object.Name = "NeedleBlade"
+		item.Object.Keys[1] = "needle-key"
+		actor.Items.Items["sword"] = item
+		s.Players["a"] = actor
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	rollCalls := 0
 	connector, err := NewWorldConnector(WorldConnectorConfig{
 		Store: store, WorldID: "repair-success-world", Clock: func() (int32, int) { return 100, 12 },
 		Roll: func(low, high int) int {
+			rollCalls++
 			if low == 1 && high == 100 {
 				return 100
 			}
@@ -186,8 +195,9 @@ func TestWorldConnectorSubmitRepairSuccessStillChargesAndReplays(t *testing.T) {
 	connector.connections[observer] = struct{}{}
 	connector.mu.Unlock()
 
-	output, err := actor.Submit(context.Background(), "수리 검")
-	if err != nil || !strings.Contains(output, "검을 되돌려 줍니다") || store.commits != 1 {
+	line := `수리 "NEEDLE"`
+	output, err := actor.Submit(context.Background(), line)
+	if err != nil || !strings.Contains(output, "NeedleBlade를 되돌려 줍니다") || store.commits != 1 || rollCalls != 2 {
 		t.Fatalf("output=%q err=%v commits=%d", output, err, store.commits)
 	}
 	savedRaw, commits := store.snapshot()
@@ -198,8 +208,8 @@ func TestWorldConnectorSubmitRepairSuccessStillChargesAndReplays(t *testing.T) {
 	if saved.Players["a"].Body.Flags[0]&(1<<1) != 0 {
 		t.Fatal("successful repair did not F_CLR PHIDDN")
 	}
-	replay, err := actor.Submit(context.Background(), "수리 검")
-	if err != nil || replay != output || store.commits != 1 {
+	replay, err := actor.Submit(context.Background(), line)
+	if err != nil || replay != output || store.commits != 1 || rollCalls != 2 {
 		t.Fatalf("replay=%q err=%v commits=%d", replay, err, store.commits)
 	}
 }

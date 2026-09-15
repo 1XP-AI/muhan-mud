@@ -124,6 +124,97 @@ func TestQuoteValueByNameVisibilityRoomAndMigrationBoundaries(t *testing.T) {
 	}
 }
 
+func TestValueSelectorMatchesNameAndKeysOnceInInventoryOrder(t *testing.T) {
+	var pawnFlags [8]byte
+	pawnFlags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	hidden := Item{Object: LegacyObject{Name: "NeedleHidden", Keys: [3]string{"", "needle-hidden", ""}, Value: 60}}
+	hidden.Object.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	items := &ItemCollection{
+		Items: map[string]Item{
+			"name":   {Object: LegacyObject{Name: "NeedleName", Value: 10}},
+			"key0":   {Object: LegacyObject{Name: "ZeroAlias", Keys: [3]string{"needle-zero", "", ""}, Value: 20}},
+			"key1":   {Object: LegacyObject{Name: "OneAlias", Keys: [3]string{"", "needle-one", ""}, Value: 30}},
+			"key2":   {Object: LegacyObject{Name: "TwoAlias", Keys: [3]string{"", "", "needle-two"}, Value: 40}},
+			"mixed":  {Object: LegacyObject{Name: "NeedleMixed", Keys: [3]string{"needle-mixed", "", ""}, Value: 50}},
+			"hidden": hidden,
+			"parent": {Object: LegacyObject{Name: "NeedleParent", Value: 70}, Contents: []string{"child"}},
+			"child":  {Object: LegacyObject{Name: "NeedleChild", Value: 80}},
+			"ready":  {Object: LegacyObject{Name: "ReadyNeedle", Keys: [3]string{"ready-needle", "", ""}, Value: 90}},
+			"other":  {Object: LegacyObject{Name: "Other", Keys: [3]string{"unrelated", "", ""}, Value: 100}},
+		},
+		Inventory: []string{"name", "key0", "key1", "key2", "mixed", "hidden", "parent", "other"},
+		Ready:     [20]string{0: "ready"},
+	}
+	state := valueTestState(pawnFlags, items)
+	for _, tc := range []struct {
+		name     string
+		selector string
+		wantID   string
+	}{
+		{name: "display name prefix is case insensitive", selector: "NEEDLEN", wantID: "name"},
+		{name: "key zero prefix", selector: "needle-z", wantID: "key0"},
+		{name: "key one prefix", selector: "NEEDLE-O", wantID: "key1"},
+		{name: "key two prefix", selector: "needle-t", wantID: "key2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := state.QuoteValueByName("actor", tc.selector, 1)
+			if err != nil || result.ItemID != tc.wantID {
+				t.Fatalf("selector=%q result=%+v err=%v", tc.selector, result, err)
+			}
+		})
+	}
+
+	// The mixed root matches through both its display name and key[0], but it
+	// contributes exactly one occurrence after the four preceding roots.
+	result, err := state.QuoteValueByName("actor", "NeEdLe", 5)
+	if err != nil || result.ItemID != "mixed" {
+		t.Fatalf("mixed occurrence result=%+v err=%v", result, err)
+	}
+	if _, err := state.QuoteValueByName("actor", "NeEdLe", 6); err == nil {
+		t.Fatal("nested/hidden roots unexpectedly counted for ordinary actor")
+	}
+	if _, err := state.QuoteValueByName("actor", "not-a-key", 1); err == nil {
+		t.Fatal("nonmatching key selected")
+	}
+	if _, err := state.QuoteValueByName("actor", "needle-child", 1); err == nil {
+		t.Fatal("nested child selected through direct inventory selector")
+	}
+	if _, err := state.QuoteValueByName("actor", "ready", 1); err == nil {
+		t.Fatal("equipped Ready root selected by inventory selector")
+	}
+
+	player := state.Players["actor"]
+	player.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	state.Players["actor"] = player
+	result, err = state.QuoteValueByName("actor", "needle", 6)
+	if err != nil || result.ItemID != "hidden" {
+		t.Fatalf("PDINVI hidden occurrence result=%+v err=%v", result, err)
+	}
+}
+
+func TestValueByNameHiddenPrefixNoOpStillClearsPHIDDN(t *testing.T) {
+	var pawnFlags [8]byte
+	pawnFlags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)
+	hidden := Item{Object: LegacyObject{Name: "NeedleHidden", Keys: [3]string{"needle-key", "", ""}, Value: 60}}
+	hidden.Object.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	state := valueTestState(pawnFlags, valueTestItems(map[string]Item{"hidden": hidden}, "hidden"))
+	hideValueActor(&state)
+	next, result, err := state.ValueByName("actor", "NEEDLE", 1)
+	if err != nil || result.Action != ValueNotHoldingAction || result.Response != ValueNotHoldingResponse {
+		t.Fatalf("ordinary hidden selector result=%+v err=%v", result, err)
+	}
+	if valueActorHidden(next) {
+		t.Fatal("named hidden miss did not clear PHIDDN")
+	}
+	player := state.Players["actor"]
+	player.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	state.Players["actor"] = player
+	_, result, err = state.ValueByName("actor", "NEEDLE", 1)
+	if err != nil || result.Action != ValueQuotedAction || result.ItemID != "hidden" {
+		t.Fatalf("PDINVI hidden selector result=%+v err=%v", result, err)
+	}
+}
+
 func TestQuoteValueByNameRejectsMalformedCanonicalGraphAndNegativeValue(t *testing.T) {
 	var flags [8]byte
 	flags[RoomPawnFlag/8] |= 1 << (RoomPawnFlag % 8)

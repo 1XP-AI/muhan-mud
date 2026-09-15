@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1XP-Inc/muhan-mud/server/internal/session"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
@@ -144,5 +145,83 @@ func TestWorldConnectorSubmitUnmigratedTradeStaysClosed(t *testing.T) {
 	output, err := connection.Submit(context.Background(), "사과 상인 교환")
 	if err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || store.commits != 0 {
 		t.Fatalf("unmigrated=%q err=%v commits=%d", output, err, store.commits)
+	}
+}
+
+func TestWorldConnectorSubmitTradePrefixesPublishOneRoomEvent(t *testing.T) {
+	var npcFlags [8]byte
+	npcFlags[37/8] |= 1 << (37 % 8)
+	initial := world.State{
+		Version: 1,
+		Rooms: map[int16]world.RoomState{200: {
+			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 200, Name: "교역방"}},
+			PlayerIDs: []string{"a", "b"},
+			NPCIDs:    []string{"npc"},
+		}},
+		Players: map[string]world.PlayerState{
+			"a": {Body: world.LegacyMonster{Name: "Alice", Type: 0, RoomID: 200}, Online: true, Items: &world.ItemCollection{Items: map[string]world.Item{"offered": {Object: world.LegacyObject{Name: "사과", Keys: [3]string{"apple"}, Type: 13, ShotsMax: 10, ShotsCurrent: 10}}}, Inventory: []string{"offered"}}},
+			"b": {Body: world.LegacyMonster{Name: "Bob", Type: 0, RoomID: 200}, Online: true, Items: &world.ItemCollection{Items: map[string]world.Item{}}},
+		},
+		NPCs: map[string]world.NPCState{
+			"npc": {
+				Body:        world.LegacyMonster{Name: "Keeper", Keys: [3]string{"vendor", "", ""}, Type: 1, RoomID: 200, Flags: npcFlags},
+				TradeOffers: []world.NPCTradeOffer{{Wanted: world.LegacyObject{Name: "사과", Keys: [3]string{"apple"}, Type: 13}, Reward: &world.LegacyObject{Name: "보상검", Type: 13}}},
+			},
+		},
+	}
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &connectorCommandStore{state: raw}
+	connector, err := NewWorldConnector(WorldConnectorConfig{Store: store, WorldID: "trade-prefix-event", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := make([]session.SessionLease, 0, 2)
+	for _, id := range []string{"a", "b"} {
+		lease, acquireErr := connector.owners.Acquire(id)
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		if admitErr := connector.owners.Admit(lease, func() error { return nil }); admitErr != nil {
+			t.Fatal(admitErr)
+		}
+		leases = append(leases, lease)
+	}
+	actor := &worldConnection{game: connector, lease: leases[0], ready: true, events: make(chan string, 8)}
+	observer := &worldConnection{game: connector, lease: leases[1], ready: true, events: make(chan string, 8)}
+	connector.mu.Lock()
+	connector.connections[actor] = struct{}{}
+	connector.connections[observer] = struct{}{}
+	connector.mu.Unlock()
+
+	output, err := actor.Submit(context.Background(), "APPLE VEND 교환")
+	if err != nil || !strings.Contains(output, "보상검") || store.commits != 1 {
+		t.Fatalf("prefix output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	select {
+	case event := <-observer.events:
+		if !strings.Contains(event, "Alice") || !strings.Contains(event, "Keeper") || !strings.Contains(event, "사과") {
+			t.Fatalf("observer event=%q", event)
+		}
+	default:
+		t.Fatal("trade room event missing")
+	}
+	select {
+	case event := <-actor.events:
+		t.Fatalf("actor received own trade event=%q", event)
+	default:
+	}
+
+	// A later command has no offered root and therefore cannot fan out a
+	// second exchange event after the first committed receipt.
+	if _, err := actor.Submit(context.Background(), "APPLE VEND 교환"); err != nil || store.commits != 2 {
+		t.Fatalf("repeat output err=%v commits=%d", err, store.commits)
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("rejected repeat fanned out trade event=%q", event)
+	default:
 	}
 }

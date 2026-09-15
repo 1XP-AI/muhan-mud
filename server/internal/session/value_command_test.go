@@ -142,6 +142,38 @@ func TestExecuteValueLinePersistsTypedReadOnlyResultAndReplays(t *testing.T) {
 	}
 }
 
+func TestExecuteValueLineSupportsPrefixAndKeySelectorAndReplays(t *testing.T) {
+	store := &departureStore{state: valueCommandMutatedFixture(t, world.RoomPawnFlag, func(s *world.State) {
+		actor := s.Players["actor"]
+		first := actor.Items.Items["sword-1"]
+		first.Object.Name = "NeedleFirst"
+		first.Object.Keys[0] = "needle-zero"
+		actor.Items.Items["sword-1"] = first
+		second := actor.Items.Items["sword-2"]
+		second.Object.Name = "SecondBlade"
+		second.Object.Keys[1] = "needle-one"
+		actor.Items.Items["sword-2"] = second
+		s.Players["actor"] = actor
+	})}
+	owners, lease := admitValueOwner(t)
+	line := `가격 "NEEDLE" 2`
+	first, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-prefix-key-1", lease, line)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.ValueResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.ValueQuotedAction || result.ItemID != "sword-2" || result.ItemName != "SecondBlade" || result.Occurrence != 2 {
+		t.Fatalf("prefix/key result=%+v", result)
+	}
+	replay, err := owners.ExecuteValueLine(context.Background(), store, "w", "value-prefix-key-1", lease, line)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func TestExecuteValueLineSupportsRepairQuoteAndFailsBeforeReceipt(t *testing.T) {
 	store := &departureStore{state: valueCommandFixture(t, world.RoomRepairFlag)}
 	owners, lease := admitValueOwner(t)

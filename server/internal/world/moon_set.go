@@ -176,20 +176,71 @@ func validateMoonSetSelector(name string) error {
 	return nil
 }
 
+func validMoonSetObjectText(value string, allowEmpty bool) bool {
+	if value == "" {
+		return allowEmpty
+	}
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+	}
+	return true
+}
+
+func validateMoonSetCollection(c ItemCollection) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrMoonSetCanonicalInventoryNeeded, err)
+	}
+	for id, item := range c.Items {
+		if id == "" || !validMoonSetObjectText(item.Object.Name, false) {
+			return fmt.Errorf("%w: unresolved item identity %q", ErrMoonSetCanonicalInventoryNeeded, id)
+		}
+		for _, key := range item.Object.Keys {
+			if !validMoonSetObjectText(key, true) {
+				return fmt.Errorf("%w: unsafe item key for %q", ErrMoonSetCanonicalInventoryNeeded, id)
+			}
+		}
+	}
+	return nil
+}
+
+func moonSetObjectPrefixMatch(object LegacyObject, selector string) bool {
+	if equalFoldPrefix(object.Name, selector) {
+		return true
+	}
+	for _, key := range object.Keys {
+		if key != "" && equalFoldPrefix(key, selector) {
+			return true
+		}
+	}
+	return false
+}
+
 func selectMoonSetRoot(c ItemCollection, name string, occurrence int) (string, Item, bool, error) {
+	return selectMoonSetRootWithVisibility(c, name, occurrence, false)
+}
+
+func selectMoonSetRootWithVisibility(c ItemCollection, name string, occurrence int, detectInvisible bool) (string, Item, bool, error) {
 	if occurrence < 1 {
 		return "", Item{}, false, ErrMoonSetInvalidOccurrence
 	}
 	if err := validateMoonSetSelector(name); err != nil {
 		return "", Item{}, false, err
 	}
-	if err := c.Validate(); err != nil {
+	if err := validateMoonSetCollection(c); err != nil {
 		return "", Item{}, false, err
 	}
 	found := 0
 	for _, id := range c.Inventory {
-		item, ok := c.Items[id]
-		if !ok || id == "" || !strings.EqualFold(item.Object.Name, name) {
+		item := c.Items[id]
+		if flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible {
+			continue
+		}
+		if !moonSetObjectPrefixMatch(item.Object, name) {
 			continue
 		}
 		found++
@@ -210,8 +261,10 @@ func moonSetResult(p MoonSetProposal) MoonSetResult {
 }
 
 // PlanMoonSet is command8.c:moon_set. itemName empty is the original
-// cmnd->num<2 usage prompt. Matching is exact case-insensitive on direct
-// inventory roots; prefix/key/OINVIS and nested/ready lookup stay fail-closed.
+// cmnd->num<2 usage prompt. Matching follows EQUAL's case-insensitive Go
+// prefix contract across the display name and all three keys, on visible
+// direct inventory roots in authoritative order. Nested/ready lookup stays
+// fail-closed.
 func (s State) PlanMoonSet(actorID, itemName string, occurrence int) (MoonSetProposal, error) {
 	actor, room, err := moonSetActor(s, actorID)
 	if err != nil {
@@ -229,7 +282,7 @@ func (s State) PlanMoonSet(actorID, itemName string, occurrence int) (MoonSetPro
 	if occurrence < 1 {
 		return MoonSetProposal{}, ErrMoonSetInvalidOccurrence
 	}
-	itemID, item, found, err := selectMoonSetRoot(*actor.Items, itemName, occurrence)
+	itemID, item, found, err := selectMoonSetRootWithVisibility(*actor.Items, itemName, occurrence, flag(actor.Body.Flags[:], playerDetectInvisibleFlag))
 	if err != nil {
 		return MoonSetProposal{}, err
 	}

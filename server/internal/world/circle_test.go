@@ -293,3 +293,211 @@ func TestCircleSourceGateOrderingAndChanceOverrides(t *testing.T) {
 		t.Fatalf("PBLIND chance=%d err=%v", got, err)
 	}
 }
+
+func circleSelectorNPC(name string, keys [3]string) NPCState {
+	return NPCState{
+		Body: LegacyMonster{
+			Name: name, Keys: keys, Type: 1, RoomID: 1,
+			HPMax: 100, HPCurrent: 100,
+		},
+		Enemies: []NPCEnemy{},
+	}
+}
+
+func circleSelectorPlayer(name string, keys [3]string) PlayerState {
+	return PlayerState{
+		Body: LegacyMonster{
+			Name: name, Keys: keys, Type: 0, Class: CircleFighterClass,
+			RoomID: 1, HPMax: 100, HPCurrent: 100,
+		},
+		Online: true,
+	}
+}
+
+func TestSelectCircleTargetUsesLegacyCreaturePrefixes(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		keys  [3]string
+	}{
+		{name: "display", query: "DiSp", keys: [3]string{"unused-display-key", "", ""}},
+		{name: "key0", query: "KEYZERO", keys: [3]string{"keyzero-alias", "", ""}},
+		{name: "key1", query: "keyone", keys: [3]string{"", "keyone-alias", ""}},
+		{name: "key2", query: "KeYtWo", keys: [3]string{"", "", "keytwo-alias"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := circleFixture()
+			s.Rooms[1] = RoomState{Resource: s.Rooms[1].Resource, PlayerIDs: []string{"actor"}, NPCIDs: []string{tt.name}}
+			s.NPCs = map[string]NPCState{tt.name: circleSelectorNPC("DisplayTarget", tt.keys)}
+
+			got, err := s.selectCircleTarget("actor", tt.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.targetID != tt.name || got.targetKind != CircleTargetNPC || got.target.Name != "DisplayTarget" {
+				t.Fatalf("target=%+v", got)
+			}
+		})
+	}
+}
+
+func TestSelectCircleTargetCountsMixedNPCFieldsOnce(t *testing.T) {
+	s := circleFixture()
+	s.Rooms[1] = RoomState{Resource: s.Rooms[1].Resource, PlayerIDs: []string{"actor"}, NPCIDs: []string{"mixed", "later"}}
+	s.NPCs = map[string]NPCState{
+		"mixed": circleSelectorNPC("UnrelatedDisplay", [3]string{"mix-zero", "MIX-one", "mix-two"}),
+		"later": circleSelectorNPC("LaterDisplay", [3]string{"mix-later", "", ""}),
+	}
+
+	got, err := s.selectCircleTarget("actor", "MiX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "mixed" {
+		t.Fatalf("mixed-field root was not selected first: %+v", got)
+	}
+}
+
+func TestSelectCircleTargetKeepsMonsterFirstPlayerFallbackAndActorExclusion(t *testing.T) {
+	s := circleFixture()
+	actor := s.Players["actor"]
+	actor.Body.Keys = [3]string{"actor-alias", "", ""}
+	s.Players["actor"] = actor
+	s.Rooms[1] = RoomState{
+		Resource:  s.Rooms[1].Resource,
+		PlayerIDs: []string{"actor", "target"},
+		NPCIDs:    []string{"monster"},
+	}
+	s.NPCs = map[string]NPCState{
+		"monster": circleSelectorNPC("SharedTarget", [3]string{"shared-monster", "", ""}),
+	}
+	s.Players["target"] = circleSelectorPlayer("PlayerTarget", [3]string{"player-fallback", "", ""})
+
+	got, err := s.selectCircleTarget("actor", "SHARED")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "monster" || got.targetKind != CircleTargetNPC {
+		t.Fatalf("monster-first target=%+v", got)
+	}
+
+	room := s.Rooms[1]
+	room.NPCIDs = nil
+	s.Rooms[1] = room
+	got, err = s.selectCircleTarget("actor", "PLAYER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "target" || got.targetKind != CircleTargetPlayer {
+		t.Fatalf("player fallback target=%+v", got)
+	}
+
+	got, err = s.selectCircleTarget("actor", "ACTOR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "" {
+		t.Fatalf("actor was selectable through own display/key: %+v", got)
+	}
+}
+
+func TestSelectCircleTargetPreservesVisibilityAndShortPrefixBoundaries(t *testing.T) {
+	s := circleFixture()
+	hiddenNPC := circleSelectorNPC("HiddenNPC", [3]string{"hidden-npc", "", ""})
+	setSettingFlag(&hiddenNPC.Body, circlePlayerInvisible, true)
+	s.NPCs["hidden"] = hiddenNPC
+	room := s.Rooms[1]
+	room.NPCIDs = []string{"hidden"}
+	s.Rooms[1] = room
+
+	got, err := s.selectCircleTarget("actor", "HIDDEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "" {
+		t.Fatalf("ordinary invisible NPC was visible without PDINVI: %+v", got)
+	}
+	actor := s.Players["actor"]
+	setSettingFlag(&actor.Body, circlePlayerDetect, true)
+	s.Players["actor"] = actor
+	got, err = s.selectCircleTarget("actor", "HIDDEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "hidden" {
+		t.Fatalf("PDINVI did not reveal ordinary invisible NPC: %+v", got)
+	}
+
+	caretaker := circleSelectorNPC("Caretaker", [3]string{"caretaker", "", ""})
+	caretaker.Body.Class = circleCaretakerClass
+	setSettingFlag(&caretaker.Body, circlePlayerDMInvisible, true)
+	s.NPCs["caretaker"] = caretaker
+	room.NPCIDs = []string{"caretaker"}
+	s.Rooms[1] = room
+	got, err = s.selectCircleTarget("actor", "CARETAKER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "" {
+		t.Fatalf("caretaker PDMINV NPC was visible with PDINVI: %+v", got)
+	}
+
+	room.NPCIDs = nil
+	room.PlayerIDs = []string{"actor", "hidden-player", "short-player"}
+	s.Rooms[1] = room
+	hiddenPlayer := circleSelectorPlayer("HiddenPlayer", [3]string{"hidden-player", "", ""})
+	setSettingFlag(&hiddenPlayer.Body, circlePlayerInvisible, true)
+	s.Players["hidden-player"] = hiddenPlayer
+	s.Players["short-player"] = circleSelectorPlayer("Beta", [3]string{"", "", ""})
+	actor = s.Players["actor"]
+	setSettingFlag(&actor.Body, circlePlayerDetect, false)
+	s.Players["actor"] = actor
+	got, err = s.selectCircleTarget("actor", "HIDDEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "" {
+		t.Fatalf("ordinary invisible player was visible without PDINVI: %+v", got)
+	}
+	actor = s.Players["actor"]
+	setSettingFlag(&actor.Body, circlePlayerDetect, true)
+	s.Players["actor"] = actor
+	got, err = s.selectCircleTarget("actor", "HIDDEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "hidden-player" {
+		t.Fatalf("PDINVI did not reveal ordinary invisible player: %+v", got)
+	}
+
+	room.PlayerIDs = []string{"actor"}
+	room.NPCIDs = []string{"short-npc"}
+	s.Rooms[1] = room
+	s.NPCs["short-npc"] = circleSelectorNPC("Alpha", [3]string{"alpha-key", "", ""})
+	got, err = s.selectCircleTarget("actor", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "short-npc" {
+		t.Fatalf("one-byte NPC prefix should be admitted: %+v", got)
+	}
+
+	room.NPCIDs = nil
+	room.PlayerIDs = []string{"actor", "short-player"}
+	s.Rooms[1] = room
+	got, err = s.selectCircleTarget("actor", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "" {
+		t.Fatalf("one-byte player prefix should be rejected after fallback: %+v", got)
+	}
+	got, err = s.selectCircleTarget("actor", "be")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.targetID != "short-player" {
+		t.Fatalf("two-byte player prefix should be admitted: %+v", got)
+	}
+}

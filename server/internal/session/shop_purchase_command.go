@@ -8,9 +8,9 @@ import (
 )
 
 // ErrUnsupportedShopPurchaseLine is returned before a receipt exists when a
-// line is outside the bounded shop purchase contract. Merchant-NPC purchase,
-// prefix/key selection, and implicit client-provided stock IDs are deliberately
-// not accepted by this parser.
+// line is outside the bounded shop purchase contract. Merchant-NPC purchase
+// and implicit client-provided stock IDs are deliberately not accepted by this
+// parser; the bounded selector is resolved by the world reducer.
 var ErrUnsupportedShopPurchaseLine = errors.New("line is not an implemented shop purchase command")
 
 // ShopPurchaseCommand is the only client-facing purchase identity. The
@@ -23,9 +23,9 @@ type ShopPurchaseCommand struct {
 
 // ParseShopPurchaseLine admits the exact C aliases for the bounded shop slice:
 // `사` / `구입` with no name (command7.c:buy cmnd->num < 2) and
-// `사 <exact stock name> [positive occurrence]` / `구입` with the same shape.
-// Matching remains exact (case-insensitive for consistency with other
-// canonical item commands); prefix/key and merchant forms fail closed.
+// `사 <stock selector> [positive occurrence]` / `구입` with the same shape.
+// The world reducer applies the source display-name/key prefix and visibility
+// contract; this parser only preserves one bounded selector token.
 func ParseShopPurchaseLine(line string) (ShopPurchaseCommand, bool) {
 	if !utf8.ValidString(line) {
 		return ShopPurchaseCommand{}, false

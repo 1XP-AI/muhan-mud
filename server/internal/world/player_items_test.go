@@ -71,6 +71,31 @@ func TestPlayerInventoryEmptyCatalog(t *testing.T) {
 	}
 }
 
+func TestPlayerInventoryOmitsNonEmptyAllInvisibleCatalogWithoutDetection(t *testing.T) {
+	s := playerItemsFixture(t)
+	invisible := LegacyObject{Name: "비밀"}
+	invisible.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	p := s.Players["a"]
+	p.Items = &ItemCollection{Items: map[string]Item{
+		"secret-1": {Object: invisible},
+		"secret-2": {Object: invisible},
+	}, Inventory: []string{"secret-1", "secret-2"}}
+	s.Players["a"] = p
+	text, err := s.PlayerInventory("a")
+	if err != nil || text != "" {
+		t.Fatalf("undetected invisible inventory=%q err=%v", text, err)
+	}
+
+	p = s.Players["a"]
+	p.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	s.Players["a"] = p
+	text, err = s.PlayerInventory("a")
+	want := "소지품:\r\n  (x2) 비밀.\r\n"
+	if err != nil || text != want {
+		t.Fatalf("detected invisible inventory=%q err=%v want=%q", text, err, want)
+	}
+}
+
 func TestPlayerInventoryDoesNotInventEmptyName(t *testing.T) {
 	s := playerItemsFixture(t)
 	p := s.Players["a"]
@@ -142,5 +167,20 @@ func TestPlayerEquipmentEmptyCatalog(t *testing.T) {
 	text, err := s.PlayerEquipment("a")
 	if err != nil || text != "당신은 걸치고 있는게 아무것도 없습니다.\r\n" {
 		t.Fatalf("empty equipment=%q err=%v", text, err)
+	}
+}
+
+func TestPlayerEquipmentEmptyCatalogPrecedesBlindResponse(t *testing.T) {
+	s := playerItemsFixture(t)
+	p := s.Players["a"]
+	p.Body.Flags[playerBlindFlag/8] |= 1 << (playerBlindFlag % 8)
+	p.Items = &ItemCollection{Items: map[string]Item{
+		"coin-1": {Object: LegacyObject{Name: "동전"}},
+	}, Inventory: []string{"coin-1"}}
+	s.Players["a"] = p
+	text, err := s.PlayerEquipment("a")
+	want := "당신은 걸치고 있는게 아무것도 없습니다.\r\n"
+	if err != nil || text != want {
+		t.Fatalf("blind empty equipment=%q err=%v want=%q", text, err, want)
 	}
 }

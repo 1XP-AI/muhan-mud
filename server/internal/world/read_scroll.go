@@ -255,12 +255,13 @@ func selectReadScrollRoot(actor PlayerState, name string, occurrence int) (strin
 		return "", Item{}, "", -1, ErrReadScrollMissingItem
 	}
 	found := 0
+	detectInvisible := flag(actor.Body.Flags[:], playerDetectInvisibleFlag)
 	for _, id := range actor.Items.Inventory {
 		item, ok := actor.Items.Items[id]
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical read-scroll inventory root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) || !inventoryObjectVisible(item.Object, detectInvisible) {
 			continue
 		}
 		found++
@@ -268,8 +269,9 @@ func selectReadScrollRoot(actor PlayerState, name string, occurrence int) (strin
 			return id, item, ScrollInventoryRoot, -1, nil
 		}
 	}
-	// magic1.c's find_obj fallback searches ready slots only after the direct
-	// inventory list, preserving one-based occurrence order across both roots.
+	// C find_obj owns its own match counter. magic1.c therefore starts a fresh
+	// positive occurrence count for the Ready fallback after Inventory fails.
+	found = 0
 	for slot, id := range actor.Items.Ready {
 		if id == "" {
 			continue
@@ -278,7 +280,7 @@ func selectReadScrollRoot(actor PlayerState, name string, occurrence int) (strin
 		if !ok {
 			return "", Item{}, "", -1, fmt.Errorf("canonical read-scroll ready root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) || !inventoryObjectVisible(item.Object, detectInvisible) {
 			continue
 		}
 		found++

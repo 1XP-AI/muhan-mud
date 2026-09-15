@@ -16,6 +16,7 @@ type NPCCombatRoundProposal struct {
 	RoomID           int16
 	Hit              bool
 	Critical         bool
+	Poisoned         bool
 	Damage           int
 	PlayerHPBefore   int
 	PlayerHPAfter    int
@@ -23,6 +24,7 @@ type NPCCombatRoundProposal struct {
 	next             State
 	expectedHit      bool
 	expectedCritical bool
+	expectedPoisoned bool
 }
 
 // NPCCombatRoundResult is the committed projection. TargetHP is retained as
@@ -33,11 +35,17 @@ type NPCCombatRoundResult struct {
 	RoomID   int16
 	Hit      bool
 	Critical bool
+	Poisoned bool
 	Damage   int
 	PlayerHP int
 	TargetHP int
 	Killed   bool
 }
+
+const (
+	npcCombatPoisonerFlag       uint = 13 // MPOISS
+	npcCombatVictimPoisonedFlag uint = 16 // PPOISN
+)
 
 func npcCombatContainsID(ids []string, want string) bool {
 	for _, id := range ids {
@@ -129,17 +137,30 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	if err != nil {
 		return NPCCombatRoundProposal{}, err
 	}
-	if damage >= int(player.Body.HPCurrent) {
-		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat player death continuation pending")
-	}
 	nextPlayer := next.Players[playerID]
 	nextPlayer.Body.HPCurrent = int16(int(player.Body.HPCurrent) - damage)
+	poisoned := false
+	if flag(npc.Body.Flags[:], npcCombatPoisonerFlag) {
+		poisonRoll, poisonErr := randomIn(roll, 1, 100)
+		if poisonErr != nil {
+			return NPCCombatRoundProposal{}, poisonErr
+		}
+		poisoned = poisonRoll <= 15
+		if poisoned {
+			nextPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
+		}
+	}
 	next.Players[playerID] = nextPlayer
 	proposal.next = next
 	proposal.Hit = true
 	proposal.expectedHit = true
+	proposal.Poisoned = poisoned
+	proposal.expectedPoisoned = poisoned
 	proposal.Damage = damage
 	proposal.PlayerHPAfter = int(nextPlayer.Body.HPCurrent)
+	if damage >= int(player.Body.HPCurrent) {
+		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat player death continuation pending")
+	}
 	return proposal, nil
 }
 
@@ -160,9 +181,16 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if proposal.Hit != proposal.expectedHit || proposal.Critical != proposal.expectedCritical || proposal.Hit != (proposal.Damage > 0) || (proposal.Critical && !proposal.Hit) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat outcome")
 	}
+	if proposal.Poisoned != proposal.expectedPoisoned || (proposal.Poisoned && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatPoisonerFlag))) {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat poison outcome")
+	}
 	nextPlayer, nextOK := proposal.next.Players[proposal.PlayerID]
 	if !nextOK || int(nextPlayer.Body.HPCurrent) != proposal.PlayerHPAfter {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
+	}
+	wantPoisoned := flag(player.Body.Flags[:], npcCombatVictimPoisonedFlag) || proposal.Poisoned
+	if flag(nextPlayer.Body.Flags[:], npcCombatVictimPoisonedFlag) != wantPoisoned {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat poison candidate")
 	}
 	if proposal.Damage >= proposal.PlayerHPBefore {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("NPC combat player death continuation pending")
@@ -172,7 +200,7 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	}
 	result := NPCCombatRoundResult{
 		NPCID: proposal.NPCID, PlayerID: proposal.PlayerID, RoomID: proposal.RoomID,
-		Hit: proposal.Hit, Critical: proposal.Critical, Damage: proposal.Damage,
+		Hit: proposal.Hit, Critical: proposal.Critical, Poisoned: proposal.Poisoned, Damage: proposal.Damage,
 		PlayerHP: proposal.PlayerHPAfter, TargetHP: proposal.PlayerHPAfter,
 		Killed: false,
 	}

@@ -33,6 +33,7 @@ func TestParseSettingsLineAndCommandClassification(t *testing.T) {
 	}{
 		{"설정", "set", "", false, 0},
 		{"설정 색", "set", "색", false, 0},
+		{"설정 도망수치", "set", "도망수치", false, 0},
 		{"설정 도망수치 1", "set", "도망수치", true, 1},
 		{"해제 방이름", "clear", "방이름", false, 0},
 	}
@@ -82,11 +83,28 @@ func TestExecuteSettingsLinePersistsAndReplays(t *testing.T) {
 }
 
 func TestExecuteSettingsLineRejectsMalformedBeforeReceipt(t *testing.T) {
-	store := &departureStore{state: settingsCommandFixture(t)}
-	var owners Ownership
-	lease, _ := owners.Acquire("a")
-	_ = owners.Admit(lease, func() error { return nil })
-	if _, err := owners.ExecuteSettingsLine(context.Background(), store, "w", "settings-bad", lease, "해제 도망수치 10"); err == nil || store.commits != 0 {
-		t.Fatalf("malformed settings reached receipt: err=%v commits=%d", err, store.commits)
+	for _, line := range []string{
+		"해제 도망수치 10",
+		"설정 색 extra",
+		"설정 도망수치 nope",
+		"설정 도망수치 1 extra",
+		"설정 색\x00",
+		"설정\n",
+		"설정 \"색",
+	} {
+		t.Run(line, func(t *testing.T) {
+			store := &departureStore{state: settingsCommandFixture(t)}
+			var owners Ownership
+			lease, err := owners.Acquire("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := owners.Admit(lease, func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owners.ExecuteSettingsLine(context.Background(), store, "w", "settings-bad", lease, line); err == nil || store.commits != 0 {
+				t.Fatalf("malformed settings reached receipt: line=%q err=%v commits=%d", line, err, store.commits)
+			}
+		})
 	}
 }

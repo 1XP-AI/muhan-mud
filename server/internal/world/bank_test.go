@@ -101,6 +101,34 @@ func TestBankItemGraphMovesCanonicalRoots(t *testing.T) {
 	}
 }
 
+func TestBankItemSelectorsUseLegacyPrefixes(t *testing.T) {
+	s := bankItemFixture()
+	player := s.Players["a"]
+	sword := player.Items.Items["sword"]
+	sword.Object.Name = "Longsword"
+	sword.Object.Keys[0] = "BladeAlias"
+	player.Items.Items["sword"] = sword
+	s.Players["a"] = player
+
+	next, result, err := s.DepositBankItem("a", "blade", 1)
+	if err != nil || result.Action != "bank-deposit-item" || result.ItemName != "Longsword" {
+		t.Fatalf("deposit by key result=%+v err=%v", result, err)
+	}
+
+	account := next.BankAccounts["a"]
+	bankSword := account.Items.Items["sword"]
+	bankSword.Object.Keys[1] = "VaultAlias"
+	account.Items.Items["sword"] = bankSword
+	next.BankAccounts["a"] = account
+	withdrawn, result, err := next.WithdrawBankItem("a", "vault", 1)
+	if err != nil || result.Action != "bank-withdraw-item" || result.ItemName != "Longsword" {
+		t.Fatalf("withdraw by key result=%+v err=%v", result, err)
+	}
+	if len(withdrawn.BankAccounts["a"].Items.Inventory) != 0 || !containsID(withdrawn.Players["a"].Items.Inventory, "sword") {
+		t.Fatalf("withdraw by key locations bank=%+v player=%+v", withdrawn.BankAccounts["a"].Items.Inventory, withdrawn.Players["a"].Items.Inventory)
+	}
+}
+
 func TestBankItemGraphRejectsContainersAndSupportsAll(t *testing.T) {
 	s := bankItemFixture()
 	if _, _, err := s.DepositBankItem("a", "가방", 1); err == nil {

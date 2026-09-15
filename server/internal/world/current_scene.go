@@ -122,13 +122,14 @@ const (
 )
 
 // ErrRoomCombatUnmigrated is returned when display_rom would walk first_enm
-// but canonical enemy state is missing or still a migration sentinel.
+// but canonical enemy state is missing or still unresolved.
 var ErrRoomCombatUnmigrated = errors.New("room combat notices unmigrated")
 
 // renderDisplayRomCombatNotices ports room.c:display_rom's trailing first_mon
 // first_enm loop. find_crt is limited to this room's first_ply; a miss prints
-// nothing. Nil Enemies, negative Damage, and unimported Resource.Monsters
-// fail closed instead of looking peaceful.
+// nothing. Nil Enemies and unimported Resource.Monsters fail closed instead of
+// looking peaceful. Damage is combat bookkeeping that display_rom does not
+// inspect, so an unresolved negative sentinel does not suppress a valid notice.
 func (s State) renderDisplayRomCombatNotices(actorID string, roomID int16, detectInvisible, detectMagic bool) (string, error) {
 	room, ok := s.Rooms[roomID]
 	if !ok {
@@ -153,9 +154,6 @@ func (s State) renderDisplayRomCombatNotices(actorID string, roomID int16, detec
 			continue
 		}
 		first := npc.Enemies[0]
-		if first.Damage < 0 {
-			return "", fmt.Errorf("%w: NPC %s enemy damage", ErrRoomCombatUnmigrated, npcID)
-		}
 		if first.Target.Kind != "player" {
 			continue
 		}

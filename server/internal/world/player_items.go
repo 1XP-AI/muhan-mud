@@ -118,6 +118,9 @@ func (s State) PlayerInventory(actorID string) (string, error) {
 		entries = append(entries, objectCatalogName(item.Object, detectMagic, count))
 	}
 	if len(entries) == 0 {
+		if len(p.Items.Inventory) > 0 {
+			return "", nil
+		}
 		return "소지품:\r\n  없음.\r\n", nil
 	}
 	return "소지품:\r\n  " + strings.Join(entries, ", ") + ".\r\n", nil

@@ -34,6 +34,56 @@ func useTestState(object Item, floor bool) State {
 	}
 }
 
+func TestSelectUseRootMatchesCEqualPrefixesOnceWithIndependentFloorFallback(t *testing.T) {
+	floorOne := LegacyObject{Name: "Floor One", Keys: [3]string{"floor-one", "gate-stone", ""}}
+	floorTwo := LegacyObject{Name: "Floor Two", Keys: [3]string{"floor-two", "", ""}}
+	floorTwo.Flags[useFloorFlag/8] |= 1 << (useFloorFlag % 8)
+	actor := PlayerState{Items: &ItemCollection{
+		Items: map[string]Item{
+			"display":   {Object: LegacyObject{Name: "Healing Flask"}},
+			"key0":      {Object: LegacyObject{Name: "zero-label", Keys: [3]string{"alpha-use", "", ""}}},
+			"key1":      {Object: LegacyObject{Name: "one-label", Keys: [3]string{"", "beta-use", ""}}},
+			"key2":      {Object: LegacyObject{Name: "two-label", Keys: [3]string{"", "", "gamma-use"}}},
+			"duplicate": {Object: LegacyObject{Name: "Healing Root", Keys: [3]string{"healing-key0", "HEALING-KEY1", "healing-key2"}}},
+			"followup":  {Object: LegacyObject{Name: "Healing Followup"}},
+			"cross":     {Object: LegacyObject{Name: "cross inventory", Keys: [3]string{"floor-alias", "", ""}}},
+		},
+		Inventory: []string{"display", "key0", "key1", "key2", "duplicate", "followup", "cross"},
+	}}
+	room := RoomState{Items: &ItemCollection{
+		Items:     map[string]Item{"floor-one": {Object: floorOne}, "floor-two": {Object: floorTwo}},
+		Inventory: []string{"floor-one", "floor-two"},
+	}}
+
+	for _, tc := range []struct {
+		name     string
+		selector string
+		wantID   string
+		wantLoc  UseLocation
+		wantOcc  int
+	}{
+		{name: "display name prefix", selector: "HEAL", wantID: "display", wantLoc: UseInventoryRoot, wantOcc: 1},
+		{name: "key zero prefix", selector: "ALPHA", wantID: "key0", wantLoc: UseInventoryRoot, wantOcc: 1},
+		{name: "key one prefix", selector: "BETA", wantID: "key1", wantLoc: UseInventoryRoot, wantOcc: 1},
+		{name: "key two prefix", selector: "GaMmA", wantID: "key2", wantLoc: UseInventoryRoot, wantOcc: 1},
+		{name: "duplicate fields count one root", selector: "HEAL", wantID: "duplicate", wantLoc: UseInventoryRoot, wantOcc: 2},
+		{name: "duplicate fields do not consume next root", selector: "HEAL", wantID: "followup", wantLoc: UseInventoryRoot, wantOcc: 3},
+		{name: "inventory takes precedence", selector: "FLOOR", wantID: "cross", wantLoc: UseInventoryRoot, wantOcc: 1},
+		{name: "floor occurrence is independent", selector: "FLOOR", wantID: "floor-two", wantLoc: UseFloorRoot, wantOcc: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := selectUseRoot(actor, room, tc.selector, tc.wantOcc)
+			if err != nil || root.id != tc.wantID || root.location != tc.wantLoc || root.occurrence != tc.wantOcc {
+				t.Fatalf("selector=%q occurrence=%d root=%+v err=%v", tc.selector, tc.wantOcc, root, err)
+			}
+		})
+	}
+
+	if _, err := selectUseRoot(actor, room, "GATE", 1); !errors.Is(err, ErrUseFloor) {
+		t.Fatalf("floor root without OUSEFL was admitted: err=%v", err)
+	}
+}
+
 func TestPlanApplyUseDelegatesEquipmentAndClearsHiddenAtomically(t *testing.T) {
 	object := LegacyObject{Name: "검", Type: useSharpType, Wear: equipmentWield, ShotsMax: 1, ShotsCurrent: 1, DiceCount: 1, DiceSides: 4}
 	s := useTestState(Item{Object: object}, false)

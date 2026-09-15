@@ -167,3 +167,73 @@ func TestExecuteBuyStatesLineRejectsUnsupportedAndUnmigratedBeforeReceipt(t *tes
 		t.Fatalf("apply pending err=%v commits=%d", err, store.commits)
 	}
 }
+
+func TestExecuteBuyStatesLineWithOptionsPersistsRollsAndReplaysWithoutSecondRoll(t *testing.T) {
+	initial := sessionBuyStatesFixture(t, world.BuyStatesCaretakerClass, 102000000, 5000000, nil)
+	state, err := world.DecodeState(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := state.Players["actor"]
+	actor.Body.HPMax, actor.Body.HPCurrent = 100, 42
+	actor.Body.MPMax, actor.Body.MPCurrent = 80, 21
+	state.Players["actor"] = actor
+	initial, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: initial}
+	owners, lease := admitBuyStatesOwner(t)
+	calls := 0
+	first, err := owners.ExecuteBuyStatesLineWithOptions(context.Background(), store, "w", "buy-states-apply", lease, "체력 향상", BuyStatesOptions{Roll: func(low, high int) int {
+		calls++
+		if low != 0 || high != 3 {
+			t.Fatalf("vitality roll bounds %d..%d", low, high)
+		}
+		return []int{1, 3}[calls-1]
+	}})
+	if err != nil || first.Replayed || store.commits != 1 || calls != 2 {
+		t.Fatalf("first=%+v err=%v commits=%d calls=%d", first, err, store.commits, calls)
+	}
+	var result world.BuyStatesResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.BuyStatesApplied || !result.Changed || result.Amount != 2 || result.Cost != 2000000 || result.Gain != 9 || result.ExperienceAfter != 100000000 || result.GoldAfter != 3000000 {
+		t.Fatalf("result=%+v", result)
+	}
+	if len(result.Rolls) != 2 || len(result.GrowthRolls) != 2 || result.Rolls[0] != 1 || result.Rolls[1] != 3 {
+		t.Fatalf("result roll evidence=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["actor"].Body.HPMax != 109 || saved.Players["actor"].Body.HPCurrent != 109 || saved.Players["actor"].Body.MPCurrent != 21 {
+		t.Fatalf("saved=%+v", saved.Players["actor"].Body)
+	}
+	replay, err := owners.ExecuteBuyStatesLineWithOptions(context.Background(), store, "w", "buy-states-apply", lease, "체력 향상", BuyStatesOptions{Roll: func(int, int) int {
+		t.Fatal("buy_states replay rerolled")
+		return 0
+	}})
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) || calls != 2 {
+		t.Fatalf("replay=%+v err=%v commits=%d calls=%d", replay, err, store.commits, calls)
+	}
+}
+
+func TestExecuteBuyStatesLineWithOptionsRejectsInvalidRollBeforeReceipt(t *testing.T) {
+	initial := sessionBuyStatesFixture(t, world.BuyStatesCaretakerClass, 101000000, 2000000, nil)
+	store := &departureStore{state: initial}
+	owners, lease := admitBuyStatesOwner(t)
+	if _, err := owners.ExecuteBuyStatesLineWithOptions(context.Background(), store, "w", "buy-states-invalid-roll", lease, "도력 향상", BuyStatesOptions{Roll: func(low, high int) int {
+		if low != 0 || high != 3 {
+			t.Fatalf("invalid roll bounds %d..%d", low, high)
+		}
+		return 9
+	}}); !errors.Is(err, world.ErrBuyStatesRandom) || store.commits != 0 {
+		t.Fatalf("invalid roll err=%v commits=%d", err, store.commits)
+	}
+	if string(store.state) != string(initial) {
+		t.Fatal("invalid roll changed stored state")
+	}
+}

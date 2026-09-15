@@ -24,6 +24,49 @@ func drinkTestState(object LegacyObject, ready bool) State {
 	}
 }
 
+func TestDrinkSelectorUsesCaseInsensitiveEQUALPrefixesAndIndependentReadyFallback(t *testing.T) {
+	actor := drinkTestState(LegacyObject{}, false).Players["a"]
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"display":         {Object: LegacyObject{Name: "HealingPotion"}},
+			"key0":            {Object: LegacyObject{Name: "zero-label", Keys: [3]string{"alpha-potion", "", ""}}},
+			"key1":            {Object: LegacyObject{Name: "one-label", Keys: [3]string{"", "beta-potion", ""}}},
+			"key2":            {Object: LegacyObject{Name: "two-label", Keys: [3]string{"", "", "gamma-potion"}}},
+			"inventory-ready": {Object: LegacyObject{Name: "not-a-potion", Keys: [3]string{"ready-potion", "", ""}}},
+			"ready-one":       {Object: LegacyObject{Name: "first-ready", Keys: [3]string{"ready-potion", "", ""}}},
+			"ready-two":       {Object: LegacyObject{Name: "second-ready", Keys: [3]string{"ready-potion", "", ""}}},
+		},
+		Inventory: []string{"display", "key0", "key1", "key2", "inventory-ready"},
+		Ready:     [20]string{2: "ready-one", 7: "ready-two"},
+	}
+	if err := actor.Items.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		selector   string
+		occurrence int
+		wantID     string
+		wantPlace  DrinkLocation
+		wantSlot   int
+	}{
+		{name: "display name prefix", selector: "HEAL", occurrence: 1, wantID: "display", wantPlace: DrinkInventoryRoot, wantSlot: -1},
+		{name: "key zero prefix", selector: "ALPHA", occurrence: 1, wantID: "key0", wantPlace: DrinkInventoryRoot, wantSlot: -1},
+		{name: "key one prefix", selector: "BETA", occurrence: 1, wantID: "key1", wantPlace: DrinkInventoryRoot, wantSlot: -1},
+		{name: "key two prefix", selector: "GAMMA", occurrence: 1, wantID: "key2", wantPlace: DrinkInventoryRoot, wantSlot: -1},
+		{name: "inventory precedence", selector: "READY-POTION", occurrence: 1, wantID: "inventory-ready", wantPlace: DrinkInventoryRoot, wantSlot: -1},
+		{name: "independent ready occurrence", selector: "READY-POTION", occurrence: 2, wantID: "ready-two", wantPlace: DrinkReadySlot, wantSlot: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, _, place, slot, err := selectDrinkRoot(actor, tc.selector, tc.occurrence)
+			if err != nil || id != tc.wantID || place != tc.wantPlace || slot != tc.wantSlot {
+				t.Fatalf("selector=%q occurrence=%d got id=%q place=%q slot=%d err=%v", tc.selector, tc.occurrence, id, place, slot, err)
+			}
+		})
+	}
+}
+
 func TestPlanApplyDrinkVigorConsumesOneChargeAndClearsHidden(t *testing.T) {
 	object := LegacyObject{Name: "회복약", Type: drinkPotionType, MagicPower: 1, ShotsCurrent: 2, ShotsMax: 2}
 	s := drinkTestState(object, false)

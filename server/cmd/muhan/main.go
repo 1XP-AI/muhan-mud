@@ -93,6 +93,13 @@ func main() {
 	voteManifestMapping := flag.String("build-vote-manifest-mapping", "", "private operator name-to-player-ID mapping JSON for vote manifest build")
 	voteManifestOutput := flag.String("build-vote-manifest-output", "", "private destination manifest for vote-state import")
 	voteManifestBuildDryRun := flag.Bool("build-vote-manifest-dry-run", false, "validate vote files, ISSUE, and mapping without writing a manifest or connecting to PostgreSQL")
+	fullDataDryRun := flag.Bool("full-data-dry-run", false, "read-only aggregate validation of all reviewed migration source families; never opens PostgreSQL or listens")
+	fullDataRooms := flag.String("full-data-rooms", "", "explicit reviewed rooms source directory for -full-data-dry-run")
+	fullDataPlayerManifest := flag.String("full-data-player-manifest", "", "explicit reviewed PlayerSnapshotV1 manifest for -full-data-dry-run")
+	fullDataSocialFamilyManifest := flag.String("full-data-social-family-manifest", "", "explicit reviewed family-ledger-v1 manifest for -full-data-dry-run")
+	fullDataSocialMemoManifest := flag.String("full-data-social-memo-manifest", "", "explicit reviewed character-memos-v1 manifest for -full-data-dry-run")
+	fullDataBankManifest := flag.String("full-data-bank-manifest", "", "explicit reviewed BankSnapshotV1 manifest for -full-data-dry-run")
+	fullDataVoteManifest := flag.String("full-data-vote-manifest", "", "explicit reviewed vote-state-v1 manifest for -full-data-dry-run")
 	playerTickInterval := flag.Duration("player-tick", 20*time.Second, "player vital scheduler cadence; whole seconds")
 	roomResourceTickInterval := flag.Duration("room-resource-tick", 20*time.Second, "canonical floor/door resource scheduler cadence; whole seconds")
 	npcResourceTickInterval := flag.Duration("npc-resource-tick", 20*time.Second, "canonical permanent NPC scheduler cadence; whole seconds")
@@ -159,6 +166,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	fullDataOptions, err := validateFullDataDryRunFlags(
+		*fullDataDryRun,
+		*fullDataRooms, *fullDataPlayerManifest,
+		*fullDataSocialFamilyManifest, *fullDataSocialMemoManifest,
+		*fullDataBankManifest, *fullDataVoteManifest,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	bankSnapshotInspectionSelected := bankSnapshotInspectOptions.Directory != "" || bankSnapshotInspectOptions.File != ""
 	bankRawInspectionSelected := bankRawInspectOptions.Root != ""
 	bankRawConversionSelected := bankRawConvertOptions.Root != ""
@@ -168,6 +184,27 @@ func main() {
 	bankSnapshotManifestBuildSelected := bankSnapshotManifestBuildOptions.ReviewPath != ""
 	voteManifestImportSelected := voteManifestImportOptions.ManifestPath != ""
 	voteManifestBuildSelected := voteManifestBuildOptions.Root != ""
+	if *fullDataDryRun {
+		if backupRestore.mode != backupRestoreNone || *migrate || *seedWorld != "" || *seedRooms != "" || *seedCanonical || *seedIfAbsent || *worldID != "" || *templates != "" || *gameHour >= 0 || *npcTalkDir != "" || *voteIssueFile != "" || playerSnapshotOptions.ManifestPath != "" || playerSnapshotInspectOptions.Directory != "" || playerSnapshotRawOptions.SourceDir != "" || playerSnapshotManifestBuildOptions.ReviewPath != "" || socialImportSelected || socialManifestBuildSelected || bankSnapshotImportSelected || bankSnapshotManifestBuildOptions.ReviewPath != "" || bankSnapshotInspectionSelected || *bankSnapshotInspectDryRun || bankRawInspectionSelected || bankRawConversionSelected || voteManifestImportSelected || voteManifestBuildSelected {
+			log.Fatal("full-data dry-run mode cannot be combined with another import, inspection, conversion, seed, backup, or world mode")
+		}
+		report, runErr := RunFullDataDryRun(fullDataOptions)
+		reportRaw, marshalErr := MarshalFullDataDryRunReport(report)
+		if marshalErr != nil {
+			log.Fatalf("full-data dry-run report failed: %v", marshalErr)
+		}
+		if written, writeErr := os.Stdout.Write(reportRaw); writeErr != nil || written != len(reportRaw) {
+			if writeErr != nil {
+				log.Fatalf("full-data dry-run output failed: %v", writeErr)
+			}
+			log.Fatal("full-data dry-run output was incomplete")
+		}
+		if runErr != nil {
+			log.Printf("full-data dry-run failed: %v", runErr)
+			os.Exit(report.ExitCode)
+		}
+		return
+	}
 	if *bankSnapshotInspectDryRun && !bankSnapshotInspectionSelected && !bankRawInspectionSelected && !bankRawConversionSelected {
 		log.Fatal("-inspect-bank-snapshot-dry-run requires -inspect-bank-snapshot-dir or -inspect-bank-snapshot-file")
 	}

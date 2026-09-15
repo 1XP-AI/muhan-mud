@@ -172,8 +172,9 @@ func TestCurrentSceneCombatNoticeFailsClosedWhenUnmigrated(t *testing.T) {
 	wolf = s.NPCs["npc-wolf"]
 	wolf.Enemies = []NPCEnemy{{Target: EntityRef{Kind: "player", ID: "a"}, Damage: -1}}
 	s.NPCs["npc-wolf"] = wolf
-	if _, err := s.CurrentScene("a", 12); !errors.Is(err, ErrRoomCombatUnmigrated) {
-		t.Fatalf("negative damage: %v", err)
+	text, err := s.CurrentScene("a", 12)
+	if err != nil || !strings.Contains(text, "늑대가 당신과 싸우고 있습니다.\n") {
+		t.Fatalf("negative damage display notice=%q err=%v", text, err)
 	}
 
 	s = playerDeathFixture()

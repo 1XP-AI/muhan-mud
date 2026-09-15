@@ -58,7 +58,7 @@ func TestParseShopMarketplaceLineUsesOnlySourceAliasesAndExplicitOccurrence(t *t
 	if action, ok := parseShopMarketplaceLine("팔아"); !ok || action.kind != "sell" || action.name != "" || action.occurrence != 1 {
 		t.Fatalf("bare sell action=%+v ok=%t", action, ok)
 	}
-	for _, line := range []string{"list", "sell 검", "팔아 검 0", "팔아 검 x", "품목 재고"} {
+	for _, line := range []string{"list", "sell 검", "팔아 검 0", "팔아 검 x", "팔아 검\x00", "품목 재고"} {
 		if _, ok := parseShopMarketplaceLine(line); ok {
 			t.Fatalf("unsupported shop line accepted: %q", line)
 		}
@@ -232,6 +232,36 @@ func TestExecuteShopLineSellPersistsAndReplaysWithoutReevaluatingAllocator(t *te
 	replayed, err := world.DecodeState(store.state)
 	if err != nil || shopMarketplaceActorHidden(replayed) || replayed.Players["a"].Body.Gold != 150 {
 		t.Fatalf("replay re-cleared or re-committed: %+v err=%v commits=%d", replayed, err, store.commits)
+	}
+}
+
+func TestExecuteShopLineSellPreservesKeyPrefixOccurrenceAndReplays(t *testing.T) {
+	store := &departureStore{state: shopMarketplaceMutatedFixture(t, func(s *world.State) {
+		actor := s.Players["a"]
+		actor.Items.Items["key-first"] = world.Item{Object: world.LegacyObject{Name: "도구1", Keys: [3]string{"", "needle", ""}, Type: 13, Value: 100, Weight: 1}}
+		actor.Items.Items["key-second"] = world.Item{Object: world.LegacyObject{Name: "도구2", Keys: [3]string{"", "needle", ""}, Type: 13, Value: 100, Weight: 1}}
+		actor.Items.Inventory = append(actor.Items.Inventory, "key-first", "key-second")
+		s.Players["a"] = actor
+	})}
+	owners, lease := admitShopMarketplaceOwner(t)
+	first, err := owners.ExecuteShopLine(context.Background(), store, "w", "shop-sell-key-prefix", lease, "팔아 needle 2")
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%s err=%v commits=%d", first.Response, err, store.commits)
+	}
+	var result world.ShopSaleResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != world.ShopSaleSoldAction || result.ItemID != "key-second" || result.Payout != 50 {
+		t.Fatalf("key-prefix result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.Gold != 150 || containsShopCommandID(saved.Players["a"].Items.Inventory, "key-second") || !containsShopCommandID(saved.Rooms[201].Items.Inventory, "key-second") {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteShopLine(context.Background(), store, "w", "shop-sell-key-prefix", lease, "팔아 needle 2")
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) || store.commits != 1 {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
 

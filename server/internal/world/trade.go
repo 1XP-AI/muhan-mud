@@ -187,7 +187,7 @@ func (s State) selectTradeNPC(actorID, name string, occurrence int) (string, boo
 	}
 	actor, ok := s.Players[actorID]
 	if !ok || !actor.Online || s.NPCs == nil {
-		return "", false, fmt.Errorf("canonical NPC trade context required")
+		return "", false, ErrTradeNPCUnresolved
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -197,13 +197,25 @@ func (s State) selectTradeNPC(actorID, name string, occurrence int) (string, boo
 	if !ok {
 		return "", false, fmt.Errorf("actor room absent")
 	}
-	found := 0
+	// Validate the complete canonical room list before resolving a match. A
+	// malformed identity after an otherwise matching NPC must not be hidden by
+	// an early return; unresolved canonical state is always fail-closed.
 	for _, id := range room.NPCIDs {
 		npc, exists := s.NPCs[id]
 		if !exists || id == "" || npc.Body.Type != 1 || npc.Body.RoomID != room.Resource.ID {
 			return "", false, ErrTradeNPCUnresolved
 		}
-		if !strings.EqualFold(npc.Body.Name, name) {
+	}
+	found := 0
+	for _, id := range room.NPCIDs {
+		npc := s.NPCs[id]
+		// find_crt walks only the room's first_mon list. The canonical room
+		// slice preserves that order, while legacyCreaturePrefixMatch ports
+		// EQUAL's name/key[0..2] alternatives under the existing Go
+		// case-insensitive identity policy. lookAtVisible is the shared
+		// find_crt visibility gate: ordinary MINVIS requires PDINVI and a
+		// caretaker-class PDMINV identity is always skipped.
+		if !legacyCreaturePrefixMatch(npc.Body, name) || !lookAtVisible(actor.Body, npc.Body) {
 			continue
 		}
 		found++
@@ -214,11 +226,45 @@ func (s State) selectTradeNPC(actorID, name string, occurrence int) (string, boo
 	return "", false, nil
 }
 
+// selectTradeInventoryRoot is the canonical equivalent of object.c:find_obj
+// for command10.c:trade. It searches only direct Inventory roots in stored
+// order; Ready slots, nested children, and legacy Body.Inventory are never
+// consulted. Each root contributes at most one occurrence even when its
+// display name and more than one key match the same selector.
+func selectTradeInventoryRoot(c ItemCollection, name string, occurrence int, detectInvisible bool) (string, error) {
+	if occurrence < 1 {
+		return "", ErrTradeInvalidOccurrence
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("item name required")
+	}
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	found := 0
+	for _, id := range c.Inventory {
+		item, ok := c.Items[id]
+		if !ok || id == "" || !equalInventorySelector(item.Object, name) {
+			continue
+		}
+		if flag(item.Object.Flags[:], objectInvisibleFlag) && !detectInvisible {
+			continue
+		}
+		found++
+		if found == occurrence {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("item not found")
+}
+
 func tradeItemMatches(offered, wanted LegacyObject) bool {
-	// command10.c compares key[0] and name with strcmp. Names are admitted
-	// case-insensitively at the terminal boundary for the existing Go command
-	// convention; key[0] remains an exact identity discriminator.
-	return strings.EqualFold(offered.Name, wanted.Name) && offered.Keys[0] == wanted.Keys[0]
+	// command10.c compares the selected player's object and the loaded wanted
+	// catalog object with strcmp on both name and key[0]. Selector matching is
+	// prefix/case-insensitive at the terminal boundary, but this catalog
+	// identity check must remain exact once an offered root is selected.
+	return offered.Name == wanted.Name && offered.Keys[0] == wanted.Keys[0]
 }
 
 func tradeItemIDs(s State) map[string]struct{} {
@@ -374,7 +420,7 @@ func (s State) planTradeNPCByName(actorID, itemName string, itemOccurrence int, 
 	if npc.TradeOffers == nil {
 		return State{}, NPCTradeResult{}, ErrTradeOffersUnmigrated
 	}
-	itemID, itemErr := selectInventoryRoot(*actor.Items, itemName, itemOccurrence, nil)
+	itemID, itemErr := selectTradeInventoryRoot(*actor.Items, itemName, itemOccurrence, flag(actor.Body.Flags[:], playerDetectInvisibleFlag))
 	if itemErr != nil {
 		base.Response = "당신은 그런 물건을 갖고 있지 않습니다.\r\n"
 		return tradeRejected(s, base)

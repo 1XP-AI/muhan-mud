@@ -400,3 +400,37 @@ func TestExecuteDirectionalLineRejectsMidVerbItemMutationWithoutCommit(t *testin
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
+
+func TestExecuteDirectionalLineRejectsMidVerbItemsAndBankWithoutCommit(t *testing.T) {
+	store := &departureStore{state: directionalCardinalCommandFixture()}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		line string
+		id   string
+	}{
+		{"동 소지품 extra", "items-mid-east"},
+		{"북 장 junk", "items-mid-north"},
+		{"동 잔액", "bank-mid-east-balance"},
+		{"동 입금 extra", "bank-mid-east-deposit"},
+		{"북 출금 junk", "bank-mid-north-withdraw"},
+	} {
+		parsed, parseErr := ParseCommand(tt.line)
+		if parseErr != nil || parsed.Kind == CommandDirectional {
+			t.Fatalf("ParseCommand(%q)=%+v err=%v want fail-closed, not CommandDirectional", tt.line, parsed, parseErr)
+		}
+		if _, execErr := owners.ExecuteDirectionalLine(context.Background(), store, "w", tt.id, lease, tt.line, 100, 12, world.SceneOptions{}, nil, nil, nil); !errors.Is(execErr, ErrUnsupportedDirectionalLine) || store.commits != 0 {
+			t.Fatalf("mid-verb C command %q moved: %v commits=%d", tt.line, execErr, store.commits)
+		}
+		saved, decodeErr := world.DecodeState(store.state)
+		if decodeErr != nil || saved.Players["a"].Body.RoomID != 1 {
+			t.Fatalf("mid-verb C command %q changed RoomID: %+v err=%v", tt.line, saved.Players["a"], decodeErr)
+		}
+	}
+}

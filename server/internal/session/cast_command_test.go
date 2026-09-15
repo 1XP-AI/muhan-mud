@@ -55,6 +55,8 @@ func TestParseCastLineKeepsSelfTargetBoundary(t *testing.T) {
 		{line: "주문 소 bob", kind: CommandCast, spellName: "소", target: "bob"},
 		{line: "주문 귀환", kind: CommandCast, spellName: "귀환"},
 		{line: "주문 귀", kind: CommandCast, spellName: "귀"},
+		{line: "주문 귀환 Bob", kind: CommandCast, spellName: "귀환", target: "Bob"},
+		{line: "주문 귀 Bob", kind: CommandCast, spellName: "귀", target: "Bob"},
 	}
 	for _, tc := range tests {
 		parsed, err := ParseCommand(tc.line)
@@ -62,17 +64,75 @@ func TestParseCastLineKeepsSelfTargetBoundary(t *testing.T) {
 			t.Fatalf("ParseCommand(%q)=%+v err=%v", tc.line, parsed, err)
 		}
 		command, ok := ParseCastLine(tc.line)
-		if !ok || command.SpellName != tc.spellName || command.Target != tc.target {
+		if !ok || command.SpellName != tc.spellName || command.Target != tc.target || (command.Target != "" && command.Occurrence != 1) {
 			t.Fatalf("ParseCastLine(%q)=%+v ok=%v", tc.line, command, ok)
 		}
 	}
-	for _, line := range []string{"주문 회복 Alice", "주문 완치 Bob", "주문 귀환 Alice", "주문 천리안 Bob extra", "주문\n회복", "주문\x00"} {
+	for _, line := range []string{"주문 회복 Alice", "주문 완치 Bob", "주문 천리안 Bob extra", "주문\n회복", "주문\x00"} {
 		if IsCastLine(line) {
 			t.Fatalf("unsupported cast form accepted: %q", line)
 		}
 		parsed, err := ParseCommand(line)
 		if err != nil || parsed.Kind != CommandUnknown {
 			t.Fatalf("malformed cast form=%+v err=%v", parsed, err)
+		}
+	}
+}
+
+func TestParseCastLineRecallTargetOccurrenceIsBounded(t *testing.T) {
+	tests := []struct {
+		line       string
+		target     string
+		occurrence int
+	}{
+		{line: "주문 귀환 Bob", target: "Bob", occurrence: 1},
+		{line: "주문 귀 Bob 2", target: "Bob", occurrence: 2},
+		{line: "주문 귀환 Bob 2147483647", target: "Bob", occurrence: 2147483647},
+	}
+	for _, tc := range tests {
+		command, ok := ParseCastLine(tc.line)
+		if !ok || command.SpellName == "" || command.Target != tc.target || command.Occurrence != tc.occurrence {
+			t.Fatalf("ParseCastLine(%q)=%+v ok=%v", tc.line, command, ok)
+		}
+	}
+	for _, line := range []string{
+		"주문 귀환 Bob 0",
+		"주문 귀환 Bob -1",
+		"주문 귀환 Bob +1",
+		"주문 귀환 Bob 1.0",
+		"주문 귀환 Bob nope",
+		"주문 귀환 Bob 2147483648",
+		"주문 귀환 Bob 999999999999999999999999",
+		"주문 귀환 2",
+		"주문 귀환 -1",
+		"주문 귀환",
+		"주문 귀환 Bob 2 extra",
+		`주문 귀환 "Bob Foo"`,
+		`주문 귀환 "Bob Foo" 2`,
+		"주문 귀환 Bob\n2",
+		"주문 귀환 Bob\x00 2",
+		"주문 귀환 Bob\x1b 2",
+	} {
+		if line == "주문 귀환" {
+			if command, ok := ParseCastLine(line); !ok || command.Target != "" {
+				t.Fatalf("self recall boundary changed: %+v ok=%v", command, ok)
+			}
+			continue
+		}
+		if command, ok := ParseCastLine(line); ok {
+			t.Fatalf("invalid recall occurrence accepted: %q -> %+v", line, command)
+		}
+		store := &departureStore{state: recallSessionFixture(t)}
+		var owners Ownership
+		lease, err := owners.Acquire("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := owners.Admit(lease, func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := owners.ExecuteCastLine(context.Background(), store, "w", "recall-invalid-"+line, lease, line, 100, 12, nil); !errors.Is(err, ErrUnsupportedCastLine) || store.commits != 0 {
+			t.Fatalf("invalid recall reached receipt line=%q err=%v commits=%d", line, err, store.commits)
 		}
 	}
 }

@@ -239,15 +239,6 @@ func trainingActor(s State, actorID string) (PlayerState, RoomState, error) {
 	if actorID == "" || !ok || !actor.Online || actor.Body.Type != 0 || !validTrainingName(actor.Body.Name) {
 		return PlayerState{}, RoomState{}, ErrTrainingActorAbsent
 	}
-	if actor.Body.Class == 0 || actor.Body.Class > trainingMaxClass {
-		return PlayerState{}, RoomState{}, ErrTrainingUnsupportedClass
-	}
-	if actor.Body.Level == 0 {
-		return PlayerState{}, RoomState{}, ErrTrainingUnsupportedLevel
-	}
-	if actor.Body.Experience < 0 || actor.Body.Gold < 0 {
-		return PlayerState{}, RoomState{}, ErrTrainingNumeric
-	}
 	room, ok := s.Rooms[actor.Body.RoomID]
 	if !ok {
 		return PlayerState{}, RoomState{}, ErrTrainingRoomAbsent
@@ -296,47 +287,55 @@ func trainingSimulationFor(actor LegacyMonster, room LegacyRoom) (trainingSimula
 	if flag(actor.Flags[:], playerBlindFlag) {
 		return trainingSimulation{}, ErrTrainingBlind
 	}
-	if !flag(room.Flags[:], trainingRoomFlag) {
-		return trainingSimulation{}, ErrTrainingRoom
-	}
-	if !trainingClassAllowed(actor, room) {
-		return trainingSimulation{}, ErrTrainingClass
-	}
-	if actor.Experience < 0 || actor.Gold < 0 {
-		return trainingSimulation{}, ErrTrainingNumeric
-	}
-	experienceNeeded, err := trainingExperienceNeeded(actor.Level)
-	if err != nil {
-		return trainingSimulation{}, err
-	}
-	goldNeeded, err := trainingGoldNeeded(actor.Level, experienceNeeded)
-	if err != nil {
-		return trainingSimulation{}, err
-	}
-	if int64(actor.Experience) < experienceNeeded {
-		return trainingSimulation{}, fmt.Errorf("%w: need %d more experience", ErrTrainingExperience, experienceNeeded-int64(actor.Experience))
-	}
-	if int64(actor.Gold) < goldNeeded {
-		return trainingSimulation{}, fmt.Errorf("%w: need %d more gold", ErrTrainingGold, goldNeeded-int64(actor.Gold))
-	}
 
-	sim := trainingSimulation{
-		body:                 actor,
-		beforeLevel:          actor.Level,
-		beforeClass:          actor.Class,
-		beforeExperience:     actor.Experience,
-		beforeGold:           actor.Gold,
-		experienceNeeded:     experienceNeeded,
-		goldNeeded:           goldNeeded,
-		nextExperienceNeeded: experienceNeeded,
-		nextGoldNeeded:       goldNeeded,
-	}
+	// command7.c releases PUPDMG before looking at RTRAIN, class, experience,
+	// or gold. Keep the source order in the pure candidate even though a failed
+	// Plan does not expose a partial mutation to callers.
+	sim := trainingSimulation{body: actor}
 	if flag(sim.body.Flags[:], trainingUpDmgFlag) {
 		if err := trainingReleaseUpDmg(&sim.body); err != nil {
 			return trainingSimulation{}, err
 		}
 		sim.upDmgReleased = true
 	}
+	if !flag(room.Flags[:], trainingRoomFlag) {
+		return trainingSimulation{}, ErrTrainingRoom
+	}
+	if sim.body.Class == 0 || sim.body.Class > trainingMaxClass {
+		return trainingSimulation{}, ErrTrainingUnsupportedClass
+	}
+	if !trainingClassAllowed(sim.body, room) {
+		return trainingSimulation{}, ErrTrainingClass
+	}
+	if sim.body.Level == 0 {
+		return trainingSimulation{}, ErrTrainingUnsupportedLevel
+	}
+	if sim.body.Experience < 0 || sim.body.Gold < 0 {
+		return trainingSimulation{}, ErrTrainingNumeric
+	}
+	experienceNeeded, err := trainingExperienceNeeded(sim.body.Level)
+	if err != nil {
+		return trainingSimulation{}, err
+	}
+	goldNeeded, err := trainingGoldNeeded(sim.body.Level, experienceNeeded)
+	if err != nil {
+		return trainingSimulation{}, err
+	}
+	if int64(sim.body.Experience) < experienceNeeded {
+		return trainingSimulation{}, fmt.Errorf("%w: need %d more experience", ErrTrainingExperience, experienceNeeded-int64(sim.body.Experience))
+	}
+	if int64(sim.body.Gold) < goldNeeded {
+		return trainingSimulation{}, fmt.Errorf("%w: need %d more gold", ErrTrainingGold, goldNeeded-int64(sim.body.Gold))
+	}
+
+	sim.beforeLevel = actor.Level
+	sim.beforeClass = actor.Class
+	sim.beforeExperience = actor.Experience
+	sim.beforeGold = actor.Gold
+	sim.experienceNeeded = experienceNeeded
+	sim.goldNeeded = goldNeeded
+	sim.nextExperienceNeeded = experienceNeeded
+	sim.nextGoldNeeded = goldNeeded
 
 	// C's family edit_member is an external side effect. Refuse the transition
 	// before changing the candidate when that unresolved side effect is needed.

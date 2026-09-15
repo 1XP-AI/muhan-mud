@@ -340,6 +340,10 @@ type CastOptions struct {
 	Hour   int
 	Roll   func(int, int) int
 	Target string
+	// Occurrence is the one-based player occurrence from the legacy
+	// command's val[2]. Zero means the existing targeted API omitted the
+	// suffix and is normalized to the first occurrence by recall.
+	Occurrence int
 }
 
 type CastEvent struct {
@@ -418,6 +422,7 @@ type CastProposal struct {
 	CursedItemsCleared int
 	TargetID           string
 	TargetName         string
+	TargetOccurrence   int
 	LocateLinked       bool
 	TargetText         string
 	Hour               int

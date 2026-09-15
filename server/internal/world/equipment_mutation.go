@@ -78,6 +78,33 @@ func equipmentMutationPlayer(s State, actorID string) (PlayerState, error) {
 	return p, nil
 }
 
+// selectEquipmentInventoryRoot is the equipment-local equivalent of C's
+// find_obj over the player's direct first_obj list. It deliberately does not
+// widen selectInventoryRoot: unrelated item commands retain their existing
+// selector contract. EQUAL's display-name/key[0..2] alternatives are folded
+// into one root match, and only visible roots contribute to occurrence order.
+func selectEquipmentInventoryRoot(c ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (string, error) {
+	if occurrence < 1 {
+		return "", fmt.Errorf("invalid item occurrence")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("item name required")
+	}
+	found := 0
+	for _, id := range c.Inventory {
+		item := c.Items[id]
+		if !equalInventorySelector(item.Object, name) || (visible != nil && !visible(item.Object)) {
+			continue
+		}
+		found++
+		if found == occurrence {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("item not found")
+}
+
 func selectReadyRoot(c ItemCollection, name string, occurrence int, visible func(LegacyObject) bool) (int, string, error) {
 	if occurrence < 1 {
 		return 0, "", fmt.Errorf("invalid item occurrence")
@@ -92,7 +119,7 @@ func selectReadyRoot(c ItemCollection, name string, occurrence int, visible func
 			continue
 		}
 		item, ok := c.Items[id]
-		if !ok || !strings.EqualFold(item.Object.Name, name) || (visible != nil && !visible(item.Object)) {
+		if !ok || !equalInventorySelector(item.Object, name) || (visible != nil && !visible(item.Object)) {
 			continue
 		}
 		found++
@@ -323,7 +350,7 @@ func (s State) ReadyItem(actorID, name string, occurrence int, mode EquipmentMod
 		return State{}, EquipmentMutationResult{}, err
 	}
 	detect := flag(p.Body.Flags[:], playerDetectInvisibleFlag)
-	id, err := selectInventoryRoot(*p.Items, name, occurrence, func(object LegacyObject) bool {
+	id, err := selectEquipmentInventoryRoot(*p.Items, name, occurrence, func(object LegacyObject) bool {
 		return detect || !flag(object.Flags[:], objectInvisibleFlag)
 	})
 	if err != nil {

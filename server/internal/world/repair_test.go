@@ -113,7 +113,7 @@ func TestRepairBreakRefundsAndRemovesWholeDirectInventoryRoot(t *testing.T) {
 	}
 }
 
-func TestRepairRequiresExactPositiveDirectOccurrenceAndAdmissionChecks(t *testing.T) {
+func TestRepairRequiresPositiveDirectOccurrenceAndAdmissionChecks(t *testing.T) {
 	base := repairStateFixture()
 	actor := base.Players["a"]
 	second := actor.Items.Items["sword"]
@@ -137,7 +137,6 @@ func TestRepairRequiresExactPositiveDirectOccurrenceAndAdmissionChecks(t *testin
 		name   string
 		mutate func(*State)
 	}{
-		{name: "prefix", mutate: func(s *State) {}},
 		{name: "onofix", mutate: func(s *State) {
 			p := s.Players["a"]
 			item := p.Items.Items["sword"]
@@ -169,11 +168,7 @@ func TestRepairRequiresExactPositiveDirectOccurrenceAndAdmissionChecks(t *testin
 			s := repairStateFixture()
 			test.mutate(&s)
 			before := s
-			name := "검"
-			if test.name == "prefix" {
-				name = "검 일부"
-			}
-			if _, err := s.PlanRepair("a", name, 1, func(int, int) int { t.Fatal("invalid repair consumed RNG"); return 1 }); err == nil {
+			if _, err := s.PlanRepair("a", "검", 1, func(int, int) int { t.Fatal("invalid repair consumed RNG"); return 1 }); err == nil {
 				t.Fatal("invalid repair was admitted")
 			}
 			if !reflect.DeepEqual(s, before) {
@@ -185,6 +180,115 @@ func TestRepairRequiresExactPositiveDirectOccurrenceAndAdmissionChecks(t *testin
 		if _, err := base.PlanRepair("a", "검", occurrence, func(int, int) int { t.Fatal("invalid occurrence consumed RNG"); return 1 }); err == nil {
 			t.Fatalf("occurrence %d was admitted", occurrence)
 		}
+	}
+}
+
+func TestRepairSelectorMatchesNameAndKeysOnceInInventoryOrder(t *testing.T) {
+	s := repairStateFixture()
+	actor := s.Players["a"]
+	hidden := Item{Object: LegacyObject{Name: "NeedleHidden", Keys: [3]string{"", "needle-hidden", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}}
+	hidden.Object.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	actor.Items = &ItemCollection{
+		Items: map[string]Item{
+			"name":   {Object: LegacyObject{Name: "NeedleName", Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"key0":   {Object: LegacyObject{Name: "ZeroAlias", Keys: [3]string{"needle-zero", "", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"key1":   {Object: LegacyObject{Name: "OneAlias", Keys: [3]string{"", "needle-one", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"key2":   {Object: LegacyObject{Name: "TwoAlias", Keys: [3]string{"", "", "needle-two"}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"mixed":  {Object: LegacyObject{Name: "NeedleMixed", Keys: [3]string{"needle-mixed", "", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"hidden": hidden,
+			"parent": {Object: LegacyObject{Name: "NeedleParent", Type: repairMissileType, Value: 100, ShotsMax: 30}, Contents: []string{"child"}},
+			"child":  {Object: LegacyObject{Name: "NeedleChild", Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"ready":  {Object: LegacyObject{Name: "ReadyNeedle", Keys: [3]string{"ready-needle", "", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+			"other":  {Object: LegacyObject{Name: "Other", Keys: [3]string{"unrelated", "", ""}, Type: repairMissileType, Value: 100, ShotsMax: 30}},
+		},
+		Inventory: []string{"name", "key0", "key1", "key2", "mixed", "hidden", "parent", "other"},
+		Ready:     [20]string{0: "ready"},
+	}
+	s.Players["a"] = actor
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	repairSuccessRoll := func(low, high int) int {
+		if low == 1 && high == 100 {
+			return 100
+		}
+		if low == 5 && high == 9 {
+			return 9
+		}
+		t.Fatalf("unexpected repair random range=%d..%d", low, high)
+		return 0
+	}
+	for _, tc := range []struct {
+		name     string
+		selector string
+		wantID   string
+	}{
+		{name: "display name prefix is case insensitive", selector: "NEEDLEN", wantID: "name"},
+		{name: "key zero prefix", selector: "needle-z", wantID: "key0"},
+		{name: "key one prefix", selector: "NEEDLE-O", wantID: "key1"},
+		{name: "key two prefix", selector: "needle-t", wantID: "key2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proposal, err := s.PlanRepair("a", tc.selector, 1, repairSuccessRoll)
+			if err != nil || proposal.ItemID != tc.wantID {
+				t.Fatalf("selector=%q proposal=%+v err=%v", tc.selector, proposal, err)
+			}
+		})
+	}
+
+	// The mixed root matches through both its display name and key[0], but it
+	// contributes exactly one occurrence after the four preceding roots.
+	proposal, err := s.PlanRepair("a", "NeEdLe", 5, repairSuccessRoll)
+	if err != nil || proposal.ItemID != "mixed" {
+		t.Fatalf("mixed occurrence proposal=%+v err=%v", proposal, err)
+	}
+	noRNG := func(int, int) int {
+		t.Fatal("repair selector miss consumed RNG")
+		return 1
+	}
+	for _, tc := range []struct {
+		name       string
+		selector   string
+		occurrence int
+	}{
+		{name: "ordinary hidden skip", selector: "needle-hidden", occurrence: 1},
+		{name: "nonmatching key", selector: "not-a-key", occurrence: 1},
+		{name: "nested child", selector: "needle-child", occurrence: 1},
+		{name: "ready root", selector: "ready", occurrence: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.PlanRepair("a", tc.selector, tc.occurrence, noRNG); err == nil {
+				t.Fatalf("selector=%q occurrence=%d unexpectedly admitted", tc.selector, tc.occurrence)
+			}
+		})
+	}
+	parent, err := s.PlanRepair("a", "needlepar", 1, repairSuccessRoll)
+	if err != nil || parent.ItemID != "parent" {
+		t.Fatalf("parent root policy changed proposal=%+v err=%v", parent, err)
+	}
+
+	ordinary := s.clone()
+	ordinaryActor := ordinary.Players["a"]
+	ordinaryActor.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	ordinary.Players["a"] = ordinaryActor
+	next, result, err := ordinary.RepairByName("a", "NEEDLE-H", 1, noRNG)
+	if err != nil || result.Action != RepairNotHoldingAction || result.Response != RepairNotHoldingResponse {
+		t.Fatalf("ordinary hidden RepairByName result=%+v err=%v", result, err)
+	}
+	if !repairActorHidden(next) {
+		t.Fatal("ordinary hidden no-op cleared PHIDDN")
+	}
+	detected := s.clone()
+	detectedActor := detected.Players["a"]
+	detectedActor.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	detectedActor.Body.Flags[playerHiddenStateFlag/8] |= 1 << (playerHiddenStateFlag % 8)
+	detected.Players["a"] = detectedActor
+	next, result, err = detected.RepairByName("a", "NEEDLE-H", 1, repairSuccessRoll)
+	if err != nil || result.Action != RepairSuccessAction || result.ItemID != "hidden" || next.Players["a"].Body.Gold != 75 {
+		t.Fatalf("PDINVI hidden RepairByName result=%+v err=%v", result, err)
+	}
+	if repairActorHidden(next) {
+		t.Fatal("PDINVI hidden repair did not clear PHIDDN")
 	}
 }
 

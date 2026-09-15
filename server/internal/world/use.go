@@ -207,8 +207,9 @@ type useRoot struct {
 
 // selectUseRoot follows command9.c's inventory-first lookup.  The fallback
 // occurrence is evaluated against the floor roots independently, exactly as
-// the two find_obj calls do.  Matching is exact case-insensitive; no prefix,
-// quote, nested descendant or client item ID is accepted.
+// the two find_obj calls do.  Matching follows C's EQUAL display/key prefix
+// alternatives through the canonical case-insensitive helper; quote, nested
+// descendant and client item ID selectors remain rejected.
 func selectUseRoot(actor PlayerState, room RoomState, name string, occurrence int) (useRoot, error) {
 	if occurrence < 1 || !validUseName(name) {
 		return useRoot{}, fmt.Errorf("invalid use item selector")
@@ -219,7 +220,7 @@ func selectUseRoot(actor PlayerState, room RoomState, name string, occurrence in
 		if !ok {
 			return useRoot{}, fmt.Errorf("canonical use inventory root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) {
 			continue
 		}
 		found++
@@ -236,7 +237,7 @@ func selectUseRoot(actor PlayerState, room RoomState, name string, occurrence in
 		if !ok {
 			return useRoot{}, fmt.Errorf("canonical use floor root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) {
 			continue
 		}
 		found++

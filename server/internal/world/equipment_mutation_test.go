@@ -102,6 +102,115 @@ func TestEquipmentMutationUsesFirstEmptyNeckAndFingerSlots(t *testing.T) {
 	}
 }
 
+func TestEquipmentSelectorsMatchLegacyEqualPrefixesOnceInOrderAndVisibility(t *testing.T) {
+	makeInventoryState := func(detect bool) State {
+		s := equipmentMutationFixture(t)
+		p := s.Players["a"]
+		invisible := [8]byte{}
+		invisible[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+		p.Items = &ItemCollection{
+			Items: map[string]Item{
+				"display":  {Object: LegacyObject{Name: "NeedleDisplay", Keys: [3]string{"needle-display", "", ""}, Wear: equipmentBody, ShotsMax: 1, ShotsCurrent: 1}},
+				"key0":     {Object: LegacyObject{Name: "ZeroLabel", Keys: [3]string{"needle-zero", "", ""}, Wear: equipmentArms, ShotsMax: 1, ShotsCurrent: 1}},
+				"key1":     {Object: LegacyObject{Name: "OneLabel", Keys: [3]string{"", "needle-one", ""}, Wear: equipmentLegs, ShotsMax: 1, ShotsCurrent: 1}},
+				"key2":     {Object: LegacyObject{Name: "TwoLabel", Keys: [3]string{"", "", "needle-two"}, Wear: equipmentHead, ShotsMax: 1, ShotsCurrent: 1}},
+				"mixed":    {Object: LegacyObject{Name: "NeedleMixed", Keys: [3]string{"needle-mixed", "needle-alias", "needle-third"}, Wear: equipmentFeet, ShotsMax: 1, ShotsCurrent: 1}},
+				"hidden":   {Object: LegacyObject{Name: "HiddenNeedle", Keys: [3]string{"needle-hidden", "", ""}, Wear: equipmentFace, ShotsMax: 1, ShotsCurrent: 1, Flags: invisible}},
+				"equipped": {Object: LegacyObject{Name: "Equipped", Keys: [3]string{"equipped-only", "", ""}, Wear: equipmentWield, ShotsMax: 1, ShotsCurrent: 1}},
+			},
+			Inventory: []string{"display", "key0", "key1", "key2", "mixed", "hidden"},
+			Ready:     [20]string{equipmentWield - 1: "equipped"},
+		}
+		if detect {
+			p.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+		}
+		s.Players["a"] = p
+		return s
+	}
+
+	for _, tc := range []struct {
+		selector string
+		wantID   string
+	}{
+		{selector: "NEEDLED", wantID: "display"},
+		{selector: "needle-z", wantID: "key0"},
+		{selector: "NEEDLE-O", wantID: "key1"},
+		{selector: "needle-t", wantID: "key2"},
+	} {
+		next, result, err := makeInventoryState(false).ReadyItem("a", tc.selector, 1, EquipmentWear)
+		if err != nil || next.Players["a"].Items.Ready[result.Slot-1] != tc.wantID {
+			t.Fatalf("selector=%q result=%+v err=%v items=%+v", tc.selector, result, err, next.Players["a"].Items)
+		}
+	}
+
+	// The mixed root matches by display name and all three keys, but C's
+	// find_obj contributes one occurrence for the canonical root.
+	next, result, err := makeInventoryState(false).ReadyItem("a", "NeEdLe", 5, EquipmentWear)
+	if err != nil || result.Slot != equipmentFeet || next.Players["a"].Items.Ready[equipmentFeet-1] != "mixed" {
+		t.Fatalf("mixed inventory occurrence result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	if _, _, err := makeInventoryState(false).ReadyItem("a", "needle", 6, EquipmentWear); err == nil {
+		t.Fatal("invisible inventory root counted without PDINVI")
+	}
+	next, result, err = makeInventoryState(true).ReadyItem("a", "needle", 6, EquipmentWear)
+	if err != nil || result.Slot != equipmentFace || next.Players["a"].Items.Ready[equipmentFace-1] != "hidden" {
+		t.Fatalf("detected invisible inventory result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	if _, _, err := makeInventoryState(false).ReadyItem("a", "equipped", 1, EquipmentWear); err == nil {
+		t.Fatal("Ready root selected by inventory-only equipment command")
+	}
+	if _, _, err := makeInventoryState(false).RemoveItem("a", "needle", 1); err == nil {
+		t.Fatal("Inventory root selected by ready-only equipment command")
+	}
+
+	makeReadyState := func(detect bool) State {
+		s := equipmentMutationFixture(t)
+		p := s.Players["a"]
+		invisible := [8]byte{}
+		invisible[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+		p.Items = &ItemCollection{
+			Items: map[string]Item{
+				"hidden-ready": {Object: LegacyObject{Name: "HiddenReady", Keys: [3]string{"needle-hidden-ready", "", ""}, Wear: equipmentBody, ShotsMax: 1, ShotsCurrent: 1, Flags: invisible}},
+				"ready-key0":   {Object: LegacyObject{Name: "ReadyZero", Keys: [3]string{"needle-ready-zero", "", ""}, Wear: equipmentArms, ShotsMax: 1, ShotsCurrent: 1}},
+				"ready-key1":   {Object: LegacyObject{Name: "ReadyOne", Keys: [3]string{"", "needle-ready-one", ""}, Wear: equipmentLegs, ShotsMax: 1, ShotsCurrent: 1}},
+				"ready-key2":   {Object: LegacyObject{Name: "ReadyTwo", Keys: [3]string{"", "", "needle-ready-two"}, Wear: equipmentHead, ShotsMax: 1, ShotsCurrent: 1}},
+				"ready-mixed":  {Object: LegacyObject{Name: "NeedleReadyMixed", Keys: [3]string{"needle-ready-mixed", "needle-ready-alias", ""}, Wear: equipmentFeet, ShotsMax: 1, ShotsCurrent: 1}},
+			},
+			Ready: [20]string{"hidden-ready", "ready-key0", "ready-key1", "ready-key2", "ready-mixed"},
+		}
+		if detect {
+			p.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+		}
+		s.Players["a"] = p
+		return s
+	}
+
+	next, result, err = makeReadyState(false).RemoveItem("a", "NEEDLE-READY-Z", 1)
+	if err != nil || result.Slot != 2 || !containsID(next.Players["a"].Items.Inventory, "ready-key0") {
+		t.Fatalf("ready key prefix result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	next, result, err = makeReadyState(false).RemoveItem("a", "needle-ready-o", 1)
+	if err != nil || result.Slot != 3 || !containsID(next.Players["a"].Items.Inventory, "ready-key1") {
+		t.Fatalf("ready key[1] prefix result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	next, result, err = makeReadyState(false).RemoveItem("a", "NEEDLE-READY-T", 1)
+	if err != nil || result.Slot != 4 || !containsID(next.Players["a"].Items.Inventory, "ready-key2") {
+		t.Fatalf("ready key[2] prefix result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	next, result, err = makeReadyState(false).RemoveItem("a", "needle-ready", 4)
+	if err != nil || result.Slot != 5 || !containsID(next.Players["a"].Items.Inventory, "ready-mixed") {
+		t.Fatalf("ready mixed occurrence result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	next, result, err = makeReadyState(false).RemoveItem("a", "needle", 1)
+	if err != nil || result.Slot != 2 || !containsID(next.Players["a"].Items.Inventory, "ready-key0") {
+		t.Fatalf("hidden ready visibility result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+	next, result, err = makeReadyState(true).RemoveItem("a", "needle", 1)
+	if err != nil || result.Slot != 1 || !containsID(next.Players["a"].Items.Inventory, "hidden-ready") {
+		t.Fatalf("detected hidden ready result=%+v err=%v items=%+v", result, err, next.Players["a"].Items)
+	}
+}
+
 func TestEquipmentMutationAllSkipsIneligibleAndRemovesNonCursed(t *testing.T) {
 	s := equipmentMutationFixture(t)
 	next, result, err := s.WearAllItems("a")

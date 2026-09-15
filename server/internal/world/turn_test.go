@@ -60,6 +60,112 @@ func turnRollScript(t *testing.T, values ...int) func(int, int) int {
 	}
 }
 
+func TestSelectTurnNPCMatchesLegacyEQUALPrefixesOnceInOrderAndVisibility(t *testing.T) {
+	s := turnStateFixture()
+	s.Rooms[1] = RoomState{
+		Resource:  LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1}},
+		PlayerIDs: []string{"cleric"},
+		NPCIDs: []string{
+			"display", "key0", "key1", "key2", "mixed",
+			"hidden", "caretaker",
+		},
+	}
+	s.NPCs = map[string]NPCState{
+		"display": {
+			Body:    LegacyMonster{Name: "WolfDisplay", Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"key0": {
+			Body:    LegacyMonster{Name: "ZeroLabel", Keys: [3]string{"WolfKeyZero", "", ""}, Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"key1": {
+			Body:    LegacyMonster{Name: "OneLabel", Keys: [3]string{"", "WolfKeyOne", ""}, Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"key2": {
+			Body:    LegacyMonster{Name: "TwoLabel", Keys: [3]string{"", "", "WolfKeyTwo"}, Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"mixed": {
+			Body:    LegacyMonster{Name: "WolfMixed", Keys: [3]string{"WolfMixZero", "WolfMixOne", "WolfMixTwo"}, Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"hidden": {
+			Body:    LegacyMonster{Name: "HiddenWolf", Type: turnMonsterType, Class: 4, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+		"caretaker": {
+			Body:    LegacyMonster{Name: "CaretakerWolf", Type: turnMonsterType, Class: turnInvincibleClass + 1, RoomID: 1, HPMax: 10, HPCurrent: 10},
+			Enemies: []NPCEnemy{},
+		},
+	}
+	hidden := s.NPCs["hidden"]
+	setSettingFlag(&hidden.Body, turnNPCInvisibleFlag, true)
+	s.NPCs["hidden"] = hidden
+	caretaker := s.NPCs["caretaker"]
+	setSettingFlag(&caretaker.Body, turnNPCDMInvisibleFlag, true)
+	s.NPCs["caretaker"] = caretaker
+
+	for occurrence, wantID := range []string{"display", "key0", "key1", "key2", "mixed"} {
+		got, err := s.selectTurnNPC("cleric", "WOLF", occurrence+1)
+		if err != nil || got.id != wantID || got.occurrence != occurrence+1 {
+			t.Fatalf("occurrence=%d got=%+v err=%v", occurrence+1, got, err)
+		}
+	}
+	if got, err := s.selectTurnNPC("cleric", "WOLF", 6); err != nil || got.id != "" {
+		t.Fatalf("mixed root counted more than once: got=%+v err=%v", got, err)
+	}
+
+	if got, err := s.selectTurnNPC("cleric", "HID", 1); err != nil || got.id != "" {
+		t.Fatalf("ordinary invisible NPC should be hidden: got=%+v err=%v", got, err)
+	}
+	actor := s.Players["cleric"]
+	setSettingFlag(&actor.Body, turnActorDetectFlag, true)
+	s.Players["cleric"] = actor
+	if got, err := s.selectTurnNPC("cleric", "HID", 1); err != nil || got.id != "hidden" {
+		t.Fatalf("PDINVI should reveal ordinary invisible NPC: got=%+v err=%v", got, err)
+	}
+	if got, err := s.selectTurnNPC("cleric", "CARE", 1); err != nil || got.id != "" {
+		t.Fatalf("caretaker PDMINV NPC should remain hidden: got=%+v err=%v", got, err)
+	}
+}
+
+func TestSelectTurnNPCRejectsPlayerAndUnknownRoomRoots(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root string
+		add  func(*State)
+	}{
+		{
+			name: "player root",
+			root: "player-root",
+			add: func(s *State) {
+				s.NPCs["player-root"] = NPCState{Body: LegacyMonster{Name: "PlayerRoot", Type: turnPlayerType, RoomID: 1, HPMax: 10, HPCurrent: 10}, Enemies: []NPCEnemy{}}
+			},
+		},
+		{
+			name: "unknown root",
+			root: "missing-root",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := turnStateFixture()
+			if tc.add != nil {
+				tc.add(&s)
+			}
+			s.Rooms[1] = RoomState{
+				Resource:  LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1}},
+				PlayerIDs: []string{"cleric"},
+				NPCIDs:    []string{tc.root},
+			}
+			if _, err := s.selectTurnNPC("cleric", "PLAYER", 1); !errors.Is(err, ErrTurnNPCStateUnresolved) {
+				t.Fatalf("root=%q err=%v", tc.root, err)
+			}
+		})
+	}
+}
+
 func TestPlanApplyTurnNonlethalSuccessAddsEnemyDamageAndBroadcast(t *testing.T) {
 	s := turnStateFixture()
 	actor := s.Players["cleric"]

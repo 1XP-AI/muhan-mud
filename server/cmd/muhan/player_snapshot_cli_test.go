@@ -244,6 +244,42 @@ func TestReadPlayerSnapshotImportManifestRejectsDuplicateIdentityBeforeWrites(t 
 	}
 }
 
+func TestReadPlayerSnapshotImportManifestRejectsSnapshotPathEscape(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath, _, _, _ := writePlayerSnapshotManifestFixture(t, dir, "Alice", "Alice")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest playerSnapshotImportManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Records[0].SnapshotFile = "../outside.bin"
+	escapeRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, escapeRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPlayerSnapshotImportManifest(manifestPath); err == nil || !strings.Contains(err.Error(), "snapshot_file must be a private relative path") {
+		t.Fatalf("snapshot path escape err=%v", err)
+	}
+
+	manifest.Records[0].SnapshotFile = filepath.Join(dir, "outside.bin")
+	abs, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, abs, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPlayerSnapshotImportManifest(manifestPath); err == nil || !strings.Contains(err.Error(), "snapshot_file must be a private relative path") {
+		t.Fatalf("absolute snapshot path err=%v", err)
+	}
+}
+
 func TestPlayerSnapshotManifestDryRunDoesNotRequireDatabase(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath, _, _, _ := writePlayerSnapshotManifestFixture(t, dir, "Alice", "Alice")

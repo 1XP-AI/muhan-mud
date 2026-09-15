@@ -1,5 +1,23 @@
 # Go 게임 서버 기능 원장 (G0 조사)
 
+## 2026-09-15 G4 실제 rooms/NPC/item full-data dry-run
+
+| 원작/운영 경계 | Go 검증 결과 | 검증/남은 조건 |
+| --- | --- | --- |
+| 전체 데이터 이관의 rooms·NPC·item 입력 경계와 side-effect 없는 사전 점검 | `go run ./cmd/muhan -full-data-dry-run -full-data-rooms ../rooms`를 두 번 실행해 모두 예상된 `full-data dry-run missing-input`(exit 1)을 반환. 누락 입력은 `players`, `social_family_manifest`, `social_memo_manifest`, `social`, `bank`, `vote`; 제공된 rooms source 3,216개에서 canonical rooms 2,341개·NPC 639개·item node 8,622개를 재현했고 room digest `5e90290dc9e0f6d7190e4c80f13a2ef82fcd9f1be0289c6fc43f678a8115d85a`, graph digest `050ae89113b6a1b086ee1d4369bc628cda73493761c2ddc1648f87b4a7b90d35`를 확인 | Luna max `ctx_1c5d3f67da39` / `task_94a473d75945`, report `/tmp/g4-full-data-actual-npc-item-report.md`. 두 stdout byte-identical SHA-256 `96c8eceab1350e7eb1fdbc8411aae21046545282e54322c376bf530b96fab6a3`; `database_opened=false`, `listener_started=false`, `outputs_written=false`. worker race 2회·coordinator race·vet·JSON/status/hash/diff-check PASS 후 release. 전체 manifests/data, fencing/recovery, PG backup/PITR/cutover는 미완료 |
+
+## 2026-09-15 `update.c` NPC MPOISS→PPOISN
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `src/update.c:471-490` ordinary NPC hit effect order | 성공 hit 뒤 `MPOISS` bit 13의 정확한 `1..100` 1회 추첨, `<=15`이면 victim `PPOISN` bit 16 설정. world proposal/apply와 durable NPC tick summary/state, lethal probe/replay에 `Poisoned`를 보존하고 miss·non-poisoner·invalid/tampered/stale 후보는 fail-closed | Luna max `ctx_8a120016169c` / `task_b67992572ae2`, report `/tmp/g7-npc-poison-report.md`, worker_done `msg_596526509b82`; coordinator race 2회·vet·gofmt·diff-check·4파일 범위 PASS 후 release. disease/blind/dissolve/breath, producer/tick/AI/추종/리젠, NPC corpus·PG·ARM64·browser/deploy는 미완료 |
+
+## 2026-09-15 `command5.c:who` 중앙 라우팅
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `command5.c:who` bare/long status | 중앙 `ParseCommand`가 exact `누구`·`누구 l`을 `CommandSocial`로 연결하고, 기존 social handler가 long `종족` projection·read-only receipt/replay를 처리한다. 대소문자·추가 토큰·control/newline·`그룹 l`·`무리 l`은 fail-closed | session/transport targeted race 2회, `go vet`, `gofmt`, `git diff --check`, 범위·보호 hash PASS. 채팅·외침·귓말·게시판·우편·그룹·가족·관리 전체, full command ledger, PG/E2E/browser/mobile/deploy는 미완료 |
+
 ## 2026-09-14 display_rom 전투 안내
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
@@ -930,8 +948,8 @@ enabled_rows=343 unique_aliases=341 positive_ids=154 handlers=174 special_-2_row
 특수 행(343에 미포함): `눌러`/`밀어`는 `cmdfn=0` → `special_cmd`. sentinel `@` 1행.
 주석 명령 `은신술`/`가입`/`탈퇴`/`전수`/`변수나한권`/`sneak`는 등록 기능으로 세지 않으며 유지·제외는 사용자 승인 대기.
 
-Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결 214 / 부분 24 / 미연결 105.
-미연결 51 handler는 주로 DM(`dm1.c`–`dm6.c`)과 `notepad`/`list_act`/`list_enm`/`list_charm`.
+Handler 합계: 연결 109 / 부분 20 / 미연결 45. 등록 행 합계: 연결 223 / 부분 24 / 미연결 96.
+미연결 45 handler는 주로 DM(`dm1.c`–`dm6.c`)과 `notepad`.
 
 ### 계정·월드·전투·NPC·경제·마법·사회·관리·저장 계약
 
@@ -944,7 +962,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 경제 | 상점 품목/구매/판매/가치/수리/교환/상인 구입·선택. 은행은 operator-owned PG import까지. 라이브 gold/graph parity는 별도 | `command7.c`/`bank.c` | `world/bank.go` shop/merchant/trade/repair, `world/forge.go`, `world/newforge.go` | `server/internal/session/bank_command_test.go`, `server/internal/session/forge_command_test.go`, `server/internal/session/newforge_command_test.go` | bank import race 기록 있음. 이번 레인은 원장만 | kind-8/raw locator | 라이브 이체, 대량 계좌 대조, 상점/거래 catalog |
 | 마법 | `spllist` 56 + 활성 `ospell` 20. 플레이어 self-cast 다수와 NPC CAST 일부 연결. 대상/맵/공격 주문과 전체 spell effect는 미연결 | `global.c:spllist/ospell`, `magic1.c`–`magic8.c` | `world/cast.go` `spell_catalog.go` | `server/internal/session/cast_command_test.go` | focused race 기록 있음. 이번 레인은 원장만 | spell bit/timer canonical | 대상 주문, `[엔터]` continuation, zap/전주문 DM |
 | 사회 | 말/잡담/환호/그룹말/패거리/결혼/투표/우편/게시판/메모/초대/감정표현. 패거리공지·선전포고·기억 연결 | `command4.c`/`post.c`/`action.c`/`command11.c`/`command12.c` | family_*/marriage/vote/mail/board/emote | `server/internal/session/family_news_command_test.go`, `server/internal/session/family_war_command_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | social file → canonical | 패거리 보상, 운영 news/war import, 전체 C 출력 |
-| 관리 | cmdno 101–147 `*` 명령은 클래스 게이트가 계약. 현재 Go는 `*떨어져라`/`*침공`만 연결. 나머지 DM은 미연결 | `dm1.c`–`dm6.c` | `world/dm_family.go`만 | `server/internal/world/dm_family_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | 특권 명령 별도 suite | teleport/save/reload/shutdown 등 나머지 DM handler |
+| 관리 | cmdno 101–147 `*` 명령은 클래스 게이트가 계약. 현재 Go는 `*active`/`*활성`, `*enemy`/`*적`, `*charm`/`*최면`, `*떨어져라`/`*침공`을 bounded 연결. 나머지 DM은 미연결 | `dm1.c`–`dm6.c`/`update.c` | `world/dm_active.go`, `world/dm_enemy.go`, `world/dm_charm.go`, `world/dm_family.go` | `server/internal/world/dm_active_test.go`, `server/internal/world/dm_enemy_test.go`, `server/internal/world/dm_charm_test.go`, `server/internal/world/dm_family_test.go` | targeted race 기록 있음. 이번 레인은 원장만 | 특권 명령 별도 suite | NPC producer/tick/AI·공격·추종·리젠, teleport/save/reload/shutdown 등 나머지 DM handler |
 | 저장 | PostgreSQL가 영속 권위. command ID+상태 버전 트랜잭션. raw C struct를 DB에 직접 복사하지 않음. runtime descriptor/RNG는 비영속 | `mstruct.h` `player_store.c` `files1.c` | storage/world snapshot import | player/bank snapshot 테스트 | 로컬 PG 선택 실행 기록 있음. 이번 레인은 원장만 | PlayerSnapshotV1/object graph | 운영 백업·복구, 대량 플레이어 대조, live bank |
 
 ### 174 handler 인수 항목
@@ -963,8 +981,8 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `broadsend` | 59 | 2 | `src/command4.c:508` | 연결 | CommandBroadcast; world/broadcast.go | `server/internal/session/broadcast_command_test.go`, `server/internal/world/broadcast_test.go` | 채널/권한 전수 미완료 |
 | `broadsend2` | 70 | 1 | `src/command4.c:571` | 연결 | CommandBroadcast; world/broadcast.go | `server/internal/session/broadcast_command_test.go`, `server/internal/world/broadcast_test.go` | 환호 채널 bounded |
 | `burn` | 83 | 2 | `src/command2.c:1693` | 연결 | CommandBurn; world/burn.go | `server/internal/session/burn_command_test.go`, `server/internal/world/burn_test.go` | 소각 대상 전수 미완료 |
-| `buy` | 42 | 1 | `src/command7.c:169` | 연결 | CommandShopPurchase; world shop/merchant | CMD-GAP (직접 handler 테스트 파일 없음) | 가격/재고 전수 미완료 |
-| `buy_states` | 149 | 1 | `src/command11.c:954` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 향상. Go parser/reducer 없음 |
+| `buy` | 42 | 1 | `src/command7.c:169` | 연결 | CommandShopPurchase; world shop/merchant | `server/internal/session/shop_purchase_command_test.go`, `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_purchase_name_test.go` | 가격/재고 전수 미완료 |
+| `buy_states` | 149 | 1 | `src/command11.c:954` | 연결 | CommandBuyStates; session/buy_states_command.go + world/buy_states.go + transport route | `server/internal/session/buy_states_command_test.go`, `server/internal/world/buy_states_test.go`, `server/internal/transport/world_connector_buy_states_test.go` | 향상 deterministic apply/receipt/replay bounded. live RNG·전체 G3 미완료 |
 | `call_war` | 72 | 1 | `src/special1.c:182` | 연결 | CommandFamilyWar; world/family_war.go | `server/internal/session/family_war_command_test.go`, `server/internal/world/family_war_test.go` | 문주 사망 종료·운영 War 영속·보상 미완료 |
 | `cast` | 38 | 1 | `src/magic1.c:23` | 부분 | CommandCast; world/cast.go + spell_catalog.go + summon.go | `server/internal/session/cast_command_test.go`, `server/internal/world/cast_test.go`, `server/internal/world/summon_test.go` | self-cast 다수·천리안·소환 연결. 공격/맵/기타 대상 주문·[엔터] continuation 미완료 |
 | `change_class` | 86 | 1 | `src/command7.c:1111` | 연결 | CommandChangeClass; world/change_class.go | `server/internal/session/change_class_command_test.go`, `server/internal/world/change_class_test.go` | confirmation bounded |
@@ -1028,10 +1046,10 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `enemy_status` | 154 | 1 | `src/command8.c:1358` | 연결 | CommandEnemyStatus; session enemy status | `server/internal/session/enemy_status_command_test.go` | 상태 bounded |
 | `equipment` | 11 | 2 | `src/command3.c:606` | 연결 | CommandItems; session items/equipment | `server/internal/session/equipment_command_test.go` | 출력 parity 미완료 |
 | `family` | 148 | 1 | `src/command11.c:506` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go`, `server/internal/session/family_mutation_command_test.go` | 가입 신청. family_gold ledger 없으면 fail-closed |
-| `family_member` | 148 | 1 | `src/command12.c:326` | 연결 | CommandFamilyMember; session family member | CMD-GAP (직접 handler 테스트 파일 없음) | 패거리원 bounded |
+| `family_member` | 148 | 1 | `src/command12.c:326` | 연결 | CommandFamilyMember; session family member | `server/internal/session/family_status_command_test.go` | 패거리원 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | `family_news` | 148 | 1 | `src/post.c:290` | 연결 | CommandFamilyNews; world/family_news.go | `server/internal/session/family_news_command_test.go`, `server/internal/world/family_news_test.go` | view_file 페이지/운영 import 미완료 |
 | `family_talk` | 148 | 2 | `src/command11.c:741` | 연결 | CommandFamilyTalk; world/family_talk.go | `server/internal/world/family_talk_test.go` | 패거리말/] bounded |
-| `family_who` | 148 | 1 | `src/command11.c:785` | 연결 | CommandFamilyWho; session family who | CMD-GAP (직접 handler 테스트 파일 없음) | 온라인 목록 bounded |
+| `family_who` | 148 | 1 | `src/command11.c:785` | 연결 | CommandFamilyWho; session family who | `server/internal/session/family_status_command_test.go` | 온라인 목록 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | `flee` | 37 | 2 | `src/command7.c:19` | 연결 | CommandFlee; world/flee.go | `server/internal/session/flee_command_test.go`, `server/internal/world/flee_test.go` | 전투 중 방향 인자는 fail-closed |
 | `fm_out` | 148 | 1 | `src/command12.c:155` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go` | 패거리추방 bounded |
 | `follow` | 18 | 1 | `src/command4.c:641` | 부분 | CommandFollow; session follow | `server/internal/session/follow_command_test.go` | 추종자 graph 일부, C follow 전수 미완료 |
@@ -1052,11 +1070,11 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `inventory` | 6 | 1 | `src/command2.c:1196` | 연결 | CommandItems; session items/equipment | `server/internal/session/items_command_test.go` | 전체 C 출력 parity 미완료 |
 | `invite` | 152 | 1 | `src/command12.c:362` | 연결 | CommandPropertyInvite; world/property_invite.go | `server/internal/world/property_invite_test.go` | 초대 bounded |
 | `kick` | 97 | 1 | `src/command8.c:1176` | 연결 | CommandKick; world/kick.go | `server/internal/session/kick_command_test.go`, `server/internal/world/kick_test.go` | 차기 bounded |
-| `list` | 41 | 1 | `src/command7.c:139` | 연결 | CommandShopList; session shop | CMD-GAP (직접 handler 테스트 파일 없음) | 상점 storage 전수 미완료 |
-| `list_act` | 140 | 2 | `src/update.c:1010` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *active. Go 없음 |
-| `list_charm` | 146 | 2 | `src/dm6.c:268` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *charm. Go 없음 |
-| `list_enm` | 145 | 2 | `src/dm6.c:226` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *enemy. Go 없음 |
-| `list_family` | 148 | 1 | `src/command11.c:859` | 연결 | CommandFamilyList; session family list | CMD-GAP (직접 handler 테스트 파일 없음) | 모든패거리 bounded |
+| `list` | 41 | 1 | `src/command7.c:139` | 연결 | CommandShopList; session shop | `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_marketplace_test.go` | 상점 storage 전수 미완료 |
+| `list_act` | 140 | 2 | `src/update.c:1010` | 연결 | CommandDMActive; session/dm_active_command.go + world/dm_active.go + transport route | `server/internal/session/dm_active_command_test.go`, `server/internal/world/dm_active_test.go`, `server/internal/transport/world_connector_dm_active_test.go` | ActiveNPCIDs canonical order·DM gate·read-only receipt/replay·unresolved identity fail-closed bounded. active producer/tick/AI·PG·full G3 미완료 |
+| `list_charm` | 146 | 2 | `src/dm6.c:268` | 연결 | CommandDMCharm; session/dm_charm_command.go + world/dm_charm.go + transport route | `server/internal/session/dm_charm_command_test.go`, `server/internal/world/dm_charm_test.go`, `server/internal/transport/world_connector_dm_charm_test.go` | global online player target·CharmRefs canonical order·receipt/replay bounded. Charm producer/spell mutation·expiry·NPC AI/tick·PG/full G3 미완료 |
+| `list_enm` | 145 | 2 | `src/dm6.c:226` | 연결 | CommandDMEnemy; session/dm_enemy_command.go + world/dm_enemy.go + transport route | `server/internal/session/dm_enemy_command_test.go`, `server/internal/world/dm_enemy_test.go`, `server/internal/transport/world_connector_dm_enemy_test.go` | same-room NPC enemy list·canonical occurrence/order·receipt/replay bounded. NPC producers/tick/AI·공격·추종·리젠·PG/full G3 미완료 |
+| `list_family` | 148 | 1 | `src/command11.c:859` | 연결 | CommandFamilyList; session family list | `server/internal/session/family_status_command_test.go` | 모든패거리 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | `lock` | 34 | 1 | `src/command6.c:553` | 연결 | CommandDoorKey; world/door_keys.go | `server/internal/world/door_keys_test.go` | 키 객체 graph 전수 미완료 |
 | `look` | 2 | 3 | `src/command2.c:37` | 연결 | CommandLook; session/look_command.go + world/look.go | `server/internal/session/look_command_test.go`, `server/internal/world/look_test.go` | 출구 peek + find_obj(인벤→ready→방) + first_mon + display_rom 전투 안내. 닫힘/지도없음/RONMAR·RONFML/PBLIND. `나`/first_ply는 미완료 |
 | `look_board` | 94 | 1 | `src/board.c:66` | 연결 | CommandBoard; world/board.go | `server/internal/session/board_command_test.go` | 게시판 조회. look_board 심볼명 없음 |
@@ -1079,7 +1097,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `pfinger` | 80 | 1 | `src/command11.c:400` | 연결 | CommandPlayerLookup; session player lookup | `server/internal/session/player_lookup_command_test.go` | 사용자정보 bounded |
 | `picklock` | 35 | 1 | `src/command6.c:641` | 연결 | CommandDoorKey; world/door_keys.go | `server/internal/world/door_keys_test.go` | 스킬/RNG 전수 미완료 |
 | `ply_aliases` | 82 | 2 | `src/alias.c:260` | 연결 | CommandAlias; world/alias.go | `server/internal/session/alias_command_test.go`, `server/internal/world/alias_test.go` | prefix/suffix 둘 다. 영속 전수 미완료 |
-| `ply_suicide` | 77 | 1 | `src/command5.c:653` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 목매달기. Go parser/reducer 없음 |
+| `ply_suicide` | 77 | 1 | `src/command5.c:653` | 연결 | CommandSuicide; session/suicide_command.go + world/suicide.go + transport route | `server/internal/session/suicide_command_test.go`, `server/internal/world/suicide_test.go`, `server/internal/transport/world_connector_suicide_test.go` | 확인/암호 continuation·atomic death·receipt/replay bounded. 운영 계정/전체 C parity 미완료 |
 | `poison_mon` | 98 | 1 | `src/command7.c:1308` | 연결 | CommandPoison; world/poison.go | `server/internal/session/poison_command_test.go`, `server/internal/world/poison_test.go` | 독살포 bounded |
 | `postdelete` | 55 | 1 | `src/post.c:174` | 연결 | CommandMail; world/mail.go | `server/internal/world/mail_test.go` | 삭제 순서 전수 미완료 |
 | `postread` | 54 | 1 | `src/post.c:134` | 연결 | CommandMail; world/mail.go | `server/internal/world/mail_test.go` | 페이지/정렬 전수 미완료 |
@@ -1100,7 +1118,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `say` | 4 | 3 | `src/command2.c:642` | 연결 | CommandSay; world/say.go | `server/internal/world/say_test.go` | prefix/occurrence 확장 없음 |
 | `search` | 24 | 2 | `src/command5.c:549` | 연결 | CommandSearch; world/search.go | `server/internal/session/search_command_test.go`, `server/internal/world/search_test.go` | 숨김 객체 전수 미완료 |
 | `selection` | 75 | 1 | `src/command10.c:597` | 연결 | CommandSelection; world/selection.go | `server/internal/session/selection_command_test.go`, `server/internal/world/selection_test.go` | 상인 선택 bounded |
-| `sell` | 43 | 1 | `src/command7.c:227` | 연결 | CommandShopSell; session shop sell | CMD-GAP (직접 handler 테스트 파일 없음) | 가격/재고 전수 미완료 |
+| `sell` | 43 | 1 | `src/command7.c:227` | 연결 | CommandShopSell; session shop sell | `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_marketplace_test.go` | 가격/재고 전수 미완료 |
 | `sendman` | 17 | 2 | `src/command4.c:408` | 연결 | CommandDirectMessage; world/direct_message.go | `server/internal/session/direct_message_command_test.go`, `server/internal/world/direct_message_test.go` | 오프라인/길이 경계 일부 |
 | `set` | 27 | 1 | `src/command5.c:895` | 연결 | CommandSettings; world/settings.go | `server/internal/world/settings_test.go` | flag 전수 미완료 |
 | `set_title` | 84 | 1 | `src/alias.c:432` | 연결 | CommandTitle; world/title.go | `server/internal/session/title_command_test.go`, `server/internal/world/title_test.go` | 칭호 설정 bounded |
@@ -1124,7 +1142,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | `withdraw` | 63 | 1 | `src/bank.c:401` | 부분 | CommandBank; world/bank.go | `server/internal/session/bank_command_test.go` | 라이브 transfer 미완료 |
 | `writeboard` | 92 | 1 | `src/board.c:176` | 연결 | CommandBoardWrite; world/board_write.go | `server/internal/world/board_write_test.go` | 써 bounded. writeboard 심볼명 없음 |
 | `yell` | 29 | 1 | `src/command6.c:21` | 연결 | CommandYell; world/yell.go | `server/internal/session/yell_command_test.go`, `server/internal/world/yell_test.go` | 권역/방 제한 일부 |
-| `zap` | 60 | 1 | `src/magic1.c:673` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | cmdlist 등록, Go parser/reducer 없음 |
+| `zap` | 60 | 1 | `src/magic1.c:673` | 연결 | CommandZap; session/zap_command.go + world/zap.go + transport route | `server/internal/session/zap_command_test.go`, `server/internal/world/zap_test.go`, `server/internal/transport/world_connector_zap_test.go` | wand selector·vigor bounded, direct/Ready EQUAL·receipt/replay 확인. 전체 spell catalog/effect·PG/E2E 미완료 |
 
 ### 343 등록 행 인수 항목
 
@@ -1237,9 +1255,9 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 105 | 39 | `배워` | `study` | `src/magic1.c:259` | 연결 | CommandStudy; world/study.go | `server/internal/session/study_command_test.go`, `server/internal/world/study_test.go` | 직업/레벨 전수 미완료 |
 | 106 | 39 | `연마` | `study` | `src/magic1.c:259` | 연결 | CommandStudy; world/study.go | `server/internal/session/study_command_test.go`, `server/internal/world/study_test.go` | 직업/레벨 전수 미완료 |
 | 107 | 40 | `읽어` | `readscroll` | `src/magic1.c:352` | 연결 | CommandReadScroll; world/read_scroll.go | `server/internal/world/read_scroll_test.go` | 게시판 `읽어`와 구분 |
-| 108 | 41 | `품목` | `list` | `src/command7.c:139` | 연결 | CommandShopList; session shop | CMD-GAP (직접 handler 테스트 파일 없음) | 상점 storage 전수 미완료 |
-| 109 | 42 | `사` | `buy` | `src/command7.c:169` | 연결 | CommandShopPurchase; world shop/merchant | CMD-GAP (직접 handler 테스트 파일 없음) | 가격/재고 전수 미완료 |
-| 110 | 43 | `팔아` | `sell` | `src/command7.c:227` | 연결 | CommandShopSell; session shop sell | CMD-GAP (직접 handler 테스트 파일 없음) | 가격/재고 전수 미완료 |
+| 108 | 41 | `품목` | `list` | `src/command7.c:139` | 연결 | CommandShopList; session shop | `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_marketplace_test.go` | 상점 storage 전수 미완료 |
+| 109 | 42 | `사` | `buy` | `src/command7.c:169` | 연결 | CommandShopPurchase; world shop/merchant | `server/internal/session/shop_purchase_command_test.go`, `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_purchase_name_test.go` | 가격/재고 전수 미완료 |
+| 110 | 43 | `팔아` | `sell` | `src/command7.c:227` | 연결 | CommandShopSell; session shop sell | `server/internal/session/shop_marketplace_command_test.go`, `server/internal/world/shop_marketplace_test.go` | 가격/재고 전수 미완료 |
 | 111 | 44 | `가치` | `value` | `src/command7.c:294` | 연결 | CommandValue; session value | `server/internal/session/value_command_test.go` | 감정 전수 미완료 |
 | 112 | 44 | `가격` | `value` | `src/command7.c:294` | 연결 | CommandValue; session value | `server/internal/session/value_command_test.go` | 감정 전수 미완료 |
 | 113 | 45 | `기습` | `backstab` | `src/command7.c:342` | 연결 | CommandBackstab; world/backstab.go | `server/internal/session/backstab_command_test.go`, `server/internal/world/backstab_test.go` | 은신/위치 전수 미완료 |
@@ -1262,7 +1280,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 130 | 59 | `잡담` | `broadsend` | `src/command4.c:508` | 연결 | CommandBroadcast; world/broadcast.go | `server/internal/session/broadcast_command_test.go`, `server/internal/world/broadcast_test.go` | 채널/권한 전수 미완료 |
 | 131 | 59 | `잡` | `broadsend` | `src/command4.c:508` | 연결 | CommandBroadcast; world/broadcast.go | `server/internal/session/broadcast_command_test.go`, `server/internal/world/broadcast_test.go` | 채널/권한 전수 미완료 |
 | 132 | 70 | `환호` | `broadsend2` | `src/command4.c:571` | 연결 | CommandBroadcast; world/broadcast.go | `server/internal/session/broadcast_command_test.go`, `server/internal/world/broadcast_test.go` | 환호 채널 bounded |
-| 133 | 60 | `zap` | `zap` | `src/magic1.c:673` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | cmdlist 등록, Go parser/reducer 없음 |
+| 133 | 60 | `zap` | `zap` | `src/magic1.c:673` | 연결 | CommandZap; session/zap_command.go + world/zap.go + transport route | `server/internal/session/zap_command_test.go`, `server/internal/world/zap_test.go`, `server/internal/transport/world_connector_zap_test.go` | wand selector·vigor bounded, direct/Ready EQUAL·receipt/replay 확인. 전체 spell catalog/effect·PG/E2E 미완료 |
 | 134 | 61 | `환영` | `welcome` | `src/command4.c:227` | 부분 | CommandWelcome; session welcome | `server/internal/session/welcome_command_test.go` | 출력/대상 전수 미완료 |
 | 135 | 62 | `방혼술` | `turn` | `src/magic3.c:155` | 연결 | CommandTurn; world/turn.go | `server/internal/session/turn_command_test.go`, `server/internal/world/turn_test.go` | 언데드 대상 전수 미완료 |
 | 136 | 63 | `보관물` | `bank_inv` | `src/bank.c:114` | 부분 | CommandBank; world/bank.go | `server/internal/session/bank_command_test.go` | 보관물 alias는 Bank 경로. bank_inv 심볼 자체는 Go에 없음 |
@@ -1282,7 +1300,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 150 | 74 | `구입` | `purchase` | `src/command10.c:492` | 연결 | CommandShopPurchase/MerchantPurchase; world/merchant_purchase.go | `server/internal/session/merchant_purchase_command_test.go`, `server/internal/world/merchant_purchase_test.go` | 상인 구입 bounded |
 | 151 | 75 | `선택` | `selection` | `src/command10.c:597` | 연결 | CommandSelection; world/selection.go | `server/internal/session/selection_command_test.go`, `server/internal/world/selection_test.go` | 상인 선택 bounded |
 | 152 | 76 | `교환` | `trade` | `src/command10.c:664` | 연결 | CommandTrade; session/world trade | `server/internal/session/trade_command_test.go` | 교환 전수 미완료 |
-| 153 | 77 | `목매달기` | `ply_suicide` | `src/command5.c:653` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 목매달기. Go parser/reducer 없음 |
+| 153 | 77 | `목매달기` | `ply_suicide` | `src/command5.c:653` | 연결 | CommandSuicide; session/suicide_command.go + world/suicide.go + transport route | `server/internal/session/suicide_command_test.go`, `server/internal/world/suicide_test.go`, `server/internal/transport/world_connector_suicide_test.go` | 확인/암호 continuation·atomic death·receipt/replay bounded. 운영 계정/전체 C parity 미완료 |
 | 154 | 78 | `암호` | `passwd` | `src/command11.c:83` | 부분 | CommandPassword; session password + storage bcrypt | `server/internal/session/password_command_test.go` | 게임 연결 continuation 일부, 운영 계정 이관 미완료 |
 | 155 | 79 | `투표` | `vote` | `src/command11.c:190` | 연결 | CommandVote; world/vote.go | `server/internal/session/vote_command_test.go`, `server/internal/world/vote_test.go` | raw→manifest 있음. 라이브 투표 전수 미완료 |
 | 156 | 80 | `사용자정보` | `pfinger` | `src/command11.c:400` | 연결 | CommandPlayerLookup; session player lookup | `server/internal/session/player_lookup_command_test.go` | 사용자정보 bounded |
@@ -1350,7 +1368,7 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 218 | 100 | `구박` | `action` | `src/action.c:43` | 연결 | CommandEmote/Express/LookAtTarget; world/emote.go + express + look_at_target | `server/internal/world/emote_test.go`, `server/internal/session/look_at_target_command_test.go` | 감정표현 alias 집합 bounded. NPC 대상 fail-closed |
 | 219 | 100 | `안아` | `action` | `src/action.c:43` | 연결 | CommandEmote/Express/LookAtTarget; world/emote.go + express + look_at_target | `server/internal/world/emote_test.go`, `server/internal/session/look_at_target_command_test.go` | 감정표현 alias 집합 bounded. NPC 대상 fail-closed |
 | 220 | 100 | `껴안아` | `action` | `src/action.c:43` | 연결 | CommandEmote/Express/LookAtTarget; world/emote.go + express + look_at_target | `server/internal/world/emote_test.go`, `server/internal/session/look_at_target_command_test.go` | 감정표현 alias 집합 bounded. NPC 대상 fail-closed |
-| 221 | 149 | `향상` | `buy_states` | `src/command11.c:954` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 향상. Go parser/reducer 없음 |
+| 221 | 149 | `향상` | `buy_states` | `src/command11.c:954` | 연결 | CommandBuyStates; session/buy_states_command.go + world/buy_states.go + transport route | `server/internal/session/buy_states_command_test.go`, `server/internal/world/buy_states_test.go`, `server/internal/transport/world_connector_buy_states_test.go` | 향상 deterministic apply/receipt/replay bounded. live RNG·전체 G3 미완료 |
 | 222 | 150 | `결혼` | `marriage` | `src/command11.c:1124` | 연결 | CommandMarriage; world/marriage.go | `server/internal/session/marriage_command_test.go`, `server/internal/world/marriage_test.go` | 신청/수락 bounded |
 | 223 | 150 | `사랑말` | `m_send` | `src/command11.c:1247` | 연결 | CommandMarriageSend; world/marriage_followup.go | `server/internal/session/marriage_followup_command_test.go` | 사랑말 bounded |
 | 224 | 150 | `이혼` | `divorce` | `src/command11.c:1291` | 연결 | CommandDivorce; world/marriage_followup.go | `server/internal/session/marriage_followup_command_test.go`, `server/internal/world/marriage_followup_test.go` | 이혼 bounded |
@@ -1358,16 +1376,16 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 226 | 151 | `메모` | `memo` | `src/command12.c:85` | 연결 | CommandMemo; world/memo.go | `server/internal/session/memo_command_test.go`, `server/internal/world/memo_test.go` | 메모 bounded |
 | 227 | 152 | `초대` | `invite` | `src/command12.c:362` | 연결 | CommandPropertyInvite; world/property_invite.go | `server/internal/world/property_invite_test.go` | 초대 bounded |
 | 228 | 154 | `상태` | `enemy_status` | `src/command8.c:1358` | 연결 | CommandEnemyStatus; session enemy status | `server/internal/session/enemy_status_command_test.go` | 상태 bounded |
-| 229 | 148 | `패거리누구` | `family_who` | `src/command11.c:785` | 연결 | CommandFamilyWho; session family who | CMD-GAP (직접 handler 테스트 파일 없음) | 온라인 목록 bounded |
+| 229 | 148 | `패거리누구` | `family_who` | `src/command11.c:785` | 연결 | CommandFamilyWho; session family who | `server/internal/session/family_status_command_test.go` | 온라인 목록 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | 230 | 148 | `패거리공지` | `family_news` | `src/post.c:290` | 연결 | CommandFamilyNews; world/family_news.go | `server/internal/session/family_news_command_test.go`, `server/internal/world/family_news_test.go` | view_file 페이지/운영 import 미완료 |
 | 231 | 148 | `패거리가입` | `family` | `src/command11.c:506` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go`, `server/internal/session/family_mutation_command_test.go` | 가입 신청. family_gold ledger 없으면 fail-closed |
 | 232 | 148 | `가입허가` | `boss_family` | `src/command11.c:597` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go`, `server/internal/session/family_mutation_command_test.go` | 가입허가 bounded |
 | 233 | 148 | `패거리탈퇴` | `out_family` | `src/command11.c:662` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go` | 패거리탈퇴. out_family 심볼명 없음(PlanFamilyLeave) |
 | 234 | 148 | `패거리추방` | `fm_out` | `src/command12.c:155` | 연결 | CommandFamilyMutation; world/family_mutation.go | `server/internal/world/family_mutation_test.go` | 패거리추방 bounded |
-| 235 | 148 | `패거리원` | `family_member` | `src/command12.c:326` | 연결 | CommandFamilyMember; session family member | CMD-GAP (직접 handler 테스트 파일 없음) | 패거리원 bounded |
+| 235 | 148 | `패거리원` | `family_member` | `src/command12.c:326` | 연결 | CommandFamilyMember; session family member | `server/internal/session/family_status_command_test.go` | 패거리원 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | 236 | 148 | `패거리말` | `family_talk` | `src/command11.c:741` | 연결 | CommandFamilyTalk; world/family_talk.go | `server/internal/world/family_talk_test.go` | 패거리말/] bounded |
 | 237 | 148 | `]` | `family_talk` | `src/command11.c:741` | 연결 | CommandFamilyTalk; world/family_talk.go | `server/internal/world/family_talk_test.go` | 패거리말/] bounded |
-| 238 | 148 | `모든패거리` | `list_family` | `src/command11.c:859` | 연결 | CommandFamilyList; session family list | CMD-GAP (직접 handler 테스트 파일 없음) | 모든패거리 bounded |
+| 238 | 148 | `모든패거리` | `list_family` | `src/command11.c:859` | 연결 | CommandFamilyList; session family list | `server/internal/session/family_status_command_test.go` | 모든패거리 parser/receipt/replay bounded; catalog 이관·mutation 미완료 |
 | 239 | 153 | `대답` | `resend` | `src/command12.c:525` | 연결 | CommandReply; session reply | `server/internal/session/reply_command_test.go` | 대답/`/` bounded |
 | 240 | 153 | `/` | `resend` | `src/command12.c:525` | 연결 | CommandReply; session reply | `server/internal/session/reply_command_test.go` | 대답/`/` bounded |
 | 241 | 101 | `*teleport` | `dm_teleport` | `src/dm1.c:28` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
@@ -1468,10 +1486,10 @@ Handler 합계: 연결 103 / 부분 20 / 미연결 51. 등록 행 합계: 연결
 | 336 | 143 | `*도움말` | `dm_help` | `src/dm5.c:660` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 337 | 144 | `*attack` | `dm_attack` | `src/dm6.c:163` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 | 338 | 144 | `*공격` | `dm_attack` | `src/dm6.c:163` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
-| 339 | 145 | `*enemy` | `list_enm` | `src/dm6.c:226` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *enemy. Go 없음 |
-| 340 | 145 | `*적` | `list_enm` | `src/dm6.c:226` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *enemy. Go 없음 |
-| 341 | 146 | `*charm` | `list_charm` | `src/dm6.c:268` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *charm. Go 없음 |
-| 342 | 146 | `*최면` | `list_charm` | `src/dm6.c:268` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | *charm. Go 없음 |
+| 339 | 145 | `*enemy` | `list_enm` | `src/dm6.c:226` | 연결 | CommandDMEnemy; session/dm_enemy_command.go + world/dm_enemy.go + transport route | `server/internal/session/dm_enemy_command_test.go`, `server/internal/world/dm_enemy_test.go`, `server/internal/transport/world_connector_dm_enemy_test.go` | same-room NPC enemy list·canonical occurrence/order·receipt/replay bounded. NPC producers/tick/AI·공격·추종·리젠·PG/full G3 미완료 |
+| 340 | 145 | `*적` | `list_enm` | `src/dm6.c:226` | 연결 | CommandDMEnemy; session/dm_enemy_command.go + world/dm_enemy.go + transport route | `server/internal/session/dm_enemy_command_test.go`, `server/internal/world/dm_enemy_test.go`, `server/internal/transport/world_connector_dm_enemy_test.go` | same-room NPC enemy list·canonical occurrence/order·receipt/replay bounded. NPC producers/tick/AI·공격·추종·리젠·PG/full G3 미완료 |
+| 341 | 146 | `*charm` | `list_charm` | `src/dm6.c:268` | 연결 | CommandDMCharm; session/dm_charm_command.go + world/dm_charm.go + transport route | `server/internal/session/dm_charm_command_test.go`, `server/internal/world/dm_charm_test.go`, `server/internal/transport/world_connector_dm_charm_test.go` | global online player target·CharmRefs canonical order·receipt/replay bounded. Charm producer/spell mutation·expiry·NPC AI/tick·PG/full G3 미완료 |
+| 342 | 146 | `*최면` | `list_charm` | `src/dm6.c:268` | 연결 | CommandDMCharm; session/dm_charm_command.go + world/dm_charm.go + transport route | `server/internal/session/dm_charm_command_test.go`, `server/internal/world/dm_charm_test.go`, `server/internal/transport/world_connector_dm_charm_test.go` | global online player target·CharmRefs canonical order·receipt/replay bounded. Charm producer/spell mutation·expiry·NPC AI/tick·PG/full G3 미완료 |
 | 343 | 147 | `*사용자저장` | `dm_save_all_ply` | `src/dm1.c:13` | 미연결 | —; — | CMD-GAP (직접 handler 테스트 파일 없음) | 관리자 명령. Go parser/reducer 없음 |
 
 ### 이 재집계가 대체하는 G0 서술

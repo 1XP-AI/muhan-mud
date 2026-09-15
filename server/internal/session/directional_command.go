@@ -38,11 +38,19 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 	if lastTokenIsItemMutationVerb(line) || lineContainsItemMutationVerb(line) {
 		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
 	}
-	// C parse() last-token 소지품/장비/장 is inventory/equipment, not
-	// move. Live Submit classifies those as CommandItems first; a
-	// direct ExecuteDirectionalLine bypass still has to refuse them
-	// or ParseDirectionalToken(fields[0]) would walk east on `동 소지품`.
-	if lastTokenIsItemsVerb(line) {
+	// C parse() 소지품/장비/장 is inventory/equipment, not move. Live Submit
+	// classifies last-token forms as CommandItems first and rejects a
+	// mid-verb form such as `동 소지품 extra`; a direct
+	// ExecuteDirectionalLine bypass must refuse both or
+	// ParseDirectionalToken(fields[0]) would walk east.
+	if lastTokenIsItemsVerb(line) || lineContainsItemsVerb(line) {
+		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
+	}
+	// C parse() bank aliases are not movement. Live Submit classifies valid
+	// forms as CommandBank and rejects a mid-verb form such as
+	// `동 입금 extra`; a direct ExecuteDirectionalLine bypass must refuse any exact
+	// bank alias token before ParseDirectionalToken(fields[0]) can walk.
+	if lineContainsBankVerb(line) {
 		return storage.WorldReceipt{}, ErrUnsupportedDirectionalLine
 	}
 	token, ok := world.ParseDirectionalToken(line)
@@ -145,4 +153,20 @@ func lineContainsItemMutationVerb(line string) bool {
 		return false
 	}
 	return tokensContainItemMutationVerb(tokens)
+}
+
+func lineContainsItemsVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil {
+		return false
+	}
+	return tokensContainItemsVerb(tokens)
+}
+
+func lineContainsBankVerb(line string) bool {
+	tokens, err := tokenizeLegacy(strings.TrimSpace(line))
+	if err != nil {
+		return false
+	}
+	return tokensContainBankVerb(tokens)
 }

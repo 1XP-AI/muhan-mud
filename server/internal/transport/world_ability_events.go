@@ -60,6 +60,36 @@ func (g *WorldConnector) publishRecall(after world.State, result world.CastResul
 	if event.ActorID == "" || event.Text == "" || event.ExcludeActorID == "" {
 		return
 	}
+	if event.ExcludeTargetID != "" {
+		destText := ""
+		destID := int16(0)
+		if target, ok := after.Players[result.TargetID]; ok && target.Online && world.RecallDestArrivalVisible(target.Body) {
+			destID = target.Body.RoomID
+			destText = world.RecallDestArrivalText(target.Body.Name)
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		for connection := range g.connections {
+			actorID := connection.lease.ActorID
+			player, ok := after.Players[actorID]
+			if !ok || !player.Online || connection.events == nil || actorID == event.ExcludeActorID || actorID == event.ExcludeTargetID {
+				continue
+			}
+			if player.Body.RoomID == event.RoomID {
+				select {
+				case connection.events <- event.Text:
+				default:
+				}
+			}
+			if destText != "" && player.Body.RoomID == destID {
+				select {
+				case connection.events <- destText:
+				default:
+				}
+			}
+		}
+		return
+	}
 	destText := ""
 	destID := int16(0)
 	if actor, ok := after.Players[event.ActorID]; ok && actor.Online && world.RecallDestArrivalVisible(actor.Body) {

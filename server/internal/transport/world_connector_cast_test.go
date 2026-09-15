@@ -144,6 +144,28 @@ func connectorRecallState(male bool) world.State {
 	}
 }
 
+func connectorTargetedRecallState(targetFlags [8]byte) world.State {
+	state := connectorRecallState(false)
+	actor := state.Players["a"]
+	actor.Body.RoomID = 2
+	state.Players["a"] = actor
+	target := state.Players["b"]
+	target.Body.RoomID = 2
+	target.Body.Flags = targetFlags
+	state.Players["b"] = target
+	observer := state.Players["c"]
+	observer.Body.RoomID = 2
+	state.Players["c"] = observer
+	state.Players["d"] = world.PlayerState{
+		Body:   world.LegacyMonster{Name: "Dora", Type: 0, Class: 4, Level: 4, RoomID: 1},
+		Online: true,
+	}
+	state.Rooms[1] = world.RoomState{Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "숲"}}, PlayerIDs: []string{"d"}}
+	state.Rooms[2] = world.RoomState{Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 2, Name: "마을"}}, PlayerIDs: []string{"a", "b", "c"}}
+	state.Rooms[1001] = world.RoomState{Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1001, Name: "광장"}}}
+	return state
+}
+
 func TestWorldConnectorSubmitRecallFansOutSourceBroadcastAndSuppressesReplay(t *testing.T) {
 	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{}}
 	raw, err := json.Marshal(connectorRecallState(false))
@@ -258,25 +280,207 @@ func TestWorldConnectorSubmitRecallMaleSourceBroadcast(t *testing.T) {
 	}
 }
 
-func TestWorldConnectorSubmitTargetedRecallFailsClosed(t *testing.T) {
-	store := connectorRecallStore(t, false)
-	_, actor, observer, dest := connectorThreeWorldConnections(t, store, "recall-targeted")
-	text, err := actor.Submit(context.Background(), "주문 귀환 Bob")
-	if err != nil || text != "아직 구현되지 않은 명령입니다.\r\n" {
-		t.Fatalf("targeted recall=%q err=%v", text, err)
+func TestWorldConnectorSubmitTargetedRecallMovesTargetAndSuppressesReplay(t *testing.T) {
+	state := connectorTargetedRecallState([8]byte{})
+	target := state.Players["b"]
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case event := <-observer.events:
-		t.Fatalf("targeted source event=%q", event)
-	default:
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "recall-targeted", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case event := <-dest.events:
-		t.Fatalf("targeted dest event=%q", event)
-	default:
+	connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c", "d"})
+
+	output, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob")
+	if err != nil || output != "귀환 주문을 Bob에게 외웠습니다.\r\n" || store.commits != 1 {
+		t.Fatalf("targeted recall=%q err=%v commits=%d", output, err, store.commits)
 	}
-	if store.commits != 0 {
-		t.Fatalf("commits=%d", store.commits)
+	assertConnectorEvent(t, connections["b"], "Alice이 당신에게 귀환 주문을 외웠습니다.\r\n")
+	assertConnectorEvent(t, connections["c"], "Alice이 Bob에게 귀환 주문을 외웠습니다.")
+	assertConnectorEvent(t, connections["d"], world.RecallDestArrivalText("Bob"))
+	assertConnectorNoEvent(t, connections["a"])
+	saved, err := world.DecodeState(store.connectorCommandStore.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["a"].Body.RoomID != 2 || saved.Players["b"].Body.RoomID != 1 || saved.Players["b"].Body.HPCurrent != target.Body.HPCurrent || saved.Rooms[2].Resource.BeenHere != 0 || !equalStringIDs(saved.Rooms[2].PlayerIDs, []string{"a", "c"}) || !equalStringIDs(saved.Rooms[1].PlayerIDs, []string{"b", "d"}) || saved.Rooms[1].Resource.BeenHere != 1 {
+		t.Fatalf("targeted occupancy actor=%+v target=%+v source=%v dest=%v", saved.Players["a"].Body, saved.Players["b"].Body, saved.Rooms[2].PlayerIDs, saved.Rooms[1].PlayerIDs)
+	}
+
+	replay, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob")
+	if err != nil || replay != output {
+		t.Fatalf("targeted replay=%q err=%v", replay, err)
+	}
+	if store.commits != 1 {
+		t.Fatalf("replay committed again: commits=%d", store.commits)
+	}
+	assertConnectorNoEvent(t, connections["a"])
+	assertConnectorNoEvent(t, connections["b"])
+	assertConnectorNoEvent(t, connections["c"])
+	assertConnectorNoEvent(t, connections["d"])
+}
+
+func TestWorldConnectorSubmitTargetedRecallOccurrenceSelectsSecondAndReplays(t *testing.T) {
+	state := connectorTargetedRecallState([8]byte{})
+	state.Players["e"] = world.PlayerState{
+		Body:   world.LegacyMonster{Name: "Bob", Type: 0, Class: 4, Level: 4, RoomID: 2, HPMax: 80, HPCurrent: 61},
+		Online: true,
+	}
+	room := state.Rooms[2]
+	room.PlayerIDs = []string{"a", "b", "e", "c"}
+	state.Rooms[2] = room
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "recall-targeted-occurrence", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c", "d", "e"})
+
+	output, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob 2")
+	if err != nil || output != "귀환 주문을 Bob에게 외웠습니다.\r\n" || store.commits != 1 {
+		t.Fatalf("targeted occurrence=%q err=%v commits=%d", output, err, store.commits)
+	}
+	assertConnectorEvent(t, connections["e"], "Alice이 당신에게 귀환 주문을 외웠습니다.\r\n")
+	assertConnectorEvent(t, connections["b"], "Alice이 Bob에게 귀환 주문을 외웠습니다.")
+	assertConnectorEvent(t, connections["c"], "Alice이 Bob에게 귀환 주문을 외웠습니다.")
+	assertConnectorEvent(t, connections["d"], world.RecallDestArrivalText("Bob"))
+	assertConnectorNoEvent(t, connections["a"])
+	saved, err := world.DecodeState(store.connectorCommandStore.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["b"].Body.RoomID != 2 || saved.Players["e"].Body.RoomID != 1 || saved.Players["e"].Body.HPCurrent != 61 || !equalStringIDs(saved.Rooms[2].PlayerIDs, []string{"a", "b", "c"}) || !equalStringIDs(saved.Rooms[1].PlayerIDs, []string{"e", "d"}) {
+		t.Fatalf("targeted occurrence occupancy b=%+v e=%+v source=%v dest=%v", saved.Players["b"].Body, saved.Players["e"].Body, saved.Rooms[2].PlayerIDs, saved.Rooms[1].PlayerIDs)
+	}
+
+	replay, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob 2")
+	if err != nil || replay != output || store.commits != 1 {
+		t.Fatalf("targeted occurrence replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		assertConnectorNoEvent(t, connections[id])
+	}
+}
+
+func TestWorldConnectorSubmitTargetedRecallOccurrenceOutOfRangeIsReceiptNoOp(t *testing.T) {
+	state := connectorTargetedRecallState([8]byte{})
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "recall-targeted-occurrence-missing", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c", "d"})
+
+	output, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob 2")
+	if err != nil || output != "그런 사람이 존재하지 않습니다.\r\n" || store.commits != 1 {
+		t.Fatalf("out-of-range recall=%q err=%v commits=%d", output, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.connectorCommandStore.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["a"].Body.RoomID != 2 || saved.Players["a"].Body.MPCurrent != 40 || saved.Players["b"].Body.RoomID != 2 || !equalStringIDs(saved.Rooms[2].PlayerIDs, []string{"a", "b", "c"}) || !equalStringIDs(saved.Rooms[1].PlayerIDs, []string{"d"}) || saved.Rooms[1].Resource.BeenHere != 0 {
+		t.Fatalf("out-of-range mutated actor=%+v target=%+v source=%v dest=%v", saved.Players["a"].Body, saved.Players["b"].Body, saved.Rooms[2].PlayerIDs, saved.Rooms[1].PlayerIDs)
+	}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		assertConnectorNoEvent(t, connections[id])
+	}
+
+	replay, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob 2")
+	if err != nil || replay != output || store.commits != 1 {
+		t.Fatalf("out-of-range replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		assertConnectorNoEvent(t, connections[id])
+	}
+}
+
+func TestWorldConnectorSubmitTargetedRecallInvalidOccurrenceHasNoReceipt(t *testing.T) {
+	for _, line := range []string{"주문 귀환 Bob 0", "주문 귀환 Bob -1", "주문 귀환 Bob nope", "주문 귀환 Bob 2147483648", "주문 귀환 2", "주문 귀환 Bob 2 extra"} {
+		t.Run(line, func(t *testing.T) {
+			store := connectorRecallStore(t, false)
+			_, actor, observer, destination := connectorThreeWorldConnections(t, store, "recall-invalid-occurrence")
+			text, err := actor.Submit(context.Background(), line)
+			if err != nil || text != "아직 구현되지 않은 명령입니다.\r\n" {
+				t.Fatalf("invalid occurrence line=%q text=%q err=%v", line, text, err)
+			}
+			select {
+			case event := <-observer.events:
+				t.Fatalf("invalid occurrence source event=%q", event)
+			default:
+			}
+			select {
+			case event := <-destination.events:
+				t.Fatalf("invalid occurrence destination event=%q", event)
+			default:
+			}
+			if store.commits != 0 {
+				t.Fatalf("invalid occurrence committed: %d", store.commits)
+			}
+		})
+	}
+}
+
+func TestWorldConnectorSubmitTargetedRecallSuppressesInvisibleDestinationArrival(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag int
+	}{
+		{name: "hidden", flag: 1},
+		{name: "dm-invisible", flag: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var targetFlags [8]byte
+			targetFlags[tc.flag/8] |= 1 << (tc.flag % 8)
+			state := connectorTargetedRecallState(targetFlags)
+			raw, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+			connector, err := NewWorldConnector(WorldConnectorConfig{
+				Store: store, WorldID: "recall-targeted-" + tc.name, Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 4,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c", "d"})
+
+			output, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob")
+			if err != nil || output != "귀환 주문을 Bob에게 외웠습니다.\r\n" || store.commits != 1 {
+				t.Fatalf("targeted %s=%q err=%v commits=%d", tc.name, output, err, store.commits)
+			}
+			assertConnectorEvent(t, connections["b"], "Alice이 당신에게 귀환 주문을 외웠습니다.\r\n")
+			assertConnectorEvent(t, connections["c"], "Alice이 Bob에게 귀환 주문을 외웠습니다.")
+			assertConnectorNoEvent(t, connections["d"])
+			assertConnectorNoEvent(t, connections["a"])
+
+			replay, err := connections["a"].Submit(context.Background(), "주문 귀환 Bob")
+			if err != nil || replay != output || store.commits != 1 {
+				t.Fatalf("%s replay=%q err=%v commits=%d", tc.name, replay, err, store.commits)
+			}
+			assertConnectorNoEvent(t, connections["a"])
+			assertConnectorNoEvent(t, connections["b"])
+			assertConnectorNoEvent(t, connections["c"])
+			assertConnectorNoEvent(t, connections["d"])
+		})
 	}
 }
 
@@ -446,4 +650,26 @@ func equalStringIDs(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func assertConnectorEvent(t *testing.T, connection *worldConnection, want string) {
+	t.Helper()
+	select {
+	case event := <-connection.events:
+		if event != want {
+			t.Fatalf("%s event=%q want=%q", connection.lease.ActorID, event, want)
+		}
+	default:
+		t.Fatalf("%s event missing", connection.lease.ActorID)
+	}
+	assertConnectorNoEvent(t, connection)
+}
+
+func assertConnectorNoEvent(t *testing.T, connection *worldConnection) {
+	t.Helper()
+	select {
+	case event := <-connection.events:
+		t.Fatalf("%s received unexpected event=%q", connection.lease.ActorID, event)
+	default:
+	}
 }

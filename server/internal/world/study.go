@@ -38,16 +38,33 @@ var (
 	ErrStudySpellUnavailable = errors.New("study spell catalog entry unavailable")
 )
 
+// StudyLocation identifies the canonical direct root searched by study. A
+// nested item is never an independent selector target; equipped roots are
+// admitted only through the legacy Ready fallback after Inventory search.
+type StudyLocation string
+
+const (
+	StudyInventoryRoot StudyLocation = "inventory"
+	StudyReadySlot     StudyLocation = "ready"
+
+	// Short aliases keep callers that use the legacy vocabulary readable.
+	StudyInventory StudyLocation = StudyInventoryRoot
+	StudyReady     StudyLocation = StudyReadySlot
+)
+
 // StudyProposal is a snapshot-bound candidate for magic1.c:study. The item
-// ID is resolved from the canonical direct inventory during planning; it is
-// never accepted from a client. No random source or ID allocator is involved.
+// ID is resolved from a canonical Inventory or Ready root during planning; it
+// is never accepted from a client. No random source or ID allocator is involved.
 type StudyProposal struct {
 	Action      string
 	ActorID     string
 	RoomID      int16
 	ItemID      string
 	ItemName    string
+	Selector    string
 	Occurrence  int
+	Location    StudyLocation
+	ReadySlot   int
 	SpellIndex  int
 	SpellName   string
 	Learned     bool
@@ -123,34 +140,74 @@ func studySpellName(magicPower byte) (string, int, error) {
 	return legacyInfoSpellNames[index], index, nil
 }
 
-func selectStudyInventoryRoot(actor PlayerState, name string, occurrence int) (string, Item, error) {
+func studyObjectVisible(actor LegacyMonster, object LegacyObject) bool {
+	return !flag(object.Flags[:], objectInvisibleFlag) || flag(actor.Flags[:], playerDetectInvisibleFlag)
+}
+
+// selectStudyRoot ports object.c:find_obj and magic1.c:study's Ready loop.
+// Each canonical root counts once when its display name or any key matches
+// the case-insensitive EQUAL-style prefix; hidden objects count only for a
+// player with PDINVI. The two C loops own separate counters, so Ready fallback
+// starts a fresh positive occurrence count after Inventory fails to resolve.
+func selectStudyRoot(actor PlayerState, name string, occurrence int) (string, Item, StudyLocation, int, error) {
 	if occurrence < 1 {
-		return "", Item{}, fmt.Errorf("invalid study occurrence")
+		return "", Item{}, "", -1, fmt.Errorf("invalid study occurrence")
 	}
 	if !validStudyName(name) {
-		return "", Item{}, fmt.Errorf("invalid study item name")
+		return "", Item{}, "", -1, fmt.Errorf("invalid study item name")
 	}
 	if actor.Items == nil || len(actor.Body.Inventory) != 0 {
-		return "", Item{}, fmt.Errorf("canonical study player inventory required")
+		return "", Item{}, "", -1, fmt.Errorf("canonical study player inventory required")
 	}
 	if err := actor.Items.Validate(); err != nil {
-		return "", Item{}, err
+		return "", Item{}, "", -1, err
 	}
 	found := 0
 	for _, id := range actor.Items.Inventory {
 		item, ok := actor.Items.Items[id]
 		if !ok || id == "" {
-			return "", Item{}, fmt.Errorf("canonical study inventory root absent")
+			return "", Item{}, "", -1, fmt.Errorf("canonical study inventory root absent")
 		}
-		if !strings.EqualFold(item.Object.Name, name) {
+		if !equalInventorySelector(item.Object, name) || !studyObjectVisible(actor.Body, item.Object) {
 			continue
 		}
 		found++
 		if found == occurrence {
-			return id, item, nil
+			return id, item, StudyInventoryRoot, -1, nil
 		}
 	}
-	return "", Item{}, fmt.Errorf("%w: %q", ErrStudyMissingItem, name)
+	// find_obj owns its own match counter. magic1.c therefore resets the
+	// occurrence for this Ready fallback after the direct Inventory lookup did
+	// not resolve the requested occurrence; Ready slots retain slot order.
+	found = 0
+	for slot, id := range actor.Items.Ready {
+		if id == "" {
+			continue
+		}
+		item, ok := actor.Items.Items[id]
+		if !ok {
+			return "", Item{}, "", -1, fmt.Errorf("canonical study ready root absent")
+		}
+		if !equalInventorySelector(item.Object, name) || !studyObjectVisible(actor.Body, item.Object) {
+			continue
+		}
+		found++
+		if found == occurrence {
+			return id, item, StudyReadySlot, slot, nil
+		}
+	}
+	return "", Item{}, "", -1, fmt.Errorf("%w: %q", ErrStudyMissingItem, name)
+}
+
+// selectStudyInventoryRoot preserves the pre-location helper for package-local
+// callers. It intentionally remains Inventory-only; PlanStudy uses
+// selectStudyRoot so the Ready fallback can carry its slot through Apply.
+func selectStudyInventoryRoot(actor PlayerState, name string, occurrence int) (string, Item, error) {
+	id, item, location, _, err := selectStudyRoot(actor, name, occurrence)
+	if err == nil && location != StudyInventoryRoot {
+		return "", Item{}, fmt.Errorf("%w: %q", ErrStudyMissingItem, name)
+	}
+	return id, item, err
 }
 
 func studyActor(s State, actorID string) (PlayerState, RoomState, error) {
@@ -228,15 +285,30 @@ func cloneStudyActor(actor PlayerState) PlayerState {
 }
 
 func removeStudyRoot(items *ItemCollection, root string) error {
+	return removeStudyRootAt(items, StudyInventoryRoot, -1, root)
+}
+
+func removeStudyRootAt(items *ItemCollection, location StudyLocation, readySlot int, root string) error {
 	if items == nil || root == "" {
 		return fmt.Errorf("study item collection required")
 	}
 	if err := items.Validate(); err != nil {
 		return err
 	}
-	remaining, err := removeInventoryRoot(items.Inventory, root)
-	if err != nil {
-		return err
+	switch location {
+	case StudyInventoryRoot:
+		remaining, err := removeInventoryRoot(items.Inventory, root)
+		if err != nil {
+			return err
+		}
+		items.Inventory = remaining
+	case StudyReadySlot:
+		if readySlot < 0 || readySlot >= len(items.Ready) || items.Ready[readySlot] != root {
+			return fmt.Errorf("study ready root location changed")
+		}
+		items.Ready[readySlot] = ""
+	default:
+		return fmt.Errorf("study root location required")
 	}
 	stack := []string{root}
 	seen := map[string]bool{}
@@ -254,8 +326,80 @@ func removeStudyRoot(items *ItemCollection, root string) error {
 		stack = append(stack, item.Contents...)
 		delete(items.Items, id)
 	}
-	items.Inventory = remaining
 	return items.Validate()
+}
+
+// moveStudyRoot transfers one canonical root from Inventory or Ready to a
+// room. TransferItemRoots handles Inventory roots; Ready roots need an
+// explicit slot clear before the same complete subtree is attached to the
+// room's ordered floor roots.
+func moveStudyRoot(source, destination *ItemCollection, location StudyLocation, readySlot int, root string) error {
+	if source == nil || destination == nil {
+		return fmt.Errorf("study canonical transfer unavailable")
+	}
+	if location == StudyInventoryRoot {
+		plan, err := TransferItemRoots(*source, *destination, []string{root})
+		if err != nil {
+			return err
+		}
+		*source, *destination = plan.Source, plan.Destination
+		return nil
+	}
+	if location != StudyReadySlot || readySlot < 0 || readySlot >= len(source.Ready) || source.Ready[readySlot] != root {
+		return fmt.Errorf("study ready root location changed")
+	}
+	if err := source.Validate(); err != nil {
+		return err
+	}
+	if err := destination.Validate(); err != nil {
+		return err
+	}
+	moved := map[string]Item{}
+	nextSource := source.clone()
+	nextSource.Ready[readySlot] = ""
+	stack, seen := []string{root}, map[string]bool{}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[id] {
+			return fmt.Errorf("cyclic study item subtree")
+		}
+		seen[id] = true
+		item, ok := nextSource.Items[id]
+		if !ok {
+			return fmt.Errorf("study item subtree absent")
+		}
+		moved[id] = item
+		delete(nextSource.Items, id)
+		stack = append(stack, item.Contents...)
+	}
+	nextDestination := destination.clone()
+	for id, item := range moved {
+		if _, exists := nextDestination.Items[id]; exists {
+			return fmt.Errorf("overlapping study item owners")
+		}
+		nextDestination.Items[id] = item
+	}
+	object := moved[root].Object
+	at := len(nextDestination.Inventory)
+	for i, id := range nextDestination.Inventory {
+		other := nextDestination.Items[id].Object
+		if other.Name > object.Name || (other.Name == object.Name && int8(other.Adjustment) > int8(object.Adjustment)) {
+			at = i
+			break
+		}
+	}
+	nextDestination.Inventory = append(nextDestination.Inventory, "")
+	copy(nextDestination.Inventory[at+1:], nextDestination.Inventory[at:])
+	nextDestination.Inventory[at] = root
+	if err := nextSource.Validate(); err != nil {
+		return err
+	}
+	if err := nextDestination.Validate(); err != nil {
+		return err
+	}
+	*source, *destination = nextSource, nextDestination
+	return nil
 }
 
 // PlanStudy ports the canonical direct-inventory path of magic1.c:study. It
@@ -269,7 +413,7 @@ func (s State) PlanStudy(actorID, itemName string, occurrence int) (StudyProposa
 	if flag(actor.Body.Flags[:], studyPlayerBlindFlag) {
 		return StudyProposal{}, ErrStudyBlind
 	}
-	itemID, item, err := selectStudyInventoryRoot(actor, itemName, occurrence)
+	itemID, item, location, readySlot, err := selectStudyRoot(actor, itemName, occurrence)
 	if err != nil {
 		return StudyProposal{}, err
 	}
@@ -289,7 +433,10 @@ func (s State) PlanStudy(actorID, itemName string, occurrence int) (StudyProposa
 		RoomID:            actor.Body.RoomID,
 		ItemID:            itemID,
 		ItemName:          item.Object.Name,
+		Selector:          itemName,
 		Occurrence:        occurrence,
+		Location:          location,
+		ReadySlot:         readySlot,
 		SpellIndex:        spellIndex,
 		SpellName:         spellName,
 		expectedActor:     cloneStudyActor(actor),
@@ -328,14 +475,14 @@ func (s State) ApplyStudy(proposal StudyProposal) (State, StudyResult, error) {
 	if err != nil {
 		return State{}, StudyResult{}, err
 	}
-	if proposal.Action != "study" || proposal.ActorID == "" || proposal.RoomID != actor.Body.RoomID || proposal.ItemID == "" || proposal.ItemName == "" || proposal.Occurrence < 1 || proposal.SpellIndex < 0 || proposal.SpellIndex >= studyMaxSpellPower || proposal.SpellName == "" || proposal.Response == "" {
+	if proposal.Action != "study" || proposal.ActorID == "" || proposal.RoomID != actor.Body.RoomID || proposal.ItemID == "" || proposal.ItemName == "" || !validStudyName(proposal.Selector) || proposal.Occurrence < 1 || (proposal.Location != StudyInventoryRoot && proposal.Location != StudyReadySlot) || (proposal.Location == StudyInventoryRoot && proposal.ReadySlot != -1) || (proposal.Location == StudyReadySlot && (proposal.ReadySlot < 0 || proposal.ReadySlot >= len(actor.Items.Ready))) || proposal.SpellIndex < 0 || proposal.SpellIndex >= studyMaxSpellPower || proposal.SpellName == "" || proposal.Response == "" {
 		return State{}, StudyResult{}, fmt.Errorf("invalid study proposal")
 	}
 	if !reflect.DeepEqual(actor, proposal.expectedActor) || room.Items == nil || !reflect.DeepEqual(*room.Items, proposal.expectedRoomItems) {
 		return State{}, StudyResult{}, fmt.Errorf("stale study actor or room proposal")
 	}
-	itemID, item, err := selectStudyInventoryRoot(actor, proposal.ItemName, proposal.Occurrence)
-	if err != nil || itemID != proposal.ItemID || !reflect.DeepEqual(item, proposal.expectedItem) {
+	itemID, item, location, readySlot, err := selectStudyRoot(actor, proposal.Selector, proposal.Occurrence)
+	if err != nil || itemID != proposal.ItemID || location != proposal.Location || readySlot != proposal.ReadySlot || !reflect.DeepEqual(item, proposal.expectedItem) {
 		return State{}, StudyResult{}, fmt.Errorf("stale study item proposal")
 	}
 	spellName, spellIndex, err := studySpellName(item.Object.MagicPower)
@@ -374,15 +521,12 @@ func (s State) ApplyStudy(proposal StudyProposal) (State, StudyResult, error) {
 		if nextActor.Items == nil || nextRoom.Items == nil {
 			return State{}, StudyResult{}, fmt.Errorf("study canonical transfer unavailable")
 		}
-		plan, err := TransferItemRoots(*nextActor.Items, *nextRoom.Items, []string{proposal.ItemID})
-		if err != nil {
+		if err := moveStudyRoot(nextActor.Items, nextRoom.Items, proposal.Location, proposal.ReadySlot, proposal.ItemID); err != nil {
 			return State{}, StudyResult{}, err
 		}
-		nextActor.Items = &plan.Source
-		nextRoom.Items = &plan.Destination
 		next.Rooms[proposal.RoomID] = nextRoom
 	} else {
-		if err := removeStudyRoot(nextActor.Items, proposal.ItemID); err != nil {
+		if err := removeStudyRootAt(nextActor.Items, proposal.Location, proposal.ReadySlot, proposal.ItemID); err != nil {
 			return State{}, StudyResult{}, err
 		}
 		nextActor.Body.Flags[studyPlayerHiddenFlag/8] &^= 1 << (studyPlayerHiddenFlag % 8)
