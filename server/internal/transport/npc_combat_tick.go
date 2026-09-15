@@ -47,6 +47,8 @@ type NPCCombatTickAttack struct {
 	Hit      bool   `json:"hit"`
 	Critical bool   `json:"critical"`
 	Poisoned bool   `json:"poisoned"`
+	Diseased bool   `json:"diseased"`
+	Blinded  bool   `json:"blinded"`
 	Damage   int    `json:"damage"`
 	PlayerHP int    `json:"player_hp"`
 	Lethal   bool   `json:"lethal"`
@@ -466,7 +468,8 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 		}
 		return candidate, NPCCombatTickAttack{
 			NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
-			Hit: result.Hit, Critical: result.Critical, Poisoned: result.Poisoned, Damage: result.Damage,
+			Hit: result.Hit, Critical: result.Critical, Poisoned: result.Poisoned,
+			Diseased: result.Diseased, Blinded: result.Blinded, Damage: result.Damage,
 			PlayerHP: result.PlayerHP,
 		}, false, nil
 	}
@@ -515,7 +518,8 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 	}
 	return probeCandidate, NPCCombatTickAttack{
 		NPCID: probeResult.NPCID, PlayerID: probeResult.PlayerID, RoomID: probeResult.RoomID,
-		Hit: probeResult.Hit, Critical: probeResult.Critical, Poisoned: probeResult.Poisoned, Damage: probeResult.Damage,
+		Hit: probeResult.Hit, Critical: probeResult.Critical, Poisoned: probeResult.Poisoned,
+		Diseased: probeResult.Diseased, Blinded: probeResult.Blinded, Damage: probeResult.Damage,
 		PlayerHP: actualAfter, Lethal: true,
 	}, true, nil
 }
