@@ -454,6 +454,82 @@ func TestWorldConnectorNotepadRetriesSavedCommitByReceiptBeforeLimitPreflight(t 
 	}
 }
 
+type notepadPreflightInterleaveStore struct {
+	mu             sync.Mutex
+	fitState       json.RawMessage
+	canonicalState json.RawMessage
+	fullState      json.RawMessage
+	loads          int
+	commits        int
+}
+
+func (s *notepadPreflightInterleaveStore) ReadWorldReceipt(_ context.Context, _ string, _ string, _ json.RawMessage) (storage.WorldReceipt, error) {
+	return storage.WorldReceipt{}, sql.ErrNoRows
+}
+
+func (s *notepadPreflightInterleaveStore) LoadWorld(context.Context, string) (storage.WorldSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loads++
+	state := s.fitState
+	if s.loads >= 4 {
+		state = s.fullState
+		s.canonicalState = append(json.RawMessage(nil), s.fullState...)
+	}
+	return storage.WorldSnapshot{Revision: int64(s.loads), State: append(json.RawMessage(nil), state...)}, nil
+}
+
+func (s *notepadPreflightInterleaveStore) CommitWorldCommand(_ context.Context, _ string, _ string, _ json.RawMessage, _ int64, state, _ json.RawMessage) (storage.WorldReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commits++
+	s.canonicalState = append(json.RawMessage(nil), state...)
+	return storage.WorldReceipt{}, nil
+}
+
+func (s *notepadPreflightInterleaveStore) snapshot() (json.RawMessage, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append(json.RawMessage(nil), s.canonicalState...), s.loads, s.commits
+}
+
+func TestWorldConnectorNotepadDotLimitInterleaveFailsClosed(t *testing.T) {
+	initial := notepadConnectorFixture(10)
+	fitRaw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := notepadStateWithBytes(world.MaxNotepadBytes)
+	fullRaw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &notepadPreflightInterleaveStore{
+		fitState:       fitRaw,
+		canonicalState: fitRaw,
+		fullState:      fullRaw,
+	}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*메모 a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+	if output, err := connection.Submit(context.Background(), "interleaved"); err != nil || output != world.NotepadAppendContinuePrompt || connection.notepad == nil {
+		t.Fatalf("body output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+
+	output, err := connection.Submit(context.Background(), ".")
+	if err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil {
+		t.Fatalf("interleaved limit output=%q err=%v draft=%+v", output, err, connection.notepad)
+	}
+	state, loads, commits := store.snapshot()
+	if loads != 4 {
+		t.Fatalf("interleaved limit loads=%d, want 4 (start, body, dot preflight, reducer)", loads)
+	}
+	if commits != 0 || !bytes.Equal(state, fullRaw) {
+		t.Fatalf("interleaved limit mutated canonical state commits=%d state_changed=%v", commits, !bytes.Equal(state, fullRaw))
+	}
+}
+
 func TestWorldConnectorNotepadDotRejectsCanonicalLimitChange(t *testing.T) {
 	initial := notepadConnectorFixture(10)
 	raw, err := json.Marshal(initial)
