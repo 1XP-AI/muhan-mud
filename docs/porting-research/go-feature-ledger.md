@@ -4,8 +4,20 @@
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
 | --- | --- | --- |
-| `post.c:notepad`의 `*notepad`/`*메모`, view·append·clear·invalid option·`noteedit` dot continuation | `CommandNotepad`가 exact 두 alias를 중앙 분류하고, `State.Notepad`의 nil migration marker와 ordered line projection을 `PlanNotepad`/`ApplyNotepad`·JSON clone/validate로 고정한다. session은 CARETAKER actor를 canonical snapshot에서 확인하고, transport는 79-byte UTF-8-safe connection-local buffer를 `.`에서만 durable receipt로 제출한다. raw `POSTPATH`/파일 경로/credential는 state·payload·authority로 사용하지 않는다. | Luna max `task_76627974420b`/`ctx_1189481fa7f3` 및 `task_953d12c6cfe3`/`ctx_5d0578a24d87` 병렬 구현 후 coordinator 독립 검증. notepad world/session/transport targeted race, session·transport 전체 race, vet·gofmt·diff-check PASS. 기존 `TestRoomBodyCorpus` 63건과 NPC respawn combat notice 2건은 별도 baseline 실패. DM_pad 원본 import·운영 PG/복구·전체 C 출력/브라우저·배포는 미완료 |
+| `post.c:notepad`의 `*notepad`/`*메모`, view·append·clear·invalid option·`noteedit` dot continuation | `CommandNotepad`가 exact 두 alias를 중앙 분류하고, `State.Notepad`의 nil migration marker와 ordered line projection을 `PlanNotepad`/`ApplyNotepad`·JSON clone/validate로 고정한다. session은 CARETAKER actor를 canonical snapshot에서 확인하고, transport는 최신 canonical notepad와 draft/header를 매 body line 및 dot 경계에서 preflight한 79-byte UTF-8-safe connection-local buffer를 `.`에서만 durable receipt로 제출한다. raw `POSTPATH`/파일 경로/credential는 state·payload·authority로 사용하지 않는다. | Luna max `task_76627974420b`/`ctx_1189481fa7f3` 및 `task_953d12c6cfe3`/`ctx_5d0578a24d87` 병렬 구현 후 `task_0647814ad8ed`/`ctx_46b456ced671`가 near-limit retry-only risk를 보강했다. notepad world/session/transport targeted race, full transport race, vet·gofmt·diff-check PASS. 기존 `TestRoomBodyCorpus` 63건과 NPC respawn combat notice 2건은 별도 baseline 실패. DM_pad 원본 import·운영 PG/복구·전체 C 출력/브라우저·배포는 미완료 |
 | `command4.c:group`의 following leader·mixed `first_fol` 순서·PDMINV skip | `PlayerGroup`가 canonical mixed order와 following-edge leader를 유지하고 canonical NPC follower의 `PDMINV`도 숨긴다. | world `PlayerGroup` race·vet·gofmt·diff-check PASS. nil `FollowerRefs` category fallback, 그룹 구성/mutation·full C 출력·PG/E2E는 미완료 |
+
+## 2026-09-15 G3 notepad continuation limit preflight follow-up
+
+독립 PR review의 P3-2를 반영해 connection-local editor가 현재 canonical `State.Notepad`와
+buffered draft/header를 함께 계산한다. line/byte 초과는 dot 이후 `commitPending` retry-only 상태로
+잠기지 않고 입력 단계에서 안전하게 거절하며, dot 직전에도 canonical 변경을 다시 preflight한다.
+
+Luna max `task_0647814ad8ed` / `ctx_46b456ced671`가 `world_connector.go`와
+`world_connector_notepad_test.go`만 변경했고, coordinator가 notepad world/session/transport race,
+full transport race, vet, gofmt, diff-check, scope와 `src/frp.new` SHA를 독립 검증했다.
+커밋은 `12c212a`로 push됐으며 C `view_file` paging·receipt 크기·cross-connection recovery,
+PG/브라우저/배포 인수는 여전히 미완료다.
 
 ## 2026-09-15 G4 실제 rooms/NPC/item full-data dry-run
 
