@@ -2,7 +2,7 @@
 
 ## CURRENT CHECKPOINT — 2026-09-15
 
-현재 `codex/mud-identity-foundation`의 push된 브랜치 tip이 권위이며 정확한 SHA는 `git rev-parse HEAD`로 확인한다. PR #13은 Project #1 `In Progress` 항목으로 연결되고 `Refs #1`, `Refs #3`–`Refs #12`를 추적한다. #12 Go terminal-only lane은 Luna Max worker_done·coordinator 독립 검증·release 후 네 소유 파일을 commit/push했으며, shell/Playwright-list/scope/protected-file 검증은 PASS했다. Docker BuildKit은 호스트 파일시스템 100%와 metadata I/O 오류로 막혀 #12와 모든 미완료 이슈는 OPEN으로 유지한다. 현재 active/reclaimable worker는 0개이며 `src.frp.new`는 기존 dirty 해시를 보존한다.
+현재 `codex/mud-identity-foundation`의 push된 브랜치 tip이 권위이며 정확한 SHA는 `git rev-parse HEAD`로 확인한다. PR #13은 Project #1 `In Progress` 항목으로 연결되고 `Refs #1`, `Refs #3`–`Refs #12`를 추적한다. #10 G3 notepad/group slice는 `a93bf66`으로 commit/push됐고, 두 Luna Max 구현 worker의 독립 검증·release와 별도 PR review가 완료됐다. 리뷰는 P0/P1/P2 없음, P3/P4 출력·운영 경계를 기록했으며 #10 전체 인수는 미완료라 OPEN으로 유지한다. Docker BuildKit은 호스트 파일시스템 100%와 metadata I/O 오류로 막혀 #12와 모든 미완료 이슈는 OPEN으로 유지한다. 현재 active/reclaimable worker는 0개이며 `src.frp.new`는 기존 dirty SHA-256 `d6c16b0ec01a1a4e07391c838b8ee63819e7353b0ece86d293d92373c30906eb`를 보존한다.
 
 **이 아래의 기존 재개 기록과 현재 값이 충돌하면 이 CURRENT CHECKPOINT를 따른다.**
 
