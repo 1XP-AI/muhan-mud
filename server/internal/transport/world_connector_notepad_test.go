@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/engine"
 	"github.com/1XP-Inc/muhan-mud/server/internal/session"
@@ -58,6 +59,181 @@ func newNotepadConnection(t *testing.T, initial world.State, store engine.Comman
 		t.Fatal(err)
 	}
 	return &worldConnection{game: connector, lease: lease, ready: true}
+}
+
+func notepadLinesWithCount(count int) []string {
+	lines := make([]string, count)
+	if count > 0 {
+		lines[0] = world.NotepadHeaderLine
+	}
+	if count > 1 {
+		for i := 2; i < count; i++ {
+			lines[i] = "existing"
+		}
+	}
+	return lines
+}
+
+func notepadBodyLinesWithBytes(total int) []string {
+	lines := []string{}
+	for total > world.MaxNotepadLineBytes+1 {
+		lines = append(lines, strings.Repeat("b", world.MaxNotepadLineBytes))
+		total -= world.MaxNotepadLineBytes + 1
+	}
+	if total > 0 {
+		lines = append(lines, strings.Repeat("b", total-1))
+	}
+	return lines
+}
+
+func notepadStateWithBytes(total int) world.State {
+	state := notepadConnectorFixture(10)
+	lines := []string{world.NotepadHeaderLine, ""}
+	lines = append(lines, notepadBodyLinesWithBytes(total-notepadDraftBytes(lines))...)
+	state.Notepad = lines
+	return state
+}
+
+func setNotepadStoreState(t *testing.T, store *connectorCommandStore, state world.State) {
+	t.Helper()
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.state = raw
+	store.mu.Unlock()
+}
+
+func TestWorldConnectorNotepadContinuationChecksCurrentCanonicalLineAndByteLimits(t *testing.T) {
+	t.Run("line boundary commits once and rejects the next line before dot", func(t *testing.T) {
+		initial := notepadConnectorFixture(10)
+		initial.Notepad = notepadLinesWithCount(world.MaxNotepadLines - 1)
+		raw, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := &connectorCommandStore{state: raw}
+		connection := newNotepadConnection(t, initial, store)
+
+		if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+			t.Fatalf("start output=%q err=%v", output, err)
+		}
+		if output, err := connection.Submit(context.Background(), "boundary"); err != nil || output != world.NotepadAppendContinuePrompt || store.commits != 0 {
+			t.Fatalf("boundary output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+		if output, err := connection.Submit(context.Background(), "."); err != nil || output != world.NotepadAppendResponse || connection.notepad != nil || store.commits != 1 {
+			t.Fatalf("dot output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+
+		if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+			t.Fatalf("second start output=%q err=%v", output, err)
+		}
+		if output, err := connection.Submit(context.Background(), "over-limit"); err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil || store.commits != 1 {
+			t.Fatalf("over-limit output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+	})
+
+	t.Run("byte boundary commits once and rejects the next line before dot", func(t *testing.T) {
+		initial := notepadStateWithBytes(world.MaxNotepadBytes - world.MaxNotepadLineBytes - 1)
+		raw, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := &connectorCommandStore{state: raw}
+		connection := newNotepadConnection(t, initial, store)
+
+		if output, err := connection.Submit(context.Background(), "*메모 a"); err != nil || output != world.NotepadAppendPrompt {
+			t.Fatalf("start output=%q err=%v", output, err)
+		}
+		boundary := strings.Repeat("z", world.MaxNotepadLineBytes)
+		if output, err := connection.Submit(context.Background(), boundary); err != nil || output != world.NotepadAppendContinuePrompt || store.commits != 0 {
+			t.Fatalf("boundary output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+		if output, err := connection.Submit(context.Background(), "."); err != nil || output != world.NotepadAppendResponse || connection.notepad != nil || store.commits != 1 {
+			t.Fatalf("dot output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+		saved, err := world.DecodeState(store.state)
+		if err != nil || notepadDraftBytes(saved.Notepad) != world.MaxNotepadBytes {
+			t.Fatalf("saved bytes=%d err=%v", notepadDraftBytes(saved.Notepad), err)
+		}
+
+		if output, err := connection.Submit(context.Background(), "*메모 a"); err != nil || output != world.NotepadAppendPrompt {
+			t.Fatalf("second start output=%q err=%v", output, err)
+		}
+		if output, err := connection.Submit(context.Background(), "over-byte-limit"); err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil || store.commits != 1 {
+			t.Fatalf("over-limit output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+	})
+
+	t.Run("utf8 truncation is checked after canonicalization", func(t *testing.T) {
+		initial := notepadConnectorFixture(10)
+		raw, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := &connectorCommandStore{state: raw}
+		connection := newNotepadConnection(t, initial, store)
+		if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+			t.Fatalf("start output=%q err=%v", output, err)
+		}
+
+		line := strings.Repeat("한", world.MaxNotepadLineBytes)
+		if output, err := connection.Submit(context.Background(), line); err != nil || output != world.NotepadAppendContinuePrompt || store.commits != 0 {
+			t.Fatalf("utf8 output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+		}
+		if connection.notepad == nil || len(connection.notepad.lines) != 1 || len(connection.notepad.lines[0]) > world.MaxNotepadLineBytes || !utf8.ValidString(connection.notepad.lines[0]) {
+			t.Fatalf("utf8 draft=%+v", connection.notepad)
+		}
+		if output, err := connection.Submit(context.Background(), "."); err != nil || output != world.NotepadAppendResponse || store.commits != 1 {
+			t.Fatalf("dot output=%q err=%v commits=%d", output, err, store.commits)
+		}
+	})
+}
+
+func TestWorldConnectorNotepadContinuationAccountsForEmptyFileHeader(t *testing.T) {
+	initial := notepadConnectorFixture(10)
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &connectorCommandStore{state: raw}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+
+	// Seed the local draft to the byte boundary so one more 79-byte line
+	// would fit only if the empty-file header and separator were omitted. The
+	// seed avoids issuing millions of individual terminal lines in this test;
+	// admission still runs through the connection continuation path.
+	connection.notepad.lines = notepadBodyLinesWithBytes(world.MaxNotepadBytes - world.MaxNotepadLineBytes - 1)
+	if output, err := connection.Submit(context.Background(), strings.Repeat("x", world.MaxNotepadLineBytes)); err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil || store.commits != 0 {
+		t.Fatalf("header over-limit output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+	}
+}
+
+func TestWorldConnectorNotepadContinuationUsesCanonicalChangesWithBufferedDraft(t *testing.T) {
+	initial := notepadConnectorFixture(10)
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &connectorCommandStore{state: raw}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*메모 a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+	if output, err := connection.Submit(context.Background(), "local-draft"); err != nil || output != world.NotepadAppendContinuePrompt || connection.notepad == nil || store.commits != 0 {
+		t.Fatalf("draft output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+	}
+
+	changed := notepadConnectorFixture(10)
+	changed.Notepad = notepadLinesWithCount(world.MaxNotepadLines - 1)
+	setNotepadStoreState(t, store, changed)
+	if output, err := connection.Submit(context.Background(), "canonical-plus-draft"); err != nil || output != "아직 구현되지 않은 명령입니다.\r\n" || connection.notepad != nil || store.commits != 0 {
+		t.Fatalf("concurrent limit output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+	}
 }
 
 func TestWorldConnectorNotepadContinuationStaysLocalUntilDot(t *testing.T) {

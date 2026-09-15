@@ -575,6 +575,14 @@ func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line st
 		return session.NotepadAppendInvalidLineResponse, true, nil
 	}
 	if strings.HasPrefix(line, ".") {
+		// Admission is checked again immediately before entering the durable
+		// retry gate. A canonical append/clear can race this connection after
+		// the last body line, so a limit discovered only by ExecuteNotepadAppend
+		// must not strand the draft in commitPending mode.
+		if fits, checked := c.notepadDraftFitsCurrentLimits(ctx, draft.lines); checked && !fits {
+			c.clearNotepad()
+			return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+		}
 		draft.commitPending = true
 		receipt, err := c.game.owners.ExecuteNotepadAppendWithVerb(
 			ctx, c.game.config.Store, c.game.config.WorldID, draft.commandID, c.lease, draft.verb, draft.lines,
@@ -595,12 +603,50 @@ func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line st
 		return result.Response, true, nil
 	}
 	canonical := world.TruncateNotepadLine(line)
-	if len(draft.lines)+2 > world.MaxNotepadLines || notepadDraftBytes(draft.lines)+len(canonical)+1+len(world.NotepadHeaderLine)+2 > world.MaxNotepadBytes {
+	pending := make([]string, 0, len(draft.lines)+1)
+	pending = append(pending, draft.lines...)
+	pending = append(pending, canonical)
+	if fits, checked := c.notepadDraftFitsCurrentLimits(ctx, pending); !checked {
+		// A body line is not admitted without a current canonical snapshot. It
+		// remains retryable as local input and has not entered commitPending.
+		return session.NotepadAppendRetryResponse, true, nil
+	} else if !fits {
 		c.clearNotepad()
 		return "아직 구현되지 않은 명령입니다.\r\n", true, nil
 	}
 	draft.lines = append(draft.lines, canonical)
 	return world.NotepadAppendContinuePrompt, true, nil
+}
+
+// notepadDraftFitsCurrentLimits checks the complete append projection against
+// the latest durable notepad. The draft remains connection-local; this helper
+// only loads canonical state and accounts for the header that PlanNotepad
+// inserts when an empty file receives its first body line.
+func (c *worldConnection) notepadDraftFitsCurrentLimits(ctx context.Context, lines []string) (bool, bool) {
+	state, ok := c.game.snapshot(ctx)
+	if !ok || state.Notepad == nil {
+		return false, false
+	}
+	return notepadDraftFitsState(state, lines), true
+}
+
+func notepadDraftFitsState(state world.State, lines []string) bool {
+	if state.Notepad == nil {
+		return false
+	}
+	if len(lines) == 0 {
+		return true
+	}
+
+	totalLines := len(state.Notepad)
+	totalBytes := notepadDraftBytes(state.Notepad)
+	if totalLines == 0 {
+		totalLines = 2 // NotepadHeaderLine plus the blank separator line.
+		totalBytes = len(world.NotepadHeaderLine) + 2
+	}
+	totalLines += len(lines)
+	totalBytes += notepadDraftBytes(lines)
+	return totalLines <= world.MaxNotepadLines && totalBytes <= world.MaxNotepadBytes
 }
 
 func notepadDraftBytes(lines []string) int {
