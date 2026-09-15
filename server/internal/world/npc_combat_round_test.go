@@ -543,6 +543,265 @@ func TestNPCCombatRoundRejectsTamperedPoisonCandidateAtomically(t *testing.T) {
 	}
 }
 
+func npcCombatDissolveFixture(t *testing.T, items map[string]Item, ready [20]string) State {
+	t.Helper()
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	player.Items = &ItemCollection{Items: items, Ready: ready}
+	s.Players["a"] = player
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[npcCombatDissolverFlag/8] |= 1 << (npcCombatDissolverFlag % 8)
+	s.NPCs["wolf-id"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestNPCCombatRoundMDISITRejectsUnmigratedItemsBeforeRNG(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	player.Items = nil
+	s.Players["a"] = player
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[npcCombatDissolverFlag/8] |= 1 << (npcCombatDissolverFlag % 8)
+	s.NPCs["wolf-id"] = npc
+	before := s.clone()
+	called := false
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(int, int) int {
+		called = true
+		return 20
+	})
+	if err == nil || called || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) || !reflect.DeepEqual(s, before) {
+		t.Fatalf("unmigrated MDISIT was not fail-closed: proposal=%+v err=%v called=%v changed=%v", proposal, err, called, !reflect.DeepEqual(s, before))
+	}
+}
+
+func TestNPCCombatRoundDissolvesSelectedReadySubtreeAndRefreshesEquipment(t *testing.T) {
+	s := npcCombatDissolveFixture(t, map[string]Item{
+		"body": {Object: LegacyObject{Name: "갑옷", Armor: 7}, Contents: []string{"gem"}},
+		// This child must disappear with the selected ready root.
+		"gem":   {Object: LegacyObject{Name: "보석"}},
+		"held":  {Object: LegacyObject{Name: "쥔검", Armor: 2}},
+		"wield": {Object: LegacyObject{Name: "무기", Armor: 3, Adjustment: 2}},
+	}, [20]string{0: "body", 16: "held", 19: "wield"})
+	before := s.clone()
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch {
+		case high == 20:
+			return 20
+		case high == 6:
+			return 6
+		case low == 1 && high == 100:
+			return 15
+		case low == 0 && high == 2:
+			return 0
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.DissolveSucceeded || !proposal.Dissolved || proposal.DissolveProtected || proposal.DissolveRoll != 15 || proposal.DissolveSelectionRoll != 0 || proposal.DissolveCandidateCount != 3 || proposal.DissolveReadySlot != 0 || proposal.DissolveItemID != "body" || proposal.DissolveItemName != "갑옷" {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}, {0, 2}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("planning mutated source state")
+	}
+
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.DissolveSucceeded || !result.Dissolved || result.DissolveItemID != "body" || result.DissolveReadySlot != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	items := next.Players["a"].Items
+	if items.Ready[0] != "" || items.Ready[16] != "held" || items.Ready[19] != "wield" {
+		t.Fatalf("ready after dissolve=%v", items.Ready)
+	}
+	if _, ok := items.Items["body"]; ok {
+		t.Fatal("dissolved root remains")
+	}
+	if _, ok := items.Items["gem"]; ok {
+		t.Fatal("dissolved child remains")
+	}
+	if err := next.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := items.CombatStats(next.Players["a"].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int8(next.Players["a"].Body.Armor) != stats.Armor || int8(next.Players["a"].Body.Thaco) != stats.Thaco {
+		t.Fatalf("equipment stats not refreshed: body=%+v stats=%+v", next.Players["a"].Body, stats)
+	}
+}
+
+func TestNPCCombatRoundDissolveSelectsHeldAndWieldReadySlots(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		slot int
+		id   string
+	}{
+		{name: "held", slot: 16, id: "held"},
+		{name: "wield", slot: 19, id: "wield"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ready [20]string
+			ready[tc.slot] = tc.id
+			s := npcCombatDissolveFixture(t, map[string]Item{tc.id: {Object: LegacyObject{Name: tc.name}}}, ready)
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				if low == 1 && high == 100 {
+					return 15
+				}
+				if low == 0 && high == 0 {
+					return 0
+				}
+				return high
+			})
+			if err != nil || !proposal.Dissolved || proposal.DissolveReadySlot != tc.slot || proposal.DissolveItemID != tc.id || proposal.DissolveCandidateCount != 1 {
+				t.Fatalf("proposal=%+v err=%v", proposal, err)
+			}
+			if want := [][2]int{{1, 20}, {1, 6}, {1, 100}, {0, 0}}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("RNG calls=%v want=%v", calls, want)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil || !result.Dissolved || next.Players["a"].Items.Ready[tc.slot] != "" {
+				t.Fatalf("result=%+v next=%+v err=%v", result, next, err)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundDissolveProtectedSelectionConsumesSelectionRNGButNoOps(t *testing.T) {
+	item := Item{Object: LegacyObject{Name: "이벤트검", Flags: [8]byte{objectOneWevFlag / 8: 1 << (objectOneWevFlag % 8)}}}
+	s := npcCombatDissolveFixture(t, map[string]Item{"held": item}, [20]string{16: "held"})
+	before := s.clone()
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		if low == 1 && high == 100 {
+			return 15
+		}
+		if low == 0 && high == 0 {
+			return 0
+		}
+		return high
+	})
+	if err != nil || !proposal.DissolveSucceeded || proposal.Dissolved || !proposal.DissolveProtected || proposal.DissolveItemID != "held" || proposal.DissolveReadySlot != 16 {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}, {0, 0}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("planning mutated protected source state")
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil || !result.DissolveProtected || result.Dissolved || !reflect.DeepEqual(next.Players["a"].Items, s.Players["a"].Items) {
+		t.Fatalf("protected selection changed state: result=%+v next=%+v err=%v", result, next, err)
+	}
+}
+
+func TestNPCCombatRoundDissolveSuccessWithNoReadyItemsSkipsSelectionRNG(t *testing.T) {
+	s := npcCombatDissolveFixture(t, map[string]Item{}, [20]string{})
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		if low == 1 && high == 100 {
+			return 15
+		}
+		return high
+	})
+	if err != nil || !proposal.DissolveSucceeded || proposal.Dissolved || proposal.DissolveCandidateCount != 0 || proposal.DissolveItemID != "" {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	if _, result, err := s.ApplyNPCCombatRound(proposal); err != nil || !result.DissolveSucceeded || result.DissolveCandidateCount != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestNPCCombatRoundDissolveFollowsExistingEffectRNGOrder(t *testing.T) {
+	s := npcCombatDissolveFixture(t, map[string]Item{
+		"held": {Object: LegacyObject{Name: "쥔검"}},
+	}, [20]string{16: "held"})
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[13/8] |= 1 << (13 % 8) // MPOISS
+	npc.Body.Flags[34/8] |= 1 << (34 % 8) // MDISEA
+	npc.Body.Flags[45/8] |= 1 << (45 % 8) // MBLNDR
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch len(calls) {
+		case 1:
+			return 20
+		case 2:
+			return 6
+		case 3:
+			return 15 // MPOISS
+		case 4, 5:
+			return 10 // MDISEA/MBLNDR
+		case 6:
+			return 15 // MDISIT
+		case 7:
+			return 0 // one ready candidate
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil || !proposal.Poisoned || !proposal.Diseased || !proposal.Blinded || !proposal.Dissolved {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	want := [][2]int{{1, 20}, {1, 6}, {1, 100}, {1, 100}, {1, 100}, {1, 100}, {0, 0}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+}
+
+func TestNPCCombatRoundRejectsTamperedDissolveSelectionAtomically(t *testing.T) {
+	s := npcCombatDissolveFixture(t, map[string]Item{
+		"held":  {Object: LegacyObject{Name: "쥔검"}},
+		"wield": {Object: LegacyObject{Name: "무기"}},
+	}, [20]string{16: "held", 19: "wield"})
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		if low == 1 && high == 100 {
+			return 15
+		}
+		if low == 0 {
+			return 0
+		}
+		return high
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := proposal
+	tampered.DissolveSelectionRoll = 1
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered selection accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+	tampered = proposal
+	tampered.next.Players["a"].Items.Ready[19] = ""
+	if next, result, err := s.ApplyNPCCombatRound(tampered); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("tampered item candidate accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+}
+
 func TestNPCCombatRoundPreservesNPCStealthOnHitAndMiss(t *testing.T) {
 	for _, tc := range []struct {
 		name string

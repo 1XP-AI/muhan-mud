@@ -11,41 +11,69 @@ import (
 // by the durable scheduler, so a lethal round is rejected rather than saving a
 // partially-dead player.
 type NPCCombatRoundProposal struct {
-	NPCID            string
-	PlayerID         string
-	RoomID           int16
-	Hit              bool
-	Critical         bool
-	Poisoned         bool
-	Diseased         bool
-	Blinded          bool
-	Damage           int
-	PlayerHPBefore   int
-	PlayerHPAfter    int
-	before           State
-	next             State
-	expectedHit      bool
-	expectedCritical bool
-	expectedPoisoned bool
-	expectedDiseased bool
-	expectedBlinded  bool
+	NPCID                  string
+	PlayerID               string
+	RoomID                 int16
+	Hit                    bool
+	Critical               bool
+	Poisoned               bool
+	Diseased               bool
+	Blinded                bool
+	DissolveSucceeded      bool
+	Dissolved              bool
+	DissolveProtected      bool
+	DissolveRoll           int
+	DissolveSelectionRoll  int
+	DissolveCandidateCount int
+	// DissolveReadySlot is the zero-based canonical Ready index (0..19).
+	DissolveReadySlot              int
+	DissolveItemID                 string
+	DissolveItemName               string
+	Damage                         int
+	PlayerHPBefore                 int
+	PlayerHPAfter                  int
+	before                         State
+	next                           State
+	expectedHit                    bool
+	expectedCritical               bool
+	expectedPoisoned               bool
+	expectedDiseased               bool
+	expectedBlinded                bool
+	expectedDissolveSucceeded      bool
+	expectedDissolved              bool
+	expectedDissolveProtected      bool
+	expectedDissolveRoll           int
+	expectedDissolveSelectionRoll  int
+	expectedDissolveCandidateCount int
+	expectedDissolveReadySlot      int
+	expectedDissolveItemID         string
+	expectedDissolveItemName       string
 }
 
 // NPCCombatRoundResult is the committed projection. TargetHP is retained as
 // an explicit alias for transport/event code that uses target-oriented naming.
 type NPCCombatRoundResult struct {
-	NPCID    string
-	PlayerID string
-	RoomID   int16
-	Hit      bool
-	Critical bool
-	Poisoned bool
-	Diseased bool
-	Blinded  bool
-	Damage   int
-	PlayerHP int
-	TargetHP int
-	Killed   bool
+	NPCID                  string
+	PlayerID               string
+	RoomID                 int16
+	Hit                    bool
+	Critical               bool
+	Poisoned               bool
+	Diseased               bool
+	Blinded                bool
+	DissolveSucceeded      bool
+	Dissolved              bool
+	DissolveProtected      bool
+	DissolveRoll           int
+	DissolveSelectionRoll  int
+	DissolveCandidateCount int
+	DissolveReadySlot      int
+	DissolveItemID         string
+	DissolveItemName       string
+	Damage                 int
+	PlayerHP               int
+	TargetHP               int
+	Killed                 bool
 }
 
 const (
@@ -55,6 +83,7 @@ const (
 	npcCombatVictimDiseasedFlag uint = 41 // PDISEA
 	npcCombatBlinderFlag        uint = 45 // MBLNDR
 	npcCombatVictimBlindedFlag  uint = 42 // PBLIND
+	npcCombatDissolverFlag      uint = 35 // MDISIT
 )
 
 func npcCombatContainsID(ids []string, want string) bool {
@@ -78,6 +107,62 @@ func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, in
 		damage = 1
 	}
 	return damage, nil
+}
+
+// npcCombatReadySlots mirrors dissolve_item's checklist construction. The
+// canonical ItemCollection has already been validated by State.Validate, but
+// the explicit checks keep this helper safe if it is reused at another
+// proposal boundary.
+func npcCombatReadySlots(items *ItemCollection) ([]int, error) {
+	if items == nil {
+		return nil, fmt.Errorf("NPC combat MDISIT requires canonical player items")
+	}
+	if err := items.Validate(); err != nil {
+		return nil, fmt.Errorf("NPC combat MDISIT player items: %w", err)
+	}
+	slots := make([]int, 0, len(items.Ready))
+	for slot, id := range items.Ready {
+		if id == "" {
+			continue
+		}
+		if _, ok := items.Items[id]; !ok {
+			return nil, fmt.Errorf("NPC combat MDISIT ready item absent")
+		}
+		slots = append(slots, slot)
+	}
+	return slots, nil
+}
+
+// npcCombatDeleteReadyRoot is the canonical ID-graph equivalent of
+// dissolve_item's free_obj(root). A ready root owns its complete subtree;
+// deleting only the root would leave orphan IDs and make the next snapshot
+// invalid.
+func npcCombatDeleteReadyRoot(items *ItemCollection, slot int) error {
+	if items == nil || slot < 0 || slot >= len(items.Ready) {
+		return fmt.Errorf("NPC combat MDISIT ready slot absent")
+	}
+	root := items.Ready[slot]
+	if root == "" {
+		return fmt.Errorf("NPC combat MDISIT ready root absent")
+	}
+	stack := []string{root}
+	seen := make(map[string]bool)
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if id == "" || seen[id] {
+			return fmt.Errorf("NPC combat MDISIT item subtree is cyclic")
+		}
+		seen[id] = true
+		item, ok := items.Items[id]
+		if !ok {
+			return fmt.Errorf("NPC combat MDISIT item subtree absent")
+		}
+		stack = append(stack, item.Contents...)
+		delete(items.Items, id)
+	}
+	items.Ready[slot] = ""
+	return nil
 }
 
 // PlanNPCCombatRound plans one canonical NPC attack against an exact player
@@ -108,6 +193,12 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	}
 	if npc.Enemies == nil {
 		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat enemy relations unresolved")
+	}
+	// The legacy dissolve_item path can fall back to raw creature pointers, but
+	// canonical Go combat may only mutate an ID-owned ItemCollection. Reject an
+	// unresolved player inventory before consuming attack randomness.
+	if flag(npc.Body.Flags[:], npcCombatDissolverFlag) && player.Items == nil {
+		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat MDISIT requires canonical player items")
 	}
 	enemy := false
 	for _, relation := range npc.Enemies {
@@ -182,6 +273,52 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 			nextPlayer.Body.Flags[npcCombatVictimBlindedFlag/8] |= 1 << (npcCombatVictimBlindedFlag % 8)
 		}
 	}
+	dissolveSucceeded := false
+	dissolved := false
+	dissolveProtected := false
+	dissolveRoll := 0
+	dissolveSelectionRoll := 0
+	dissolveCandidateCount := 0
+	dissolveReadySlot := 0
+	dissolveItemID := ""
+	dissolveItemName := ""
+	// src/update.c:507-509 performs this check after the poison/disease/blind
+	// checks. dissolve_item's checklist is ported below from command10.c:442-480.
+	if flag(npc.Body.Flags[:], npcCombatDissolverFlag) {
+		var dissolveErr error
+		dissolveRoll, dissolveErr = randomIn(roll, 1, 100)
+		if dissolveErr != nil {
+			return NPCCombatRoundProposal{}, dissolveErr
+		}
+		if dissolveRoll <= 15 {
+			dissolveSucceeded = true
+			slots, slotsErr := npcCombatReadySlots(player.Items)
+			if slotsErr != nil {
+				return NPCCombatRoundProposal{}, slotsErr
+			}
+			dissolveCandidateCount = len(slots)
+			if dissolveCandidateCount > 0 {
+				dissolveSelectionRoll, dissolveErr = randomIn(roll, 0, dissolveCandidateCount-1)
+				if dissolveErr != nil {
+					return NPCCombatRoundProposal{}, dissolveErr
+				}
+				dissolveReadySlot = slots[dissolveSelectionRoll]
+				dissolveItemID = player.Items.Ready[dissolveReadySlot]
+				selected := player.Items.Items[dissolveItemID]
+				dissolveItemName = selected.Object.Name
+				dissolveProtected = flag(selected.Object.Flags[:], objectOneWevFlag)
+				if !dissolveProtected {
+					if err := npcCombatDeleteReadyRoot(nextPlayer.Items, dissolveReadySlot); err != nil {
+						return NPCCombatRoundProposal{}, err
+					}
+					if err := refreshEquipmentStats(&nextPlayer); err != nil {
+						return NPCCombatRoundProposal{}, err
+					}
+					dissolved = true
+				}
+			}
+		}
+	}
 	next.Players[playerID] = nextPlayer
 	proposal.next = next
 	proposal.Hit = true
@@ -192,6 +329,24 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	proposal.expectedDiseased = diseased
 	proposal.Blinded = blinded
 	proposal.expectedBlinded = blinded
+	proposal.DissolveSucceeded = dissolveSucceeded
+	proposal.expectedDissolveSucceeded = dissolveSucceeded
+	proposal.Dissolved = dissolved
+	proposal.expectedDissolved = dissolved
+	proposal.DissolveProtected = dissolveProtected
+	proposal.expectedDissolveProtected = dissolveProtected
+	proposal.DissolveRoll = dissolveRoll
+	proposal.expectedDissolveRoll = dissolveRoll
+	proposal.DissolveSelectionRoll = dissolveSelectionRoll
+	proposal.expectedDissolveSelectionRoll = dissolveSelectionRoll
+	proposal.DissolveCandidateCount = dissolveCandidateCount
+	proposal.expectedDissolveCandidateCount = dissolveCandidateCount
+	proposal.DissolveReadySlot = dissolveReadySlot
+	proposal.expectedDissolveReadySlot = dissolveReadySlot
+	proposal.DissolveItemID = dissolveItemID
+	proposal.expectedDissolveItemID = dissolveItemID
+	proposal.DissolveItemName = dissolveItemName
+	proposal.expectedDissolveItemName = dissolveItemName
 	proposal.Damage = damage
 	proposal.PlayerHPAfter = int(nextPlayer.Body.HPCurrent)
 	if damage >= int(player.Body.HPCurrent) {
@@ -226,6 +381,63 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if proposal.Blinded != proposal.expectedBlinded || (proposal.Blinded && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatBlinderFlag))) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat blind outcome")
 	}
+	if proposal.DissolveSucceeded != proposal.expectedDissolveSucceeded ||
+		proposal.Dissolved != proposal.expectedDissolved ||
+		proposal.DissolveProtected != proposal.expectedDissolveProtected ||
+		proposal.DissolveRoll != proposal.expectedDissolveRoll ||
+		proposal.DissolveSelectionRoll != proposal.expectedDissolveSelectionRoll ||
+		proposal.DissolveCandidateCount != proposal.expectedDissolveCandidateCount ||
+		proposal.DissolveReadySlot != proposal.expectedDissolveReadySlot ||
+		proposal.DissolveItemID != proposal.expectedDissolveItemID ||
+		proposal.DissolveItemName != proposal.expectedDissolveItemName {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve outcome")
+	}
+	if proposal.Dissolved && (!proposal.DissolveSucceeded || proposal.DissolveProtected) {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve protection")
+	}
+	if proposal.DissolveProtected && (!proposal.DissolveSucceeded || proposal.DissolveItemID == "") {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat protected dissolve")
+	}
+	if !proposal.Hit && (proposal.DissolveSucceeded || proposal.DissolveRoll != 0 || proposal.DissolveSelectionRoll != 0 || proposal.DissolveCandidateCount != 0 || proposal.DissolveReadySlot != 0 || proposal.DissolveItemID != "" || proposal.DissolveItemName != "" || proposal.DissolveProtected || proposal.Dissolved) {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve on miss")
+	}
+	if proposal.Hit && flag(npc.Body.Flags[:], npcCombatDissolverFlag) {
+		if player.Items == nil {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("NPC combat MDISIT requires canonical player items")
+		}
+		slots, err := npcCombatReadySlots(player.Items)
+		if err != nil {
+			return State{}, NPCCombatRoundResult{}, err
+		}
+		if proposal.DissolveRoll < 1 || proposal.DissolveRoll > 100 || proposal.DissolveSucceeded != (proposal.DissolveRoll <= 15) {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve roll")
+		}
+		if !proposal.DissolveSucceeded {
+			if proposal.DissolveSelectionRoll != 0 || proposal.DissolveCandidateCount != 0 || proposal.DissolveReadySlot != 0 || proposal.DissolveItemID != "" || proposal.DissolveItemName != "" || proposal.DissolveProtected || proposal.Dissolved {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve miss")
+			}
+		} else {
+			if proposal.DissolveCandidateCount != len(slots) {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve candidates")
+			}
+			if len(slots) == 0 {
+				if proposal.DissolveSelectionRoll != 0 || proposal.DissolveReadySlot != 0 || proposal.DissolveItemID != "" || proposal.DissolveItemName != "" || proposal.DissolveProtected || proposal.Dissolved {
+					return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve empty selection")
+				}
+			} else {
+				if proposal.DissolveSelectionRoll < 0 || proposal.DissolveSelectionRoll >= len(slots) || proposal.DissolveReadySlot != slots[proposal.DissolveSelectionRoll] {
+					return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve selection")
+				}
+				selectedID := player.Items.Ready[proposal.DissolveReadySlot]
+				selected, ok := player.Items.Items[selectedID]
+				if !ok || selectedID != proposal.DissolveItemID || selected.Object.Name != proposal.DissolveItemName || proposal.DissolveProtected != flag(selected.Object.Flags[:], objectOneWevFlag) || proposal.Dissolved == proposal.DissolveProtected {
+					return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve item")
+				}
+			}
+		}
+	} else if proposal.DissolveSucceeded || proposal.Dissolved || proposal.DissolveProtected || proposal.DissolveRoll != 0 || proposal.DissolveSelectionRoll != 0 || proposal.DissolveCandidateCount != 0 || proposal.DissolveReadySlot != 0 || proposal.DissolveItemID != "" || proposal.DissolveItemName != "" {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat dissolve capability")
+	}
 	nextPlayer, nextOK := proposal.next.Players[proposal.PlayerID]
 	if !nextOK || int(nextPlayer.Body.HPCurrent) != proposal.PlayerHPAfter {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
@@ -242,6 +454,32 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if flag(nextPlayer.Body.Flags[:], npcCombatVictimBlindedFlag) != wantBlinded {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat blind candidate")
 	}
+	if flag(npc.Body.Flags[:], npcCombatDissolverFlag) {
+		expected := s.clone()
+		expectedPlayer := expected.Players[proposal.PlayerID]
+		expectedPlayer.Body.HPCurrent = int16(proposal.PlayerHPAfter)
+		if proposal.Poisoned {
+			expectedPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
+		}
+		if proposal.Diseased {
+			expectedPlayer.Body.Flags[npcCombatVictimDiseasedFlag/8] |= 1 << (npcCombatVictimDiseasedFlag % 8)
+		}
+		if proposal.Blinded {
+			expectedPlayer.Body.Flags[npcCombatVictimBlindedFlag/8] |= 1 << (npcCombatVictimBlindedFlag % 8)
+		}
+		if proposal.Dissolved {
+			if err := npcCombatDeleteReadyRoot(expectedPlayer.Items, proposal.DissolveReadySlot); err != nil {
+				return State{}, NPCCombatRoundResult{}, err
+			}
+			if err := refreshEquipmentStats(&expectedPlayer); err != nil {
+				return State{}, NPCCombatRoundResult{}, err
+			}
+		}
+		expected.Players[proposal.PlayerID] = expectedPlayer
+		if !reflect.DeepEqual(proposal.next, expected) {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
+		}
+	}
 	if proposal.Damage >= proposal.PlayerHPBefore {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("NPC combat player death continuation pending")
 	}
@@ -251,9 +489,14 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	result := NPCCombatRoundResult{
 		NPCID: proposal.NPCID, PlayerID: proposal.PlayerID, RoomID: proposal.RoomID,
 		Hit: proposal.Hit, Critical: proposal.Critical, Poisoned: proposal.Poisoned,
-		Diseased: proposal.Diseased, Blinded: proposal.Blinded, Damage: proposal.Damage,
-		PlayerHP: proposal.PlayerHPAfter, TargetHP: proposal.PlayerHPAfter,
-		Killed: false,
+		Diseased: proposal.Diseased, Blinded: proposal.Blinded,
+		DissolveSucceeded: proposal.DissolveSucceeded, Dissolved: proposal.Dissolved,
+		DissolveProtected: proposal.DissolveProtected, DissolveRoll: proposal.DissolveRoll,
+		DissolveSelectionRoll:  proposal.DissolveSelectionRoll,
+		DissolveCandidateCount: proposal.DissolveCandidateCount,
+		DissolveReadySlot:      proposal.DissolveReadySlot, DissolveItemID: proposal.DissolveItemID,
+		DissolveItemName: proposal.DissolveItemName, Damage: proposal.Damage,
+		PlayerHP: proposal.PlayerHPAfter, TargetHP: proposal.PlayerHPAfter, Killed: false,
 	}
 	return proposal.next.clone(), result, nil
 }

@@ -46,6 +46,12 @@ before-error P3 해결을 확인했지만, 첫 dot preflight와 durable reducer 
 | --- | --- | --- |
 | `src/update.c:471-490` ordinary NPC hit effect order | 성공 hit 뒤 `MPOISS` bit 13의 정확한 `1..100` 1회 추첨, `<=15`이면 victim `PPOISN` bit 16 설정. world proposal/apply와 durable NPC tick summary/state, lethal probe/replay에 `Poisoned`를 보존하고 miss·non-poisoner·invalid/tampered/stale 후보는 fail-closed | Luna max `ctx_8a120016169c` / `task_b67992572ae2`, report `/tmp/g7-npc-poison-report.md`, worker_done `msg_596526509b82`; coordinator race 2회·vet·gofmt·diff-check·4파일 범위 PASS 후 release. disease/blind/dissolve/breath, producer/tick/AI/추종/리젠, NPC corpus·PG·ARM64·browser/deploy는 미완료 |
 
+## 2026-09-16 `update.c` NPC MDISIT→dissolve_item
+
+| 원작 경계 | Go 구현 | 검증/남은 조건 |
+| --- | --- | --- |
+| `src/update.c:507-509`, `src/command10.c:442-480` ordinary NPC hit의 MDISIT 및 `dissolve_item` | 성공 hit 뒤 poison·disease·blind 다음 `MDISIT` `1..100` 1회와 ready 후보 선택 RNG를 순서대로 기록한다. canonical `ItemCollection.Ready` 20칸 전체(held/wield 포함)를 원작 순서로 후보화하고, `ONEWEV`는 선택 RNG를 소비한 뒤 보존하며 그 밖의 선택 root와 전체 ID subtree를 삭제하고 armor/THAC0를 갱신한다. durable NPC phase summary/state와 lethal probe/replay도 동일 결과를 보존하고 replay에서 RNG를 재소비하지 않는다. nil/legacy inventory·invalid/tampered candidate는 fail-closed | Luna max `task_a78c32c7c9c6` / `ctx_7708688f29cf`, report `/tmp/g7-npc-dissolve-item.md`, worker_done `msg_4649aa507ca3`; coordinator가 world `TestNPCCombatRound` race, transport 전체 race, vet, gofmt·diff-check 및 정확한 4파일 범위를 독립 재검증하고 worker release/ack를 완료했다. 전체 world corpus의 기존 room-body 63건 및 NPC admission fixture 2건 실패는 baseline/out-of-scope로 남으며, #7은 OPEN/In Progress/G3이고 전체 NPC tick/AI/리젠·PG/ARM64/browser/deploy 인수는 미완료 |
+
 ## 2026-09-15 `command5.c:who` 중앙 라우팅
 
 | 원작 경계 | Go 구현 | 검증/남은 조건 |
