@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "secret": "0123456789abcdef0123456789abcdef",
+  "nowMs": 1700000000000,
+  "actorUserId": "123e4567-e89b-12d3-a456-426614174000",
+  "correlationId": "123e4567-e89b-12d3-a456-426614174001",
+  "characterId": "123e4567-e89b-12d3-a456-426614174002",
+  "worldId": "muhan",
+  "canonicalName": "Alice",
+  "aliasName": "aLiCe",
+  "canonicalNameHex": "416c696365",
+  "aliasNameHex": "614c694365",
+  "legacyShard": "35",
+  "playerFileSha256": "18f8d2eb4a387bbc1e37ec099a7326805739bc9c99ecf0f14b808a5bcb65bf49",
+  "mismatchPlayerFileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "storageFormat": "player-v1",
+  "nonceHex": "000102030405060708090a0b0c0d0e0f",
+  "malformedEvidenceWireHex": "00"
+}

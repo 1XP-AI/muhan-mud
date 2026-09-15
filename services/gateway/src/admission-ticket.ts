@@ -3,6 +3,7 @@ import { CharacterAuthorizationError, isStrictLowerUuid } from './character-auth
 
 const MAX_TICKET_TTL_MS = 15_000
 const MAX_TICKET_LINE_BYTES = 256
+const MAX_BOUND_TICKET_LINE_BYTES = 384
 
 export interface AdmissionTicketInput {
   actorUserId: string
@@ -10,6 +11,8 @@ export interface AdmissionTicketInput {
   legacyNameKey: string
   jwtExpiresAtMs: number
   nowMs: number
+  sessionId?: string
+  gatewayInstanceId?: string
 }
 
 export interface AdmissionTicketDependencies {
@@ -53,10 +56,14 @@ export function createAdmissionTicket(
   if (!Buffer.isBuffer(nonceBytes) || nonceBytes.length !== 16) throw new CharacterAuthorizationError('invalid admission nonce source')
   const nonce = nonceBytes.toString('hex')
   const nameHex = Buffer.from(input.legacyNameKey, 'utf8').toString('hex')
-  const signed = `MUD1|${expiresUnix}|${nonce}|${input.actorUserId}|${input.characterId}|${nameHex}`
+  const bound=input.sessionId!==undefined || input.gatewayInstanceId!==undefined
+  if(bound && (!isStrictLowerUuid(input.sessionId) || typeof input.gatewayInstanceId!=='string' ||
+    !/^[-a-zA-Z0-9_.]{1,128}$/.test(input.gatewayInstanceId))) throw new CharacterAuthorizationError('invalid session binding')
+  const base=`${expiresUnix}|${nonce}|${input.actorUserId}|${input.characterId}|${nameHex}`
+  const signed = bound ? `MUD2|${base}|${input.sessionId}|${input.gatewayInstanceId}` : `MUD1|${base}`
   const hmac = createHmac('sha256', secret).update(signed, 'ascii').digest('hex')
   const wire = Buffer.from(`${signed}|${hmac}\n`, 'ascii')
-  if (wire.length > MAX_TICKET_LINE_BYTES) throw new CharacterAuthorizationError('admission ticket is too large')
+  if (wire.length > (bound?MAX_BOUND_TICKET_LINE_BYTES:MAX_TICKET_LINE_BYTES)) throw new CharacterAuthorizationError('admission ticket is too large')
   return wire
 }
 

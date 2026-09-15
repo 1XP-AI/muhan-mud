@@ -8,6 +8,7 @@
  */
 
 #include "mtype.h"
+#include "onboarding_activation_save_capability.h"
 
 typedef struct obj_tag {		/* Object list tags */
 	struct obj_tag 	*next_tag;
@@ -62,7 +63,7 @@ typedef struct iobuf {			/* I/O buffers for players */
 	short		ihead, itail;
 	short		ohead, otail;
 	void		(*fn)();
-	char		fnparam;
+	signed char	fnparam; /* login welcome uses -1 on every CPU */
 	long		ltime;
 	char		intrpt;
 	char		commands;
@@ -80,6 +81,30 @@ typedef struct extra {			/* Extra (non-saved) player fields */
 	char		auth_user_id[37];
 	char		character_id[37];
 	char		admission_nonce[33];
+	/* MUD2 DB lease identity, cleared with descriptor-owned extra on logout.
+	 * Empty for MUD1/MUD1O: never substitute admission_nonce as session ID. */
+	char		db_session_id[37];
+	char		db_gateway_instance_id[129];
+	/* MUD1O transient identity/state.  extra is never serialized with a
+	 * creature, so the actor/correlation/character IDs cannot enter player
+	 * files.  The compact state fields are protocol guards, not credentials. */
+	char		onboarding_actor_id[37];
+	char		onboarding_correlation_id[37];
+	char		onboarding_character_id[37];
+	char		onboarding_mode;
+	char		onboarding_state;
+	char		onboarding_world_staged;
+	/* An armed capability is retained only while the host retries a durable
+	 * PREPARED activation save.  No client input advances this state. */
+	char		onboarding_activation_pending;
+	char		onboarding_activation_command_id[37];
+	/* A non-serialized, one-shot handoff proof captured only after an accepted
+	 * ACTIVATED.  It belongs to this descriptor and disappears on disconnect. */
+	onboarding_activation_save_capability onboarding_activation_save;
+	/* Claim-only, in-memory evidence. It is never serialized and is cleared
+	 * immediately after VERIFIED or any fail-closed exit. */
+	char		onboarding_claim_sha256[65];
+	long		onboarding_claim_challenged_at;
 	ctag		*first_charm;
 	etag		*first_ignore;
 } extra;

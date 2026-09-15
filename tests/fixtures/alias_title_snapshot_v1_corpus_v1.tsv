@@ -1,0 +1,9 @@
+# format=alias-title-snapshot-v1-corpus;version=1
+# id	class	legacy_fixture	canonical_fixture	canonical_sha256
+valid-ordering	accept	alias_title_snapshot_v1_valid_ordering.alias	alias_title_snapshot_v1_valid_ordering.hex	98c8072580e6ccf50bb7c625875c8c1e993e7f49e88d4b7bde7e37e20169d5cd
+valid-boundary	accept	alias_title_snapshot_v1_valid_boundary.alias	alias_title_snapshot_v1_valid_boundary.hex	4de3ec38f868a45c1c2fef057589559e52ba7740313d3941ffd26dc9790ff0b4
+valid-max-count	accept	alias_title_snapshot_v1_valid_max_count.alias	alias_title_snapshot_v1_valid_max_count.hex	27aeed92a38659dff48cc84aa1ed5df4260c4e05d381a3f619db154577862d0f
+truncated-title	reject	alias_title_snapshot_v1_truncated.alias	-	-
+duplicate-alias	reject	alias_title_snapshot_v1_duplicate.alias	-	-
+oversized-alias	reject	alias_title_snapshot_v1_oversized_alias.alias	-	-
+oversized-count	reject	alias_title_snapshot_v1_oversized_count.alias	-	-

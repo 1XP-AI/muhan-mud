@@ -267,6 +267,39 @@ creature	*ply_ptr;
 }
 
 /**********************************************************************/
+/*                     staged onboarding player                       */
+/**********************************************************************/
+
+/* Staging is deliberately a pure ownership check.  init_ply() does much more
+ * than link a player: loading a room can add permanent creatures/objects and
+ * check exits, while init_ply() itself logs, broadcasts, updates timers, and
+ * can remove one-shot files.  Calling it and then del_ply_rom() cannot undo
+ * those effects (notably room->beenhere), even in a single-threaded server.
+ *
+ * The player store writes the creature image, but read_crt() clears all
+ * runtime links including parent_rom when it reloads it.  Keeping the staged
+ * creature entirely out of the world therefore leaves the SAVED file fit for
+ * a later ordinary MUD1 login, which calls the unchanged init_ply() path. */
+int init_staged_ply(ply_ptr)
+creature *ply_ptr;
+{
+	return(ply_ptr && !ply_ptr->parent_rom ? 0 : -1);
+}
+
+/* Publish only after the database transaction commits.  The legacy routine
+ * owns both room choice/admission and every login side effect, so one call
+ * preserves existing-login behavior exactly.  Its only error return is before
+ * broadcast() and add_ply_rom(), keeping a failed activation unpublished. */
+int activate_staged_ply(ply_ptr)
+creature *ply_ptr;
+{
+	if(!ply_ptr || ply_ptr->parent_rom || ply_ptr->fd < 0 ||
+	   ply_ptr->fd >= PMAX || Ply[ply_ptr->fd].ply != ply_ptr ||
+	   !Ply[ply_ptr->fd].io) return(-1);
+	return(init_ply(ply_ptr));
+}
+
+/**********************************************************************/
 /*				uninit_ply			      */
 /**********************************************************************/
 

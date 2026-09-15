@@ -125,14 +125,36 @@ function authFrame(): string {
   return JSON.stringify({ type: 'auth', accessToken: 'browser-token-not-for-logs', characterId: character })
 }
 
-async function startGateway(mud: Server, dependenciesValue: GatewayDependencies): Promise<RunningGateway> {
+async function startGateway(mud: Server, dependenciesValue: GatewayDependencies, bound=false): Promise<RunningGateway> {
   const address = mud.address()
   assert.ok(address && typeof address !== 'string')
-  const gateway = createGateway(config(address.port), dependenciesValue)
+  const gateway = createGateway({...config(address.port),mudSessionBindingEnabled:bound}, dependenciesValue)
   gateway.server.listen(0, '127.0.0.1')
   await once(gateway.server, 'listening')
   return gateway
 }
+
+test('opt-in MUD2 carries the exact acquired DB session, not a new identity', async (t) => {
+  let ticket=''
+  const mud=createServer(socket=>socket.on('data',bytes=>{
+    if(ticket.includes('\n')) return
+    ticket+=bytes.toString('ascii')
+    if(ticket.includes('\n')) socket.write('MUD1 OK\n')
+  }))
+  mud.listen(0,'127.0.0.1'); await once(mud,'listening')
+  const authorizer=new RecordingAuthorizer()
+  const gateway=await startGateway(mud,dependencies(authorizer),true)
+  t.after(async()=>{await closeGateway(gateway); await closeServer(mud)})
+  const {ws,messages}=await openWs(gateway)
+  ws.send(authFrame())
+  await waitForMessage(messages,({data,isBinary})=>!isBinary&&Buffer.from(data).toString()==='{"type":"ready"}')
+  assert.equal(authorizer.begins.length,1)
+  const parts=ticket.trimEnd().split('|')
+  assert.equal(parts[0],'MUD2')
+  assert.equal(parts[6],authorizer.begins[0]!.sessionId)
+  assert.equal(parts[7],authorizer.begins[0]!.gatewayInstanceId)
+  ws.close()
+})
 
 test('auth-first trusted relay writes ticket, waits for fragmented ACK, and preserves coalesced game bytes', async (t) => {
   const receivedFromGateway: Buffer[] = []
@@ -173,6 +195,39 @@ test('auth-first trusted relay writes ticket, waits for fragmented ACK, and pres
   ws.close()
 })
 
+test('does not pass through upstream terminal bytes before the MUD1 OK admission ACK', async (t) => {
+  let receivedTicket: Buffer | undefined
+  let signalPartialPrefix!: () => void
+  const ticketReceivedAndPartialPrefixSent = new Promise<void>((resolve) => { signalPartialPrefix = resolve })
+  let releaseAck!: () => void
+  const ackReleased = new Promise<void>((resolve) => { releaseAck = resolve })
+  const mud = createServer((socket) => socket.once('data', (ticket) => {
+    receivedTicket = Buffer.from(ticket)
+    socket.write('MUD1 ', () => signalPartialPrefix())
+    void ackReleased.then(() => socket.write(Buffer.concat([
+      Buffer.from('OK\n'), Buffer.from([0xec, 0x95, 0x88, 0xff, 0xfb, 0x01])
+    ])))
+  }))
+  mud.listen(0, '127.0.0.1')
+  await once(mud, 'listening')
+  const authorizer = new RecordingAuthorizer()
+  const gateway = await startGateway(mud, dependencies(authorizer))
+  t.after(async () => { await closeGateway(gateway); await closeServer(mud) })
+
+  const { ws, messages } = await openWs(gateway)
+  ws.send(authFrame())
+  await ticketReceivedAndPartialPrefixSent
+  assert.ok(receivedTicket, 'fake MUD must receive the admission ticket')
+  assert.match(receivedTicket.toString('ascii'), /^MUD1\|[^\n]+\n$/)
+  assert.equal(ws.readyState, WebSocket.OPEN)
+  assert.deepEqual(messages, [], 'admission fragments and upstream bytes must remain gated')
+
+  releaseAck()
+  await waitForMessage(messages, ({ data, isBinary }) => !isBinary && Buffer.from(data).toString() === '{"type":"ready"}')
+  await waitForMessage(messages, ({ data, isBinary }) => isBinary && Buffer.from(data).toString('utf8') === '안')
+  ws.close()
+})
+
 test('normal MUD TCP end after admission sends closed without an error and releases the lease', async (t) => {
   const mud = createServer((socket) => {
     socket.once('data', () => {
@@ -197,7 +252,7 @@ test('normal MUD TCP end after admission sends closed without an error and relea
   await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
 })
 
-test('non-owner authorization rejection never opens MUD TCP and releases the exact attempted session', async (t) => {
+test('an authenticated account without an owned active character never reaches MUD ticket admission', async (t) => {
   let mudConnections = 0
   const mud = createServer(() => { mudConnections += 1 })
   mud.listen(0, '127.0.0.1')
@@ -209,7 +264,7 @@ test('non-owner authorization rejection never opens MUD TCP and releases the exa
   const { ws, messages } = await openWs(gateway)
   ws.send(authFrame())
   await once(ws, 'close')
-  assert.equal(mudConnections, 0)
+  assert.equal(mudConnections, 0, 'a rejected owner-active lease must prevent ticket issuance')
   assert.ok(messages.some(({ data }) => Buffer.from(data).toString().includes('authentication or character authorization failed')))
   await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
 })
@@ -234,6 +289,7 @@ test('auth frame rejects unknown fields before authentication or MUD TCP', async
 
 for (const scenario of [
   { name: 'ERR', response: (socket: Socket) => socket.write('MUD1 ERR\n') },
+  { name: 'malformed response', response: (socket: Socket) => socket.write('MUD1 MAYBE\n') },
   { name: 'end', response: (socket: Socket) => socket.end() },
   { name: 'oversized preface', response: (socket: Socket) => socket.write(Buffer.alloc(257, 0x41)) },
   { name: 'timeout', response: (_socket: Socket) => {} }
@@ -250,6 +306,7 @@ for (const scenario of [
     ws.send(authFrame())
     await once(ws, 'close')
     assert.ok(!messages.some(({ data }) => Buffer.from(data).toString() === '{"type":"ready"}'))
+    assert.ok(!messages.some(({ isBinary }) => isBinary), 'failed admission must not create a usable relay session')
     await eventually(() => assert.deepEqual(authorizer.releases, [{ sessionId: session, gatewayInstanceId: 'gateway-contract' }]))
   })
 }

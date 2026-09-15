@@ -14,6 +14,16 @@
 #include "player_store.h"
 #include "player_recovery.h"
 #include "trusted_admission.h"
+#include "onboarding_admission.h"
+#include "onboarding_activation_binding.h"
+#include "onboarding_activation_save_capability.h"
+#ifdef USE_M3_RUNTIME
+#include "onboarding_activation_gate.h"
+#endif
+#include "onboarding_evidence_control.h"
+#include "onboarding_evidence_emission.h"
+#include "onboarding_receipt.h"
+#include "onboarding_session.h"
 #include "resource_path.h"
 #include <ctype.h>
 
@@ -29,6 +39,449 @@
 
 char pass_num[PMAX];
 long last_login[PMAX];
+
+static int onboarding_fd_active(fd)
+int fd;
+{
+	return fd >= 0 && fd < PMAX && Ply[fd].extr &&
+		Ply[fd].extr->onboarding_mode != 0;
+}
+
+static int onboarding_fd_provisioning(fd)
+int fd;
+{
+	return onboarding_fd_active(fd) &&
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION;
+}
+
+static void onboarding_clear_claim_transient(fd)
+int fd;
+{
+	if(fd < 0 || fd >= PMAX || !Ply[fd].extr) return;
+	memset(Ply[fd].extr->tempstr[0], 0,
+	       sizeof(Ply[fd].extr->tempstr[0]));
+	memset(Ply[fd].extr->onboarding_claim_sha256, 0,
+	       sizeof(Ply[fd].extr->onboarding_claim_sha256));
+	Ply[fd].extr->onboarding_claim_challenged_at = 0;
+}
+
+/* MUD1O claim is the only path that holds a loaded legacy password solely to
+ * compare it once.  handle_commands has already wiped the consumed ring line
+ * before entering this callback; do not erase unread Gateway controls. */
+static void onboarding_zero_claim_credentials(fd, transient)
+int fd;
+unsigned char *transient;
+{
+	if(fd < 0 || fd >= PMAX) return;
+	if(Ply[fd].ply)
+		onboarding_session_zeroize_claim_memory(
+			Ply[fd].ply->password, sizeof(Ply[fd].ply->password), 0, 0);
+	if(transient)
+		onboarding_session_zeroize_claim_memory(
+			0, 0, transient, strlen((char *)transient) + 1);
+}
+
+static void ticket_reject(fd, response, length)
+int fd;
+const char *response;
+unsigned int length;
+{
+	scwrite(fd, response, length);
+	disconnect(fd);
+}
+
+void onboarding_fail(fd)
+int fd;
+{
+	/* Numeric lifecycle diagnostics only: never log the consumed control line. */
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr && Ply[fd].io)
+		fprintf(stderr, "MUD onboarding failure: mode=%d state=%d phase=%d\n",
+			(int)Ply[fd].extr->onboarding_mode,
+			(int)Ply[fd].extr->onboarding_state,
+			(int)Ply[fd].io->fnparam);
+	/* Do not let disconnect() turn a failed onboarding wizard into a retrying
+	 * save.  A successfully saved file has already been atomically published
+	 * and is intentionally left alone. */
+	if(fd >= 0 && fd < PMAX && Ply[fd].ply)
+		Ply[fd].ply->fd = -1;
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr)
+		Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_FAILED;
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr)
+		onboarding_activation_save_capability_clear(
+			&Ply[fd].extr->onboarding_activation_save);
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr &&
+	   Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM)
+	{
+		onboarding_zero_claim_credentials(fd, 0);
+		onboarding_clear_claim_transient(fd);
+	}
+	ticket_reject(fd, "MUD1O ERR\n", 10);
+}
+
+static int onboarding_canonical_name(str)
+unsigned char *str;
+{
+	unsigned long bytes, codepoints;
+
+	if(!str || !utf8_validate(str, (unsigned long)strlen((char *)str))) return -1;
+	bytes = (unsigned long)strlen((char *)str);
+	codepoints = utf8_codepoint_len(str);
+	if(!bytes || bytes > PLAYER_NAME_MAX_BYTES ||
+	   codepoints < PLAYER_NAME_MIN_CODEPOINTS ||
+	   codepoints > PLAYER_NAME_MAX_CODEPOINTS ||
+	   !player_name_is_valid(str, PLAYER_NAME_MIN_CODEPOINTS,
+					 PLAYER_NAME_MAX_CODEPOINTS)) return -1;
+	lowercize(str, 1);
+	if(!strcmp((char *)str, DMNAME) || !strcmp((char *)str, DMNAME2) ||
+	   !strcmp((char *)str, DMNAME3) || !strcmp((char *)str, DMNAME4) ||
+	   !strcmp((char *)str, DMNAME5) || !strcmp((char *)str, DMNAME6) ||
+	   !strcmp((char *)str, DMNAME7)) return -1;
+	return 0;
+}
+
+static int onboarding_name_hex(name, out, out_size)
+const char *name;
+char *out;
+unsigned long out_size;
+{
+	static const char hex[] = "0123456789abcdef";
+	unsigned long i, length;
+
+	if(!name || !out) return -1;
+	length = (unsigned long)strlen(name);
+	if(!length || length > PLAYER_NAME_MAX_BYTES ||
+	   out_size < length * 2 + 1) return -1;
+	for(i=0; i<length; i++) {
+		unsigned char byte = (unsigned char)name[i];
+		out[2*i] = hex[byte >> 4];
+		out[2*i+1] = hex[byte & 15];
+	}
+	out[length * 2] = 0;
+	return 0;
+}
+
+static int onboarding_apply_control(fd, control, gateway)
+int fd;
+onboarding_control *control;
+int gateway;
+{
+	onboarding_state state;
+	int result;
+
+	if(!onboarding_fd_active(fd) || !control) return -1;
+	state = (onboarding_state)Ply[fd].extr->onboarding_state;
+	result = gateway ? onboarding_state_apply_gateway_control(&state, control) :
+			onboarding_state_apply_c_control(&state, control);
+	if(result != 0) return -1;
+	Ply[fd].extr->onboarding_state = (char)state;
+	return 0;
+}
+
+static int onboarding_send_control(fd, control)
+int fd;
+onboarding_control *control;
+{
+	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	unsigned long length;
+	int written;
+
+	if(!control || onboarding_apply_control(fd, control, 0) != 0 ||
+	   onboarding_format_c_control(line, sizeof(line), control) != 0) return -1;
+	length = (unsigned long)strlen(line);
+	written = scwrite(fd, line, (unsigned int)length);
+	if(written < 0 || (unsigned long)written != length) return -1;
+	return 0;
+}
+
+/* The command UUID is bound only after the protocol state machine accepted
+ * ACTIVATED.  This durable non-secret record is deliberately not an M3
+ * consumption call; M3 remains unmodified until its separate integration. */
+static int onboarding_write_activation_binding(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_activation_binding_mode mode;
+	if(!onboarding_fd_active(fd) || !command_id) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	return onboarding_activation_binding_write(
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, command_id);
+}
+
+/* The later save integration must consume this descriptor-owned object by the
+ * same command UUID; this call neither selects a saver nor invokes one. */
+static int onboarding_capture_activation_save_capability(fd, command_id,
+							 canonical_name)
+int fd;
+const char *command_id;
+const char *canonical_name;
+{
+	onboarding_activation_binding_mode mode;
+	onboarding_activation_save_capability_status result;
+	if(!onboarding_fd_active(fd) || !command_id || !canonical_name) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	result = onboarding_activation_save_capability_capture(
+		&Ply[fd].extr->onboarding_activation_save,
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, command_id, canonical_name);
+	if(result != ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK &&
+	   result != ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED)
+		fprintf(stderr, "MUD activation capture rejected: result=%d\n", (int)result);
+	return result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_OK ||
+		result == ONBOARDING_ACTIVATION_SAVE_CAPABILITY_DISABLED ? 0:-1;
+}
+
+static int onboarding_send_active(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_control control;
+	if(!command_id) return -1;
+	memset(&control, 0, sizeof(control));
+	control.kind = ONBOARDING_CONTROL_ACTIVE;
+	strcpy(control.command_id, command_id);
+	return onboarding_send_control(fd, &control);
+}
+
+static void onboarding_finish_activation(fd)
+int fd;
+{
+	if(!onboarding_fd_active(fd)) return;
+	strcpy(Ply[fd].extr->auth_user_id, Ply[fd].extr->onboarding_actor_id);
+	strcpy(Ply[fd].extr->character_id, Ply[fd].extr->onboarding_character_id);
+	/* MUD1O activation has no DB-session handoff yet. Never retain a prior
+	 * binding or fabricate one from the onboarding correlation/nonce. */
+	memset(Ply[fd].extr->db_session_id,0,sizeof(Ply[fd].extr->db_session_id));
+	memset(Ply[fd].extr->db_gateway_instance_id,0,sizeof(Ply[fd].extr->db_gateway_instance_id));
+	memset(Ply[fd].extr->onboarding_actor_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_actor_id));
+	memset(Ply[fd].extr->onboarding_correlation_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_correlation_id));
+	memset(Ply[fd].extr->onboarding_character_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_character_id));
+	Ply[fd].extr->onboarding_mode = 0;
+	Ply[fd].extr->onboarding_state = (char)ONBOARDING_STATE_NEW;
+	Ply[fd].extr->onboarding_activation_pending = 0;
+	memset(Ply[fd].extr->onboarding_activation_command_id, 0,
+	       sizeof(Ply[fd].extr->onboarding_activation_command_id));
+}
+
+static int onboarding_activation_complete(fd)
+int fd;
+{
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply) return -1;
+	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION) {
+		Ply[fd].ply->fd = fd;
+		if(activate_staged_ply(Ply[fd].ply) < 0 || onboarding_send_active(fd,
+			Ply[fd].extr->onboarding_activation_command_id) != 0) {
+			return -1;
+		}
+		Ply[fd].extr->onboarding_world_staged = 0;
+		onboarding_finish_activation(fd);
+		/* One-shot onboarding never acquires a gameplay lease. Discard this
+		 * descriptor (including queued wizard bytes); play requires fresh
+		 * trusted admission, just as the claim completion path does. */
+		disconnect(fd);
+		return 0;
+	}
+	if(Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {
+		if(onboarding_send_active(fd,
+			Ply[fd].extr->onboarding_activation_command_id) != 0) {
+			return -1;
+		}
+		onboarding_zero_claim_credentials(fd, 0);
+		onboarding_finish_activation(fd); disconnect(fd); return 0;
+	}
+	return -1;
+}
+
+#ifdef USE_M3_RUNTIME
+static void onboarding_activation_wait(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{ (void)fd; (void)param; (void)str; }
+
+/* 0 completes, 1 retains PREPARED for host retry, -1 is terminal. */
+static int onboarding_activation_gate_advance(fd, command_id)
+int fd;
+const char *command_id;
+{
+	onboarding_activation_binding_mode mode;
+	onboarding_activation_gate_result result;
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply || !command_id) return -1;
+	mode = Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_PROVISION ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_PROVISION :
+		Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM ?
+		ONBOARDING_ACTIVATION_BINDING_MODE_CLAIM :
+		ONBOARDING_ACTIVATION_BINDING_MODE_INVALID;
+	result = onboarding_activation_gate_attempt(
+		&Ply[fd].extr->onboarding_activation_save, command_id,
+		Ply[fd].extr->onboarding_actor_id,
+		Ply[fd].extr->onboarding_correlation_id,
+		Ply[fd].extr->onboarding_character_id, mode, Ply[fd].ply->name,
+		Ply[fd].ply->name, Ply[fd].ply);
+	if(result == ONBOARDING_ACTIVATION_GATE_BYPASS ||
+	   result == ONBOARDING_ACTIVATION_GATE_CONSUMED) {
+		memmove(Ply[fd].extr->onboarding_activation_command_id, command_id,
+			strlen(command_id) + 1);
+		return onboarding_activation_complete(fd);
+	}
+	if(result != ONBOARDING_ACTIVATION_GATE_RETAINED) return -1;
+	memmove(Ply[fd].extr->onboarding_activation_command_id, command_id,
+		strlen(command_id) + 1);
+	Ply[fd].extr->onboarding_activation_pending = 1;
+	Ply[fd].io->fn = onboarding_activation_wait; Ply[fd].io->fnparam = 0;
+	return 1;
+}
+#endif
+
+/* This is the single command lifecycle boundary: command handlers use it
+ * after an accepted ACTIVATED, and the M3 idle boundary uses the same entry
+ * to consume a retained PREPARED command.  The legacy build deliberately
+ * bypasses the dormant M3 gate but retains its previous completion effects. */
+static int onboarding_activation_lifecycle_advance(fd, command_id)
+int fd;
+const char *command_id;
+{
+#ifdef USE_M3_RUNTIME
+	return onboarding_activation_gate_advance(fd, command_id);
+#else
+	if(!onboarding_fd_active(fd) || !Ply[fd].ply || !command_id) return -1;
+	strcpy(Ply[fd].extr->onboarding_activation_command_id, command_id);
+	return onboarding_activation_complete(fd);
+#endif
+}
+
+#ifdef USE_M3_RUNTIME
+/* Called only from the post-update serialized host idle boundary. */
+void onboarding_activation_gate_idle_retry()
+{
+	int fd, result;
+	for(fd = 0; fd < PMAX; fd++) {
+		if(!Ply[fd].extr || !Ply[fd].extr->onboarding_activation_pending)
+			continue;
+		if(!Ply[fd].io || !Ply[fd].ply ||
+		   !Ply[fd].extr->onboarding_activation_command_id[0]) {
+			onboarding_fail(fd); continue;
+		}
+		result = onboarding_activation_lifecycle_advance(fd,
+			Ply[fd].extr->onboarding_activation_command_id);
+		if(result < 0) onboarding_fail(fd);
+	}
+}
+#endif
+
+#ifdef ONBOARDING_ACTIVATION_COMMAND_TESTING
+/* The dynamic harness supplies one Gateway record through the descriptor's
+ * real selected onboarding handler.  This exists only in test objects: it
+ * neither bypasses parser/state checks nor creates a production input path. */
+void onboarding_activation_command_test_deliver_activated(fd, command_id)
+int fd;
+const char *command_id;
+{
+	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	int written;
+
+	if(!onboarding_fd_active(fd) || !Ply[fd].io || !Ply[fd].io->fn ||
+	   !command_id) return;
+	written = snprintf(line, sizeof(line), "MUD1O ACTIVATED|%s", command_id);
+	if(written < 0 || (unsigned long)written >= sizeof(line)) return;
+	Ply[fd].io->fn(fd, Ply[fd].io->fnparam, (unsigned char *)line);
+	memset(line, 0, sizeof(line));
+}
+#ifdef USE_M3_RUNTIME
+void onboarding_activation_command_test_idle_retry()
+{
+	onboarding_activation_gate_idle_retry();
+}
+#endif
+#endif
+
+/* The EVIDENCE lane carries the separately canonical metadata envelope, not a
+ * legacy onboarding_control.  It advances only after inspection, tuple match,
+ * and formatting have all succeeded; all failures leave no SAVED/VERIFIED
+ * fallback and are handled by the existing generic onboarding abort path. */
+static int onboarding_send_evidence(fd, canonical_name, known_file_sha256)
+int fd;
+const char *canonical_name;
+const char *known_file_sha256;
+{
+	char line[ONBOARDING_EVIDENCE_CONTROL_MAX_RECORD_LENGTH + 1];
+	onboarding_state state;
+	int result;
+
+	memset(line, 0, sizeof(line));
+	result = -1;
+	if(!onboarding_fd_active(fd) ||
+	   onboarding_evidence_emission_prepare(canonical_name, known_file_sha256,
+					      line, sizeof(line)) !=
+	       ONBOARDING_EVIDENCE_EMISSION_OK)
+		goto out;
+	state = (onboarding_state)Ply[fd].extr->onboarding_state;
+	if(onboarding_state_apply_evidence(&state) != 0)
+		goto out;
+	if(scwrite(fd, line, (unsigned int)strlen(line)) < 0)
+		goto out;
+	Ply[fd].extr->onboarding_state = (char)state;
+	result = 0;
+out:
+	memset(line, 0, sizeof(line));
+	return result;
+}
+
+static int onboarding_parse_gateway_line(str, control)
+unsigned char *str;
+onboarding_control *control;
+{
+	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	unsigned long length;
+
+	if(!str || !control) return -1;
+	length = (unsigned long)strlen((char *)str);
+	if(!length || length >= ONBOARDING_ADMISSION_MAX_LINE) return -1;
+	memcpy(line, str, length);
+	line[length] = '\n';
+	line[length + 1] = 0;
+	return onboarding_parse_gateway_control(line, control);
+}
+
+/* While create_ply owns a human prompt, protocol controls must still never
+ * become character input.  Only ABORT is meaningful at that point. */
+int onboarding_control_during_wizard(fd, str)
+int fd;
+unsigned char *str;
+{
+	onboarding_control control;
+
+	if(!onboarding_fd_active(fd) || !onboarding_session_is_protocol_line(str) ||
+	   !Ply[fd].io) return 0;
+	/* A retained M3 activation has no client-driven transition.  Drop every
+	 * line without failing or clearing its exact descriptor capability. */
+	if(Ply[fd].extr->onboarding_activation_pending) return 1;
+	if((Ply[fd].io->fn == onboarding_provision &&
+	    (Ply[fd].io->fnparam == 5 || Ply[fd].io->fnparam == 6 ||
+	     Ply[fd].io->fnparam == 7)) ||
+	   (Ply[fd].io->fn == onboarding_claim &&
+	    (Ply[fd].io->fnparam == 3 || Ply[fd].io->fnparam == 5 ||
+	     Ply[fd].io->fnparam == 6)))
+		return 0;
+	if(onboarding_parse_gateway_line(str, &control) == 0 &&
+	   control.kind == ONBOARDING_CONTROL_ABORT)
+		onboarding_apply_control(fd, &control, 1);
+	onboarding_fail(fd);
+	return 1;
+}
 
 /**********************************************************************/
 /*                              login                                 */
@@ -57,7 +510,14 @@ char file[80];
               char *wday[7]={"일","월","화","수","목","금","토",};
 
 		switch(param) {
-	case -1: str[0]=0;
+	case -1:
+				/* A disabled MUD1O ticket must not be reinterpreted as a
+				 * legacy name after the welcome prompt. */
+				if(onboarding_session_is_protocol_line(str)) {
+					ticket_reject(fd, "MUD1 ERR\n", 9);
+					return;
+				}
+				str[0]=0;
 		case 0:
                             pass_num[fd]=0;
 				if(strcmp(Ply[fd].extr->tempstr[0], str)) {
@@ -258,8 +718,7 @@ unsigned char *str;
 	(void)param;
 	if(trusted_admission_validate((char *)str, time(0), &ticket) != 0 ||
 	   player_recovery_login_blocked()) {
-		scwrite(fd, "MUD1 ERR\n", 9);
-		disconnect(fd);
+		ticket_reject(fd, "MUD1 ERR\n", 9);
 		return;
 	}
 
@@ -270,8 +729,7 @@ unsigned char *str;
 	if(load_result != PLAYER_STORE_OK || !ply_ptr ||
 	   strcmp(ply_ptr->name, ticket.name) != 0 || F_ISSET(ply_ptr, SUICD)) {
 		if(ply_ptr) free_crt(ply_ptr);
-		scwrite(fd, "MUD1 ERR\n", 9);
-		disconnect(fd);
+		ticket_reject(fd, "MUD1 ERR\n", 9);
 		return;
 	}
 	free_crt(ply_ptr);
@@ -283,16 +741,14 @@ unsigned char *str;
 		if(Ply[i].ply && i != fd && !strcmp(Ply[i].ply->name, ticket.name))
 			disconnect(i);
 	if(player_recovery_login_blocked() || checkdouble(ticket.name)) {
-		scwrite(fd, "MUD1 ERR\n", 9);
-		disconnect(fd);
+		ticket_reject(fd, "MUD1 ERR\n", 9);
 		return;
 	}
 	load_result = load_ply(ticket.name, &ply_ptr);
 	if(load_result != PLAYER_STORE_OK || !ply_ptr ||
 	   strcmp(ply_ptr->name, ticket.name) != 0 || F_ISSET(ply_ptr, SUICD)) {
 		if(ply_ptr) free_crt(ply_ptr);
-		scwrite(fd, "MUD1 ERR\n", 9);
-		disconnect(fd);
+		ticket_reject(fd, "MUD1 ERR\n", 9);
 		return;
 	}
 
@@ -302,18 +758,355 @@ unsigned char *str;
 	if(init_ply(ply_ptr) < 0) {
 		free_crt(Ply[fd].ply);
 		Ply[fd].ply = 0;
-		scwrite(fd, "MUD1 ERR\n", 9);
-		disconnect(fd);
+		ticket_reject(fd, "MUD1 ERR\n", 9);
 		return;
 	}
 	init_alias(ply_ptr);
 	strcpy(Ply[fd].extr->auth_user_id, ticket.user_id);
 	strcpy(Ply[fd].extr->character_id, ticket.character_id);
 	strcpy(Ply[fd].extr->admission_nonce, ticket.nonce);
+	strcpy(Ply[fd].extr->db_session_id, ticket.session_id);
+	strcpy(Ply[fd].extr->db_gateway_instance_id, ticket.gateway_instance_id);
 
 	/* The acknowledgement intentionally precedes every legacy game byte. */
 	scwrite(fd, "MUD1 OK\n", 8);
 	RETURN(fd, command, 1);
+}
+
+/* MUD1O is a separate private lane.  MUD1 stays delegated to its unchanged
+ * ticket-only implementation, while an unknown initial line gets no legacy
+ * prompt and no protocol detail. */
+void onboarding_admission_login(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{
+	onboarding_admission_ticket ticket;
+	onboarding_state state;
+	char line[ONBOARDING_ADMISSION_MAX_LINE + 1];
+	const char *secret;
+	unsigned long length;
+
+	(void)param;
+	if(str && (!strncmp((char *)str, "MUD1|", 5) || !strncmp((char *)str, "MUD2|", 5))) {
+		trusted_admission_login(fd, 1, str);
+		return;
+	}
+	if(onboarding_session_mode() != 1 ||
+	   !onboarding_session_is_protocol_line(str)) {
+		scwrite(fd, "MUD1 ERR\n", 9);
+		disconnect(fd);
+		return;
+	}
+	length = (unsigned long)strlen((char *)str);
+	if(!length || length >= ONBOARDING_ADMISSION_MAX_LINE) {
+		onboarding_fail(fd);
+		return;
+	}
+	memcpy(line, str, length);
+	line[length] = '\n';
+	line[length + 1] = 0;
+	secret = getenv("MUD_ADMISSION_SECRET");
+	if(player_recovery_login_blocked() ||
+	   onboarding_session_validate_ticket(line, secret, time(0), &ticket) != 0) {
+		onboarding_fail(fd);
+		return;
+	}
+	state = ONBOARDING_STATE_NEW;
+	if(onboarding_state_accept_ticket(&state, &ticket) != 0) {
+		onboarding_fail(fd);
+		return;
+	}
+	/* Only validated identity/correlation metadata live in extra.  The raw
+	 * bearer ticket, HMAC, and admission secret never survive validation. */
+	strcpy(Ply[fd].extr->onboarding_actor_id, ticket.user_id);
+	strcpy(Ply[fd].extr->onboarding_correlation_id, ticket.correlation_id);
+	strcpy(Ply[fd].extr->admission_nonce, ticket.nonce);
+	Ply[fd].extr->onboarding_mode = ticket.mode;
+	Ply[fd].extr->onboarding_state = (char)state;
+	scwrite(fd, "MUD1O OK\n", 9);
+	if(ticket.mode == ONBOARDING_ADMISSION_MODE_PROVISION)
+		onboarding_provision(fd, 1, 0);
+	else
+		onboarding_claim(fd, 1, 0);
+}
+
+/* Provisioning preserves login()'s name -> confirmation -> [enter] sequence
+ * before it reserves the canonical file name and starts create_ply. */
+void onboarding_provision(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{
+	creature *ply_ptr;
+	onboarding_control control;
+	char onboarding_digest[ONBOARDING_ADMISSION_SHA256_HEX_LEN + 1];
+	int load_result;
+
+	switch(param) {
+	case 1:
+		print(fd, "\n당신의 이름은 무엇입니까? ");
+		RETURN(fd, onboarding_provision, 2);
+	case 2:
+		if(onboarding_canonical_name(str) != 0 ||
+		   player_recovery_login_blocked()) {
+			onboarding_fail(fd);
+			return;
+		}
+		ply_ptr = 0;
+		load_result = load_ply((char *)str, &ply_ptr);
+		if(ply_ptr) free_crt(ply_ptr);
+		if(load_result != PLAYER_STORE_NOT_FOUND) {
+			onboarding_fail(fd);
+			return;
+		}
+		strcpy(Ply[fd].extr->tempstr[0], (char *)str);
+		print(fd, "\n%S%j 하시겠습니까(예/아니오)? ", str, "4");
+		RETURN(fd, onboarding_provision, 3);
+	case 3:
+		if(strcmp((char *)str,"예") && str[0]!='y' && str[0]!='Y') {
+			Ply[fd].extr->tempstr[0][0] = 0;
+			print(fd, "당신의 이름은 무엇입니까? ");
+			RETURN(fd, onboarding_provision, 2);
+		}
+		print(fd, "\n[엔터]를 누르십시요.");
+		RETURN(fd, onboarding_provision, 4);
+	case 4:
+		memset(&control, 0, sizeof(control));
+		control.kind = ONBOARDING_CONTROL_RESERVE;
+		if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
+				       sizeof(control.name_hex)) != 0 ||
+		   onboarding_send_control(fd, &control) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		RETURN(fd, onboarding_provision, 5);
+	case 5:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_RESERVED ||
+		   Ply[fd].extr->onboarding_character_id[0] ||
+		   onboarding_apply_control(fd, &control, 1) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		strcpy(Ply[fd].extr->onboarding_character_id, control.character_id);
+		/* The reservation is now externally durable.  Before the wizard can
+		 * publish a player file, persist only the reconciliation allowlist.
+		 * The receipt API never receives a ticket, HMAC, password, or input. */
+		if(onboarding_receipt_write_pending(
+				Ply[fd].extr->onboarding_actor_id,
+				Ply[fd].extr->onboarding_correlation_id,
+				Ply[fd].extr->onboarding_character_id,
+				Ply[fd].extr->tempstr[0], "player-v1") != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		create_ply(fd, 1, 0);
+		return;
+	case 6:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_COMMIT ||
+		   onboarding_apply_control(fd, &control, 1) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		if(!Ply[fd].ply || !Ply[fd].extr->onboarding_world_staged ||
+		   Ply[fd].ply->parent_rom) {
+			onboarding_fail(fd);
+			return;
+		}
+		memset(onboarding_digest, 0, sizeof(onboarding_digest));
+		/* A committed receipt is retained for out-of-band DB/file
+		 * reconciliation; it is never deleted on the socket fast path. */
+		if(onboarding_session_file_sha256(Ply[fd].ply->name,
+					 onboarding_digest) != 0 ||
+		   onboarding_receipt_mark_committed(
+				   Ply[fd].extr->onboarding_actor_id,
+				   Ply[fd].extr->onboarding_correlation_id,
+				   Ply[fd].extr->onboarding_character_id,
+				   Ply[fd].extr->tempstr[0], "player-v1",
+				   onboarding_digest) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		/* COMMIT is a completion prerequisite, not the publication edge. */
+		RETURN(fd, onboarding_provision, 7);
+	case 7:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
+		   onboarding_apply_control(fd, &control, 1) != 0 ||
+		   !Ply[fd].ply || !Ply[fd].extr->onboarding_world_staged ||
+		   Ply[fd].ply->parent_rom ||
+		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
+		   onboarding_capture_activation_save_capability(fd, control.command_id,
+			   Ply[fd].ply->name) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		if(onboarding_activation_lifecycle_advance(fd, control.command_id) < 0)
+			onboarding_fail(fd);
+		return;
+	default:
+		onboarding_fail(fd);
+		return;
+	}
+}
+
+/* Claim waits for the Gateway's database-backed ALLOW before it enables
+ * password echo-off. There is exactly one password comparison and no retry
+ * branch; all failure reasons look identical to the private peer. */
+void onboarding_claim(fd, param, str)
+int fd;
+int param;
+unsigned char *str;
+{
+	creature *ply_ptr;
+	onboarding_control control;
+	char verified_digest[ONBOARDING_ADMISSION_SHA256_HEX_LEN + 1];
+	int load_result, password_ok;
+
+	switch(param) {
+	case 1:
+		print(fd, "\n당신의 이름은 무엇입니까? ");
+		RETURN(fd, onboarding_claim, 2);
+	case 2:
+		if(onboarding_canonical_name(str) != 0 ||
+		   player_recovery_login_blocked()) {
+			onboarding_fail(fd);
+			return;
+		}
+		ply_ptr = 0;
+		load_result = load_ply((char *)str, &ply_ptr);
+		if(load_result != PLAYER_STORE_OK || !ply_ptr ||
+		   strcmp((char *)str, ply_ptr->name) != 0 || F_ISSET(ply_ptr, SUICD)) {
+			if(ply_ptr) {
+				onboarding_session_zeroize_claim_memory(
+					ply_ptr->password, sizeof(ply_ptr->password), 0, 0);
+				free_crt(ply_ptr);
+			}
+			onboarding_fail(fd);
+			return;
+		}
+		strcpy(Ply[fd].extr->tempstr[0], (char *)str);
+		Ply[fd].ply = ply_ptr;
+		/* A claim read is not a gameplay session and must never re-save on
+		 * failure, ABORT, or normal roster-refresh close. */
+		Ply[fd].ply->fd = -1;
+		memset(&control, 0, sizeof(control));
+		control.kind = ONBOARDING_CONTROL_CHALLENGE;
+		if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
+			       sizeof(control.name_hex)) != 0 ||
+		   onboarding_session_file_sha256(Ply[fd].extr->tempstr[0],
+			   Ply[fd].extr->onboarding_claim_sha256) != 0) {
+			memset(&control, 0, sizeof(control));
+			onboarding_fail(fd);
+			return;
+		}
+		strcpy(control.file_sha256, Ply[fd].extr->onboarding_claim_sha256);
+		if(onboarding_send_control(fd, &control) != 0) {
+			memset(&control, 0, sizeof(control));
+			onboarding_fail(fd);
+			return;
+		}
+		memset(&control, 0, sizeof(control));
+		Ply[fd].extr->onboarding_claim_challenged_at = time(0);
+		RETURN(fd, onboarding_claim, 3);
+	case 3:
+		if(!Ply[fd].extr->onboarding_claim_sha256[0] ||
+		   !onboarding_session_claim_allow_live(
+			Ply[fd].extr->onboarding_claim_challenged_at, time(0)) ||
+		   onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_ALLOW ||
+		   onboarding_apply_control(fd, &control, 1) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		print(fd, "암호를 넣어 주십시요: ");
+		print(fd, "%c%c%c", 255, 251, 1);
+		RETURN(fd, onboarding_claim, 4);
+	case 4:
+		if(!onboarding_session_claim_allow_live(
+			Ply[fd].extr->onboarding_claim_challenged_at, time(0))) {
+			onboarding_zero_claim_credentials(fd, str);
+			onboarding_fail(fd);
+			return;
+		}
+		password_ok = Ply[fd].ply && strcmp((char *)str, Ply[fd].ply->password) == 0;
+		/* The comparison is complete: erase the password field and every byte
+		 * in the socket input buffer before taking any success/failure branch. */
+		onboarding_zero_claim_credentials(fd, str);
+		if(!password_ok) {
+			onboarding_fail(fd);
+			return;
+		}
+		memset(verified_digest, 0, sizeof(verified_digest));
+		if(onboarding_session_file_sha256(Ply[fd].extr->tempstr[0],
+					 verified_digest) != 0 ||
+		   strcmp(verified_digest, Ply[fd].extr->onboarding_claim_sha256) != 0) {
+			memset(verified_digest, 0, sizeof(verified_digest));
+			onboarding_fail(fd);
+			return;
+		}
+		memset(&control, 0, sizeof(control));
+		if(onboarding_evidence_control_enabled()) {
+			if(onboarding_send_evidence(fd, Ply[fd].extr->tempstr[0],
+						   verified_digest) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
+		}
+		else {
+			control.kind = ONBOARDING_CONTROL_VERIFIED;
+			if(onboarding_name_hex(Ply[fd].extr->tempstr[0], control.name_hex,
+				       sizeof(control.name_hex)) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
+			strcpy(control.file_sha256, verified_digest);
+			if(onboarding_send_control(fd, &control) != 0) {
+				memset(verified_digest, 0, sizeof(verified_digest));
+				memset(&control, 0, sizeof(control));
+				onboarding_fail(fd);
+				return;
+			}
+		}
+		memset(verified_digest, 0, sizeof(verified_digest));
+		memset(&control, 0, sizeof(control));
+		onboarding_clear_claim_transient(fd);
+		RETURN(fd, onboarding_claim, 5);
+	case 5:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_CLAIMED ||
+		   Ply[fd].extr->onboarding_character_id[0] ||
+		   onboarding_apply_control(fd, &control, 1) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		strcpy(Ply[fd].extr->onboarding_character_id, control.character_id);
+		onboarding_zero_claim_credentials(fd, 0);
+		RETURN(fd, onboarding_claim, 6);
+	case 6:
+		if(onboarding_parse_gateway_line(str, &control) != 0 ||
+		   control.kind != ONBOARDING_CONTROL_ACTIVATED ||
+		   onboarding_apply_control(fd, &control, 1) != 0 ||
+		   onboarding_write_activation_binding(fd, control.command_id) != 0 ||
+		   !Ply[fd].ply ||
+		   onboarding_capture_activation_save_capability(fd, control.command_id,
+			   Ply[fd].ply->name) != 0) {
+			onboarding_fail(fd);
+			return;
+		}
+		if(onboarding_activation_lifecycle_advance(fd, control.command_id) < 0)
+			onboarding_fail(fd);
+		return;
+	default:
+		onboarding_fail(fd);
+		return;
+	}
 }
 
 /**********************************************************************/
@@ -330,6 +1123,8 @@ char    *str;
 		int     i, k, l, n, sum;
 		int		save_result;
 		int     num[5];
+		onboarding_control onboarding_control_value;
+		char onboarding_digest[ONBOARDING_ADMISSION_SHA256_HEX_LEN + 1];
 
 		switch(param) {
 		case 1:
@@ -513,7 +1308,13 @@ char    *str;
 				strcpy(Ply[fd].ply->name, Ply[fd].extr->tempstr[0]);
 				up_level(Ply[fd].ply);
 				Ply[fd].ply->fd = fd;
-				if(init_ply(Ply[fd].ply) < 0) {
+				if((onboarding_fd_provisioning(fd) ?
+				    init_staged_ply(Ply[fd].ply) :
+				    init_ply(Ply[fd].ply)) < 0) {
+					if(onboarding_fd_provisioning(fd)) {
+						onboarding_fail(fd);
+						return;
+					}
 					scwrite(fd, "\n서버 초기화 중 오류가 발생했습니다.\n",
 						(int)strlen("\n서버 초기화 중 오류가 발생했습니다.\n"));
 					if(Ply[fd].ply) {
@@ -524,6 +1325,8 @@ char    *str;
 					print(fd, "\n당신의 이름은 무엇입니까? ");
 					RETURN(fd, login, 1);
 				}
+				if(onboarding_fd_provisioning(fd))
+					Ply[fd].extr->onboarding_world_staged = 1;
 	                               init_alias(Ply[fd].ply);
 		F_SET(Ply[fd].ply,PLECHO);
 		F_SET(Ply[fd].ply,PPROMP);
@@ -531,9 +1334,59 @@ char    *str;
 				print(fd, "%c%c%c\n",255,252,1);
 				save_result = save_ply(Ply[fd].ply->name, Ply[fd].ply);
 				if(save_result != PLAYER_STORE_OK) {
+					if(onboarding_fd_provisioning(fd)) {
+						onboarding_fail(fd);
+						return;
+					}
 					merror("create_ply", NONFATAL);
 					print(fd, "새 캐릭터를 저장하지 못했습니다. 현재 접속을 유지하는 동안 저장 명령으로 다시 시도하십시오.\n");
 					RETURN(fd, command, 1);
+				}
+				if(onboarding_fd_provisioning(fd)) {
+					memset(&onboarding_control_value, 0,
+						   sizeof(onboarding_control_value));
+					memset(onboarding_digest, 0, sizeof(onboarding_digest));
+					onboarding_control_value.kind = ONBOARDING_CONTROL_SAVED;
+					strcpy(onboarding_control_value.character_id,
+					       Ply[fd].extr->onboarding_character_id);
+					strcpy(onboarding_control_value.storage_format, "player-v1");
+					if(!onboarding_control_value.character_id[0] ||
+					   onboarding_session_file_sha256(Ply[fd].ply->name,
+								   onboarding_digest) != 0) {
+						onboarding_fail(fd);
+						return;
+					}
+					/* The player file and its exact hash are durable before this
+					 * replacement.  Thus a crash before SAVED leaves a `saved`
+					 * receipt for the reconciler, not an unprovable orphan file. */
+					if(onboarding_receipt_mark_saved(
+							Ply[fd].extr->onboarding_actor_id,
+							Ply[fd].extr->onboarding_correlation_id,
+							Ply[fd].extr->onboarding_character_id,
+							Ply[fd].extr->tempstr[0], "player-v1",
+							onboarding_digest) != 0) {
+						onboarding_fail(fd);
+						return;
+					}
+					if(onboarding_evidence_control_enabled()) {
+						if(onboarding_send_evidence(fd,
+								Ply[fd].extr->tempstr[0],
+								onboarding_digest) != 0) {
+							onboarding_fail(fd);
+							return;
+						}
+					}
+					else {
+						strcpy(onboarding_control_value.file_sha256, onboarding_digest);
+						if(onboarding_send_control(fd, &onboarding_control_value) != 0) {
+							onboarding_fail(fd);
+							return;
+						}
+					}
+					/* Before COMMIT this remains a saved file, not a live gameplay
+					 * owner.  disconnect() therefore frees it without a second save. */
+					Ply[fd].ply->fd = -1;
+					RETURN(fd, onboarding_provision, 6);
 				}
 
 				print(fd, "[환영]이라고 치시면 초보자 분들에게 도움이 되는 많은 정보를 얻을수 있습니다.\n");

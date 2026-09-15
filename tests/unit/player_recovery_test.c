@@ -24,16 +24,18 @@ int file_player_store_load(char *name, creature **player)
     return PLAYER_STORE_NOT_FOUND;
 }
 
-static int test_save(char *name, creature *player)
+static int test_save(void *opaque, char *name, creature *player)
 {
+    (void)opaque;
     (void)name;
     (void)player;
     save_calls++;
     return save_calls > saves_before_success ? PLAYER_STORE_OK : PLAYER_STORE_IO_ERROR;
 }
 
-static int test_load(char *name, creature **player)
+static int test_load(void *opaque, char *name, creature **player)
 {
+    (void)opaque;
     (void)name;
     (void)player;
     return PLAYER_STORE_NOT_FOUND;
@@ -65,7 +67,7 @@ static int expect(int condition, const char *message)
 
 int main(void)
 {
-    player_store_ops store = { test_save, test_load };
+    player_store_ops store = { test_save, test_load, 0 };
     creature *player, *quarantined;
     int i, failed = 0;
 

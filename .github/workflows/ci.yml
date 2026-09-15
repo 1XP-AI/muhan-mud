@@ -1,22 +1,129 @@
 name: CI
 
 on:
-  push:
+  workflow_dispatch:
+    inputs:
+      validation_scope:
+        description: >-
+          Choose the smallest gate that matches this change. Main is the only
+          scope that runs the Linux ARM64 cross-build; release adds legacy
+          DB/browser/compatibility checks and is not a per-lane check.
+        required: true
+        type: choice
+        options:
+          - fast
+          - integration
+          - main
+          - release
+        default: fast
+
+# Manual execution preserves the local-first policy; hosted exceptions cover x64/Windows.
+concurrency:
+  group: manual-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  go-validation:
+    name: Go ${{ inputs.validation_scope }} gate
+    if: inputs.validation_scope != 'release'
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Guard main merge gate scope
+        if: inputs.validation_scope == 'main'
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$GITHUB_REF" != "$expected" ]]; then
+            echo "main ARM64 gate is reserved for the default branch ($expected); use integration on a feature branch." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verify Linux ARM64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          command -v git
+
+      - name: Setup Go from module contract
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Run selected Go gate
+        shell: bash
+        env:
+          VALIDATION_SCOPE: ${{ inputs.validation_scope }}
+        run: |
+          set -euo pipefail
+          case "$VALIDATION_SCOPE" in
+            fast)
+              # Actions checkout is clean; opt into the checked-out commit's
+              # diff so the manual fast gate does not silently skip.
+              GO_FAST_COMMIT=1 scripts/run-go-validation.sh fast
+              ;;
+            integration)
+              scripts/run-go-validation.sh integration
+              ;;
+            main)
+              scripts/run-go-validation.sh main
+              ;;
+            *)
+              echo "unsupported validation scope: $VALIDATION_SCOPE" >&2
+              exit 2
+              ;;
+          esac
+
+  # Release is an explicit compatibility checkpoint, not a feature-branch
+  # feedback lane. Fail before checkout/database startup/matrix fan-out when a
+  # caller accidentally selects it on a working branch.
+  release-scope-guard:
+    name: Release scope guard
+    if: inputs.validation_scope == 'release'
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 5
+
+    steps:
+      - name: Guard release scope
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$GITHUB_REF" != "$expected" ]]; then
+            echo "release compatibility gate is reserved for the default branch ($expected); use fast or integration on a feature branch." >&2
+            exit 1
+          fi
+          echo "release compatibility gate accepted on $GITHUB_REF"
+
   database-contract:
     name: Supabase ownership contract
-    runs-on: ubuntu-latest
+    if: inputs.validation_scope == 'release'
+    needs: release-scope-guard
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:17-alpine
         env:
           POSTGRES_PASSWORD: contract-only-password
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -24,55 +131,489 @@ jobs:
           --health-retries 20
 
     steps:
+      - name: Isolate job-local build outputs
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          mkdir -p "$task_temp/tmp" "$task_temp/cache"
+          printf 'TMPDIR=%s/tmp\nXDG_CACHE_HOME=%s/cache\nnpm_config_cache=%s/npm\nnpm_config_store_dir=%s/pnpm-store\nPLAYWRIGHT_BROWSERS_PATH=%s/playwright\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+          printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install PostgreSQL client
+      - name: Verify Linux ARM64 runner and Docker
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          test "$(uname -m)" = aarch64
+          command -v apt-get
+          sudo -n true || { echo 'Runner requires passwordless sudo for explicit dependency installation.' >&2; exit 1; }
+          docker info --format '{{.Architecture}}'
 
-      - name: Run ownership and session contract
+      - name: Install PostgreSQL client and libpq headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Other repositories share this host: wait/retry rather than deleting apt locks.
+          sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update --error-on=any
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential postgresql-client libpq-dev python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip util-linux
+          test -x /usr/bin/flock
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm (job-local)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Run P1F Linux runtime idle and native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src p1f-runtime-idle-test CC=gcc
+          make -C src p1f-runtime-native-test CC=gcc PG_CONFIG=pg_config
+
+      - name: Compile isolated libpq receipt adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-receipt-transport-native-compile CC=gcc PG_CONFIG=pg_config
+
+      - name: Gate complete M3 runtime link (Linux + libpq)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src m3-runtime-linux-link \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_RUNTIME_LINK_OUTFILE="$TMPDIR/muhan-m3-runtime"
+
+      - name: Run identity and onboarding contracts
         shell: bash
         env:
-          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:5432/postgres
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           set -euo pipefail
-          psql "$DATABASE_URL" --file=supabase/tests/bootstrap_contract.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
-          psql "$DATABASE_URL" --file=supabase/migrations/20260902000000_game_identity.sql
-          psql "$DATABASE_URL" --file=supabase/tests/game_identity_contract.sql
+          bash supabase/tests/imported_unclaimed_batch_schema_static_contract.sh
+          bash supabase/tests/imported_unclaimed_batch_character_provenance_static_contract.sh
+          bash supabase/tests/imported_unclaimed_claim_provenance_gate_static_contract.sh
+          bash supabase/tests/imported_unclaimed_batch_member_legacy_locator_static_contract.sh
+          bash supabase/tests/imported_unclaimed_batch_member_identity_static_contract.sh
+          bash supabase/tests/imported_unclaimed_historic_batch_tuple_gate_static_contract.sh
+          bash supabase/tests/legacy_locator_resolver_static_contract.sh
+          bash supabase/tests/player_snapshot_v1_inventory_graph_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_topology_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_root_value_shadow_static_contract.sh
+          bash supabase/tests/bank_snapshot_v1_root_value_shadow_disposable_contract_harness.test.sh
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
+          # Every additive migration is intentionally applied twice: the first
+          # pass proves the upgrade and the second proves safe job/CI replay.
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260902000000_game_identity.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260903000000_character_onboarding.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260903000000_character_onboarding.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260904000000_onboarding_intent_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260904000000_onboarding_intent_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260907000000_claim_challenge_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260907000000_claim_challenge_safety.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260909000000_m3_shadow_receipts.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260909000000_m3_shadow_receipts.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/game_identity_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/character_onboarding_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_shadow_receipt_contract.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_shadow_receipt_route_v2_contract.sql
+          CLAIM_CHALLENGE_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/claim_challenge_lock_expiry.sh
+          SERVICE_RPC_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/service_rpc_lock_expiry.sh
+          M3_SHADOW_LOCK_EXPIRY_ALLOW_DISPOSABLE=1 bash supabase/tests/m3_shadow_receipt_lock_expiry.sh
+
+      - name: Run disposable native M3 receipt transport integration
+        shell: bash
+        env:
+          M3_RECEIPT_TRANSPORT_ALLOW_DISPOSABLE: "1"
+          M3_RECEIPT_TRANSPORT_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-receipt-transport-integration CC=gcc PG_CONFIG=pg_config
+          make -C src character-save-journal-v2-receipt-transport-restart-integration CC=gcc PG_CONFIG=pg_config
+
+      # Keep this after the historical receipt-transport lane: migration 110
+      # intentionally adds the one audited membership that the earlier
+      # no-membership baseline proves absent.
+      - name: Run M3 writer login and startup-session contracts
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+          M3_WRITER_SESSION_ALLOW_DISPOSABLE: "1"
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260911000000_m3_writer_session.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --command="alter role mud_writer_login password 'm3-rpc-login-password'"
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/m3_writer_session_contract.sql
+          make -C src character-save-journal-v2-runtime-native-compile CC=gcc PG_CONFIG=pg_config
+          M3_RUNTIME_ALLOW_DISPOSABLE=1 make -C src character-save-journal-v2-runtime-integration CC=gcc PG_CONFIG=pg_config
+          make -C src character-save-journal-v2-rpc-transport-native-compile CC=gcc PG_CONFIG=pg_config
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260912000000_m3_live_save_route.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260912000000_m3_live_save_route.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
+          psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260918000000_m3_absent_head_seed.sql
+          M3_RPC_TRANSPORT_ALLOW_DISPOSABLE=1 \
+          M3_RPC_TRANSPORT_DATABASE_URL=postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres \
+            make -C src character-save-journal-v2-rpc-transport-integration CC=gcc PG_CONFIG=pg_config
+
+      - name: Run M3 v3 route, provisioning baseline, and absent-head seed PostgreSQL 17 contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          M3_LIVE_SAVE_ROUTE_ALLOW_DISPOSABLE: "1"
+          M3_PROVISIONING_HEAD_BASELINE_ALLOW_DISPOSABLE: "1"
+        run: |
+          set -euo pipefail
+          bash supabase/tests/m3_live_save_route_pg17_integration.sh
+          bash supabase/tests/m3_provisioning_head_baseline_pg17_integration.sh
+
+      - name: Run isolated legacy identity evidence binding PostgreSQL contract
+        shell: bash
+        env:
+          PGPASSWORD: contract-only-password
+        run: |
+          set -euo pipefail
+          evidence_database=legacy_identity_evidence_contract
+          evidence_database_url="postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/${evidence_database}"
+          createdb --host=127.0.0.1 --port="${{ job.services.postgres.ports['5432'] }}" --username=postgres "${evidence_database}"
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 --file=supabase/tests/bootstrap_contract.sql
+          # Start at the identity schema: the earlier lobby-presence migration
+          # depends on Realtime, which this minimal disposable bootstrap omits.
+          migrations=(
+            supabase/migrations/20260902000000_game_identity.sql
+            supabase/migrations/20260903000000_character_onboarding.sql
+            supabase/migrations/20260904000000_onboarding_intent_safety.sql
+            supabase/migrations/20260905000000_claim_fingerprint_safety.sql
+            supabase/migrations/20260906000000_claim_actor_rate_limit.sql
+            supabase/migrations/20260907000000_claim_challenge_safety.sql
+            supabase/migrations/20260908000000_service_rpc_fresh_clock.sql
+            supabase/migrations/20260909000000_m3_shadow_receipts.sql
+            supabase/migrations/20260910000000_m3_shadow_receipt_route_v2.sql
+            supabase/migrations/20260911000000_m3_writer_session.sql
+            supabase/migrations/20260912000000_m3_live_save_route.sql
+            supabase/migrations/20260913000000_m3_provisioning_head_baseline.sql
+            supabase/migrations/20260914000000_m4_file_snapshot_manifest.sql
+            supabase/migrations/20260915000000_player_snapshot_v1_artifacts.sql
+            supabase/migrations/20260916000000_player_snapshot_v1_receipt_octets_binding.sql
+            supabase/migrations/20260917000000_player_snapshot_v1_replay_reader.sql
+            supabase/migrations/20260918000000_m3_absent_head_seed.sql
+            supabase/migrations/20260919000000_player_snapshot_v1_level_projection.sql
+            supabase/migrations/20260920000000_player_snapshot_v1_level_projection_replay_reader.sql
+            supabase/migrations/20260921000000_legacy_identity_evidence_binding.sql
+          )
+          # The first pass proves the upgrade path; the second proves every
+          # additive migration remains safe under CI/job replay.
+          for pass in 1 2; do
+            for migration in "${migrations[@]}"; do
+              psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 --file="${migration}"
+            done
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/legacy_identity_evidence_binding_contract.sql
+          # Keep the legacy evidence contract pinned at its 210 checkpoint.
+          # The handoff gate is deliberately applied only after that contract,
+          # then replayed before its own pending-to-active contract runs.
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260922000000_onboarding_handoff_lifecycle.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260922100000_onboarding_handoff_gate.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260923000000_onboarding_snapshot_eligibility_outbox.sql
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/onboarding_handoff_gate_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/onboarding_snapshot_eligibility_outbox_contract.sql
+          pva_fixture_hex="$(tr -d '\r\n' < tests/fixtures/player_snapshot_v1_canonical.hex)"
+          pva_payload="decode('${pva_fixture_hex}', 'hex')"
+          pvi_tree_fixture_hex="$(tr -d '\r\n' < tests/fixtures/player_snapshot_v1_tree_inventory.hex)"
+          pvi_tree_payload="decode('${pvi_tree_fixture_hex}', 'hex')"
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260924000000_onboarding_snapshot_fulfillment.sql
+          done
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment corrective migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260925000000_onboarding_snapshot_fulfillment_corrective.sql
+          done
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot fulfillment terminal-semantics migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260926000000_onboarding_snapshot_fulfillment_terminal_semantics.sql
+          done
+          if psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql; then
+            echo "RED unexpectedly passed before onboarding snapshot command-binding migration" >&2
+            exit 1
+          fi
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260927000000_onboarding_snapshot_command_binding.sql
+          done
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20260930000000_imported_unclaimed_claim_provenance_gate.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261008000000_imported_unclaimed_batch_member_identity.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261002000000_legacy_locator_resolver.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261003000000_player_snapshot_v1_inventory_graph_shadow.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261004000000_player_snapshot_v1_full_payload_rehearsal_reader.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261005000000_bank_snapshot_v1_topology_shadow.sql
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_ledger_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_character_provenance_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_claim_provenance_gate_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_member_legacy_locator_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_batch_member_identity_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/imported_unclaimed_historic_batch_tuple_gate_contract.sql
+          # The historic tuple contract must source 090 while its policy table
+          # is still absent; install it permanently only after the assertions.
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql
+          for pass in 1 2; do
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261010000000_pending_onboarding_snapshot_eligibility_fulfillment.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261011000000_pending_onboarding_snapshot_eligibility_login.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261012000000_pending_onboarding_snapshot_eligibility_login_hardening.sql
+            psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+              --file=supabase/migrations/20261013000000_private_function_execute_hardening.sql
+          done
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/legacy_locator_resolver_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pvi_tree_payload=${pvi_tree_payload}" \
+            --file=supabase/tests/player_snapshot_v1_inventory_graph_shadow_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/player_snapshot_v1_full_payload_rehearsal_reader_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/bank_snapshot_v1_topology_shadow_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --set="pva_payload=${pva_payload}" \
+            --file=supabase/tests/onboarding_snapshot_fulfillment_contract.sql
+          psql "${evidence_database_url}" --set=ON_ERROR_STOP=1 \
+            --file=supabase/tests/pending_onboarding_snapshot_eligibility_fulfillment_contract.sql
+
+      - name: Run M4 file snapshot manifest PostgreSQL 17 contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-snapshot-shadow-outbox-pg17-integration \
+            M4_FILE_SNAPSHOT_MANIFEST_ALLOW_DISPOSABLE=1
+
+      - name: Run PlayerSnapshotV1 PostgreSQL 17 artifact contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYER_SNAPSHOT_V1_ARTIFACT_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/player_snapshot_v1_artifact_pg17_integration.sh
+
+      # The replay-reader gate executes the explicit comparator from dist,
+      # before the later filesystem relay E2E consumes the same compiled relay.
+      - name: Install, test, typecheck, and build M4 relay contracts
+        shell: bash
+        working-directory: services/m4-file-snapshot-manifest-relay
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          npm run typecheck
+          npm run build
+          # The full-payload rehearsal remains default-off; this binary is
+          # built only for its isolated disposable PostgreSQL 17 contract.
+          cargo build --locked --release --manifest-path ../../rust/Cargo.toml \
+            -p muhan-core-dto --bin player_snapshot_v1_replay_verify
+
+      - name: Run PlayerSnapshotV1 replay-reader and full-payload rehearsal PostgreSQL 17 contract
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYER_SNAPSHOT_V1_REPLAY_READER_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/player_snapshot_v1_replay_reader_pg17_integration.sh
+
+      - name: Run BankSnapshotV1 topology adapter PostgreSQL 17 E2E
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_ALLOW_CI_E2E: "1"
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_DATABASE_URL: postgresql://mud_writer_login:m3-rpc-login-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/legacy_identity_evidence_contract
+          BANK_SNAPSHOT_V1_TOPOLOGY_SHADOW_E2E_SUPER_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/legacy_identity_evidence_contract
+        run: |
+          set -euo pipefail
+          bash supabase/tests/bank_snapshot_v1_topology_shadow_pg17_adapter_e2e.sh
+
+      - name: Run PlayerSnapshotV1 manifest-first Linux filesystem relay PostgreSQL 17 E2E
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYER_SNAPSHOT_V1_ARTIFACT_RELAY_ALLOW_DISPOSABLE=1 \
+            bash supabase/tests/player_snapshot_v1_artifact_relay_pg17_e2e.sh
+
+      - name: Run isolated M3 owner and runtime-shadow PostgreSQL 17 E2E gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Each harness creates a random-named, loopback-published PostgreSQL
+          # 17 container with tmpfs storage, then removes only that container.
+          # Do not add docker system prune/volume cleanup here: shared runner
+          # storage must remain outside this test's ownership.
+          make -C src character-save-journal-v2-process-owner-pg17-integration \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_PROCESS_OWNER_PG17_ALLOW_DISPOSABLE=1
+          make -C src character-save-journal-v2-runtime-shadow-pg17-integration \
+            CC=gcc PG_CONFIG=pg_config \
+            M3_RUNTIME_SHADOW_PG17_ALLOW_DISPOSABLE=1
+
+      - name: Install importer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter @muhan/character-inventory-importer...
+
+      - name: Run disposable Linux/Postgres importer integration
+        shell: bash
+        env:
+          INVENTORY_E2E_ALLOW_DISPOSABLE: "1"
+          INVENTORY_E2E_DATABASE_URL: postgresql://postgres:contract-only-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+        run: |
+          set -euo pipefail
+          # This primary disposable database has the identity checkpoint but
+          # not the later isolated-evidence migrations. Apply the importer's
+          # exact immutable batch/provenance/tuple prerequisites before its
+          # store opens, replaying each as the executable contract lane does.
+          for pass in 1 2; do
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260928000000_imported_unclaimed_batch_ledger.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20260929000000_imported_unclaimed_batch_character_provenance.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261001000000_imported_unclaimed_batch_member_legacy_locator.sql
+            psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261008000000_imported_unclaimed_batch_member_identity.sql
+          done
+          psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/imported_unclaimed_batch_member_identity_contract.sql
+          psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/tests/imported_unclaimed_historic_batch_tuple_gate_contract.sql
+          # Keep 090 out of the prerequisite loop: the contract sources it
+          # against pristine tuple-policy state before importer setup applies it.
+          psql "$INVENTORY_E2E_DATABASE_URL" --set=ON_ERROR_STOP=1 --file=supabase/migrations/20261009000000_imported_unclaimed_historic_batch_tuple_gate.sql
+          pnpm --filter @muhan/character-inventory-importer test:integration
 
   build-and-smoke:
-    name: ${{ matrix.runner }}
-    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.lane }}
+    if: inputs.validation_scope == 'release'
+    needs: release-scope-guard
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            smoke_expect_hints: "1"
-          - runner: ubuntu-22.04-arm
+          - lane: linux-arm64
+            runner: ubuntu-arm64
+            labels: [self-hosted, Linux, ARM64]
             smoke_expect_hints: "0"
-          - runner: windows-latest
+          # Retain native x64 ABI and the pinned amd64 named-volume contract.
+          - lane: linux-x64-compatibility
+            runner: ubuntu-latest
+            labels: ubuntu-latest
             smoke_expect_hints: "1"
-          - runner: macos-latest
+          - lane: windows-x64-compatibility
+            runner: windows-latest
+            labels: windows-latest
+            smoke_expect_hints: "1"
+          - lane: macos-arm64-portability
+            runner: macos-latest
+            labels: [self-hosted, macOS, ARM64]
             smoke_expect_hints: "1"
 
     steps:
+      - name: Isolate job-local build outputs
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_temp="$(mktemp -d "$RUNNER_TEMP/muhan-ci.XXXXXX")"
+          mkdir -p "$task_temp/tmp" "$task_temp/cache"
+          printf 'TMPDIR=%s/tmp\nXDG_CACHE_HOME=%s/cache\nnpm_config_cache=%s/npm\nnpm_config_store_dir=%s/pnpm-store\nPLAYWRIGHT_BROWSERS_PATH=%s/playwright\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+          printf 'MUHAN_UNIT_DIR=%s/unit\nCARGO_HOME=%s/cargo\nRUSTUP_HOME=%s/rustup\nCARGO_TARGET_DIR=%s/target\n' "$task_temp" "$task_temp" "$task_temp" "$task_temp" >> "$GITHUB_ENV"
+
       - name: Checkout (default)
         if: matrix.runner != 'macos-latest'
         uses: actions/checkout@v4
 
       - name: Checkout (macOS sparse, manual)
         if: matrix.runner == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           git init .
-          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://github.com/${{ github.repository }}.git"
           git sparse-checkout init --no-cone
           printf '%s\n' \
             '/src/' \
@@ -83,11 +624,12 @@ jobs:
             '/post/' \
             '/log/' \
             '/README.md' > .git/info/sparse-checkout
-          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 origin "${{ github.sha }}"
           git checkout --force FETCH_HEAD
 
       - name: Setup Python (Linux/macOS)
-        if: matrix.runner != 'windows-latest'
+        if: matrix.runner == 'macos-latest'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -102,13 +644,55 @@ jobs:
             gcc
             python
 
+      - name: Verify Linux ARM64 runner and Docker
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          command -v apt-get
+          sudo -n true || { echo 'Runner requires passwordless sudo for explicit dependency installation.' >&2; exit 1; }
+          docker info --format '{{.Architecture}}'
+
       - name: Install build deps (Ubuntu)
         if: startsWith(matrix.runner, 'ubuntu')
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y build-essential
+          # Other repositories share this host: wait/retry rather than deleting apt locks.
+          sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update --error-on=any
+          sudo apt-get -o DPkg::Lock::Timeout=120 install -y build-essential libpq-dev postgresql-client python3 python3-venv python-is-python3 curl ca-certificates git pkg-config jq xz-utils unzip util-linux
+          test -x /usr/bin/flock
+
+      - name: Setup Node
+        if: matrix.lane == 'linux-arm64'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm (job-local)
+        if: matrix.lane == 'linux-arm64'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          dest: ${{ runner.temp }}/pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - name: Setup Rust
+        if: matrix.lane == 'linux-arm64'
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify macOS ARM64 toolchain
+        if: matrix.runner == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcode-select -p
+          xcrun --find clang
+          command -v make
+          cc --version
 
       - name: Build (Linux/macOS)
         if: matrix.runner != 'windows-latest'
@@ -130,14 +714,63 @@ jobs:
           make -C src clean >/dev/null 2>&1 || true
           make -C src -j2 CC=gcc
 
+      - name: Run M3 native runtime lifecycle gate (Linux + libpq)
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-runtime-native-test \
+            CC=gcc PG_CONFIG=pg_config
+
+      - name: Exercise M3 live-save production graph (Linux)
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src m3-feature-off-legacy-authority-test CC=gcc
+          make -C src m3-live-save-all-shadow-binding-test CC=gcc
+
+      - name: Run named-volume restart harness
+        if: matrix.lane == 'linux-x64-compatibility'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/integration/muhan_v2_named_volume_restart_integration.sh
+
+      - name: Player snapshot portable contract (Linux/macOS)
+        if: matrix.runner != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler=cc
+          if [[ "${{ matrix.runner }}" == ubuntu* ]]; then
+            compiler=gcc
+          fi
+          make -C src player-snapshot-v1-test CC="$compiler"
+
+      - name: Player snapshot portable contract (Windows/MSYS2)
+        if: matrix.runner == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          make -C src player-snapshot-v1-test CC=gcc
+
+      - name: Audit default MUD artifact has no PQ or libpq (Linux)
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-v2-rpc-transport-live-mud-audit \
+            M3_RPC_TRANSPORT_LIVE_BINARY="$GITHUB_WORKSPACE/src/frp.new"
+
       - name: Smoke test (Linux/macOS)
         if: matrix.runner != 'windows-latest'
         shell: bash
         run: |
           set -euo pipefail
           export MUHAN_HOME="$GITHUB_WORKSPACE"
-          log_file="/tmp/frp.log"
-          port="$((40000 + RANDOM % 1000))"
+          log_file="$RUNNER_TEMP/frp-${{ github.job }}-${{ strategy.job-index }}.log"
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 
           ./src/frp.new -r "$port" >"$log_file" 2>&1 &
           pid=$!
@@ -167,9 +800,9 @@ jobs:
         run: |
           set -euo pipefail
           export MUHAN_HOME="$(pwd)"
-          log_file="/tmp/frp.log"
+          log_file="$RUNNER_TEMP/frp-${{ github.job }}-${{ strategy.job-index }}.log"
           bin="./src/frp.new"
-          port="$((40000 + RANDOM % 1000))"
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 
           if [[ ! -x "$bin" && -x "./src/frp.new.exe" ]]; then
             bin="./src/frp.new.exe"
@@ -198,51 +831,192 @@ jobs:
           fi
 
       - name: Legacy unit contracts
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           make -C src unit-test CC=gcc
+          make -C src character-save-journal-v2-uuid-native-test CC=gcc
+          make -C src character-save-journal-v2-deadline-native-test CC=gcc
+          python3 tests/unit/player_writer_contract_test.py
+          python3 tests/unit/creature_object_layout_contract_test.py
+
+      - name: Onboarding protocol sanitizers
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/onboarding_admission_test.c \
+            src/onboarding_admission.c src/onboarding_session.c \
+            src/trusted_admission.c src/player_path.c \
+            src/utf8_text.c src/resource_path.c \
+            -o "$RUNNER_TEMP/onboarding-admission-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1 \
+            "$RUNNER_TEMP/onboarding-admission-sanitized-test"
+          gcc -std=gnu89 -fcommon -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/onboarding_receipt_test.c \
+            src/onboarding_receipt.c src/resource_path.c \
+            -o "$RUNNER_TEMP/onboarding-receipt-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/onboarding-receipt-sanitized-test"
+          gcc -std=gnu89 -fcommon -Wno-error=implicit-function-declaration \
+            -ffunction-sections -fdata-sections \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/room_time_test.c src/room.c \
+            -Wl,--gc-sections -o "$RUNNER_TEMP/room-time-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/room-time-sanitized-test"
+          gcc -std=gnu89 -fcommon -Wno-error=implicit-function-declaration \
+            -ffunction-sections -fdata-sections \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src tests/unit/staged_player_stage_test.c src/player.c \
+            -Wl,--gc-sections -o "$RUNNER_TEMP/staged-player-sanitized-test"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+            "$RUNNER_TEMP/staged-player-sanitized-test"
+
+      - name: CDTO and journal sanitizers
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src character-save-journal-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-writer-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-writer-bootstrap-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-uuid-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-route-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-publish-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-ack-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-recovery-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-receipt-transport-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-rpc-transport-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-live-ops-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-player-store-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-deadline-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-process-owner-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-runtime-sanitizer-test CC=gcc
+          make -C src character-save-journal-v2-crash-sanitizer-test CC=gcc
+          make -C src m3-feature-off-legacy-authority-sanitizer-test CC=gcc
+          make -C src m3-live-save-all-shadow-binding-sanitizer-test CC=gcc
+          make -C src character-snapshot-shadow-outbox-sanitizer-test CC=gcc
+          make -C src cdto-v1-sanitizer-test CC=gcc
+          make -C src object-v1-sanitizer-test CC=gcc
+          make -C src object-graph-v1-sanitizer-test CC=gcc
+          make -C src creature-v1-sanitizer-test CC=gcc
+          make -C src player-snapshot-v1-sanitizer-test CC=gcc
+
+      - name: Bounded player serializer checks
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C src player-record-serializer-test CC=gcc
+          make -C src player-record-serializer-sanitizer-test CC=gcc
 
       - name: Deterministic AI scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-ai-scenario.sh --output "$RUNNER_TEMP/muhan-ai-scenario.json"
 
       - name: SIGTERM shutdown scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-shutdown-scenario.sh --output "$RUNNER_TEMP/muhan-shutdown-scenario.json"
 
-      - name: Setup Node for Gateway/Web contracts
-        if: matrix.runner == 'ubuntu-latest'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Install and verify Gateway/Web
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@10.15.1 --activate
           pnpm install --frozen-lockfile
           pnpm check
 
+      - name: Admission identity C/Gateway conformance
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-admission-identity-conformance.sh
+
+      - name: MUD1C admission-context C/Gateway conformance
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-mud1c-admission-context-conformance.sh
+
+      - name: Browser xterm onboarding contract
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec playwright install --with-deps chromium
+          export MUHAN_BROWSER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+          pnpm test:browser
+
+      - name: Web stack lifecycle unit contract
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/web-stack-ui.lifecycle.test.ts
+          pnpm --dir services/gateway exec tsx --test ../../tests/stack-e2e/normalized-snapshot-check.test.ts
+          pnpm --dir services/gateway exec tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --esModuleInterop --jsx react-jsx ../../tests/stack-e2e/stack-e2e.test.ts
+
+      - name: Disposable web onboarding stack acceptance
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/run-stack-e2e.sh
+
+      - name: Rust CDTO and M3 wake protocol contracts
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml -p muhan-core-dto --all-targets -- -D warnings
+          cargo clippy --manifest-path rust/Cargo.toml -p muhan-m3-wake-protocol --all-targets -- -D warnings
+          ./scripts/run-cdto-differential.sh
+          ./scripts/run-m3-wake-differential.sh
+          cargo test --manifest-path rust/Cargo.toml --workspace --exclude muhan-m3-wake-protocol
+
       - name: Trusted admission scenario
-        if: matrix.runner == 'ubuntu-latest'
+        if: matrix.lane == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/run-admission-scenario.sh --output "$RUNNER_TEMP/muhan-admission-scenario.json"
 
+      - name: Real onboarding scenario with ASan and UBSan
+        if: matrix.lane == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sanitized_binary="$RUNNER_TEMP/muhan-onboarding-sanitized"
+          sanitizer_flags='-g -O1 -std=gnu89 -fcommon -DFINGERACCT -DCHECKDOUBLE -DSUICIDE -DOBJLEVEL -DDEBUG -fsanitize=address,undefined -fno-omit-frame-pointer'
+          make -B -C src -j2 CC=gcc CFLAGS="$sanitizer_flags" OUTFILE="$sanitized_binary"
+          # The scenario deliberately SIGKILLs the server at the SAVED crash
+          # window, so LeakSanitizer cannot run its process-exit sweep here.
+          # Leak detection remains enabled in the normally exiting unit job.
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+          AI_SCENARIO_ALLOW_EXTERNAL_BINARY=1 \
+          AI_SCENARIO_BINARY="$sanitized_binary" \
+            ./scripts/run-onboarding-scenario.sh \
+              --output "$RUNNER_TEMP/muhan-onboarding-sanitized-scenario.json"
+
       - name: Upload AI scenario evidence
-        if: always() && matrix.runner == 'ubuntu-latest'
+        if: always() && matrix.lane == 'linux-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: mud-ai-scenario-${{ github.sha }}
@@ -250,4 +1024,5 @@ jobs:
             ${{ runner.temp }}/muhan-ai-scenario.json
             ${{ runner.temp }}/muhan-shutdown-scenario.json
             ${{ runner.temp }}/muhan-admission-scenario.json
+            ${{ runner.temp }}/muhan-onboarding-sanitized-scenario.json
           if-no-files-found: warn

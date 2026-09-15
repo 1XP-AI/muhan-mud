@@ -51,6 +51,11 @@ make -C src unit-test
 ./scripts/run-ai-scenario.sh --output /tmp/muhan-ai-scenario.json
 ```
 
+대소문자만 다른 레거시 경로처럼 macOS에서 동시에 체크아웃할 수 없는 원본은
+casefold-safe 물리 이름으로 보관하고 `tools/revive/path-relocations.v1.tsv`에 논리
+경로와 blob을 기록한다. 이 파일을 변경할 때는 `make -C src unit-test`로 Git 트리,
+manifest 및 재생성 계약을 함께 검증해야 한다.
+
 플레이어 파일을 마이그레이션하기 전에는 raw 내용을 출력하지 않는 JSONL inventory를
 생성할 수 있습니다. 기본 모드는 old first-character shard와 invalid/duplicate/
 symlink 항목을 기록합니다. C 로그인과 같은 ASCII canonical name/shard 및

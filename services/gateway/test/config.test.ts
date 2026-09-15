@@ -25,6 +25,34 @@ test('test-only disabled authentication produces a bounded gateway config', () =
   assert.equal(config.mudPort, 4100)
   assert.equal(config.maxConnections, 2)
   assert.deepEqual([...config.allowedOrigins], ['http://localhost:3000', 'https://preview.example.com'])
+  assert.equal(config.mudOnboardingEnabled, false)
+  assert.equal(config.onboardingSourceAttemptLimit, 0)
+  assert.equal(config.onboardingSourceAttemptWindowMs, 60_000)
+  assert.equal(config.onboardingSourceAttemptMaxKeys, 10_000)
+})
+
+test('onboarding source attempt limiting is explicit, bounded, and can stay disabled', () => {
+  const enabled = loadConfig({
+    NODE_ENV: 'test', AUTH_DISABLED: 'true',
+    MUD_ONBOARDING_SOURCE_ATTEMPT_LIMIT: '3',
+    MUD_ONBOARDING_SOURCE_ATTEMPT_WINDOW_MS: '500',
+    MUD_ONBOARDING_SOURCE_ATTEMPT_MAX_KEYS: '20'
+  })
+  assert.equal(enabled.onboardingSourceAttemptLimit, 3)
+  assert.equal(enabled.onboardingSourceAttemptWindowMs, 500)
+  assert.equal(enabled.onboardingSourceAttemptMaxKeys, 20)
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_SOURCE_ATTEMPT_LIMIT: '-1' }), /MUD_ONBOARDING_SOURCE_ATTEMPT_LIMIT/)
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_SOURCE_ATTEMPT_MAX_KEYS: '0' }), /MUD_ONBOARDING_SOURCE_ATTEMPT_MAX_KEYS/)
+})
+
+test('onboarding is an opt-in strict true or false flag', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: 'true' }).mudOnboardingEnabled, true)
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ONBOARDING_ENABLED: '1' }), /MUD_ONBOARDING_ENABLED must be true or false/)
+})
+
+test('evidence onboarding mirrors C: only exact 1 enables the control lane', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ENABLE_ONBOARDING_EVIDENCE: '1' }).mudOnboardingEvidenceEnabled, true)
+  assert.equal(loadConfig({ NODE_ENV: 'test', AUTH_DISABLED: 'true', MUD_ENABLE_ONBOARDING_EVIDENCE: 'true' }).mudOnboardingEvidenceEnabled, false)
 })
 
 test('origins cannot contain paths or wildcard-like values', () => {

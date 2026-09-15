@@ -4,16 +4,34 @@ import type { Session } from "@supabase/supabase-js";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { AuthGate } from "@/components/auth-gate";
 import { CharacterRoster } from "@/components/character-roster";
+import { ClassicTerminal } from "@/components/classic-terminal";
+import type { OnboardingMode, OnboardingRecovery } from "@/lib/onboarding-contract";
 import type { GatewayStatus } from "@/components/mud-terminal";
 import type { ConfigResult } from "@/lib/config";
 import {
   useCharacterRoster,
 } from "@/lib/character-roster";
 import { shouldOpenGatewaySocket } from "@/lib/gateway-contract";
+import {
+  completeOnboardingHandoff,
+  resolvePlayAdmission,
+  type OnboardingCompletion,
+  type PlayAdmissionHandoff,
+} from "@/lib/play-admission";
 import { getBrowserSupabase } from "@/lib/supabase";
 import { useLobbyPresence } from "@/lib/use-lobby-presence";
+
+const OnboardingTerminal = dynamic(
+  () =>
+    import("@/components/onboarding-terminal").then(
+      (module) => module.OnboardingTerminal,
+    ),
+  {
+    ssr: false,
+    loading: () => <div className="terminal-loading">온보딩 터미널을 준비하는 중…</div>,
+  },
+);
 
 const MudTerminal = dynamic(
   () => import("@/components/mud-terminal").then((module) => module.MudTerminal),
@@ -34,6 +52,7 @@ const statusLabel: Record<GatewayStatus["state"], string> = {
   connecting: "통로 개방",
   authenticating: "입장권 확인",
   ready: "성문 개방",
+  provisioned: "캐릭터 활성",
   retrying: "재접속",
   closed: "닫힘",
   error: "점검 필요",
@@ -54,6 +73,13 @@ export function MudPortal({ configResult }: MudPortalProps) {
   const [gatewayStatus, setGatewayStatus] = useState(initialGatewayStatus);
   const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null);
   const [activeOwnerId, setActiveOwnerId] = useState<string | null>(null);
+  const [onboardingFlow, setOnboardingFlow] = useState<{
+    mode: OnboardingMode;
+    correlationId: string;
+  } | null>(null);
+  const [onboardingHandoff, setOnboardingHandoff] =
+    useState<PlayAdmissionHandoff | null>(null);
+  const [onboardingRecovery, setOnboardingRecovery] = useState<OnboardingRecovery | null>(null);
   const presence = useLobbyPresence(supabase, session);
   const roster = useCharacterRoster(supabase, session?.user.id ?? null);
 
@@ -87,11 +113,74 @@ export function MudPortal({ configResult }: MudPortalProps) {
     setActiveCharacterId(null);
     setActiveOwnerId(null);
     setGatewayStatus(initialGatewayStatus);
+    setOnboardingFlow(null);
+    setOnboardingHandoff(null);
+    setOnboardingRecovery(null);
   }, [session?.user.id]);
+
+  useEffect(() => {
+    const handoff = resolvePlayAdmission(
+      session?.user.id ?? "",
+      roster.status,
+      roster.characters,
+      onboardingHandoff,
+    );
+    if (!handoff) return;
+
+    setActiveCharacterId(handoff.characterId);
+    setActiveOwnerId(handoff.ownerUserId);
+    setOnboardingHandoff(null);
+  }, [onboardingHandoff, roster.characters, roster.status, session?.user.id]);
 
   const onGatewayStatus = useCallback((status: GatewayStatus) => {
     setGatewayStatus(status);
   }, []);
+
+  const terminateGateway = useCallback(() => {
+    setActiveCharacterId(null);
+    setActiveOwnerId(null);
+    setGatewayStatus(initialGatewayStatus);
+    roster.retry();
+  }, [roster.retry]);
+
+  const cancelOnboarding = useCallback(() => {
+    setOnboardingFlow(null);
+    setOnboardingRecovery(null);
+    setGatewayStatus(initialGatewayStatus);
+    roster.retry();
+  }, [roster.retry]);
+
+  const completedOnboarding = useCallback((
+    completion: OnboardingCompletion,
+    characterId: string,
+  ) => {
+    const ownerUserId = session?.user.id;
+    if (!ownerUserId) return;
+
+    setOnboardingHandoff((existing) =>
+      completeOnboardingHandoff(ownerUserId, characterId, completion, existing),
+    );
+    setOnboardingFlow(null);
+    setOnboardingRecovery(null);
+    roster.retry();
+  }, [roster.retry, session?.user.id]);
+
+  const provisionedOnboarding = useCallback((characterId: string) => {
+    completedOnboarding("provisioned", characterId);
+  }, [completedOnboarding]);
+
+  const terminateOnboarding = useCallback((recovery?: OnboardingRecovery) => {
+    setOnboardingFlow(null);
+    setActiveCharacterId(null);
+    setActiveOwnerId(null);
+    setGatewayStatus(initialGatewayStatus);
+    setOnboardingRecovery(recovery ?? null);
+    roster.retry();
+  }, [roster.retry]);
+
+  const claimOnboarding = useCallback((characterId: string) => {
+    completedOnboarding("claimed", characterId);
+  }, [completedOnboarding]);
 
   if (!configResult.config || !supabase) {
     return (
@@ -131,23 +220,23 @@ export function MudPortal({ configResult }: MudPortalProps) {
   }
 
   if (!session) {
-    return <AuthGate supabase={supabase} />;
+    return <ClassicTerminal url={configResult.config.gatewayUrl} />;
   }
 
   const identityReady = Boolean(session.user.id);
   const passageReady = !["idle", "connecting", "error", "closed"].includes(
     gatewayStatus.state,
   );
-  const worldReady = gatewayStatus.state === "ready";
-  const ownedCharacterIds = roster.characters.map((character) => character.id);
+  const worldReady = gatewayStatus.state === "ready" || gatewayStatus.state === "provisioned";
   const terminalAllowed = shouldOpenGatewaySocket(
     roster.status,
     activeOwnerId === session.user.id ? activeCharacterId : null,
-    ownedCharacterIds,
+    roster.characters,
   );
   const activeCharacter = terminalAllowed
     ? roster.characters.find((character) => character.id === activeCharacterId)
     : undefined;
+  const onboardingEnabled = configResult.config.onboardingEnabled;
 
   return (
     <main className="game-shell">
@@ -212,7 +301,7 @@ export function MudPortal({ configResult }: MudPortalProps) {
 
         <section className="terminal-panel" aria-label="게임 화면">
           <div className="terminal-chrome">
-            <span>WORLD / MUHAN-01</span>
+            <span>{onboardingFlow ? "ONBOARDING / MUHAN-01" : "WORLD / MUHAN-01"}</span>
             <span className="secure-indicator">
               <i aria-hidden="true" /> AUTH + WSS
             </span>
@@ -238,12 +327,26 @@ export function MudPortal({ configResult }: MudPortalProps) {
                 characterId={activeCharacter.id}
                 gatewayUrl={configResult.config.gatewayUrl}
                 onStatus={onGatewayStatus}
+                onTerminated={terminateGateway}
               />
             </div>
+          ) : onboardingFlow ? (
+            <OnboardingTerminal
+              accessToken={session.access_token}
+              correlationId={onboardingFlow.correlationId}
+              gatewayUrl={configResult.config.gatewayUrl}
+              mode={onboardingFlow.mode}
+              onCancel={cancelOnboarding}
+              onClaimed={claimOnboarding}
+              onProvisioned={provisionedOnboarding}
+              onStatus={onGatewayStatus}
+              onTerminated={terminateOnboarding}
+            />
           ) : (
             <CharacterRoster
               characters={roster.characters}
               error={roster.error}
+              onboardingRecovery={onboardingEnabled ? onboardingRecovery : null}
               onEnter={() => {
                 if (roster.selectedId) {
                   setActiveCharacterId(roster.selectedId);
@@ -254,6 +357,14 @@ export function MudPortal({ configResult }: MudPortalProps) {
               onSelect={roster.selectCharacter}
               selectedId={roster.selectedId}
               status={roster.status}
+              onboardingEnabled={onboardingEnabled}
+              onStartOnboarding={(mode) => {
+                if (!onboardingEnabled || roster.status !== "empty") return;
+                // One correlation identifies a user-started flow and is reused
+                // only by the bounded reconnects inside this terminal.
+                setOnboardingRecovery(null);
+                setOnboardingFlow({ mode, correlationId: crypto.randomUUID() });
+              }}
             />
           )}
         </section>

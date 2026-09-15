@@ -142,7 +142,13 @@ extern void	sock_init(), sock_loop(), accept_connect(), output_buf(),
 
 /* COMMAND1.C */
 
-extern void	login(), create_ply(), command(), parse(), trusted_admission_login();
+extern void	login(), create_ply(), command(), parse(), trusted_admission_login(),
+		onboarding_admission_login(), onboarding_provision(), onboarding_claim(),
+		onboarding_fail();
+#ifdef USE_M3_RUNTIME
+extern void onboarding_activation_gate_idle_retry();
+#endif
+extern int	onboarding_control_during_wizard();
 extern int	process_cmd();
 extern int    checkdouble();
 
@@ -320,7 +326,7 @@ extern int	dm_dust(), dm_follow(), dm_attack(), list_enm(), list_charm();
 
 /* PLAYER.C */
 
-extern int	init_ply();
+extern int	init_ply(), init_staged_ply(), activate_staged_ply();
 extern void	uninit_ply(), update_ply(), up_level(),
 		down_level(), add_obj_crt(), del_obj_crt(), compute_ac(), 
 		compute_thaco();
@@ -383,6 +389,10 @@ extern char	*crt_str(), *obj_str();
 extern int	player_path_from_name(const char *, char *, unsigned long),
 		player_path_ensure_dir(const char *),
 		player_name_is_valid(const unsigned char *, unsigned long, unsigned long);
+
+/* ONBOARDING_RECOVERY.C */
+
+extern int	onboarding_recovery_startup();
 
 /* SPECIAL1.C */
 

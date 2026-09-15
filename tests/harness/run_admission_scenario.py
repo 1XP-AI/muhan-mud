@@ -293,7 +293,15 @@ def main() -> int:
         # names, while this scenario proves Node ticket bytes against real C.
         scenario["player_name"] = "Test"
         sensitive.append(scenario["password"])
-        binary = build_current_binary(repo_root)
+        external_binary = os.environ.get("AI_SCENARIO_BINARY", "")
+        if external_binary:
+            if os.environ.get("AI_SCENARIO_ALLOW_EXTERNAL_BINARY") != "1":
+                raise ScenarioFailure("external binary execution was not explicitly enabled")
+            binary = Path(external_binary).resolve()
+        else:
+            binary = build_current_binary(repo_root)
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise ScenarioFailure("real C binary is not executable")
         fixture = build_fixture(repo_root, args.fixture)
         legacy_created = install_legacy_root(fixture, False)
 

@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include <signal.h>
 #include <sys/types.h>
 
 #ifndef WIN32
@@ -33,6 +34,7 @@
 #include "player_store.h"
 #include "player_recovery.h"
 #include "trusted_admission.h"
+#include "onboarding_session.h"
 
 #ifdef WIN32
 #define ioctl(a,b,c)    ioctlsocket(a,b,c)
@@ -49,7 +51,7 @@ typedef struct wq_tag {
 
 int				Numplayers;
 int				Numwaiting;
-int				Deadchildren;
+volatile sig_atomic_t Deadchildren;
 static wq_tag			*First_wait;
 static int			Waitsock = -1;
 static fd_set			Sockets;
@@ -73,6 +75,13 @@ int sig;
 }
 #endif
 
+void install_graceful_shutdown_handler(void)
+{
+#ifndef WIN32
+	signal(SIGTERM, request_graceful_shutdown);
+#endif
+}
+
 static int graceful_shutdown_pending()
 {
 #ifndef WIN32
@@ -81,6 +90,153 @@ static int graceful_shutdown_pending()
 	return(0);
 #endif
 }
+
+#ifdef USE_M3_RUNTIME
+/* Installed by main only after startup has completed.  Keeping this seam in
+ * io.c makes the durable consumer run on the serialized game-loop thread,
+ * while default builds neither export nor link an M3 runtime symbol. */
+static void (*m3_runtime_idle_hook)(void);
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+static int m3_runtime_idle_hook_test_sigterm_pending=-1;
+static int m3_runtime_idle_hook_test_sigprocmask_failure;
+static int m3_runtime_idle_hook_test_sigprocmask_restore_failure;
+static int m3_runtime_idle_hook_test_sigterm_observation_failure;
+#endif
+
+#ifndef WIN32
+static int m3_runtime_sigterm_is_pending(void)
+{
+	sigset_t pending;
+	int member;
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(m3_runtime_idle_hook_test_sigterm_observation_failure)
+		return -1;
+	if(m3_runtime_idle_hook_test_sigterm_pending>=0)
+		return m3_runtime_idle_hook_test_sigterm_pending;
+#endif
+	if(sigpending(&pending)!=0) return -1;
+	member=sigismember(&pending,SIGTERM);
+	if(member<0) return -1;
+	return member==1;
+}
+#endif
+
+/* SIGTERM is blocked while this decision is made.  A request already
+ * delivered to the handler or waiting in the blocked signal set belongs to
+ * shutdown, not to a new native tick. */
+static int m3_runtime_idle_start_allowed(void)
+{
+	if(graceful_shutdown_pending()) return 0;
+#ifndef WIN32
+	/* A failed pending-set observation is indistinguishable from a pending
+	 * SIGTERM at this boundary, so do not begin an unprotected tick. */
+	if(m3_runtime_sigterm_is_pending()!=0) return 0;
+#endif
+	return 1;
+}
+
+void m3_runtime_install_idle_hook(void (*hook)(void))
+{
+	m3_runtime_idle_hook=hook;
+}
+
+void m3_runtime_remove_idle_hook(void)
+{
+	m3_runtime_idle_hook=0;
+}
+
+#ifndef WIN32
+static int m3_runtime_restore_signal_mask(previous)
+sigset_t *previous;
+{
+	int result;
+
+	result=sigprocmask(SIG_SETMASK,previous,0);
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(result==0&&m3_runtime_idle_hook_test_sigprocmask_restore_failure)
+		return -1;
+#endif
+	return result;
+}
+#endif
+
+static void m3_runtime_run_idle_hook(void)
+{
+#ifndef WIN32
+	sigset_t blocked,previous;
+
+	if(!m3_runtime_idle_hook) return;
+	sigemptyset(&blocked);
+	sigaddset(&blocked,SIGTERM);
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+	if(m3_runtime_idle_hook_test_sigprocmask_failure) return;
+#endif
+	/* There is no POSIX fallback: a tick can begin only while SIGTERM is
+	 * blocked and its pending state has been observed. */
+	if(sigprocmask(SIG_BLOCK,&blocked,&previous)!=0) return;
+	if(m3_runtime_idle_start_allowed()) (*m3_runtime_idle_hook)();
+	if(m3_runtime_restore_signal_mask(&previous)!=0)
+		Graceful_shutdown_requested=1;
+#else
+	if(m3_runtime_idle_hook&&m3_runtime_idle_start_allowed())
+		(*m3_runtime_idle_hook)();
+#endif
+}
+
+#ifdef M3_RUNTIME_IDLE_HOOK_TESTING
+void m3_runtime_idle_hook_test_set_shutdown_requested(int requested)
+{
+#ifndef WIN32
+	Graceful_shutdown_requested=requested ? 1 : 0;
+#else
+	(void)requested;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigterm_pending(int pending)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigterm_pending=pending<0 ? -1 : (pending ? 1 : 0);
+#else
+	(void)pending;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigprocmask_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigprocmask_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigprocmask_restore_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigprocmask_restore_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_set_sigterm_observation_failure(int fail)
+{
+#ifndef WIN32
+	m3_runtime_idle_hook_test_sigterm_observation_failure=fail ? 1 : 0;
+#else
+	(void)fail;
+#endif
+}
+
+void m3_runtime_idle_hook_test_run(void)
+{
+	m3_runtime_run_idle_hook();
+}
+#endif
+#endif
 
 static void stop_accepting_connections()
 {
@@ -186,8 +342,8 @@ int	debug;
 	/* A present but malformed secret is a deployment error, not a reason to
 	 * expose the legacy password listener.  Exit before bind/listen so the
 	 * container readiness probe cannot report a falsely healthy server. */
-	if(trusted_admission_mode() < 0) {
-		fprintf(stderr, "trusted admission configuration is invalid\n");
+	if(trusted_admission_mode() < 0 || onboarding_session_mode() < 0) {
+		fprintf(stderr, "admission configuration is invalid\n");
 		exit(78);
 	}
 
@@ -213,7 +369,7 @@ int	debug;
 	}
 #ifndef WIN32
 	signal(SIGPIPE, SIG_IGN);
-	signal(SIGTERM, request_graceful_shutdown);
+	install_graceful_shutdown_handler();
 	signal(SIGCHLD, child_died);
 
 	Tablesize = getdtablesize();
@@ -274,6 +430,12 @@ void sock_loop()
 		output_buf();
 		handle_commands();
 		update_game();
+#ifdef USE_M3_RUNTIME
+		/* Never cross a requested shutdown boundary; the next loop turn owns
+		 * graceful persistence before another socket poll. */
+		m3_runtime_run_idle_hook();
+		onboarding_activation_gate_idle_retry();
+#endif
 	}
 }
 
@@ -428,15 +590,19 @@ void init_connect(fd)
 int	fd;
 {
 	int		i;
-	int		admission_mode;
+	int		admission_mode, onboarding_mode;
 
 	admission_mode = trusted_admission_mode();
+	onboarding_mode = onboarding_session_mode();
 	if(admission_mode != 0) {
 		/* Do not emit a banner, name prompt, or site-password prompt here:
 		 * a configured (including invalid) secret is always ticket-only. */
 		Ply[fd].io->intrpt |= 2;
 		Numplayers++;
 		Ply[fd].io->ltime = time(0);
+		if(onboarding_mode == 1) {
+			RETURN(fd, onboarding_admission_login, 1);
+		}
 		RETURN(fd, trusted_admission_login, 1);
 	}
 
@@ -1007,14 +1173,35 @@ extern int  alias_buf_num[PMAX];
 int Write_CMD = 0;
 static long last_recovery_retry;
 
+/* Claim input can include a password, but a later Gateway control may already
+ * share the ring.  Wipe only the line copied into handle_commands' stack so
+ * credential bytes do not survive while an unread control remains intact. */
+static void onboarding_zero_claim_consumed_input(fd, start, length)
+int fd;
+int start;
+int length;
+{
+	int first;
+
+	if(fd < 0 || fd >= PMAX || !Ply[fd].io || start < 0 ||
+	   start >= IBUFSIZE || length <= 0 || length > IBUFSIZE) return;
+	first = IBUFSIZE - start;
+	if(first > length) first = length;
+	onboarding_session_zeroize_claim_memory(0, 0,
+		Ply[fd].io->input + start, (unsigned long)first);
+	if(length > first)
+		onboarding_session_zeroize_claim_memory(0, 0, Ply[fd].io->input,
+			(unsigned long)(length - first));
+}
+
 void handle_commands()
 {
     cmd cmnd;
     char commands[256];
     creature *ply_ptr;
 
-	int	i, j;
-	int	itail, ihead;
+	int	i, j, claim_input;
+	int	itail, ihead, input_start, input_count;
 	char	buf[IBUFSIZE+1];
 	long	t;
 
@@ -1047,6 +1234,8 @@ void handle_commands()
 			itail = Ply[i].io->itail;
 			ihead = Ply[i].io->ihead;
 			if(itail == ihead) continue;
+			input_start = itail;
+			input_count = 0;
 			for(j=0; j<IBUFSIZE; j++) {
 				if(itail == ihead) {
 					buf[j] = 0;
@@ -1055,17 +1244,29 @@ void handle_commands()
 				if(Ply[i].io->input[itail] == 13 ||
 				   Ply[i].io->input[itail] == 10) {
 					itail = (itail + 1) % IBUFSIZE;
+					input_count++;
 					buf[j] = 0;
 					break;
 				}
 				buf[j] = Ply[i].io->input[itail];
 				itail = (itail + 1) % IBUFSIZE;
+				input_count++;
 			}
 			Ply[i].io->itail = itail;
 			Ply[i].io->commands--;
-			/* Admission tickets carry a bearer MAC.  Do not mirror or command-log
-			 * this first line, and do not dereference ply before admission. */
-			if(Ply[i].io->fn != trusted_admission_login) {
+			/* handle_commands copies the ring-buffer line into this stack
+			 * buffer.  Capture claim mode before the callback can disconnect and
+			 * free extr; the callback's password argument must be wiped here too. */
+			claim_input = Ply[i].extr &&
+				Ply[i].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM;
+			if(claim_input)
+				onboarding_zero_claim_consumed_input(i, input_start, input_count);
+			/* Admission tickets and onboarding passwords carry credentials.  Do
+			 * not mirror or command-log them, and do not dereference ply before
+			 * either ticket path has admitted the connection. */
+			if(Ply[i].io->fn != trusted_admission_login &&
+			   Ply[i].io->fn != onboarding_admission_login &&
+			   !(Ply[i].extr && Ply[i].extr->onboarding_mode)) {
 				if(Spy[i] > -1) {
 					write(Spy[i], buf, strlen(buf));
 					write(Spy[i], "\r\n", 2);
@@ -1074,9 +1275,18 @@ void handle_commands()
 					log_overwrite("command.log","%s:%s\n",Ply[i].ply->name, buf);
 			}
 
+			if(onboarding_control_during_wizard(i, (unsigned char *)buf)) {
+				if(claim_input)
+					onboarding_session_zeroize_claim_memory(
+						0, 0, buf, sizeof(buf));
+				continue;
+			}
+
 			(*Ply[i].io->fn) (i, Ply[i].io->fnparam, 
         ((unsigned char)buf[0]==255 && 
         ((unsigned char)buf[1]==253 || (unsigned char)buf[1]==254)) ? buf+2 : buf);
+		if(claim_input)
+			onboarding_session_zeroize_claim_memory(0, 0, buf, sizeof(buf));
 		}
 	}
 }
@@ -1089,12 +1299,54 @@ void handle_commands()
 /* by the first parameter, clears his spot in the socket bit-array, and     */
 /* removes him from the player array by freeing all memory taken by him.    */
 
+#include "player_disconnect_persist.h"
+
+int player_disconnect_persist(creature **owned)
+{
+	int save_result;
+	if(!owned) return -1;
+	if(!*owned) return 0;
+	if((*owned)->fd > -1) {
+		uninit_ply(*owned);
+		save_result = save_ply((*owned)->name, *owned);
+		if(save_result != PLAYER_STORE_OK) {
+			log_f("disconnect: %s 저장 실패 (%d)\n", (*owned)->name, save_result);
+			if(player_recovery_enqueue(*owned) != 0) return -1;
+			*owned = 0;
+			return 0;
+		}
+	}
+	free_crt(*owned);
+	*owned = 0;
+	return 0;
+}
+
 void disconnect(fd)
 int 	fd;
 {
-	int 	i, save_result;
+	int 	i;
 	etag	*ign, *temp;
 	wq_tag	*wq;
+
+	/* A peer EOF/read error can bypass onboarding_fail() while a MUD1O claim
+	 * waits for ALLOW or CLAIMED.  Identify that lane before freeing io/extr,
+	 * and force it non-saveable before wiping the loaded password. */
+	if(fd >= 0 && fd < PMAX && Ply[fd].extr &&
+	   Ply[fd].extr->onboarding_mode == ONBOARDING_ADMISSION_MODE_CLAIM) {
+		if(Ply[fd].ply) {
+			Ply[fd].ply->fd = -1;
+			onboarding_session_zeroize_claim_memory(
+				Ply[fd].ply->password, sizeof(Ply[fd].ply->password), 0, 0);
+		}
+		if(Ply[fd].io)
+			onboarding_session_zeroize_claim_memory(
+				0, 0, Ply[fd].io->input, sizeof(Ply[fd].io->input));
+		onboarding_session_zeroize_claim_memory(
+			Ply[fd].extr->tempstr[0], sizeof(Ply[fd].extr->tempstr[0]),
+			Ply[fd].extr->onboarding_claim_sha256,
+			sizeof(Ply[fd].extr->onboarding_claim_sha256));
+		Ply[fd].extr->onboarding_claim_challenged_at = 0;
+	}
 
 	close_alias(fd);
 #ifdef WIN32
@@ -1129,26 +1381,11 @@ int 	fd;
 				if(Spy[i] == fd) Spy[i] = -1;
 			F_CLR(Ply[fd].ply, PSPYON);
 		}
-		if(Ply[fd].ply->fd > -1) {
-			uninit_ply(Ply[fd].ply);
-			save_result = save_ply(Ply[fd].ply->name, Ply[fd].ply);
-			if(save_result != PLAYER_STORE_OK) {
-				log_f("disconnect: %s 저장 실패 (%d)\n",
-					Ply[fd].ply->name, save_result);
-				if(player_recovery_enqueue(Ply[fd].ply) == 0) {
-					Ply[fd].ply = 0;
-				}
-				else {
-					log_f("disconnect: recovery ownership exhausted for %s; stopping server\n",
-						Ply[fd].ply->name);
-					merror("player recovery ownership", FATAL);
-					return;
-				}
-			}
-		}
-		if(Ply[fd].ply) {
-			free_crt(Ply[fd].ply);
-			Ply[fd].ply = 0;
+		if(player_disconnect_persist(&Ply[fd].ply) != 0) {
+			log_f("disconnect: recovery ownership exhausted for %s; stopping server\n",
+				Ply[fd].ply->name);
+			merror("player recovery ownership", FATAL);
+			return;
 		}
 	}
 	else {
@@ -1481,7 +1718,7 @@ char	*str;
 
 void child_died()
 {
-	Deadchildren++;
+	Deadchildren = 1;
 #ifndef WIN32
 	signal(SIGCHLD, child_died);
 #endif
@@ -1508,10 +1745,15 @@ void reap_children()
 	strcpy(timestr, (char *)ctime(&t));
 	timestr[strlen(timestr)-1] = 0;
 
-	while(Deadchildren > 0) {
-		Deadchildren--;
+	/* SIGCHLD is only a hint: signals coalesce and synchronous owners may
+	 * already have reaped their child. Never wait for a still-running child.
+	 * Clear before draining so a signal arriving during processing stays set. */
+	Deadchildren = 0;
+	for(;;) {
+		pid = waitpid(-1, &status, WNOHANG);
+		if(pid < 0 && errno == EINTR) continue;
+		if(pid <= 0) break;
 		found = -1;
-		pid = wait(&status);
 		sprintf(filename, "%s/auth/lookup.%d", LOGPATH, pid);
 		for(i=0; i<Tablesize; i++) {
 			if(Ply[i].io && Ply[i].io->lookup_pid == pid) {
@@ -1539,7 +1781,5 @@ void reap_children()
 			strcpy(Ply[found].io->address, address);
 	}
 
-	/* just in case, kill off any zombies */
-	wait4(-1, &status, WNOHANG, (struct rusage *)0);
 #endif
 }

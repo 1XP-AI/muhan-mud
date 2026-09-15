@@ -7,8 +7,27 @@
  *
  */
 
+#include <limits.h>
 #include "mstruct.h"
 #include "mextern.h"
+
+/* Compare ltime + interval with t without evaluating an overflowing sum. */
+static int compare_due_time(long ltime, long interval, long t)
+{
+	long	due;
+
+	if(interval > 0 && ltime > LONG_MAX - interval)
+		return 1;
+	if(interval < 0 && ltime < LONG_MIN - interval)
+		return -1;
+
+	due = ltime + interval;
+	if(due > t)
+		return 1;
+	if(due < t)
+		return -1;
+	return 0;
+}
 
 /**********************************************************************/
 /*				add_ply_rom			      */
@@ -327,15 +346,16 @@ room	*rom_ptr;
 
 		if(checklist[i]) continue;
 		if(!rom_ptr->perm_mon[i].misc) continue;
-		if(rom_ptr->perm_mon[i].ltime + rom_ptr->perm_mon[i].interval >
-		   t) continue;
+		if(compare_due_time(rom_ptr->perm_mon[i].ltime,
+		                    rom_ptr->perm_mon[i].interval, t) > 0)
+			continue;
 
 		n = 1;
 		for(j=i+1; j<10; j++) 
 			if(rom_ptr->perm_mon[i].misc == 
 			   rom_ptr->perm_mon[j].misc && 
-			   (rom_ptr->perm_mon[j].ltime + 
-			   rom_ptr->perm_mon[j].interval) < t) {
+			   compare_due_time(rom_ptr->perm_mon[j].ltime,
+			                    rom_ptr->perm_mon[j].interval, t) < 0) {
 				n++;
 				checklist[j] = 1;
 			}
@@ -420,15 +440,16 @@ room	*rom_ptr;
 
 		if(checklist[i]) continue;
 		if(!rom_ptr->perm_obj[i].misc) continue;
-		if(rom_ptr->perm_obj[i].ltime + rom_ptr->perm_obj[i].interval >
-		   t) continue;
+		if(compare_due_time(rom_ptr->perm_obj[i].ltime,
+		                    rom_ptr->perm_obj[i].interval, t) > 0)
+			continue;
 
 		n = 1;
 		for(j=i+1; j<10; j++) 
 			if(rom_ptr->perm_obj[i].misc == 
 			   rom_ptr->perm_obj[j].misc && 
-			   (rom_ptr->perm_obj[j].ltime + 
-			   rom_ptr->perm_obj[j].interval) < t) {
+			   compare_due_time(rom_ptr->perm_obj[j].ltime,
+			                    rom_ptr->perm_obj[j].interval, t) < 0) {
 				n++;
 				checklist[j] = 1;
 			}
@@ -480,13 +501,15 @@ room	*rom_ptr;
 
 	xp = rom_ptr->first_ext;
 	while(xp) {
-		if(F_ISSET(xp->ext, XLOCKS) && (xp->ext->ltime.ltime + 
-		   xp->ext->ltime.interval) < t) {
+		if(F_ISSET(xp->ext, XLOCKS) &&
+		   compare_due_time(xp->ext->ltime.ltime,
+		                    xp->ext->ltime.interval, t) < 0) {
 			F_SET(xp->ext, XLOCKD);
 			F_SET(xp->ext, XCLOSD);
 		}
-		else if(F_ISSET(xp->ext, XCLOSS) && (xp->ext->ltime.ltime +
-			 xp->ext->ltime.interval) < t)
+		else if(F_ISSET(xp->ext, XCLOSS) &&
+		        compare_due_time(xp->ext->ltime.ltime,
+		                         xp->ext->ltime.interval, t) < 0)
 			F_SET(xp->ext, XCLOSD);
 
 		xp = xp->next_tag;

@@ -11,6 +11,48 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include <time.h>
+#ifdef USE_M3_RUNTIME
+#include "character_save_journal_v2_runtime.h"
+#include "character_save_journal_v2_runtime_native.h"
+#include "onboarding_activation_gate.h"
+
+/* Static storage and exactly one atexit registration keep the opt-in shadow
+ * owner alive for every save, then make all normal exits follow its one
+ * idempotent teardown path.  SIGKILL remains a durable-journal recovery
+ * boundary and cannot run this hook. */
+static character_save_journal_v2_runtime m3_runtime;
+static character_save_journal_v2_runtime_native m3_native;
+static int m3_runtime_atexit_registered;
+
+extern void m3_runtime_install_idle_hook(void (*hook)(void));
+extern void m3_runtime_remove_idle_hook(void);
+extern void install_graceful_shutdown_handler(void);
+
+static long m3_runtime_idle_clock(void *opaque)
+{
+	(void)opaque;
+	return time(0);
+}
+
+static void m3_runtime_idle_diagnostic(void *opaque, const char *message)
+{
+	(void)opaque;
+	log_f("%s\n",message);
+}
+
+static void m3_runtime_snapshot_idle_hook(void)
+{
+	character_save_journal_v2_runtime_native_snapshot_idle_tick(&m3_native);
+}
+
+static void m3_runtime_shutdown_at_exit(void)
+{
+	m3_runtime_remove_idle_hook();
+	onboarding_activation_gate_unbind_owner(&m3_native.process_owner);
+	character_save_journal_v2_runtime_shutdown(&m3_runtime);
+}
+#endif
+#include <stdlib.h>
 #define SCHEDPORT  4000
 
 int Port;
@@ -25,6 +67,9 @@ char	*argv[];
 	char file[80];
 	void mvc_log();
 	int schedule_g();
+#ifdef USE_M3_RUNTIME
+	character_save_journal_v2_runtime_state m3_state;
+#endif
 
 	Port = PORTNUM;
 
@@ -59,6 +104,34 @@ char	*argv[];
                 report = 1;
 	}
 
+#ifdef USE_M3_RUNTIME
+	/* The optional runtime completes shadow bootstrap/recovery/PlayerStore
+	 * installation before socket setup.  Absent/off remains zero-I/O. */
+	/* Arm this before any M3 startup or atexit work: an early SIGTERM is a
+	 * graceful-lifecycle request, never default process termination. */
+	install_graceful_shutdown_handler();
+	character_save_journal_v2_runtime_native_init(&m3_native);
+	character_save_journal_v2_runtime_native_snapshot_idle_configure(&m3_native,
+		m3_runtime_idle_clock,0,m3_runtime_idle_diagnostic,0);
+	character_save_journal_v2_runtime_init(&m3_runtime,&m3_native.dependencies);
+	if(!m3_runtime_atexit_registered) {
+		if(atexit(m3_runtime_shutdown_at_exit)!=0) {
+			fprintf(stderr,"M3 runtime exit handler registration failed\n");
+			exit(78);
+		}
+		m3_runtime_atexit_registered=1;
+	}
+	m3_state=character_save_journal_v2_runtime_start(&m3_runtime);
+	if(m3_state==CHARACTER_SAVE_JOURNAL_V2_RUNTIME_FAILED) {
+		fprintf(stderr,"M3 runtime startup failed\n");
+		exit(78);
+	}
+	if(m3_native.shadow_active)
+		onboarding_activation_gate_bind_owner(&m3_native.process_owner,
+			character_save_journal_v2_runtime_native_activation_reservation_directory_fd(
+				&m3_native));
+#endif
+
 #ifdef AUTOSHUTDOWN
 	if (!Shutdown.interval){
 	    Shutdown.ltime = time(0);
@@ -71,6 +144,12 @@ char	*argv[];
 	srand(getpid() + time(0));
 	load_lockouts();
 	load_family();
+	/* The recovery pass closes the atomic-player-rename -> receipt-SAVED
+	 * crash window before this process can accept a single connection. */
+	if(onboarding_recovery_startup() != 0) {
+		fprintf(stderr, "onboarding recovery failed\n");
+		exit(78);
+	}
 	
 #ifndef DEBUG
  	sock_init(Port,0);
@@ -89,6 +168,11 @@ char	*argv[];
 	}
 
 	init_update_game(time(0));
+#ifdef USE_M3_RUNTIME
+	/* This is the sole live handoff consumer boundary: after all output,
+	 * commands, and world updates, before the next socket poll. */
+	m3_runtime_install_idle_hook(m3_runtime_snapshot_idle_hook);
+#endif
 	sock_loop();
 }
 

@@ -6,6 +6,11 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "resource_path.h"
+#ifdef ALIAS_TITLE_SNAPSHOT_V1_TEST_SEAM
+#include "alias_title_snapshot_v1.h"
+#include "alias_title_snapshot_v1_observer.h"
+#include "cdto_v1.h"
+#endif
 
 char *ply_titles[PMAX];
 
@@ -26,8 +31,108 @@ int  alias_buf_num[PMAX];
 
 extern void save_alias();
 extern void command_separate();
+extern int add_alias();
 
 char title_cut_index[PMAX];
+
+/* This diagnostic seam is compiled only by its focused tests.  Production
+ * alias saves retain no observer, codec, or callback dependency. */
+#ifdef ALIAS_TITLE_SNAPSHOT_V1_TEST_SEAM
+static alias_title_snapshot_v1_observer_fn alias_title_snapshot_observer;
+static void *alias_title_snapshot_observer_context;
+static int alias_title_snapshot_observer_in_progress;
+
+void alias_title_snapshot_v1_observer_register(observer, context)
+alias_title_snapshot_v1_observer_fn observer;
+void *context;
+{
+    alias_title_snapshot_observer = observer;
+    alias_title_snapshot_observer_context = context;
+}
+
+void alias_title_snapshot_v1_observer_clear()
+{
+    alias_title_snapshot_observer = NULL;
+    alias_title_snapshot_observer_context = NULL;
+}
+
+static int alias_title_snapshot_copy(source, source_limit, destination,
+                                     destination_limit, length)
+const char *source;
+size_t source_limit;
+uint8_t *destination;
+size_t destination_limit;
+size_t *length;
+{
+    size_t index;
+
+    if(!source || !destination || !length || source_limit <= destination_limit)
+        return -1;
+    for(index=0U; index<destination_limit; index++) {
+        if(source[index]==0) {
+            *length=index;
+            return 0;
+        }
+        destination[index]=(uint8_t)(unsigned char)source[index];
+    }
+    if(source[destination_limit]==0) {
+        *length=destination_limit;
+        return 0;
+    }
+    return -1;
+}
+
+/* A legacy value that does not fit the existing bounded CDTO is simply not
+ * observable.  It is never truncated or fed back into the legacy save path. */
+static void alias_title_snapshot_after_save(fd)
+int fd;
+{
+    alias_title_snapshot_v1 snapshot;
+    alias_title_snapshot_v1_observer_fn observer;
+    void *observer_context;
+    uint8_t *wire;
+    size_t wire_length, alias_length, process_length, length;
+    int count, index;
+
+    if(!alias_title_snapshot_observer || alias_title_snapshot_observer_in_progress ||
+       fd<0 || fd>=PMAX) return;
+    observer=alias_title_snapshot_observer;
+    observer_context=alias_title_snapshot_observer_context;
+    alias_title_snapshot_observer_in_progress=1;
+    wire=NULL;
+    wire_length=0U;
+    count=(int)ply_alias_num[fd];
+    if(count<0 || count>(int)ALIAS_TITLE_SNAPSHOT_V1_MAX_ALIASES) goto done;
+    memset(&snapshot,0,sizeof(snapshot));
+    snapshot.alias_count=(uint16_t)count;
+    for(index=0;index<count;index++) {
+        Alias_Cmd *entry=ply_alias[fd][index];
+        if(!entry ||
+           alias_title_snapshot_copy(entry->alias,sizeof(entry->alias),
+               snapshot.aliases[index].alias,
+               ALIAS_TITLE_SNAPSHOT_V1_ALIAS_MAX_BYTES,&alias_length) ||
+           alias_length==0U ||
+           alias_title_snapshot_copy(entry->process,sizeof(entry->process),
+               snapshot.aliases[index].process,
+               ALIAS_TITLE_SNAPSHOT_V1_PROCESS_MAX_BYTES,&process_length)) goto done;
+        snapshot.aliases[index].alias_length=(uint8_t)alias_length;
+        snapshot.aliases[index].process_length=(uint16_t)process_length;
+    }
+    if(ply_titles[fd]!=NULL) {
+        if(alias_title_snapshot_copy(ply_titles[fd],
+            ALIAS_TITLE_SNAPSHOT_V1_TITLE_MAX_BYTES + 1U, snapshot.title,
+            ALIAS_TITLE_SNAPSHOT_V1_TITLE_MAX_BYTES,&length)) goto done;
+        snapshot.title_present=1U;
+        snapshot.title_length=(uint8_t)length;
+    }
+    if(alias_title_snapshot_v1_encode(&snapshot,&wire,&wire_length)!=CDTO_V1_OK)
+        goto done;
+    (void)observer(wire,wire_length,observer_context);
+done:
+    cdto_v1_free_wire(wire);
+    alias_title_snapshot_observer_in_progress=0;
+}
+#endif
 
 void init_alias(ply_ptr)
 creature *ply_ptr;
@@ -255,6 +360,9 @@ creature *ply_ptr;
     }
     write(handle,"~!\n",3);
     close(handle);
+#ifdef ALIAS_TITLE_SNAPSHOT_V1_TEST_SEAM
+    alias_title_snapshot_after_save(fd);
+#endif
 
 }
 

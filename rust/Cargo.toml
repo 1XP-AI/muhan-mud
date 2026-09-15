@@ -1,6 +1,8 @@
 [workspace]
 members = [
+  "muhan-core-dto",
   "muhan-resource-index",
   "muhan-resource-ffi",
+  "muhan-m3-wake-protocol",
 ]
 resolver = "2"

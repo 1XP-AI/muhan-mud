@@ -1,0 +1,26 @@
+{
+  "name": "@muhan/m4-file-snapshot-manifest-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "../../scripts/run-player-snapshot-v1-normalized-projection-bridge.sh",
+    "start": "node dist/cli.js",
+    "bank-topology-shadow": "node dist/bank-snapshot-v1-topology-shadow-cli.js",
+    "bank-root-value-shadow": "node dist/bank-snapshot-v1-root-value-shadow-cli.js",
+    "bank-payload": "node dist/bank-snapshot-v1-payload-cli.js",
+    "replay-differential": "node dist/player-snapshot-v1-replay-differential-cli.js",
+    "v2-journal-level-shadow-comparator": "node dist/player-snapshot-v2-journal-level-shadow-comparator-cli.js",
+    "full-payload-rehearsal": "node dist/player-snapshot-v1-full-payload-rehearsal-cli.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

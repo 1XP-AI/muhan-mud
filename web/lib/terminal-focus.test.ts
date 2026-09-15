@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  canSubmitMobileLine,
+  canRestoreTerminalFocus,
+  getMobileViewportHeight,
+  shouldDeferTerminalSubmission,
+  shouldDeferTerminalResize,
+  shouldYieldTerminalKey,
+} from "./terminal-focus.ts";
+
+test("Tab and copy-with-selection leave the terminal so the browser can handle them", () => {
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "Tab",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      hasSelection: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      hasSelection: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "C",
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      hasSelection: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      hasSelection: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "c",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: true,
+      hasSelection: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldYieldTerminalKey({
+      key: "a",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      hasSelection: true,
+    }),
+    false,
+  );
+});
+
+test("terminal focus returns only when it will not interrupt IME or selection", () => {
+  assert.equal(
+    canRestoreTerminalFocus({
+      disposed: false,
+      composing: false,
+      hasSelection: false,
+      documentFocused: true,
+      activeElementOutsideTerminal: false,
+    }),
+    true,
+  );
+  assert.equal(
+    canRestoreTerminalFocus({
+      disposed: false,
+      composing: true,
+      hasSelection: false,
+      documentFocused: true,
+      activeElementOutsideTerminal: false,
+    }),
+    false,
+  );
+  assert.equal(
+    canRestoreTerminalFocus({
+      disposed: false,
+      composing: false,
+      hasSelection: true,
+      documentFocused: true,
+      activeElementOutsideTerminal: false,
+    }),
+    false,
+  );
+  assert.equal(
+    canRestoreTerminalFocus({
+      disposed: false,
+      composing: false,
+      hasSelection: false,
+      documentFocused: false,
+      activeElementOutsideTerminal: false,
+    }),
+    false,
+  );
+  assert.equal(
+    canRestoreTerminalFocus({
+      disposed: false,
+      composing: false,
+      hasSelection: false,
+      documentFocused: true,
+      activeElementOutsideTerminal: true,
+    }),
+    false,
+  );
+});
+
+test("terminal resize waits for compositionend before recalculating rows", () => {
+  assert.equal(shouldDeferTerminalResize(true), true);
+  assert.equal(shouldDeferTerminalResize(false), false);
+});
+
+test("IME composition defers Enter without dropping ordinary composition input", () => {
+  assert.equal(shouldDeferTerminalSubmission("\r", true), true);
+  assert.equal(shouldDeferTerminalSubmission("\n", true), true);
+  assert.equal(shouldDeferTerminalSubmission("가", true), false);
+  assert.equal(shouldDeferTerminalSubmission("\x7f", true), false);
+  assert.equal(shouldDeferTerminalSubmission("\r", false), false);
+});
+
+test("mobile command submission waits for readiness and IME completion", () => {
+  assert.equal(
+    canSubmitMobileLine({ value: "look", ready: true, composing: false }),
+    true,
+  );
+  assert.equal(
+    canSubmitMobileLine({ value: "look", ready: false, composing: false }),
+    false,
+  );
+  assert.equal(
+    canSubmitMobileLine({ value: "look", ready: true, composing: true }),
+    false,
+  );
+  assert.equal(
+    canSubmitMobileLine({ value: "", ready: true, composing: false }),
+    false,
+  );
+  assert.equal(
+    canSubmitMobileLine({ value: " ", ready: true, composing: false }),
+    true,
+  );
+});
+
+test("mobile viewport height tracks the visual viewport above the keyboard", () => {
+  assert.equal(getMobileViewportHeight(844), 844);
+  assert.equal(getMobileViewportHeight(420, 72), 348);
+  assert.equal(getMobileViewportHeight(420, -10), 420);
+  assert.equal(getMobileViewportHeight(420, Number.NaN), 420);
+  assert.equal(getMobileViewportHeight(0), null);
+  assert.equal(getMobileViewportHeight(Number.POSITIVE_INFINITY), null);
+});

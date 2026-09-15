@@ -4,6 +4,8 @@ import type {
   CharacterRosterStatus,
   OwnedCharacter,
 } from "@/lib/character-roster";
+import type { OnboardingMode, OnboardingRecovery } from "@/lib/onboarding-contract";
+import { decideClaimEntry } from "@/lib/claim-transparency";
 
 interface CharacterRosterProps {
   status: CharacterRosterStatus;
@@ -13,6 +15,9 @@ interface CharacterRosterProps {
   onSelect: (id: string) => void;
   onRetry: () => void;
   onEnter: () => void;
+  onboardingEnabled?: boolean;
+  onStartOnboarding?: (mode: OnboardingMode) => void;
+  onboardingRecovery?: OnboardingRecovery | null;
 }
 
 export function CharacterRoster({
@@ -23,6 +28,9 @@ export function CharacterRoster({
   onSelect,
   onRetry,
   onEnter,
+  onboardingEnabled = false,
+  onStartOnboarding,
+  onboardingRecovery = null,
 }: CharacterRosterProps) {
   if (status === "loading") {
     return (
@@ -44,13 +52,56 @@ export function CharacterRoster({
   }
 
   if (status === "empty") {
+    const claimEntry = decideClaimEntry(status, onboardingEnabled);
+    if (claimEntry.kind === "hidden") return null;
+
     return (
-      <div className="roster-state">
+      <div className="roster-state roster-empty">
         <p className="roster-empty-title">이 계정에 연결된 캐릭터가 없습니다</p>
-        <p>
-          운영자가 캐릭터를 연결하거나 claim 단계를 열어야 이곳에 표시됩니다.
-          지금은 게임 데이터를 변경할 수 없습니다.
-        </p>
+        {onboardingRecovery ? (
+          <div className="form-notice error" role="alert">
+            <p>{onboardingRecovery.title}</p>
+            <p>{onboardingRecovery.detail}</p>
+          </div>
+        ) : null}
+        {claimEntry.kind === "claim-start" && onStartOnboarding ? (
+          <>
+            <p className="claim-boundary" role="status">
+              웹 로그인만으로는 MUD 캐릭터를 소유하지 않습니다.
+            </p>
+            <p>
+              새 캐릭터를 만들거나 기존 텔넷 캐릭터를 이 계정에 연결할 수 있습니다.
+              진행 과정은 안전한 터미널에서 계속됩니다.
+            </p>
+            <div className="onboarding-actions" aria-label="캐릭터 온보딩 선택">
+              <button
+                className="primary-action"
+                onClick={() => onStartOnboarding("provision")}
+                type="button"
+              >
+                새 캐릭터 만들기
+              </button>
+              <button
+                className="secondary-action onboarding-claim-action"
+                onClick={() => onStartOnboarding("claim")}
+                type="button"
+              >
+                {claimEntry.actionLabel}
+              </button>
+            </div>
+            <p className="onboarding-note">
+              {claimEntry.detail} 게임 비밀번호는 웹 계정 비밀번호와 다른 값을 사용하세요.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="claim-boundary" role="status">{claimEntry.title}</p>
+            <p>{claimEntry.kind === "unavailable" ? claimEntry.detail : "캐릭터 목록을 다시 확인하세요."}</p>
+            <button className="secondary-action" onClick={onRetry} type="button">
+              캐릭터 목록 다시 확인
+            </button>
+          </>
+        )}
       </div>
     );
   }

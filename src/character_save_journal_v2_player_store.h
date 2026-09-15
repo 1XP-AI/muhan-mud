@@ -1,0 +1,130 @@
+#ifndef CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_H
+#define CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_H
+
+/*
+ * Stateful, caller-owned PlayerStore facade for the opt-in M3 live shadow.
+ * It owns neither the writer nor the RPC transport; callers retain both and
+ * must keep them alive for every dispatched save.
+ */
+#include "character_save_journal_v2_live_ops.h"
+#include "character_save_journal_v2_bootstrap.h"
+#include "character_save_journal_v2_protocol.h"
+#include "character_save_journal_v2_uuid.h"
+#include "player_record_serializer.h"
+#include "player_store.h"
+
+#define CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_BUFFER_MAX \
+    (64UL * 1024UL * 1024UL)
+#define CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX 63
+
+typedef int (*character_save_journal_v2_player_store_lease_deadline)(
+    void *opaque,
+    char output[CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_DEADLINE_MAX + 1]);
+
+typedef int (*character_save_journal_v2_player_store_command_uuid)(
+    void *opaque,
+    char output[CHARACTER_SAVE_JOURNAL_V2_UUID_TEXT_LENGTH + 1]);
+
+typedef int (*character_save_journal_v2_player_store_file_load)(
+    void *opaque, char *name, struct creature **player);
+
+/* Optional test seam for the mandatory pre-serialization first-head gate.
+ * A zero result authorizes the unchanged save_held_v3 path; every nonzero
+ * result is a local I/O failure with no serializer/stage/journal action. */
+typedef int (*character_save_journal_v2_player_store_absent_bootstrap)(
+    void *opaque, const character_save_journal_v2_writer_context *writer,
+    character_save_journal_v2_live_ops *live_ops,
+    const unsigned char *canonical_legacy_name, size_t canonical_legacy_name_length);
+
+typedef character_save_journal_v2_protocol_resolve_candidate_v4
+    character_save_journal_v2_player_store_resolve_candidate;
+
+typedef enum character_save_journal_v2_player_store_state {
+    CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_IDLE = 0,
+    CHARACTER_SAVE_JOURNAL_V2_PLAYER_STORE_SAVING = 1
+} character_save_journal_v2_player_store_state;
+
+typedef struct character_save_journal_v2_player_store {
+    character_save_journal_v2_writer_context *held_writer;
+    character_save_journal_v2_live_ops *live_ops;
+    char *buffer;
+    unsigned long buffer_capacity;
+    player_record_serializer_limits serializer_limits;
+    character_save_journal_v2_player_store_lease_deadline lease_deadline;
+    void *lease_deadline_opaque;
+    character_save_journal_v2_player_store_command_uuid command_uuid;
+    void *command_uuid_opaque;
+    character_save_journal_v2_player_store_file_load file_load;
+    void *file_load_opaque;
+    character_save_journal_v2_player_store_absent_bootstrap absent_bootstrap;
+    void *absent_bootstrap_opaque;
+    character_save_journal_v2_prepared_stage_observer stage_observer;
+    void *stage_observer_opaque;
+    character_save_journal_v2_player_store_resolve_candidate resolve_candidate;
+    void *resolve_candidate_opaque;
+
+    /* Observable caller-owned state.  Transient references are reset after
+     * every dispatched save.  last_report is reset before each non-reentrant
+     * attempt and then retained for its outcome; an inert reentrant rejection
+     * must not clobber the outer attempt's report.  Buffer bytes remain
+     * caller-owned throughout. */
+    unsigned long buffer_length;
+    character_save_journal_v2_player_store_state state;
+    character_save_journal_v2_protocol_report last_report;
+
+    /* Private per-call references used by the protocol serializer callback.
+     * They never outlive player_store_save's dynamic extent. */
+    struct creature *active_player;
+    int preserve_existing;
+    int existing_copy_attempted;
+} character_save_journal_v2_player_store;
+
+void character_save_journal_v2_player_store_init(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_writer_context *held_writer,
+    character_save_journal_v2_live_ops *live_ops,
+    char *buffer, unsigned long buffer_capacity,
+    const player_record_serializer_limits *serializer_limits,
+    character_save_journal_v2_player_store_lease_deadline lease_deadline,
+    void *lease_deadline_opaque,
+    character_save_journal_v2_player_store_command_uuid command_uuid,
+    void *command_uuid_opaque,
+    character_save_journal_v2_player_store_file_load file_load,
+    void *file_load_opaque);
+
+/* Installs one optional best-effort observer while the store is idle.  The
+ * observer is forwarded unchanged to both protocol reporting and the held
+ * writer capability; its result never becomes PlayerStore authority. */
+int character_save_journal_v2_player_store_set_stage_observer(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_prepared_stage_observer observer,
+    void *observer_opaque);
+
+/* Replace the default held-root/seed/rebind gate only while idle.  This is
+ * for deterministic tests and platform ports; normal initialization installs
+ * character_save_journal_v2_bootstrap_absent_head. */
+int character_save_journal_v2_player_store_set_absent_bootstrap(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_absent_bootstrap bootstrap,
+    void *bootstrap_opaque);
+
+int character_save_journal_v2_player_store_set_candidate_resolver(
+    character_save_journal_v2_player_store *store,
+    character_save_journal_v2_player_store_resolve_candidate resolver,
+    void *resolver_opaque);
+
+/* Produces an opaque PlayerStore dispatch value.  No heap allocation, global
+ * registration, connection ownership, or libpq dependency is involved. */
+player_store_ops character_save_journal_v2_player_store_build(
+    character_save_journal_v2_player_store *store);
+
+int character_save_journal_v2_player_store_save(
+    void *opaque, char *name, struct creature *player);
+/* CLAIM-only byte-preserving save. Requires a v4 candidate resolver; copies
+ * the authorized existing head and wipes transient copied bytes on return. */
+int character_save_journal_v2_player_store_save_existing(
+    void *opaque, char *name, struct creature *player);
+int character_save_journal_v2_player_store_load(
+    void *opaque, char *name, struct creature **player);
+
+#endif

@@ -14,12 +14,19 @@ import {
   createGatewayAuthFrame,
   shouldReconnectGatewayClose,
 } from "@/lib/gateway-contract";
+import {
+  canRestoreTerminalFocus,
+  canSubmitMobileLine,
+  getMobileViewportHeight,
+  shouldDeferTerminalResize,
+} from "@/lib/terminal-focus";
 
 export type GatewayConnectionState =
   | "idle"
   | "connecting"
   | "authenticating"
   | "ready"
+  | "provisioned"
   | "retrying"
   | "closed"
   | "error";
@@ -35,6 +42,7 @@ interface MudTerminalProps {
   characterId: string;
   gatewayUrl: string;
   onStatus: (status: GatewayStatus) => void;
+  onTerminated?: () => void;
 }
 
 interface GatewayControl {
@@ -78,14 +86,18 @@ export function MudTerminal({
   characterId,
   gatewayUrl,
   onStatus,
+  onTerminated,
 }: MudTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const sendInputRef = useRef<(data: string) => boolean>(() => false);
+  const queueFocusRef = useRef<() => void>(() => {});
   const localEchoRef = useRef(true);
   const readyRef = useRef(false);
+  const composingRef = useRef(false);
+  const mobileComposingRef = useRef(false);
   const [mobileLine, setMobileLine] = useState("");
   const [ready, setReady] = useState(false);
   const [localEcho, setLocalEcho] = useState(true);
@@ -99,6 +111,8 @@ export function MudTerminal({
     if (!containerRef.current) {
       return;
     }
+
+    let disposed = false;
 
     const terminal = new Terminal({
       allowProposedApi: false,
@@ -142,22 +156,140 @@ export function MudTerminal({
 
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+
+    let resizeFrame: number | undefined;
+    let resizePending = false;
+    let focusFrame: number | undefined;
+
+    const hasSelection = () =>
+      terminal.hasSelection() || Boolean(window.getSelection()?.toString());
+
+    const focusTerminal = () => {
+      const activeElement = document.activeElement;
+      if (
+        !canRestoreTerminalFocus({
+          disposed,
+          composing: composingRef.current,
+          hasSelection: hasSelection(),
+          documentFocused: document.hasFocus(),
+          activeElementOutsideTerminal:
+            activeElement !== null &&
+            activeElement !== document.body &&
+            !containerRef.current?.contains(activeElement),
+        })
+      ) {
+        return;
+      }
+      terminal.focus();
+    };
+
+    const queueFocus = () => {
+      if (disposed || focusFrame !== undefined) return;
+      focusFrame = window.requestAnimationFrame(() => {
+        focusFrame = undefined;
+        focusTerminal();
+      });
+    };
+    queueFocusRef.current = queueFocus;
+
+    const syncMobileViewport = () => {
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const layout = containerRef.current?.parentElement;
+      if (!layout) return;
+      if (window.matchMedia("(max-width: 640px)").matches) {
+        const height = getMobileViewportHeight(
+          viewportHeight,
+          layout.getBoundingClientRect().top,
+        );
+        if (height !== null) {
+          layout.style.height = `${height}px`;
+        }
+      } else {
+        layout.style.removeProperty("height");
+      }
+    };
+
+    const applyResize = () => {
+      resizeFrame = undefined;
+      if (disposed) return;
+      syncMobileViewport();
+      if (shouldDeferTerminalResize(composingRef.current)) {
+        resizePending = true;
+        return;
+      }
+      fitAddon.fit();
+      queueFocus();
+    };
+
+    const resize = () => {
+      if (disposed) return;
+      // Keep the visible area in sync with a mobile keyboard while deferring
+      // xterm's row/column recalculation until a composition has committed.
+      syncMobileViewport();
+      if (shouldDeferTerminalResize(composingRef.current)) {
+        resizePending = true;
+        return;
+      }
+      if (resizeFrame !== undefined) return;
+      resizeFrame = window.requestAnimationFrame(applyResize);
+    };
+
+    const compositionStart = () => {
+      composingRef.current = true;
+    };
+    const compositionEnd = () => {
+      composingRef.current = false;
+      if (resizePending) {
+        resizePending = false;
+        resize();
+      } else {
+        queueFocus();
+      }
+    };
+    const pointerUp = () => {
+      if (!hasSelection()) queueFocus();
+    };
+
+    terminal.textarea?.addEventListener("compositionstart", compositionStart);
+    terminal.textarea?.addEventListener("compositionend", compositionEnd);
+    containerRef.current.addEventListener("pointerup", pointerUp);
+    window.addEventListener("focus", queueFocus);
+    window.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("resize", resize);
+    window.visualViewport?.addEventListener("scroll", resize);
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(containerRef.current);
+
+    terminal.attachCustomKeyEventHandler((event) => event.key !== "Tab");
+    syncMobileViewport();
     fitAddon.fit();
-    terminal.focus();
+    queueFocus();
 
     const dataDisposable = terminal.onData((data) => {
       sendInputRef.current(data);
     });
-    const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(() => fitAddon.fit());
-    });
-    resizeObserver.observe(containerRef.current);
-
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
     return () => {
+      disposed = true;
+      if (resizeFrame !== undefined) {
+        window.cancelAnimationFrame(resizeFrame);
+        resizeFrame = undefined;
+      }
+      if (focusFrame !== undefined) {
+        window.cancelAnimationFrame(focusFrame);
+        focusFrame = undefined;
+      }
+      queueFocusRef.current = () => {};
       resizeObserver.disconnect();
+      terminal.textarea?.removeEventListener("compositionstart", compositionStart);
+      terminal.textarea?.removeEventListener("compositionend", compositionEnd);
+      containerRef.current?.removeEventListener("pointerup", pointerUp);
+      window.removeEventListener("focus", queueFocus);
+      window.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("scroll", resize);
       dataDisposable.dispose();
       fitAddon.dispose();
       terminal.dispose();
@@ -170,7 +302,6 @@ export function MudTerminal({
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
-    let terminalFailure: string | null = null;
 
     const publishStatus = (
       state: GatewayConnectionState,
@@ -184,6 +315,9 @@ export function MudTerminal({
     const setNotReady = () => {
       readyRef.current = false;
       setReady(false);
+      mobileComposingRef.current = false;
+      // Retry/termination must not carry command text or a password forward.
+      setMobileLine("");
       updateEcho(true);
     };
 
@@ -213,12 +347,17 @@ export function MudTerminal({
       reconnectTimer = setTimeout(connect, delay);
     };
 
-    const handleControl = (control: GatewayControl) => {
+    const handleControl = (
+      control: GatewayControl,
+      socket: WebSocket,
+      markProtocolMalformed: () => void,
+    ) => {
       switch (control.type) {
         case "ready":
           attempt = 0;
           readyRef.current = true;
           setReady(true);
+          queueFocusRef.current();
           publishStatus("ready", "무한대전 세계와 연결됐습니다.");
           break;
         case "echo":
@@ -227,12 +366,15 @@ export function MudTerminal({
         case "pong":
           break;
         case "error":
-          terminalFailure =
+          // Error text is informational. The following close frame owns the
+          // retry/termination decision and may be a transient 1011/12/13.
+          publishStatus(
+            "error",
             control.message ??
-            control.reason ??
-            control.code ??
-            "게이트웨이가 연결을 거절했습니다.";
-          publishStatus("error", terminalFailure);
+              control.reason ??
+              control.code ??
+              "게이트웨이가 연결을 거절했습니다.",
+          );
           break;
         case "closed":
           publishStatus(
@@ -241,11 +383,9 @@ export function MudTerminal({
           );
           break;
         default:
-          if (!readyRef.current) {
-            terminalFailure = "입장 확인 형식이 올바르지 않습니다.";
-            publishStatus("error", terminalFailure);
-            socketRef.current?.close(1008, "invalid admission acknowledgement");
-          }
+          markProtocolMalformed();
+          publishStatus("error", "게이트웨이 응답 형식이 올바르지 않습니다.");
+          socket.close(1008, "invalid gateway control frame");
       }
     };
 
@@ -270,6 +410,10 @@ export function MudTerminal({
 
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
+      let protocolMalformed = false;
+      const markProtocolMalformed = () => {
+        protocolMalformed = true;
+      };
 
       socket.addEventListener("open", () => {
         if (cancelled) {
@@ -283,22 +427,33 @@ export function MudTerminal({
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string") {
           try {
-            handleControl(JSON.parse(event.data) as GatewayControl);
+            handleControl(
+              JSON.parse(event.data) as GatewayControl,
+              socket,
+              markProtocolMalformed,
+            );
           } catch {
+            markProtocolMalformed();
             publishStatus("error", "알 수 없는 게이트웨이 응답을 받았습니다.");
+            socket.close(1008, "malformed gateway control frame");
           }
           return;
         }
 
         if (event.data instanceof ArrayBuffer) {
           if (!readyRef.current) {
-            terminalFailure = "캐릭터 입장 확인 전 데이터가 도착했습니다.";
-            publishStatus("error", terminalFailure);
+            markProtocolMalformed();
+            publishStatus("error", "캐릭터 입장 확인 전 데이터가 도착했습니다.");
             socket.close(1008, "data before auth acknowledgement");
             return;
           }
           terminalRef.current?.write(new Uint8Array(event.data));
+          return;
         }
+
+        markProtocolMalformed();
+        publishStatus("error", "게이트웨이 프레임 형식이 올바르지 않습니다.");
+        socket.close(1008, "malformed gateway frame");
       });
 
       socket.addEventListener("error", () => {
@@ -308,23 +463,19 @@ export function MudTerminal({
       });
 
       socket.addEventListener("close", (event) => {
-        if (socketRef.current === socket) {
-          socketRef.current = null;
-        }
+        // An older socket can close after a reconnect has replaced it.
+        if (socketRef.current !== socket) return;
+        socketRef.current = null;
         setNotReady();
 
         if (cancelled) {
           return;
         }
 
-        if (terminalFailure) {
-          publishStatus("error", terminalFailure);
-          return;
-        }
-
         const reason = event.reason || `연결이 닫혔습니다 (${event.code}).`;
-        if (!shouldReconnectGatewayClose(event.code)) {
+        if (!shouldReconnectGatewayClose(event.code, attempt, protocolMalformed)) {
           publishStatus("closed", reason);
+          onTerminated?.();
           return;
         }
         scheduleReconnect(reason);
@@ -345,11 +496,18 @@ export function MudTerminal({
         socket.close(1000, "session changed");
       }
     };
-  }, [accessToken, characterId, gatewayUrl, onStatus, updateEcho]);
+  }, [accessToken, characterId, gatewayUrl, onStatus, onTerminated, updateEcho]);
 
   const submitMobileLine = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!mobileLine || !sendInputRef.current(`${mobileLine}\n`)) {
+    if (
+      !canSubmitMobileLine({
+        value: mobileLine,
+        ready,
+        composing: mobileComposingRef.current,
+      }) ||
+      !sendInputRef.current(`${mobileLine}\n`)
+    ) {
       return;
     }
     setMobileLine("");
@@ -369,11 +527,29 @@ export function MudTerminal({
           {localEcho ? "명령" : "비밀번호"}
         </label>
         <input
+          aria-label={localEcho ? "명령 입력" : "게임 비밀번호 입력"}
           autoCapitalize="none"
           autoComplete="off"
+          autoCorrect="off"
           disabled={!ready}
+          enterKeyHint="send"
           id="mud-command"
+          inputMode="text"
           onChange={(event) => setMobileLine(event.target.value)}
+          onCompositionEnd={() => {
+            mobileComposingRef.current = false;
+          }}
+          onCompositionStart={() => {
+            mobileComposingRef.current = true;
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              (mobileComposingRef.current || event.nativeEvent.isComposing)
+            ) {
+              event.preventDefault();
+            }
+          }}
           placeholder={ready ? "명령을 입력하세요" : "세계 연결을 기다리는 중"}
           spellCheck={false}
           type={localEcho ? "text" : "password"}

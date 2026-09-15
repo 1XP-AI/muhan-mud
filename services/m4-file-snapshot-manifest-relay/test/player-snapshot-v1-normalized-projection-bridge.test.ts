@@ -1,0 +1,180 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { dirname, isAbsolute, join } from 'node:path'
+import { test } from 'node:test'
+import { relayPlayerSnapshotV1ArtifactsOnce, type PlayerSnapshotV1ArtifactFilesystem } from '../src/player-snapshot-v1-artifact-relay.js'
+import { projectPlayerSnapshotV1Normalized, type PlayerSnapshotV1NormalizedProjection } from '../src/player-snapshot-v1-normalized-projection.js'
+import { comparePlayerSnapshotV1NormalizedProjectionShadow } from '../src/player-snapshot-v1-normalized-projection-shadow-comparator.js'
+import { parsePlayerSnapshotV1ArtifactEvidence, parsePlayerSnapshotV1ReceiptBoundArtifactEvidence } from '../src/player-snapshot-v1-artifact.js'
+import { parseManifest } from '../src/manifest.js'
+import { PostgresNormalizedProjectionReader } from '../src/player-snapshot-v1-normalized-projection-reader.js'
+import { loadNormalizedShadowArtifact } from '../src/player-snapshot-v1-normalized-shadow-cli.js'
+
+const commandId = '11111111-1111-4111-8111-111111111111'
+const characterId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const requestSha256 = 'a'.repeat(64)
+const sourcePostSha256 = 'b'.repeat(64)
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+const treeFixture = join(repoRoot, 'tests/fixtures/player_snapshot_v1_tree_inventory.hex')
+const TREE_CANONICAL_DIGEST = '96df4bf87d1012fbef2043f215b95b6bf0790780b731546b1fcd6a257ee2b76c'
+
+test('one-shot normalized loader requires exactly one receipt-bound artifact pair', async () => {
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const digest = createHash('sha256').update(payload).digest('hex')
+  const pair = { name: `${commandId}.player-snapshot-v1`, bytes: artifact(payload, digest), receiptManifestBytes: receipt() }
+  const loaded = await loadNormalizedShadowArtifact('/fixture', { scan: async () => [pair] })
+  assert.equal(loaded.receiptRequestSha256, requestSha256)
+  assert.deepEqual(loaded.payload, payload)
+  for (const files of [[], [pair, pair], [{ ...pair, receiptManifestBytes: undefined }],
+    [{ ...pair, receiptManifestBytes: Buffer.from('invalid receipt') }]]) {
+    await assert.rejects(loadNormalizedShadowArtifact('/fixture', { scan: async () => files }))
+  }
+})
+
+function receipt(): Uint8Array {
+  return Buffer.from([
+    'version=1', 'world_id=muhan-01', `character_id=${characterId}`, `command_id=${commandId}`,
+    'canonical_name_hex=4d3341', `request_sha256=${requestSha256}`, `post_sha256=${sourcePostSha256}`,
+    'writer_instance_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'snapshot_format=legacy-file-manifest-v1',
+    'writer_epoch=7', 'writer_revision=1', 'storage_format=1', 'snapshot_octets=128', '',
+  ].join('\n'), 'ascii')
+}
+
+function artifact(payload: Uint8Array, snapshotSha256: string): Uint8Array {
+  return Buffer.concat([Buffer.from([
+    'version=1', 'world_id=muhan-01', `character_id=${characterId}`, `command_id=${commandId}`,
+    'canonical_name_hex=4d3341', `request_sha256=${requestSha256}`, `source_post_sha256=${sourcePostSha256}`,
+    'writer_instance_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'writer_epoch=7', 'writer_revision=1',
+    'storage_format=1', 'snapshot_format=player-snapshot-v1', 'source_octets=128',
+    `snapshot_sha256=${snapshotSha256}`, `snapshot_octets=${payload.length}`, '', '',
+  ].join('\n'), 'ascii'), Buffer.from(payload)])
+}
+
+test('hermetic C -> Rust -> Node bridge preserves the checked-in tree projection and remains default-off', async () => {
+  const runnerPath = process.env.M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER
+  assert.ok(runnerPath && isAbsolute(runnerPath), 'bridge runner supplies the real Rust projection binary')
+
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const parsed = await projectPlayerSnapshotV1Normalized(payload, { runnerPath, snapshotSha256 })
+  assert.equal(parsed.canonicalDigest, TREE_CANONICAL_DIGEST)
+  assert.deepEqual(parsed.player.items.map(({ parentIndex, childIndex }) => ({ parentIndex, childIndex })), [
+    { parentIndex: null, childIndex: 0 }, { parentIndex: 0, childIndex: 0 }, { parentIndex: 1, childIndex: 0 },
+    { parentIndex: 0, childIndex: 1 }, { parentIndex: null, childIndex: 1 },
+  ])
+
+  const wrappedArtifact = artifact(payload, snapshotSha256)
+  const filesystem: PlayerSnapshotV1ArtifactFilesystem = {
+    scan: async () => [{ name: `${commandId}.player-snapshot-v1`, bytes: wrappedArtifact, receiptManifestBytes: receipt() }],
+  }
+  let artifactCalls = 0
+  const artifactStore = { recordPlayerSnapshotV1Artifact: async () => { artifactCalls++; return 'RECORDED' as const } }
+
+  const off = await relayPlayerSnapshotV1ArtifactsOnce('/hermetic/unused', artifactStore, filesystem)
+  assert.equal(artifactCalls, 1)
+  assert.equal(off.normalizedProjectionDelivered, undefined, 'no normalized persistence seam is present by default')
+
+  const persisted: Array<Record<string, unknown>> = []
+  let projectCalls = 0
+  const persistence = {
+    project: async (receivedPayload: Uint8Array, receivedSha256: string): Promise<PlayerSnapshotV1NormalizedProjection> => {
+      projectCalls++
+      assert.deepEqual(receivedPayload, payload, 'relay preserves exact artifact payload bytes')
+      assert.equal(receivedSha256, snapshotSha256, 'relay preserves exact artifact SHA-256')
+      return parsed
+    },
+    store: { recordPlayerSnapshotNormalizedV1Projection: async (input: Record<string, unknown>) => { persisted.push(input); return 'RECORDED' as const } },
+  }
+  const enabled = await relayPlayerSnapshotV1ArtifactsOnce('/hermetic/unused', artifactStore, filesystem, undefined, undefined, undefined, persistence)
+  assert.equal(projectCalls, 1)
+  assert.equal(enabled.normalizedProjectionRecorded, 1)
+  assert.equal(enabled.normalizedProjectionDelivered, 1)
+  assert.deepEqual(persisted, [{
+    characterId, commandId, receiptRequestSha256: requestSha256, sourcePostSha256, sourceOctets: '128', projection: parsed,
+  }], 'the actual relay persists the exact Node-parsed Rust projection and only receipt-bound metadata')
+})
+
+test('hermetic post-save shadow proof binds the C artifact projection to one injected normalized record', async () => {
+  const runnerPath = process.env.M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER
+  assert.ok(runnerPath && isAbsolute(runnerPath), 'bridge runner supplies the real Rust projection binary')
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const derived = await projectPlayerSnapshotV1Normalized(payload, { runnerPath, snapshotSha256 })
+  const filename = `${commandId}.player-snapshot-v1`
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(filename, artifact(payload, snapshotSha256), parseManifest(receipt()))
+  const record = {
+    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: evidence.receiptRequestSha256,
+    writerInstanceId: evidence.writerInstanceId, writerEpoch: evidence.writerEpoch, writerRevision: evidence.writerRevision,
+    sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: payload.length, projection: derived,
+  }
+  assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(evidence, {
+    findByIdentity: async () => [record],
+  }, {
+    project: (receivedPayload, receivedSha256) => projectPlayerSnapshotV1Normalized(receivedPayload, { runnerPath, snapshotSha256: receivedSha256 }),
+  }), 'MATCH')
+})
+
+test('raw native evidence and filename or receipt mismatches cannot reach a shadow MATCH', async () => {
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const wrapped = artifact(payload, snapshotSha256)
+  const rawEvidence = parsePlayerSnapshotV1ArtifactEvidence(wrapped)
+  let reads = 0
+  assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(rawEvidence, {
+    findByIdentity: async () => { reads++; return [] },
+  }, { project: async () => { throw new Error('must not derive raw evidence') } }), 'INVALID_ARTIFACT')
+  assert.equal(reads, 0, 'unbound native evidence cannot reach the reader or MATCH')
+  assert.throws(
+    () => parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`22222222-2222-4222-8222-222222222222.player-snapshot-v1`, wrapped, parseManifest(receipt())),
+    /invalid PlayerSnapshotV1 artifact/,
+  )
+  for (const mismatch of [{ canonicalNameHex: '4d3342' }, { storageFormat: 2 }]) {
+    assert.throws(
+      () => parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`${commandId}.player-snapshot-v1`, wrapped, {
+        ...parseManifest(receipt()), ...mismatch,
+      }),
+      /invalid PlayerSnapshotV1 artifact/,
+    )
+  }
+})
+
+test('C fixture and real Rust wire pass through the SQL row adapter into the shadow comparator', async () => {
+  const runnerPath = process.env.M4_PLAYER_SNAPSHOT_V1_NORMALIZED_PROJECT_RUNNER
+  assert.ok(runnerPath && isAbsolute(runnerPath))
+  const payload = Buffer.from((await readFile(treeFixture, 'utf8')).trim(), 'hex')
+  const snapshotSha256 = createHash('sha256').update(payload).digest('hex')
+  const evidence = parsePlayerSnapshotV1ReceiptBoundArtifactEvidence(`${commandId}.player-snapshot-v1`,
+    artifact(payload, snapshotSha256), parseManifest(receipt()))
+  const projectionText = execFileSync(runnerPath, ['--snapshot-sha256', snapshotSha256], {
+    input: payload, maxBuffer: 4_194_352,
+  }).toString('utf8').trimEnd()
+  const row = {
+    worldId: evidence.worldId, characterId, commandId, receiptRequestSha256: evidence.receiptRequestSha256,
+    writerInstanceId: evidence.writerInstanceId, writerEpoch: evidence.writerEpoch, writerRevision: evidence.writerRevision,
+    sourcePostSha256, sourceOctets: evidence.sourceOctets, snapshotSha256, snapshotOctets: String(payload.length), projectionText,
+  }
+  const scenarios = [
+    { rows: [row], expected: 'MATCH' },
+    { rows: [], expected: 'MISSING_RECORD' },
+    { rows: [row, row], expected: 'UNEXPECTED_DUPLICATE' },
+    { rows: [{ ...row, writerRevision: '2' }], expected: 'EVIDENCE_MISMATCH' },
+    { rows: [{ ...row, projectionText: '{}' }], expected: 'RECORD_READ_ERROR' },
+  ]
+  for (const { rows, expected } of scenarios) {
+    let selects = 0
+    // Inject SQL result rows only; this test does not execute PostgreSQL.
+    const reader = new PostgresNormalizedProjectionReader({ query: async (sql, values) => {
+      if (sql === 'show transaction_read_only') return { rows: [{ transaction_read_only: 'on' }] }
+      selects++
+      assert.deepEqual(values, [evidence.worldId, characterId, commandId])
+      return { rows }
+    } })
+    assert.equal(await comparePlayerSnapshotV1NormalizedProjectionShadow(evidence, reader, {
+      project: (bytes, digest) => projectPlayerSnapshotV1Normalized(bytes, { runnerPath, snapshotSha256: digest }),
+    }), expected)
+    assert.equal(selects, 1)
+  }
+})

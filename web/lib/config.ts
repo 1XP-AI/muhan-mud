@@ -2,6 +2,7 @@ export interface PublicConfig {
   supabaseUrl: string;
   supabasePublishableKey: string;
   gatewayUrl: string;
+  onboardingEnabled: boolean;
 }
 
 export interface ConfigResult {
@@ -18,6 +19,8 @@ export interface PublicConfigEnvironment {
   NEXT_PUBLIC_SUPABASE_URL?: string;
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?: string;
   NEXT_PUBLIC_MUD_GATEWAY_URL?: string;
+  MUD_ONBOARDING_ENABLED?: string;
+  NEXT_PUBLIC_MUD_ONBOARDING_ENABLED?: string;
 }
 
 /**
@@ -48,6 +51,19 @@ export function readPublicConfig(
   }
 
   try {
+    const onboardingValue =
+      environment.MUD_ONBOARDING_ENABLED ??
+      environment.NEXT_PUBLIC_MUD_ONBOARDING_ENABLED;
+    if (
+      onboardingValue !== undefined &&
+      onboardingValue !== "true" &&
+      onboardingValue !== "false"
+    ) {
+      throw new Error(
+        "MUD_ONBOARDING_ENABLED는 true 또는 false여야 합니다.",
+      );
+    }
+
     const supabaseUrl = new URL(values.SUPABASE_PUBLIC_URL!);
     const gatewayUrl = new URL(values.MUD_GATEWAY_URL!);
     const production = environment.NODE_ENV === "production";
@@ -79,6 +95,7 @@ export function readPublicConfig(
         supabaseUrl: supabaseUrl.toString().replace(/\/$/, ""),
         supabasePublishableKey: values.SUPABASE_PUBLISHABLE_KEY!,
         gatewayUrl: gatewayUrl.toString(),
+        onboardingEnabled: onboardingValue === "true",
       },
       missing: [],
       error: null,

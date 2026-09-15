@@ -20,6 +20,29 @@
 통과했다. Linux amd64/arm64와 macOS/Windows 빌드, 컨테이너 healthcheck,
 PostgreSQL 17 계약 검사는 GitHub Actions에서 실행한다.
 
+## 2026-09-07 authority correction
+
+활성 onboarding handoff는 하나의 pending snapshot-eligibility outbox 행을
+원자적으로 만든다. 현재 구현은 private의 bounded deterministic list에서 이미
+불변으로 binding된 actor/correlation/character/mode/command tuple만 읽고,
+`mud_writer_login`의 `SET ROLE mud_writer` 경계에서 두 인자 fulfillment RPC를
+호출한다. malformed·중복·unbounded 목록은 writer 호출 전에 전체 거부되고,
+`FULFILLED`/`EXACT_RETRY`/`ALREADY_FULFILLED`/`NOT_ELIGIBLE` 및 bounded retry의
+단위 계약이 있다.
+
+이 capability는 기본 활성화가 아니다. M3는 환경 변수가 없거나
+`MUD_M3_MODE=off`이면 off이며, shadow capture는 M3-enabled build와 정확한
+`MUD_M3_MODE=shadow`, `MUD_M3_PLAYER_SNAPSHOT_V1=handoff`를 요구한다. M4 relay의
+onboarding-eligibility fulfillment도
+`M4_PLAYER_SNAPSHOT_V1_ARTIFACT_FULFILLMENT_ENABLED=true`일 때만 side effect를
+수행한다.
+
+실제 stack E2E는 CI-only disposable Docker PostgreSQL 17/PostgREST/Gateway/C
+MUD/Chromium 환경에서 그 명시적 opt-in을 검증한다. 이 문서의 기존 testnet
+기록이나 disposable E2E는 해당 capability가 배포되었거나 DB가 gameplay read
+authority로 cut over되었다는 증거가 아니며, live player bytes와 gameplay state는
+계속 legacy file/C process authority다.
+
 ## 실제 프로세스 검사
 
 게이트웨이를 `NODE_ENV=test`, test-only auth bypass로 실제 기동하고 다음 응답을 확인했다.

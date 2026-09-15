@@ -2,6 +2,32 @@
 #include "mstruct.h"
 #include "mextern.h"
 #include "resource_path.h"
+#include "bank_store.h"
+#ifdef MUHAN_BANK_MONEY_ROUTING
+#include "bank_money_route.h"
+/* Compile-gated until a qualified DB coordinator and exclusive authority are
+ * installed. Selection is separate from outcome: failure NEVER falls back. */
+static int route_bank_money(creature *player,cmd *command,int withdrawing)
+{
+    bank_money_ack ack;
+    int result=bank_money_route_dispatch(player,command,withdrawing,&ack);
+    if(result==BANK_MONEY_LEGACY) return 0;
+    if(result!=BANK_MONEY_COMMITTED) {
+        print(player->fd,"입출금을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        return 1;
+    }
+    if(withdrawing) print(player->fd,"당신은 %ld냥을 출금했습니다.\n",ack.amount);
+    else print(player->fd,"당신은 %ld냥을 입금했습니다.\n",ack.amount);
+    print(player->fd,"은행의 잔고가 %ld냥이 되었습니다.",ack.bank_gold);
+    return 1;
+}
+static int refuse_legacy_bank(creature *player)
+{
+    if(bank_money_route_allows_legacy(player)) return 0;
+    print(player->fd,"이 캐릭터의 은행 조회·물품 보관은 DB 연동 준비 중입니다.");
+    return 1;
+}
+#endif
 #include <stdio.h>
 #include <sys/types.h>
 
@@ -13,7 +39,7 @@
 #define UTF8_PREFIX_ALL "모든"
 #define UTF8_PREFIX_ALL_LEN ((int)(sizeof(UTF8_PREFIX_ALL) - 1))
 
-int load_bank(str, obj_ptr)
+int file_bank_store_load(str, obj_ptr)
 char	*str;
 object 	**obj_ptr;
 {
@@ -43,7 +69,7 @@ object 	**obj_ptr;
 	return(0);
 }
 
-int save_bank(str, obj_ptr)
+int file_bank_store_save(str, obj_ptr)
 char	*str;
 object  *obj_ptr;
 {
@@ -68,6 +94,22 @@ object  *obj_ptr;
 	return(0);
 }
 
+/* Preserve the legacy ABI while routing ordinary callers through the
+ * FileStore-backed facade by default. */
+int load_bank(str, obj_ptr)
+char	*str;
+object 	**obj_ptr;
+{
+	return(bank_store_load(str, obj_ptr));
+}
+
+int save_bank(str, obj_ptr)
+char	*str;
+object  *obj_ptr;
+{
+	return(bank_store_save(str, obj_ptr));
+}
+
 
 int bank_inv(ply_ptr, cmnd)
 creature	*ply_ptr;
@@ -76,6 +118,10 @@ cmd	*cmnd;
 	object	*bnk_ptr;
 	int		fd, n;
 	char	str[2048];
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
 
 	fd = ply_ptr->fd;
 	if(!F_ISSET(ply_ptr->parent_rom, RBANK)) {
@@ -116,6 +162,10 @@ cmd *cmnd;
 	object	*bnk_ptr;
 	room	*rom_ptr;
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
+
 	fd = ply_ptr->fd;
 	rom_ptr = ply_ptr->parent_rom;
 	if(!F_ISSET(ply_ptr->parent_rom, RBANK)) {
@@ -141,6 +191,10 @@ cmd	*cmnd;
 		int	fd, n;
 		object	*cnt_ptr, *obj_ptr;
 		room *rom_ptr;
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
 
 		fd = ply_ptr->fd;
 		rom_ptr = ply_ptr->parent_rom;
@@ -204,6 +258,10 @@ cmd	*cmnd;
 		object	*cnt_ptr, *obj_ptr;
 		room *rom_ptr;
 		int cnt=0, i;
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(refuse_legacy_bank(ply_ptr)) return(0);
+#endif
 
 		fd = ply_ptr->fd;
 		rom_ptr = ply_ptr->parent_rom;
@@ -295,6 +353,9 @@ cmd	*cmnd;
 		print(fd, "얼마를 입금하시려고요?");
 		return(0);
 	}
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(route_bank_money(ply_ptr,cmnd,0)) return(0);
+#endif
 	if(!strcmp(cmnd->str[1], "모두")) {
 		amt = ply_ptr->gold;
 		goto input_bank_all;
@@ -355,6 +416,9 @@ cmd	*cmnd;
 		print(fd, "얼마를 출금하시려고요?");
 		return(0);
 	}
+#ifdef MUHAN_BANK_MONEY_ROUTING
+	if(route_bank_money(ply_ptr,cmnd,1)) return(0);
+#endif
 		n = load_bank(ply_ptr->name, &bnk_ptr);
 		if(n < 0) {
 			bnk_ptr = (object *)malloc(sizeof(object));
@@ -402,6 +466,10 @@ char *part_obj;
     char    str[2048];
     int     fd, n = 1, found = 0, full = 0;
     int index=1;
+
+#ifdef MUHAN_BANK_MONEY_ROUTING
+    if(refuse_legacy_bank(ply_ptr)) return;
+#endif
 
     if(!strcmp(part_obj,"모두")) {
         index=0;
@@ -499,6 +567,10 @@ char *part_obj;
     int index=1;
     int i,cnt;
 
+#ifdef MUHAN_BANK_MONEY_ROUTING
+    if(refuse_legacy_bank(ply_ptr)) return;
+#endif
+
         for(i=0,cnt=0; i<MAXWEAR; i++)
                 if(ply_ptr->ready[i]) cnt++;
         cnt += count_inv(ply_ptr, -1);
@@ -591,9 +663,6 @@ char *part_obj;
 		free_obj(cnt_ptr);
 		savegame_nomsg(ply_ptr);
 }
-
-
-
 
 
 
