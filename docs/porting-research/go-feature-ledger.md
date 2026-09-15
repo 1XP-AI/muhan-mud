@@ -34,6 +34,20 @@ before-error P3 해결을 확인했지만, 첫 dot preflight와 durable reducer 
 해당 edge와 C `view_file` paging·receipt 크기·cross-connection recovery, PG/브라우저/배포
 인수는 후속 작은 PR 범위로 남긴다.
 
+## 2026-09-16 G3 notepad post-preflight rejection follow-up
+
+첫 dot preflight 이후 durable reducer가 최신 canonical 상태의 `world.ErrNotepadLimit`을
+반환한 경우는 저장 불확실성이 아닌 확정된 새 거절이다. transport는 이 경우에만
+connection-local draft를 비우고 안전한 unknown 응답을 반환하며, 일반 storage/transport
+오류는 stable command ID와 `commitPending`을 보존해 receipt-first 재시도를 계속한다.
+
+Luna max `task_7009f5994d69` / `ctx_147a136de3c6`가 `world_connector.go`와
+`world_connector_notepad_test.go`만 변경했고, coordinator가 새 interleaving 회귀와 기존
+saved-before-error receipt 회귀를 포함한 transport/world/session race, full transport race,
+vet, gofmt, diff-check, exact scope 및 `src.frp.new` 보호 hash를 독립 검증했다. 커밋은
+`7781b46`이며 작은 PR #14로 push됐다. C `view_file` paging·receipt 크기·cross-connection
+recovery, PG/브라우저/배포 인수는 여전히 미완료다.
+
 ## 2026-09-15 G4 실제 rooms/NPC/item full-data dry-run
 
 | 원작/운영 경계 | Go 검증 결과 | 검증/남은 조건 |
