@@ -127,6 +127,7 @@ const (
 	npcCombatBlinderFlag        uint = 45 // MBLNDR
 	npcCombatVictimBlindedFlag  uint = 42 // PBLIND
 	npcCombatDissolverFlag      uint = 35 // MDISIT
+	npcCombatBefuddledFlag      uint = 51 // MBEFUD
 )
 
 func npcCombatContainsID(ids []string, want string) bool {
@@ -363,6 +364,11 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		if err != nil {
 			return NPCCombatRoundProposal{}, err
 		}
+	}
+	// src/update.c:471-480 attenuates both ordinary and breath damage after
+	// damage is determined and before HP or any post-hit effect is applied.
+	if flag(npc.Body.Flags[:], npcCombatBefuddledFlag) {
+		damage /= 3
 	}
 	nextPlayer.Body.HPCurrent = int16(int(player.Body.HPCurrent) - damage)
 	poisoned := false
