@@ -589,3 +589,54 @@ func TestWorldConnectorNotepadRetriesSameDurableBoundaryAfterLostCommitResponse(
 		t.Fatalf("saved=%+v err=%v", saved.Notepad, err)
 	}
 }
+
+func TestWorldConnectorNotepadKeepsPendingDraftWhenRetryHitsCanonicalLimitWithoutReceipt(t *testing.T) {
+	initial := notepadConnectorFixture(10)
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &notepadFlakyStore{state: raw, failOnce: true}
+	connection := newNotepadConnection(t, initial, store)
+	if output, err := connection.Submit(context.Background(), "*notepad a"); err != nil || output != world.NotepadAppendPrompt {
+		t.Fatalf("start output=%q err=%v", output, err)
+	}
+	line := "retryable"
+	if output, err := connection.Submit(context.Background(), line); err != nil || output != world.NotepadAppendContinuePrompt {
+		t.Fatalf("body output=%q err=%v", output, err)
+	}
+	commandID := connection.notepad.commandID
+	if output, err := connection.Submit(context.Background(), "."); err != nil || output != session.NotepadAppendRetryResponse || connection.notepad == nil || !connection.notepad.commitPending || store.commits != 1 {
+		t.Fatalf("uncertain output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+	}
+
+	full := notepadStateWithBytes(world.MaxNotepadBytes)
+	fullRaw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.state = fullRaw
+	store.mu.Unlock()
+
+	output, err := connection.Submit(context.Background(), ".")
+	gotCommandID := ""
+	if connection.notepad != nil {
+		gotCommandID = connection.notepad.commandID
+	}
+	if err != nil || output != session.NotepadAppendRetryResponse || connection.notepad == nil || !connection.notepad.commitPending || connection.notepad.commandID != commandID || len(connection.notepad.lines) != 1 || connection.notepad.lines[0] != line || store.commits != 1 {
+		t.Fatalf("limit retry output=%q err=%v draft=%+v commits=%d commandID=%q want=%q", output, err, connection.notepad, store.commits, gotCommandID, commandID)
+	}
+
+	store.mu.Lock()
+	store.state = raw
+	store.mu.Unlock()
+	output, err = connection.Submit(context.Background(), ".")
+	if err != nil || output != world.NotepadAppendResponse || connection.notepad != nil || store.commits != 2 {
+		t.Fatalf("recovered retry output=%q err=%v draft=%+v commits=%d", output, err, connection.notepad, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || len(saved.Notepad) != 3 || saved.Notepad[2] != line {
+		t.Fatalf("saved=%+v err=%v", saved.Notepad, err)
+	}
+}
