@@ -57,6 +57,19 @@ type NPCCombatTickAttack struct {
 	BreathDicePlus         int                       `json:"breath_dice_plus,omitempty"`
 	BreathResisted         bool                      `json:"breath_resisted,omitempty"`
 	BreathPoisoned         bool                      `json:"breath_poisoned,omitempty"`
+	EnergyDrainTriggered   bool                      `json:"energy_drain_triggered,omitempty"`
+	EnergyRoll             int                       `json:"energy_roll,omitempty"`
+	EnergyBand             int                       `json:"energy_band,omitempty"`
+	EnergyDiceCount        int                       `json:"energy_dice_count,omitempty"`
+	EnergyDiceSides        int                       `json:"energy_dice_sides,omitempty"`
+	EnergyDicePlus         int                       `json:"energy_dice_plus,omitempty"`
+	EnergyDrain            int                       `json:"energy_drain,omitempty"`
+	ExperienceBefore       int32                     `json:"experience_before"`
+	ExperienceAfter        int32                     `json:"experience_after"`
+	ProficiencyBefore      [5]int32                  `json:"proficiency_before"`
+	ProficiencyAfter       [5]int32                  `json:"proficiency_after"`
+	RealmBefore            [4]int32                  `json:"realm_before"`
+	RealmAfter             [4]int32                  `json:"realm_after"`
 	DissolveSucceeded      bool                      `json:"dissolve_succeeded,omitempty"`
 	Dissolved              bool                      `json:"dissolved,omitempty"`
 	DissolveProtected      bool                      `json:"dissolve_protected,omitempty"`
@@ -491,6 +504,13 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 			BreathRoll: result.BreathRoll, BreathDiceCount: result.BreathDiceCount,
 			BreathDiceSides: result.BreathDiceSides, BreathDicePlus: result.BreathDicePlus,
 			BreathResisted: result.BreathResisted, BreathPoisoned: result.BreathPoisoned,
+			EnergyDrainTriggered: result.EnergyDrainTriggered, EnergyRoll: result.EnergyRoll,
+			EnergyBand: result.EnergyBand, EnergyDiceCount: result.EnergyDiceCount,
+			EnergyDiceSides: result.EnergyDiceSides, EnergyDicePlus: result.EnergyDicePlus,
+			EnergyDrain: result.EnergyDrain, ExperienceBefore: result.ExperienceBefore,
+			ExperienceAfter: result.ExperienceAfter, ProficiencyBefore: result.ProficiencyBefore,
+			ProficiencyAfter: result.ProficiencyAfter, RealmBefore: result.RealmBefore,
+			RealmAfter:        result.RealmAfter,
 			DissolveSucceeded: result.DissolveSucceeded, Dissolved: result.Dissolved,
 			DissolveProtected: result.DissolveProtected, DissolveRoll: result.DissolveRoll,
 			DissolveSelectionRoll:  result.DissolveSelectionRoll,
@@ -550,6 +570,13 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 		BreathRoll: probeResult.BreathRoll, BreathDiceCount: probeResult.BreathDiceCount,
 		BreathDiceSides: probeResult.BreathDiceSides, BreathDicePlus: probeResult.BreathDicePlus,
 		BreathResisted: probeResult.BreathResisted, BreathPoisoned: probeResult.BreathPoisoned,
+		EnergyDrainTriggered: probeResult.EnergyDrainTriggered, EnergyRoll: probeResult.EnergyRoll,
+		EnergyBand: probeResult.EnergyBand, EnergyDiceCount: probeResult.EnergyDiceCount,
+		EnergyDiceSides: probeResult.EnergyDiceSides, EnergyDicePlus: probeResult.EnergyDicePlus,
+		EnergyDrain: probeResult.EnergyDrain, ExperienceBefore: probeResult.ExperienceBefore,
+		ExperienceAfter: probeResult.ExperienceAfter, ProficiencyBefore: probeResult.ProficiencyBefore,
+		ProficiencyAfter: probeResult.ProficiencyAfter, RealmBefore: probeResult.RealmBefore,
+		RealmAfter:        probeResult.RealmAfter,
 		DissolveSucceeded: probeResult.DissolveSucceeded, Dissolved: probeResult.Dissolved,
 		DissolveProtected: probeResult.DissolveProtected, DissolveRoll: probeResult.DissolveRoll,
 		DissolveSelectionRoll:  probeResult.DissolveSelectionRoll,

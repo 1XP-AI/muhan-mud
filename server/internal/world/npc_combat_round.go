@@ -27,6 +27,19 @@ type NPCCombatRoundProposal struct {
 	BreathDicePlus         int
 	BreathResisted         bool
 	BreathPoisoned         bool
+	EnergyDrainTriggered   bool
+	EnergyRoll             int
+	EnergyBand             int
+	EnergyDiceCount        int
+	EnergyDiceSides        int
+	EnergyDicePlus         int
+	EnergyDrain            int
+	ExperienceBefore       int32
+	ExperienceAfter        int32
+	ProficiencyBefore      [5]int32
+	ProficiencyAfter       [5]int32
+	RealmBefore            [4]int32
+	RealmAfter             [4]int32
 	DissolveSucceeded      bool
 	Dissolved              bool
 	DissolveProtected      bool
@@ -55,6 +68,19 @@ type NPCCombatRoundProposal struct {
 	expectedBreathDicePlus         int
 	expectedBreathResisted         bool
 	expectedBreathPoisoned         bool
+	expectedEnergyDrainTriggered   bool
+	expectedEnergyRoll             int
+	expectedEnergyBand             int
+	expectedEnergyDiceCount        int
+	expectedEnergyDiceSides        int
+	expectedEnergyDicePlus         int
+	expectedEnergyDrain            int
+	expectedExperienceBefore       int32
+	expectedExperienceAfter        int32
+	expectedProficiencyBefore      [5]int32
+	expectedProficiencyAfter       [5]int32
+	expectedRealmBefore            [4]int32
+	expectedRealmAfter             [4]int32
 	expectedDamage                 int
 	expectedDissolveSucceeded      bool
 	expectedDissolved              bool
@@ -86,6 +112,19 @@ type NPCCombatRoundResult struct {
 	BreathDicePlus         int
 	BreathResisted         bool
 	BreathPoisoned         bool
+	EnergyDrainTriggered   bool
+	EnergyRoll             int
+	EnergyBand             int
+	EnergyDiceCount        int
+	EnergyDiceSides        int
+	EnergyDicePlus         int
+	EnergyDrain            int
+	ExperienceBefore       int32
+	ExperienceAfter        int32
+	ProficiencyBefore      [5]int32
+	ProficiencyAfter       [5]int32
+	RealmBefore            [4]int32
+	RealmAfter             [4]int32
 	DissolveSucceeded      bool
 	Dissolved              bool
 	DissolveProtected      bool
@@ -127,6 +166,7 @@ const (
 	npcCombatBlinderFlag        uint = 45 // MBLNDR
 	npcCombatVictimBlindedFlag  uint = 42 // PBLIND
 	npcCombatDissolverFlag      uint = 35 // MDISIT
+	npcCombatEnergyDrainFlag    uint = 30 // MENEDR
 	npcCombatBefuddledFlag      uint = 51 // MBEFUD
 )
 
@@ -151,6 +191,130 @@ func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, in
 		damage = 1
 	}
 	return damage, nil
+}
+
+func npcCombatValidateProgression(body LegacyMonster) error {
+	const maxLegacyInt32 = int64(^uint32(0) >> 1)
+	total := int64(0)
+	if body.Experience < 0 {
+		return fmt.Errorf("NPC combat target has negative experience")
+	}
+	for _, value := range body.Proficiency {
+		if value < 0 {
+			return fmt.Errorf("NPC combat target has negative weapon proficiency")
+		}
+		total += int64(value)
+	}
+	for _, value := range body.Realm {
+		if value < 0 {
+			return fmt.Errorf("NPC combat target has negative realm proficiency")
+		}
+		total += int64(value)
+	}
+	if total > maxLegacyInt32 {
+		return fmt.Errorf("NPC combat target proficiency total overflow")
+	}
+	return nil
+}
+
+// npcCombatEnergyDamage mirrors dice((level+3)/4, 5, band*5). The source
+// evaluates this only after the MENEDR hit gate and before mdice ordinary
+// melee. A wide accumulator rejects impossible future inputs rather than
+// allowing an int conversion to wrap the receipt.
+func npcCombatEnergyDamage(level byte, roll func(int, int) int) (band, count, sides, plus, damage int, err error) {
+	band = (int(level) + 3) / 4
+	count, sides, plus = band, 5, band*5
+	if band < 0 || count < 0 || sides < 1 || plus < 0 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid NPC combat energy dice")
+	}
+	value := int64(plus)
+	const maxLegacyInt32 = int64(^uint32(0) >> 1)
+	if value > maxLegacyInt32 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("NPC combat energy dice overflow")
+	}
+	for i := 0; i < count; i++ {
+		n, randomErr := randomIn(roll, 1, sides)
+		if randomErr != nil {
+			return 0, 0, 0, 0, 0, randomErr
+		}
+		value += int64(n)
+		if value > maxLegacyInt32 {
+			return 0, 0, 0, 0, 0, fmt.Errorf("NPC combat energy dice overflow")
+		}
+	}
+	return band, count, sides, plus, int(value), nil
+}
+
+// lowerNPCCombatProficiency is the private MENEDR port of
+// src/command10.c:lower_prof. Its order is part of the source contract:
+// five weapon proficiencies, then four magical realms, followed by the
+// max-weapon-proficiency floor. It intentionally remains local to this NPC
+// combat slice instead of becoming a second shared progression authority.
+func lowerNPCCombatProficiency(body *LegacyMonster, loss int32) error {
+	if body == nil || loss < 0 {
+		return fmt.Errorf("invalid NPC combat proficiency loss")
+	}
+	const maxLegacyInt32 = int64(^uint32(0) >> 1)
+	var total int64
+	for _, value := range body.Proficiency {
+		if value < 0 {
+			return fmt.Errorf("negative NPC combat weapon proficiency")
+		}
+		total += int64(value)
+	}
+	for _, value := range body.Realm {
+		if value < 0 {
+			return fmt.Errorf("negative NPC combat realm proficiency")
+		}
+		total += int64(value)
+	}
+	if total > maxLegacyInt32 {
+		return fmt.Errorf("NPC combat proficiency total overflow")
+	}
+	profloss := int64(loss)
+	if profloss > total {
+		profloss = total
+	}
+	below := 0
+	for profloss > 9 && below < 9 {
+		below = 0
+		for n := 0; n < 9; n++ {
+			share := profloss / int64(9-n)
+			if share > maxLegacyInt32 {
+				return fmt.Errorf("NPC combat proficiency loss overflow")
+			}
+			if n < 5 {
+				body.Proficiency[n] -= int32(share)
+				// Keep the two C expressions separate: the second division sees
+				// the reduced proficiency-loss total.
+				profloss -= profloss / int64(9-n)
+				if body.Proficiency[n] < 0 {
+					below++
+					profloss -= int64(body.Proficiency[n])
+					body.Proficiency[n] = 0
+				}
+			} else {
+				index := n - 5
+				body.Realm[index] -= int32(share)
+				profloss -= profloss / int64(9-n)
+				if body.Realm[index] < 0 {
+					below++
+					profloss -= int64(body.Realm[index])
+					body.Realm[index] = 0
+				}
+			}
+		}
+	}
+	maxIndex := 0
+	for n := 1; n < 5; n++ {
+		if body.Proficiency[n] > body.Proficiency[maxIndex] {
+			maxIndex = n
+		}
+	}
+	if body.Proficiency[maxIndex] < 1024 {
+		body.Proficiency[maxIndex] = 1024
+	}
+	return nil
 }
 
 // npcCombatBreathSpec ports the MBRWP1/MBRWP2 branch at update.c:419-454.
@@ -311,6 +475,11 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	if !enemy {
 		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat enemy absent")
 	}
+	if flag(npc.Body.Flags[:], npcCombatEnergyDrainFlag) && !flag(npc.Body.Flags[:], npcCombatBreatherFlag) {
+		if err := npcCombatValidateProgression(player.Body); err != nil {
+			return NPCCombatRoundProposal{}, err
+		}
+	}
 	n, err := randomIn(roll, 1, 20)
 	if err != nil {
 		return NPCCombatRoundProposal{}, err
@@ -322,6 +491,18 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		before: s.clone(), next: next,
 		expectedHit: false,
 	}
+	proposal.ExperienceBefore = player.Body.Experience
+	proposal.expectedExperienceBefore = player.Body.Experience
+	proposal.ExperienceAfter = player.Body.Experience
+	proposal.expectedExperienceAfter = player.Body.Experience
+	proposal.ProficiencyBefore = player.Body.Proficiency
+	proposal.expectedProficiencyBefore = player.Body.Proficiency
+	proposal.ProficiencyAfter = player.Body.Proficiency
+	proposal.expectedProficiencyAfter = player.Body.Proficiency
+	proposal.RealmBefore = player.Body.Realm
+	proposal.expectedRealmBefore = player.Body.Realm
+	proposal.RealmAfter = player.Body.Realm
+	proposal.expectedRealmAfter = player.Body.Realm
 	// update_active treats mrand(1,20) >= n as a hit. The NPC's stored THAC0
 	// is authoritative; an absent/legacy zero still has the source MAX(1, n).
 	threshold := int(int8(npc.Body.Thaco)) - int(int8(player.Body.Armor))/8
@@ -342,6 +523,13 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	breathDicePlus := 0
 	breathResisted := false
 	breathPoisoned := false
+	energyDrainTriggered := false
+	energyRoll := 0
+	energyBand := 0
+	energyDiceCount := 0
+	energyDiceSides := 0
+	energyDicePlus := 0
+	energyDrain := 0
 	if flag(npc.Body.Flags[:], npcCombatBreatherFlag) {
 		breathRoll, err = randomIn(roll, 1, 30)
 		if err != nil {
@@ -360,6 +548,34 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		}
 	}
 	if !breathTriggered {
+		if flag(npc.Body.Flags[:], npcCombatEnergyDrainFlag) {
+			if flag(npc.Body.Flags[:], npcCombatBreatherFlag) {
+				if err := npcCombatValidateProgression(player.Body); err != nil {
+					return NPCCombatRoundProposal{}, err
+				}
+			}
+			energyRoll, err = randomIn(roll, 1, 100)
+			if err != nil {
+				return NPCCombatRoundProposal{}, err
+			}
+			if energyRoll < 10 {
+				energyDrainTriggered = true
+				var energyRaw int
+				var energyErr error
+				energyBand, energyDiceCount, energyDiceSides, energyDicePlus, energyRaw, energyErr = npcCombatEnergyDamage(npc.Body.Level, roll)
+				if energyErr != nil {
+					return NPCCombatRoundProposal{}, energyErr
+				}
+				energyDrain = energyRaw
+				if energyDrain > int(player.Body.Experience) {
+					energyDrain = int(player.Body.Experience)
+				}
+				nextPlayer.Body.Experience = player.Body.Experience - int32(energyDrain)
+				if err := lowerNPCCombatProficiency(&nextPlayer.Body, int32(energyDrain)); err != nil {
+					return NPCCombatRoundProposal{}, err
+				}
+			}
+		}
 		damage, err = npcCombatDamage(npc.Body, player.Body, roll)
 		if err != nil {
 			return NPCCombatRoundProposal{}, err
@@ -476,6 +692,32 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	proposal.expectedBreathResisted = breathResisted
 	proposal.BreathPoisoned = breathPoisoned
 	proposal.expectedBreathPoisoned = breathPoisoned
+	proposal.EnergyDrainTriggered = energyDrainTriggered
+	proposal.expectedEnergyDrainTriggered = energyDrainTriggered
+	proposal.EnergyRoll = energyRoll
+	proposal.expectedEnergyRoll = energyRoll
+	proposal.EnergyBand = energyBand
+	proposal.expectedEnergyBand = energyBand
+	proposal.EnergyDiceCount = energyDiceCount
+	proposal.expectedEnergyDiceCount = energyDiceCount
+	proposal.EnergyDiceSides = energyDiceSides
+	proposal.expectedEnergyDiceSides = energyDiceSides
+	proposal.EnergyDicePlus = energyDicePlus
+	proposal.expectedEnergyDicePlus = energyDicePlus
+	proposal.EnergyDrain = energyDrain
+	proposal.expectedEnergyDrain = energyDrain
+	proposal.ExperienceBefore = player.Body.Experience
+	proposal.expectedExperienceBefore = player.Body.Experience
+	proposal.ExperienceAfter = nextPlayer.Body.Experience
+	proposal.expectedExperienceAfter = nextPlayer.Body.Experience
+	proposal.ProficiencyBefore = player.Body.Proficiency
+	proposal.expectedProficiencyBefore = player.Body.Proficiency
+	proposal.ProficiencyAfter = nextPlayer.Body.Proficiency
+	proposal.expectedProficiencyAfter = nextPlayer.Body.Proficiency
+	proposal.RealmBefore = player.Body.Realm
+	proposal.expectedRealmBefore = player.Body.Realm
+	proposal.RealmAfter = nextPlayer.Body.Realm
+	proposal.expectedRealmAfter = nextPlayer.Body.Realm
 	proposal.DissolveSucceeded = dissolveSucceeded
 	proposal.expectedDissolveSucceeded = dissolveSucceeded
 	proposal.Dissolved = dissolved
@@ -528,6 +770,61 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	}
 	if proposal.Blinded != proposal.expectedBlinded || (proposal.Blinded && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatBlinderFlag))) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat blind outcome")
+	}
+	if proposal.EnergyDrainTriggered != proposal.expectedEnergyDrainTriggered ||
+		proposal.EnergyRoll != proposal.expectedEnergyRoll ||
+		proposal.EnergyBand != proposal.expectedEnergyBand ||
+		proposal.EnergyDiceCount != proposal.expectedEnergyDiceCount ||
+		proposal.EnergyDiceSides != proposal.expectedEnergyDiceSides ||
+		proposal.EnergyDicePlus != proposal.expectedEnergyDicePlus ||
+		proposal.EnergyDrain != proposal.expectedEnergyDrain ||
+		proposal.ExperienceBefore != proposal.expectedExperienceBefore ||
+		proposal.ExperienceAfter != proposal.expectedExperienceAfter ||
+		proposal.ProficiencyBefore != proposal.expectedProficiencyBefore ||
+		proposal.ProficiencyAfter != proposal.expectedProficiencyAfter ||
+		proposal.RealmBefore != proposal.expectedRealmBefore ||
+		proposal.RealmAfter != proposal.expectedRealmAfter {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy outcome")
+	}
+	if !proposal.Hit {
+		if proposal.ExperienceBefore != player.Body.Experience || proposal.ExperienceAfter != player.Body.Experience || proposal.ProficiencyBefore != player.Body.Proficiency || proposal.ProficiencyAfter != player.Body.Proficiency || proposal.RealmBefore != player.Body.Realm || proposal.RealmAfter != player.Body.Realm {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy on miss")
+		}
+		if proposal.EnergyDrainTriggered || proposal.EnergyRoll != 0 || proposal.EnergyBand != 0 || proposal.EnergyDiceCount != 0 || proposal.EnergyDiceSides != 0 || proposal.EnergyDicePlus != 0 || proposal.EnergyDrain != 0 {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy on miss")
+		}
+	} else {
+		if proposal.ExperienceBefore != player.Body.Experience || proposal.ProficiencyBefore != player.Body.Proficiency || proposal.RealmBefore != player.Body.Realm {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat progression before")
+		}
+		if !proposal.BreathTriggered && flag(npc.Body.Flags[:], npcCombatEnergyDrainFlag) {
+			if err := npcCombatValidateProgression(player.Body); err != nil {
+				return State{}, NPCCombatRoundResult{}, err
+			}
+		}
+		progressed := player.Body
+		if flag(npc.Body.Flags[:], npcCombatEnergyDrainFlag) && !proposal.BreathTriggered {
+			if proposal.EnergyRoll < 1 || proposal.EnergyRoll > 100 || proposal.EnergyDrainTriggered != (proposal.EnergyRoll < 10) {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy roll")
+			}
+			if proposal.EnergyDrainTriggered {
+				wantBand := (int(npc.Body.Level) + 3) / 4
+				if proposal.EnergyBand != wantBand || proposal.EnergyDiceCount != wantBand || proposal.EnergyDiceSides != 5 || proposal.EnergyDicePlus != wantBand*5 || proposal.EnergyDrain < 0 || int64(proposal.EnergyDrain) > int64(player.Body.Experience) {
+					return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy dice")
+				}
+				progressed.Experience -= int32(proposal.EnergyDrain)
+				if err := lowerNPCCombatProficiency(&progressed, int32(proposal.EnergyDrain)); err != nil {
+					return State{}, NPCCombatRoundResult{}, err
+				}
+			} else if proposal.EnergyBand != 0 || proposal.EnergyDiceCount != 0 || proposal.EnergyDiceSides != 0 || proposal.EnergyDicePlus != 0 || proposal.EnergyDrain != 0 {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy miss")
+			}
+		} else if proposal.EnergyDrainTriggered || proposal.EnergyRoll != 0 || proposal.EnergyBand != 0 || proposal.EnergyDiceCount != 0 || proposal.EnergyDiceSides != 0 || proposal.EnergyDicePlus != 0 || proposal.EnergyDrain != 0 {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat energy capability")
+		}
+		if proposal.ExperienceAfter != progressed.Experience || proposal.ProficiencyAfter != progressed.Proficiency || proposal.RealmAfter != progressed.Realm {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat progression after")
+		}
 	}
 	if proposal.BreathTriggered != proposal.expectedBreathTriggered ||
 		proposal.BreathType != proposal.expectedBreathType ||
@@ -636,6 +933,9 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	expected := s.clone()
 	expectedPlayer := expected.Players[proposal.PlayerID]
 	expectedPlayer.Body.HPCurrent = int16(proposal.PlayerHPAfter)
+	expectedPlayer.Body.Experience = proposal.ExperienceAfter
+	expectedPlayer.Body.Proficiency = proposal.ProficiencyAfter
+	expectedPlayer.Body.Realm = proposal.RealmAfter
 	if proposal.Poisoned || proposal.BreathPoisoned {
 		expectedPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
 	}
@@ -671,6 +971,13 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 		BreathRoll: proposal.BreathRoll, BreathDiceCount: proposal.BreathDiceCount,
 		BreathDiceSides: proposal.BreathDiceSides, BreathDicePlus: proposal.BreathDicePlus,
 		BreathResisted: proposal.BreathResisted, BreathPoisoned: proposal.BreathPoisoned,
+		EnergyDrainTriggered: proposal.EnergyDrainTriggered, EnergyRoll: proposal.EnergyRoll,
+		EnergyBand: proposal.EnergyBand, EnergyDiceCount: proposal.EnergyDiceCount,
+		EnergyDiceSides: proposal.EnergyDiceSides, EnergyDicePlus: proposal.EnergyDicePlus,
+		EnergyDrain: proposal.EnergyDrain, ExperienceBefore: proposal.ExperienceBefore,
+		ExperienceAfter: proposal.ExperienceAfter, ProficiencyBefore: proposal.ProficiencyBefore,
+		ProficiencyAfter: proposal.ProficiencyAfter, RealmBefore: proposal.RealmBefore,
+		RealmAfter:        proposal.RealmAfter,
 		DissolveSucceeded: proposal.DissolveSucceeded, Dissolved: proposal.Dissolved,
 		DissolveProtected: proposal.DissolveProtected, DissolveRoll: proposal.DissolveRoll,
 		DissolveSelectionRoll:  proposal.DissolveSelectionRoll,
