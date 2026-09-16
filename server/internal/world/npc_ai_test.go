@@ -582,7 +582,8 @@ func TestNPCAggressiveTargetExposesDurableActorAndRoomEvent(t *testing.T) {
 		t.Fatalf("proposal action event=%+v", proposal.Actions)
 	}
 	event := proposal.Actions[0].Event
-	if event.RoomID != 1 || event.NPCID != "wolf" || event.NPCName != "늑대" || event.TargetID != "one" || event.TargetName != "하나" || event.ExcludeTargetID != "one" || event.TargetText != NPCAggressiveTargetActorText("늑대") || event.RoomText != NPCAggressiveTargetRoomText("늑대", "하나") {
+	wantRoomText := "\n늑대가 하나를 공격합니다."
+	if event.RoomID != 1 || event.NPCID != "wolf" || event.NPCName != "늑대" || event.TargetID != "one" || event.TargetName != "하나" || event.ExcludeTargetID != "one" || event.TargetText != NPCAggressiveTargetActorText("늑대") || event.RoomText != wantRoomText {
 		t.Fatalf("proposal event=%+v", event)
 	}
 
@@ -591,7 +592,7 @@ func TestNPCAggressiveTargetExposesDurableActorAndRoomEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Events) != 1 || !reflect.DeepEqual(result.Events[0], *event) {
+	if len(result.Events) != 1 || !reflect.DeepEqual(result.Events[0], *event) || result.Events[0].RoomText != wantRoomText {
 		t.Fatalf("durable events=%+v want=%+v", result.Events, event)
 	}
 	if result.Now != 100 || result.Actions[0].Event == nil || !reflect.DeepEqual(*result.Actions[0].Event, result.Events[0]) {
@@ -603,6 +604,9 @@ func TestNPCAggressiveTargetExposesDurableActorAndRoomEvent(t *testing.T) {
 	replay, replayResult, replayErr := state.ApplyNPCAggressiveTargetAcquisition(proposal)
 	if replayErr != nil || !reflect.DeepEqual(replay, next) || !reflect.DeepEqual(replayResult, result) {
 		t.Fatalf("event replay state=%+v result=%+v err=%v", replay, replayResult, replayErr)
+	}
+	if len(replayResult.Events) != 1 || replayResult.Events[0].RoomText != wantRoomText {
+		t.Fatalf("replayed durable room text=%q want=%q", replayResult.Events[0].RoomText, wantRoomText)
 	}
 
 	tampered := proposal

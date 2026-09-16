@@ -385,8 +385,7 @@ func NPCAggressiveTargetActorText(npcName string) string {
 // NPCAggressiveTargetRoomText is the room notification broadcast by
 // update.c:643-645, excluding the selected player from the room fan-out.
 func NPCAggressiveTargetRoomText(npcName, targetName string) string {
-	targetDisplay := targetName + "님"
-	return fmt.Sprintf("\n%s%s %s%s 공격합니다.\n", npcName, legacySubjectParticle(npcName), targetDisplay, valueObjectParticle(targetDisplay))
+	return fmt.Sprintf("\n%s%s %s%s 공격합니다.", npcName, legacySubjectParticle(npcName), targetName, valueObjectParticle(targetName))
 }
 
 func npcAIAggressiveTargetEvent(npcID string, npc LegacyMonster, targetID string, target LegacyMonster) *NPCAggressiveTargetEvent {
