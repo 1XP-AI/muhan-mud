@@ -93,6 +93,73 @@ func TestNPCCombatRoundPlansAndAppliesHitDamageAndHP(t *testing.T) {
 	}
 }
 
+func TestNPCCombatRoundEmitsSourceAlignedHitAndMissEvents(t *testing.T) {
+	t.Run("hit", func(t *testing.T) {
+		s := npcCombatRoundFixture(t)
+		proposal, err := s.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if proposal.Event == nil || !proposal.Event.Hit || proposal.Event.Damage != 6 || proposal.Event.RoomID != 1 || proposal.Event.NPCID != "wolf-id" || proposal.Event.TargetID != "a" || proposal.Event.ExcludeTargetID != "a" {
+			t.Fatalf("proposal event=%+v", proposal.Event)
+		}
+		got := proposal.Event.TargetText
+		const want = "\n늑대가 당신에게 6만큼의 상처를 입혔습니다."
+		if got != want {
+			t.Fatalf("hit actor text=%q want=%q", got, want)
+		}
+		if !strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") {
+			t.Fatalf("hit actor text newline framing=%q", got)
+		}
+		if got, want := proposal.Event.RoomText, NPCCombatHitRoomText("늑대", "Alice", 6); got != want {
+			t.Fatalf("hit room text=%q want=%q", got, want)
+		}
+		_, result, err := s.ApplyNPCCombatRound(proposal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event == nil || !reflect.DeepEqual(*result.Event, *proposal.Event) {
+			t.Fatalf("result event=%+v proposal event=%+v", result.Event, proposal.Event)
+		}
+	})
+
+	t.Run("miss", func(t *testing.T) {
+		s := npcCombatRoundFixture(t)
+		npc := s.NPCs["wolf-id"]
+		npc.Body.Thaco = 20
+		s.NPCs["wolf-id"] = npc
+		calls := 0
+		proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+			calls++
+			if low != 1 || high != 20 {
+				t.Fatalf("unexpected miss RNG request %d..%d", low, high)
+			}
+			return 1
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 || proposal.Hit || proposal.Damage != 0 || proposal.PlayerHPAfter != proposal.PlayerHPBefore || proposal.Event == nil || proposal.Event.Hit || proposal.Event.Damage != 0 || proposal.Event.RoomText != "" {
+			t.Fatalf("miss calls=%d proposal=%+v", calls, proposal)
+		}
+		got := proposal.Event.TargetText
+		const want = "\n당신은 늑대의 공격을 피했습니다."
+		if got != want {
+			t.Fatalf("miss actor text=%q want=%q", got, want)
+		}
+		if !strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") {
+			t.Fatalf("miss actor text newline framing=%q", got)
+		}
+		_, result, err := s.ApplyNPCCombatRound(proposal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event == nil || !reflect.DeepEqual(*result.Event, *proposal.Event) {
+			t.Fatalf("result event=%+v proposal event=%+v", result.Event, proposal.Event)
+		}
+	})
+}
+
 func TestNPCCombatRoundUsesOnlyHitAndDamageRNG(t *testing.T) {
 	s := npcCombatRoundFixture(t)
 	npc := s.NPCs["wolf-id"]

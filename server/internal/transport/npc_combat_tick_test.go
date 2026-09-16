@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,6 +246,236 @@ func TestPlanNPCCombatTickUsesCanonicalActiveRoomPlayerAndEnemyOrder(t *testing.
 	}
 	if got := encodeNPCCombatTickState(t, state); !bytes.Equal(got, original) {
 		t.Fatalf("planning mutated source: before=%s after=%s", original, got)
+	}
+}
+
+func TestRunNPCCombatPhasePublishesHitAfterCommitAndExcludesNPC(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	state.ActiveNPCIDs = []string{"npc-b"}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-events-hit",
+		MaxSessions: 3,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll:        npcCombatTickRoll,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := installNPCAITickConnections(t, connector, "player-b", "player-a", "npc-b")
+
+	receipt, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-hit", 5, 100)
+	if err != nil || receipt.Replayed || store.commits != 1 {
+		t.Fatalf("receipt=%+v commits=%d err=%v", receipt, store.commits, err)
+	}
+	if len(receipt.NPCCombatEvents) != 1 || receipt.NPCCombatEvents[0].TargetID != "player-b" {
+		t.Fatalf("receipt combat events=%+v", receipt.NPCCombatEvents)
+	}
+	if encoded, encodeErr := json.Marshal(receipt); encodeErr != nil || strings.Contains(string(encoded), "NPCCombatEvents") || strings.Contains(string(encoded), "TargetText") {
+		t.Fatalf("combat metadata leaked into receipt JSON: %s err=%v", encoded, encodeErr)
+	}
+	summary := decodeNPCCombatTickSummary(t, receipt.Response)
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Hit || summary.Attacks[0].Damage != 4 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if strings.Contains(string(receipt.Response), "target_text") || strings.Contains(string(receipt.Response), "room_text") {
+		t.Fatalf("ephemeral combat event leaked into receipt: %s", receipt.Response)
+	}
+	wantActor := world.NPCCombatHitActorText("늑대B", 4)
+	wantRoom := world.NPCCombatHitRoomText("늑대B", "Bob", 4)
+	if got := <-connections["player-b"].events; got != wantActor {
+		t.Fatalf("target event=%q want=%q", got, wantActor)
+	}
+	if got := <-connections["player-a"].events; got != wantRoom {
+		t.Fatalf("observer event=%q want=%q", got, wantRoom)
+	}
+	select {
+	case got := <-connections["npc-b"].events:
+		t.Fatalf("acting NPC received event=%q", got)
+	default:
+	}
+
+	rollCalls := 0
+	connector.config.Roll = func(low, high int) int {
+		rollCalls++
+		return high
+	}
+	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-hit", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 0 {
+		t.Fatalf("replay=%+v commits=%d replay RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
+	}
+	if replay.NPCCombatEvents != nil {
+		t.Fatalf("replay carried ephemeral combat events=%+v", replay.NPCCombatEvents)
+	}
+	for id, connection := range connections {
+		select {
+		case got := <-connection.events:
+			t.Fatalf("replay delivered duplicate to %s: %q", id, got)
+		default:
+		}
+	}
+}
+
+func TestRunNPCCombatPhasePublishesMissOnlyToTarget(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	state.ActiveNPCIDs = []string{"npc-b"}
+	npc := state.NPCs["npc-b"]
+	npc.Body.Thaco = 20
+	state.NPCs["npc-b"] = npc
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-events-miss",
+		MaxSessions: 3,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(low, high int) int {
+			if low != 1 || high != 20 {
+				t.Fatalf("unexpected miss RNG request %d..%d", low, high)
+			}
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := installNPCAITickConnections(t, connector, "player-b", "player-a", "npc-b")
+
+	receipt, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-miss", 5, 100)
+	if err != nil || receipt.Replayed || store.commits != 1 {
+		t.Fatalf("receipt=%+v commits=%d err=%v", receipt, store.commits, err)
+	}
+	if len(receipt.NPCCombatEvents) != 1 || receipt.NPCCombatEvents[0].Hit {
+		t.Fatalf("receipt miss combat events=%+v", receipt.NPCCombatEvents)
+	}
+	summary := decodeNPCCombatTickSummary(t, receipt.Response)
+	if len(summary.Attacks) != 1 || summary.Attacks[0].Hit || summary.Attacks[0].Damage != 0 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if got := <-connections["player-b"].events; got != world.NPCCombatMissActorText("늑대B") {
+		t.Fatalf("target miss=%q want=%q", got, world.NPCCombatMissActorText("늑대B"))
+	}
+	for _, id := range []string{"player-a", "npc-b"} {
+		select {
+		case got := <-connections[id].events:
+			t.Fatalf("unexpected miss event for %s: %q", id, got)
+		default:
+		}
+	}
+}
+
+func TestRunNPCCombatPhasePublishesOnlyAfterCommitAndReplaysWithoutFanoutOrRNG(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	state.ActiveNPCIDs = []string{"npc-b"}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state), failOnce: true}
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-events-commit",
+		MaxSessions: 3,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(_, high int) int {
+			rollCalls++
+			return high
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := installNPCAITickConnections(t, connector, "player-b", "player-a", "npc-b")
+
+	if receipt, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-commit", 5, 100); err == nil || receipt.Response != nil || store.commits != 0 {
+		t.Fatalf("uncertain commit receipt=%+v commits=%d err=%v", receipt, store.commits, err)
+	}
+	for id, connection := range connections {
+		select {
+		case got := <-connection.events:
+			t.Fatalf("uncommitted event delivered to %s: %q", id, got)
+		default:
+		}
+	}
+
+	first, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-commit", 5, 100)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("committed retry=%+v commits=%d err=%v", first, store.commits, err)
+	}
+	if len(first.NPCCombatEvents) != 1 {
+		t.Fatalf("committed retry events=%+v", first.NPCCombatEvents)
+	}
+	if got := <-connections["player-b"].events; got != world.NPCCombatHitActorText("늑대B", 4) {
+		t.Fatalf("target event=%q", got)
+	}
+	if got := <-connections["player-a"].events; got != world.NPCCombatHitRoomText("늑대B", "Bob", 4) {
+		t.Fatalf("observer event=%q", got)
+	}
+	select {
+	case got := <-connections["npc-b"].events:
+		t.Fatalf("acting NPC event=%q", got)
+	default:
+	}
+	if rollCalls != 4 {
+		t.Fatalf("RNG calls after uncertain retry=%d want=4", rollCalls)
+	}
+
+	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-commit", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 4 {
+		t.Fatalf("replay=%+v commits=%d RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
+	}
+	if replay.NPCCombatEvents != nil {
+		t.Fatalf("replay carried ephemeral combat events=%+v", replay.NPCCombatEvents)
+	}
+	for id, connection := range connections {
+		select {
+		case got := <-connection.events:
+			t.Fatalf("replay delivered event to %s: %q", id, got)
+		default:
+		}
+	}
+}
+
+func TestRunNPCCombatPhasePublishesLethalHitBeforeDeathProjection(t *testing.T) {
+	state := npcCombatLethalTickFixture(t)
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-events-lethal",
+		MaxSessions: 3,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll:        npcCombatTickRoll,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := installNPCAITickConnections(t, connector, "player-b", "player-a", "npc-b")
+
+	receipt, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-events-lethal", 5, 100)
+	if err != nil || receipt.Replayed || store.commits != 1 {
+		t.Fatalf("receipt=%+v commits=%d err=%v", receipt, store.commits, err)
+	}
+	if len(receipt.NPCCombatEvents) != 1 || !receipt.NPCCombatEvents[0].Hit {
+		t.Fatalf("lethal receipt combat events=%+v", receipt.NPCCombatEvents)
+	}
+	summary := decodeNPCCombatTickSummary(t, receipt.Response)
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if got := <-connections["player-b"].events; got != world.NPCCombatHitActorText("늑대B", 4) {
+		t.Fatalf("lethal target event=%q", got)
+	}
+	if got := <-connections["player-a"].events; got != world.NPCCombatHitRoomText("늑대B", "Bob", 4) {
+		t.Fatalf("lethal observer event=%q", got)
+	}
+	select {
+	case got := <-connections["npc-b"].events:
+		t.Fatalf("lethal acting NPC event=%q", got)
+	default:
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["player-b"].Body.RoomID != 1008 || saved.Players["player-b"].Body.HPCurrent < 1 {
+		t.Fatalf("death state=%+v", saved.Players["player-b"])
 	}
 }
 

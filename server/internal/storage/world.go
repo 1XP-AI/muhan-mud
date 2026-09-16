@@ -31,6 +31,11 @@ type WorldReceipt struct {
 	// for a leader arrival trap. It is process-local receipt metadata and is
 	// never serialized into the database/public response.
 	ArrivalTrapEvent *world.ArrivalTrapEvent `json:"-"`
+	// NPCCombatEvents is the reducer-owned, first-commit-only projection of
+	// ordinary NPC combat output. It is process-local receipt metadata and is
+	// never serialized into the database/public response; replay leaves it
+	// empty so a durable retry cannot fan out duplicate combat output.
+	NPCCombatEvents []world.NPCCombatEvent `json:"-"`
 }
 
 func validState(raw json.RawMessage) bool {

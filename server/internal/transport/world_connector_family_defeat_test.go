@@ -106,8 +106,14 @@ func TestRunNPCCombatPhasePublishesFamilyDefeatAndSuppressesReplay(t *testing.T)
 		t.Fatalf("saved war=%+v err=%v", saved.War, err)
 	}
 	for _, id := range []string{"player-b", "player-a", "quiet"} {
-		if got := drainFamilyDefeatEvents(t, connections[id], 2); !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s events=%q want=%q", id, got, want)
+		got := drainFamilyDefeatEvents(t, connections[id], 3)
+		combatText := world.NPCCombatHitActorText("늑대B", 4)
+		if id != "player-b" {
+			combatText = world.NPCCombatHitRoomText("늑대B", "Bob", 4)
+		}
+		wantWithCombat := append([]string{combatText}, want...)
+		if !reflect.DeepEqual(got, wantWithCombat) {
+			t.Fatalf("%s events=%q want=%q", id, got, wantWithCombat)
 		}
 	}
 
