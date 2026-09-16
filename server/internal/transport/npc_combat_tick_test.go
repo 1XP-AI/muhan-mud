@@ -611,12 +611,19 @@ func TestRunNPCCombatPhasePersistsLethalDissolveAndReplaysWithoutRNG(t *testing.
 	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || !summary.Attacks[0].DissolveSucceeded || !summary.Attacks[0].Dissolved || summary.Attacks[0].DissolveReadySlot != 19 || summary.Attacks[0].DissolveItemID != "weapon" || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
 		t.Fatalf("summary=%+v", summary)
 	}
+	if summary.Deaths[0].DroppedItemCount != 0 {
+		t.Fatalf("lethal MDISIT counted dissolved item as floor drop: death=%+v", summary.Deaths[0])
+	}
 	saved, err := world.DecodeState(store.snapshot())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Players["player-b"].Body.RoomID != 1008 || saved.Players["player-b"].Body.HPCurrent < 1 || len(saved.Players["player-b"].Items.Items) != 0 || len(saved.Rooms[1].Items.Items) != 0 {
+	if saved.Players["player-b"].Body.RoomID != 1008 || saved.Players["player-b"].Body.HPCurrent < 1 || len(saved.Players["player-b"].Items.Items) != 0 || saved.Rooms[1].Items == nil {
 		t.Fatalf("saved lethal dissolve state=%+v", saved)
+	}
+	sourceItems := saved.Rooms[1].Items
+	if sourceItems == nil || len(sourceItems.Items) != 0 || len(sourceItems.Inventory) != 0 || sourceItems.Ready != [20]string{} {
+		t.Fatalf("lethal MDISIT left a source-floor item graph: items=%+v", sourceItems)
 	}
 
 	replayCalls := 0
@@ -787,8 +794,11 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 	}
 	death := summary.Deaths[0]
 	if death.NPCID != "npc-b" || death.PlayerID != "player-b" || death.SourceRoomID != 1 || death.DestinationRoomID != 1008 ||
-		!death.BroadcastDeath || death.ExperienceAfter >= death.ExperienceBefore || death.DroppedItemCount != 1 || !death.EnemyRemoved {
+		!death.BroadcastDeath || death.ExperienceAfter >= death.ExperienceBefore || !death.EnemyRemoved {
 		t.Fatalf("death=%+v", death)
+	}
+	if death.DroppedItemCount != 1 {
+		t.Fatalf("ordinary lethal equipment loss dropped item count=%d, want 1", death.DroppedItemCount)
 	}
 	saved, err := world.DecodeState(store.snapshot())
 	if err != nil {

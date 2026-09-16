@@ -589,6 +589,16 @@ func planNPCCombatPlayerDeath(state, lethalCandidate world.State, npcID, playerI
 	if !ok {
 		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death attacker absent after continuation")
 	}
+	// Count the committed source-floor transfer.  The lethal candidate may
+	// already have dissolved an item subtree before the death continuation.
+	beforeFloor, ok := lethalCandidate.Rooms[roomID]
+	if !ok || beforeFloor.Items == nil {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death source floor absent before continuation")
+	}
+	afterFloor, ok := next.Rooms[roomID]
+	if !ok || afterFloor.Items == nil {
+		return world.State{}, NPCCombatTickDeath{}, errors.New("NPC combat death source floor absent after continuation")
+	}
 	return next, NPCCombatTickDeath{
 		NPCID:                    result.NPCID,
 		PlayerID:                 result.VictimID,
@@ -600,7 +610,7 @@ func planNPCCombatPlayerDeath(state, lethalCandidate world.State, npcID, playerI
 		EnemyRemoved:             npcCombatEnemyRemoved(beforeNPC, afterNPC, playerID),
 		ExperienceBefore:         beforePlayer.Body.Experience,
 		ExperienceAfter:          afterPlayer.Body.Experience,
-		DroppedItemCount:         itemCount(beforePlayer.Items) - itemCount(afterPlayer.Items),
+		DroppedItemCount:         itemCount(afterFloor.Items) - itemCount(beforeFloor.Items),
 		Scene:                    result.Entry.Scene,
 		Events:                   append([]world.FamilyWarEvent(nil), result.Events...),
 	}, nil
