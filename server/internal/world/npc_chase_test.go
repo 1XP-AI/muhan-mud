@@ -2,6 +2,7 @@ package world
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -295,6 +296,167 @@ func TestNPCGoChaseFanoutEventsUsesVacatedRoomFirstMonOrder(t *testing.T) {
 	events := NPCGoChaseFanoutEvents(pre, after, "a")
 	if len(events) != 1 || events[0].RoomID != 1 || events[0].Text != NPCGoChaseRoomText("Alpha", "Renamed Player") {
 		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestNPCCommittedChaseFanoutUsesCommittedIDsAndPreMoveIdentity(t *testing.T) {
+	post := npcChaseFixture()
+	plan, err := post.PlanNPCFollowerChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := post.ApplyNPCFollowerChase(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := post.clone()
+	actor := before.Players["a"]
+	actor.Body.RoomID = 1
+	before.Players["a"] = actor
+	source := before.Rooms[1]
+	source.PlayerIDs = []string{"a"}
+	before.Rooms[1] = source
+	destination := before.Rooms[2]
+	destination.PlayerIDs = nil
+	before.Rooms[2] = destination
+
+	// Simulate an unrelated arrival-alarm NPC and a later replacement of the
+	// committed chase body. The projection must use only committed IDs and old
+	// identity/name, not final relation fields or display names.
+	alarm := npcChaseBody("Alarm Guard", 1, 5)
+	before.NPCs["alarm"] = NPCState{Body: alarm}
+	source = before.Rooms[1]
+	source.NPCIDs = append(source.NPCIDs, "alarm")
+	before.Rooms[1] = source
+	alarm.RoomID = 2
+	after.NPCs["alarm"] = NPCState{Body: alarm}
+	destination = after.Rooms[2]
+	destination.NPCIDs = append(destination.NPCIDs, "alarm")
+	after.Rooms[2] = destination
+
+	replaced := after.NPCs["n1"]
+	replaced.Body.Name = "Replacement"
+	after.NPCs["n1"] = replaced
+	respawn := RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 99}}, PlayerIDs: []string{"a"}}
+	after.Rooms[2] = RoomState{Resource: after.Rooms[2].Resource, NPCIDs: after.Rooms[2].NPCIDs}
+	after.Rooms[99] = respawn
+	actor = after.Players["a"]
+	actor.Body.RoomID = 99
+	after.Players["a"] = actor
+
+	events := NPCCommittedChaseFanoutEvents(before, after, "a", []string{"n1", "n2"})
+	if len(events) != 2 || events[0].RoomID != 1 || events[1].RoomID != 1 {
+		t.Fatalf("events=%+v", events)
+	}
+	if events[0].Text != NPCFollowerChaseRoomText("Alpha", "Renamed Player") || events[1].Text != NPCFollowerChaseRoomText("Beta", "Renamed Player") {
+		t.Fatalf("pre-move identity/order events=%+v", events)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Text, "Alarm Guard") || strings.Contains(event.Text, "Replacement") {
+			t.Fatalf("uncommitted/replaced identity leaked into events=%+v", events)
+		}
+	}
+}
+
+func TestNPCCommittedChaseFanoutAllowsMissingAfterIdentity(t *testing.T) {
+	post := npcChaseFixture()
+	plan, err := post.PlanNPCFollowerChase(NPCFollowerChaseInput{ActorID: "a", SourceRoomID: 1, Now: 100}, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := post.ApplyNPCFollowerChase(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := post.clone()
+	actor := before.Players["a"]
+	actor.Body.RoomID = 1
+	before.Players["a"] = actor
+	source := before.Rooms[1]
+	source.PlayerIDs = []string{"a"}
+	before.Rooms[1] = source
+	delete(after.Players, "a")
+	delete(after.NPCs, "n1")
+	if events := NPCCommittedChaseFanoutEvents(before, after, "a", []string{"n1"}); len(events) != 1 || events[0].Text != NPCFollowerChaseRoomText("Alpha", "Renamed Player") {
+		t.Fatalf("missing after identity suppressed committed event=%+v", events)
+	}
+}
+
+func TestNPCCommittedChaseFanoutFailsClosedOnMalformedIdentity(t *testing.T) {
+	post := npcChaseFixture()
+	before := post.clone()
+	actor := before.Players["a"]
+	actor.Body.RoomID = 1
+	before.Players["a"] = actor
+	source := before.Rooms[1]
+	source.PlayerIDs = []string{"a"}
+	before.Rooms[1] = source
+
+	tests := []struct {
+		name   string
+		mutate func(*State)
+		ids    []string
+	}{
+		{name: "empty committed ID", ids: []string{""}},
+		{name: "duplicate committed ID", ids: []string{"n1", "n1"}},
+		{name: "reverse committed order", ids: []string{"n2", "n1"}},
+		{name: "duplicate source ID", ids: []string{"n1"}, mutate: func(s *State) {
+			r := s.Rooms[1]
+			r.NPCIDs = append(r.NPCIDs, "n1")
+			s.Rooms[1] = r
+		}},
+		{name: "missing source NPC", ids: []string{"n1"}, mutate: func(s *State) {
+			delete(s.NPCs, "n1")
+		}},
+		{name: "empty pre-move name", ids: []string{"n1"}, mutate: func(s *State) {
+			npc := s.NPCs["n1"]
+			npc.Body.Name = ""
+			s.NPCs["n1"] = npc
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := before.clone()
+			if tc.mutate != nil {
+				tc.mutate(&state)
+			}
+			if events := NPCCommittedChaseFanoutEvents(state, State{}, "a", tc.ids); len(events) != 0 {
+				t.Fatalf("malformed identity emitted events=%+v", events)
+			}
+		})
+	}
+}
+
+func TestPlanGoPreservesCommittedNPCChaseMetadata(t *testing.T) {
+	s := npcChaseFixture()
+	actor := s.Players["a"]
+	actor.Body.RoomID = 1
+	s.Players["a"] = actor
+	source := s.Rooms[1]
+	source.PlayerIDs = []string{"a"}
+	source.Resource.Exits = []LegacyExit{{Name: "동굴", Destination: 2}}
+	s.Rooms[1] = source
+	destination := s.Rooms[2]
+	destination.PlayerIDs = nil
+	s.Rooms[2] = destination
+	for _, id := range []string{"n1", "n2"} {
+		npc := s.NPCs[id]
+		npc.Body.Flags[npcFollowFlag/8] |= 1 << (npcFollowFlag % 8)
+		npc.Enemies[0].Damage = -1
+		s.NPCs[id] = npc
+	}
+
+	proposal, err := s.PlanGo("a", "동굴", 1, GoOptions{
+		Roll: func(int, int) int { return 1 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.NPCChase == nil || len(proposal.NPCChase.Moves) != 2 {
+		t.Fatalf("go proposal moved=%v transfer=%+v chase metadata=%+v", proposal.Moved, proposal.Transfer.Movement, proposal.NPCChase)
+	}
+	if got := []string{proposal.NPCChase.Moves[0].NPCID, proposal.NPCChase.Moves[1].NPCID}; !reflect.DeepEqual(got, []string{"n1", "n2"}) {
+		t.Fatalf("go proposal chase order=%v", got)
 	}
 }
 

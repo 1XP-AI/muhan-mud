@@ -158,7 +158,8 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
-	return o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
+	var committedNPCChaseIDs []string
+	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
 			return nil, nil, err
@@ -171,6 +172,11 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 		if err != nil {
 			return nil, nil, err
 		}
+		if proposal.NPCChase != nil {
+			for _, move := range proposal.NPCChase.Moves {
+				committedNPCChaseIDs = append(committedNPCChaseIDs, move.NPCID)
+			}
+		}
 		nextRaw, err := json.Marshal(next)
 		if err != nil {
 			return nil, nil, err
@@ -178,4 +184,12 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 		response, err := json.Marshal(result.Response)
 		return nextRaw, response, err
 	})
+	if err != nil {
+		return receipt, err
+	}
+	receipt.NPCChaseIDs = nil
+	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
+		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
+	}
+	return receipt, nil
 }

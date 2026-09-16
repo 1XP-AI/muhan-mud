@@ -90,7 +90,7 @@ func TestMovementEventsDirectionalNPCChaseUsesSourceOrderAndSkipsManagedFollower
 		t.Fatalf("MDMFOL was mistaken for chase=%+v", chases)
 	}
 
-	events := movementEvents(before, after, "a")
+	events := movementEvents(before, after, "a", []string{"zeta", "alpha"})
 	var sourceChases []string
 	managedArrivals, playerFollowerArrivals := 0, 0
 	for _, event := range events {
@@ -116,7 +116,7 @@ func TestMovementEventsDirectionalNPCChaseUsesSourceOrderAndSkipsManagedFollower
 	sourceConnection := &worldConnection{lease: session.SessionLease{ActorID: "observer"}, events: sourceEvents}
 	destinationConnection := &worldConnection{lease: session.SessionLease{ActorID: "destination"}, events: destinationEvents}
 	g := &WorldConnector{connections: map[*worldConnection]struct{}{sourceConnection: {}, destinationConnection: {}}}
-	g.publishMovement(before, after, "a")
+	g.publishMovement(before, after, "a", []string{"zeta", "alpha"})
 	for _, want := range []string{"떠났습니다", "Zulu", "Alpha"} {
 		select {
 		case got := <-sourceEvents:
@@ -131,6 +131,80 @@ func TestMovementEventsDirectionalNPCChaseUsesSourceOrderAndSkipsManagedFollower
 	case extra := <-sourceEvents:
 		t.Fatalf("unexpected extra source event=%q", extra)
 	default:
+	}
+}
+
+func TestMovementEventsWithoutCommittedNPCChaseIDsDoesNotInferChase(t *testing.T) {
+	before, after := directionalChaseMovementStates()
+	alarmBefore := world.NPCState{
+		Body:    world.LegacyMonster{Name: "Alarm Guard", Type: 1, RoomID: 1},
+		Enemies: []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "a"}}},
+	}
+	before.NPCs["alarm"] = alarmBefore
+	source := before.Rooms[1]
+	source.NPCIDs = append(source.NPCIDs, "alarm")
+	before.Rooms[1] = source
+	alarmAfter := alarmBefore
+	alarmAfter.Body.RoomID = 2
+	alarmAfter.Enemies = nil
+	after.NPCs["alarm"] = alarmAfter
+	destination := after.Rooms[2]
+	destination.NPCIDs = append(destination.NPCIDs, "alarm")
+	after.Rooms[2] = destination
+	for _, event := range movementEvents(before, after, "a") {
+		if strings.Contains(event.Text, "따라갑니다") {
+			t.Fatalf("inferred chase without committed IDs: %+v", event)
+		}
+	}
+}
+
+func TestMovementEventsCommittedChaseSurvivesActorReallocationAndUsesOldNPCName(t *testing.T) {
+	before, after := directionalChaseMovementStates()
+	alarmBefore := world.NPCState{
+		Body:    world.LegacyMonster{Name: "Alarm Guard", Type: 1, RoomID: 1},
+		Enemies: []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "a"}}},
+	}
+	before.NPCs["alarm"] = alarmBefore
+	source := before.Rooms[1]
+	source.NPCIDs = append(source.NPCIDs, "alarm")
+	before.Rooms[1] = source
+	alarmAfter := alarmBefore
+	alarmAfter.Body.RoomID = 2
+	alarmAfter.Enemies = nil
+	after.NPCs["alarm"] = alarmAfter
+	destination := after.Rooms[2]
+	destination.NPCIDs = append(destination.NPCIDs, "alarm")
+	after.Rooms[2] = destination
+	afterActor := after.Players["a"]
+	afterActor.Body.RoomID = 99
+	afterActor.Body.Name = "Reallocated"
+	after.Players["a"] = afterActor
+	after.Rooms[2] = world.RoomState{
+		Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 2, Name: "도착지"}},
+		PlayerIDs: []string{"destination", "follower"},
+		NPCIDs:    []string{"alpha", "alarm", "managed", "zeta"},
+	}
+	after.Rooms[99] = world.RoomState{
+		Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 99, Name: "부활지"}},
+		PlayerIDs: []string{"a"},
+	}
+	replaced := after.NPCs["zeta"]
+	replaced.Body.Name = "Replacement"
+	after.NPCs["zeta"] = replaced
+	delete(after.NPCs, "alpha")
+
+	events := movementEvents(before, after, "a", []string{"zeta", "alpha"})
+	var chaseTexts []string
+	for _, event := range events {
+		if event.RoomID == 1 && strings.Contains(event.Text, "따라갑니다") {
+			chaseTexts = append(chaseTexts, event.Text)
+		}
+	}
+	if len(chaseTexts) != 2 || chaseTexts[0] != world.NPCFollowerChaseRoomText("Zulu", "Alice") || chaseTexts[1] != world.NPCFollowerChaseRoomText("Alpha", "Alice") {
+		t.Fatalf("reallocated actor chase events=%v all=%+v", chaseTexts, events)
+	}
+	if strings.Contains(strings.Join(chaseTexts, ""), "Replacement") {
+		t.Fatalf("post-transition NPC name replaced old notice=%v", chaseTexts)
 	}
 }
 

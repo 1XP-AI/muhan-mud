@@ -20,6 +20,11 @@ type WorldReceipt struct {
 	Revision int64
 	Response json.RawMessage
 	Replayed bool
+	// NPCChaseIDs is an ephemeral, process-local projection of the ordered
+	// chase moves committed by a fresh movement command. It is deliberately
+	// excluded from JSON and is never read from or written to the database;
+	// receipt replay therefore always leaves it empty.
+	NPCChaseIDs []string `json:"-"`
 }
 
 func validState(raw json.RawMessage) bool {

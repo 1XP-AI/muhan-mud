@@ -67,6 +67,10 @@ type GoProposal struct {
 	Moved             bool
 	Transfer          TransferProposal
 	Death             *PlayerDeathResult
+	// NPCChase is the exact command6.c:go chase proposal committed with this
+	// movement. Its ordered move IDs are receipt-only projection metadata; the
+	// durable GoResult/response shape remains unchanged.
+	NPCChase *NPCFollowerChaseProposal `json:"-"`
 
 	before State
 	next   State
@@ -156,6 +160,7 @@ func (s State) PlanGo(actorID, prefix string, occurrence int, options GoOptions)
 	}
 	proposal.Transfer = step.Transfer
 	proposal.Death = step.Death
+	proposal.NPCChase = step.NPCChase
 	proposal.Moved = step.Transfer.Movement.Moved
 	proposal.next = next
 	if step.Transfer.Movement.Moved {

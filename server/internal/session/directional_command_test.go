@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,6 +73,13 @@ func TestExecuteDirectionalLineIncludesOrderedNPCChaseActorNoticesAndReplays(t *
 	if err != nil || first.Replayed || store.commits != 1 || rolls != 2 {
 		t.Fatalf("first=%+v err=%v commits=%d rolls=%d", first, err, store.commits, rolls)
 	}
+	if !reflect.DeepEqual(first.NPCChaseIDs, []string{"zeta", "alpha"}) {
+		t.Fatalf("committed chase IDs=%v", first.NPCChaseIDs)
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil || strings.Contains(string(encoded), "NPCChaseIDs") || strings.Contains(string(encoded), "zeta") {
+		t.Fatalf("ephemeral chase IDs leaked into receipt JSON: %s err=%v", encoded, err)
+	}
 	var response string
 	if err := json.Unmarshal(first.Response, &response); err != nil {
 		t.Fatal(err)
@@ -93,6 +101,9 @@ func TestExecuteDirectionalLineIncludesOrderedNPCChaseActorNoticesAndReplays(t *
 	}, nil)
 	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+	if replay.NPCChaseIDs != nil {
+		t.Fatalf("replay carried ephemeral chase IDs=%v", replay.NPCChaseIDs)
 	}
 }
 

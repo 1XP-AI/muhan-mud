@@ -245,6 +245,60 @@ func NPCGoChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFan
 	return npcChaseFanoutEvents(before, after, actorID, true)
 }
 
+// NPCCommittedChaseFanoutEvents is the transport-only projection for a
+// committed movement receipt. Eligibility is already decided by the reducer;
+// committedIDs are therefore the sole chase authorization input. The helper
+// validates committed IDs against the pre-move source RoomState order and
+// pre-move names only. It intentionally does not require after actor/final-room
+// presence or after NPC presence: a later allocation/removal must not suppress
+// an already committed old-room notice. Malformed or ambiguous identity fails
+// closed.
+func NPCCommittedChaseFanoutEvents(before, _ State, actorID string, committedIDs []string) []NPCGoChaseFanout {
+	if actorID == "" || len(committedIDs) == 0 || before.Players == nil || before.NPCs == nil {
+		return nil
+	}
+	actorBefore, actorOK := before.Players[actorID]
+	if !actorOK || actorBefore.Body.Type != 0 || actorBefore.Body.Name == "" {
+		return nil
+	}
+	sourceRoomID := actorBefore.Body.RoomID
+	source, sourceOK := before.Rooms[sourceRoomID]
+	if !sourceOK {
+		return nil
+	}
+	positions := make(map[string]int, len(source.NPCIDs))
+	for index, id := range source.NPCIDs {
+		if id == "" {
+			return nil
+		}
+		if _, exists := positions[id]; exists {
+			return nil
+		}
+		if npc, exists := before.NPCs[id]; !exists || npc.Body.Type != 1 || npc.Body.RoomID != sourceRoomID || npc.Body.Name == "" {
+			return nil
+		}
+		positions[id] = index
+	}
+
+	events := make([]NPCGoChaseFanout, 0, len(committedIDs))
+	seen := make(map[string]bool, len(committedIDs))
+	lastIndex := -1
+	for _, id := range committedIDs {
+		index, sourceOK := positions[id]
+		oldNPC, oldOK := before.NPCs[id]
+		if !sourceOK || seen[id] || id == "" || !oldOK || index <= lastIndex {
+			return nil
+		}
+		seen[id] = true
+		lastIndex = index
+		events = append(events, NPCGoChaseFanout{
+			RoomID: actorBefore.Body.RoomID,
+			Text:   NPCFollowerChaseRoomText(oldNPC.Body.Name, actorBefore.Body.Name),
+		})
+	}
+	return events
+}
+
 func npcChaseFanoutEvents(before, after State, actorID string, requireFollow bool) []NPCGoChaseFanout {
 	actorBefore, beforeOK := before.Players[actorID]
 	actorAfter, afterOK := after.Players[actorID]
