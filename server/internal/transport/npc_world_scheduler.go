@@ -24,17 +24,28 @@ type NPCWorldTickRunner interface {
 	RunNPCCombatTick(context.Context, time.Duration) (storage.WorldReceipt, bool, error)
 }
 
+// NPCAggressiveTargetTickRunner is an optional post-combat phase seam. It is
+// deliberately separate from NPCWorldTickRunner so existing hosts and test
+// doubles that implement the original three-phase contract remain valid. A
+// production WorldConnector implements this narrow interface and therefore
+// receives the acquisition phase after combat.
+type NPCAggressiveTargetTickRunner interface {
+	RunNPCAggressiveTargetTick(context.Context, time.Duration) (storage.WorldReceipt, bool, error)
+}
+
 // NPCWorldTickResult contains the receipt and admission result from each
 // ordered phase. A result returned with an error contains all phases that
 // completed before the failing phase; the failing phase's receipt is empty
 // unless its runner returned one alongside the error.
 type NPCWorldTickResult struct {
-	Maintenance    storage.WorldReceipt
-	Resource       storage.WorldReceipt
-	Combat         storage.WorldReceipt
-	MaintenanceRan bool
-	ResourceRan    bool
-	CombatRan      bool
+	Maintenance         storage.WorldReceipt
+	Resource            storage.WorldReceipt
+	Combat              storage.WorldReceipt
+	AggressiveTarget    storage.WorldReceipt
+	MaintenanceRan      bool
+	ResourceRan         bool
+	CombatRan           bool
+	AggressiveTargetRan bool
 }
 
 var (
@@ -47,10 +58,11 @@ var (
 )
 
 // NPCWorldScheduler owns one worker and the phase-specific cadences for the
-// three NPC phases. Every wake-up is executed strictly as maintenance,
-// resource, then combat. A phase error stops that cadence immediately; the
-// next wake-up retries the phase through the runner's retained durable
-// request.
+// three required NPC phases plus an optional post-combat acquisition phase.
+// Every wake-up is executed strictly as maintenance, resource, combat, then
+// acquisition when the runner implements NPCAggressiveTargetTickRunner. A
+// phase error stops that cadence immediately; the next wake-up retries the
+// phase through the runner's retained durable request.
 //
 // The scheduler is single-use after Shutdown. Construct a new scheduler for a
 // later lifecycle; the phase runners' durable receipts make replacement safe
@@ -367,5 +379,16 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 	if err != nil {
 		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
 	}
-	return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, nil
+	if err := ctx.Err(); err != nil {
+		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
+	}
+	postCombat, ok := s.runner.(NPCAggressiveTargetTickRunner)
+	if !ok {
+		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, nil
+	}
+	result.AggressiveTarget, result.AggressiveTargetRan, err = postCombat.RunNPCAggressiveTargetTick(ctx, s.combatInterval)
+	if err != nil {
+		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
+	}
+	return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, nil
 }
