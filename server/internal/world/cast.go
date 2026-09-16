@@ -427,25 +427,34 @@ type CastProposal struct {
 	TargetText         string
 	Hour               int
 
-	expectedActor           PlayerState
-	expectedRoomFlags       [8]byte
-	expectedTarget          PlayerState
-	expectedTargetSet       bool
-	expectedTargetRoomFlags [8]byte
-	targetRoomID            int16
-	sourceRoomID            int16
-	afterSourceIDs          []string
-	afterDestIDs            []string
-	expectedSourceIDs       []string
-	expectedDestIDs         []string
-	afterDestBeenHere       int32
-	deactivateSource        bool
-	afterActiveNPCIDs       []string
-	afterActiveSet          bool
-	afterBody               LegacyMonster
-	afterTarget             PlayerState
-	afterItems              ItemCollection
-	afterItemsSet           bool
+	expectedActor     PlayerState
+	expectedRoomFlags [8]byte
+	// knowAlignmentTargeted binds the explicit player-target form to its
+	// reducer. It must survive validation even if the exported target fields
+	// are edited after planning, so a targeted receipt cannot fall through to
+	// the generic self-cast path.
+	knowAlignmentTargeted         bool
+	knowAlignmentTargetID         string
+	knowAlignmentTargetName       string
+	knowAlignmentTargetOccurrence int
+	knowAlignmentExpectedTarget   PlayerState
+	expectedTarget                PlayerState
+	expectedTargetSet             bool
+	expectedTargetRoomFlags       [8]byte
+	targetRoomID                  int16
+	sourceRoomID                  int16
+	afterSourceIDs                []string
+	afterDestIDs                  []string
+	expectedSourceIDs             []string
+	expectedDestIDs               []string
+	afterDestBeenHere             int32
+	deactivateSource              bool
+	afterActiveNPCIDs             []string
+	afterActiveSet                bool
+	afterBody                     LegacyMonster
+	afterTarget                   PlayerState
+	afterItems                    ItemCollection
+	afterItemsSet                 bool
 }
 
 func castActor(s State, actorID string) (PlayerState, RoomState, error) {
@@ -1237,7 +1246,7 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 	if spec.healKind == castHealRecall {
 		return s.applyRecallCast(p, actor, room, spec)
 	}
-	if spec.Index == castKnowAlignmentSpell && p.TargetName != "" {
+	if spec.Index == castKnowAlignmentSpell && knowAlignmentTargetProposalPresent(p) {
 		return s.applyKnowAlignmentCast(p, actor, room, spec)
 	}
 	if spec.Cost != p.Cost {

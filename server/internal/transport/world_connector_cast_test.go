@@ -151,7 +151,7 @@ func TestWorldConnectorSubmitKnowAlignmentFansOutTargetAndSuppressesReplay(t *te
 		t.Fatal(err)
 	}
 	connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c"})
-	actor, target, observer := connections["a"], connections["b"], connections["c"]
+	actor, observer, target := connections["a"], connections["b"], connections["c"]
 	connector.config.Clock = func() (int32, int) { return 100, 12 }
 	connector.config.Roll = func(int, int) int {
 		t.Fatal("know-alignment target consumed RNG")
@@ -166,27 +166,29 @@ func TestWorldConnectorSubmitKnowAlignmentFansOutTargetAndSuppressesReplay(t *te
 	targetWant := "\nAlice이 당신에게 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
 	select {
 	case event := <-target.events:
-		if event != roomWant {
-			t.Fatalf("target room event=%q want=%q", event, roomWant)
-		}
-	default:
-		t.Fatal("target room event missing")
-	}
-	select {
-	case event := <-observer.events:
-		if event != roomWant {
-			t.Fatalf("target room event=%q want=%q", event, roomWant)
-		}
-	default:
-		t.Fatal("target room event missing")
-	}
-	select {
-	case event := <-observer.events:
 		if event != targetWant {
 			t.Fatalf("target private event=%q want=%q", event, targetWant)
 		}
 	default:
-		t.Fatalf("target private event missing (queued=%d)", len(observer.events))
+		t.Fatal("target private event missing")
+	}
+	select {
+	case event := <-observer.events:
+		if event != roomWant {
+			t.Fatalf("observer room event=%q want=%q", event, roomWant)
+		}
+	default:
+		t.Fatal("observer room event missing")
+	}
+	select {
+	case event := <-target.events:
+		t.Fatalf("target received extra event=%q", event)
+	default:
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("observer received extra event=%q", event)
+	default:
 	}
 	select {
 	case event := <-actor.events:

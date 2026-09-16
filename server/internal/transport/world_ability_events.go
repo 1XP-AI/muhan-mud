@@ -119,6 +119,15 @@ func (g *WorldConnector) publishRecall(after world.State, result world.CastResul
 }
 
 func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, text string) {
+	publishWorldRoomEventExcludingTarget(g, after, roomID, actorID, excludeActorID, "", text)
+}
+
+// publishWorldRoomEventExcludingTarget is the targeted room projection used
+// by cast events. The target receives its private projection through the
+// separate target publisher, so it must be omitted from the room projection.
+// Generic room events keep the empty target ID and retain their existing
+// actor-only exclusion behavior.
+func publishWorldRoomEventExcludingTarget(g *WorldConnector, after world.State, roomID int16, actorID, excludeActorID, excludeTargetID, text string) {
 	if actorID == "" || text == "" || excludeActorID == "" {
 		return
 	}
@@ -129,8 +138,9 @@ func publishWorldRoomEvent(g *WorldConnector, after world.State, roomID int16, a
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for connection := range g.connections {
-		player, ok := after.Players[connection.lease.ActorID]
-		if !ok || !player.Online || player.Body.RoomID != roomID || connection.lease.ActorID == excludeActorID || connection.events == nil {
+		connectionActorID := connection.lease.ActorID
+		player, ok := after.Players[connectionActorID]
+		if !ok || !player.Online || player.Body.RoomID != roomID || connectionActorID == excludeActorID || connectionActorID == excludeTargetID || connection.events == nil {
 			continue
 		}
 		select {

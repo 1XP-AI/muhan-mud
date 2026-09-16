@@ -210,3 +210,61 @@ func TestApplyKnowAlignmentRejectsTargetAndReceiptTampering(t *testing.T) {
 		t.Fatalf("proposal response=%q", p.Response)
 	}
 }
+
+func TestApplyKnowAlignmentTargetTamperingCannotFallThroughToSelfCast(t *testing.T) {
+	s := knowAlignmentFixture()
+	targeted, err := s.PlanCast("a", "선악감지", CastOptions{Now: 100, Target: "Bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := s.PlanCast("a", "선악감지", CastOptions{Now: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// These are the fields an untrusted submitted proposal could rewrite to
+	// make the generic reducer interpret a targeted receipt as a self-cast.
+	tampered := targeted
+	tampered.TargetName = ""
+	tampered.TargetID = ""
+	tampered.TargetOccurrence = 0
+	tampered.Response = self.Response
+	tampered.RoomText = self.RoomText
+	tampered.TargetText = ""
+	tampered.expectedTarget = PlayerState{}
+	tampered.expectedTargetSet = false
+	tampered.afterTarget = PlayerState{}
+	tampered.afterBody = self.afterBody
+
+	if _, _, err := s.ApplyCast(tampered); !errors.Is(err, ErrCastInvalidProposal) {
+		t.Fatalf("targeted proposal fell through to self-cast: %v", err)
+	}
+}
+
+func TestApplyKnowAlignmentRejectsIndividualTargetProjectionTampering(t *testing.T) {
+	s := knowAlignmentFixture()
+	proposal, err := s.PlanCast("a", "선악감지", CastOptions{Now: 100, Target: "Bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*CastProposal)
+	}{
+		{name: "target name", mutate: func(p *CastProposal) { p.TargetName = "Alice" }},
+		{name: "target id", mutate: func(p *CastProposal) { p.TargetID = p.ActorID }},
+		{name: "response", mutate: func(p *CastProposal) { p.Response = "위조된 응답\r\n" }},
+		{name: "room text", mutate: func(p *CastProposal) { p.RoomText = "위조된 방 출력\r\n" }},
+		{name: "expected target snapshot", mutate: func(p *CastProposal) { p.expectedTarget.Body.Alignment++ }},
+		{name: "after target snapshot", mutate: func(p *CastProposal) { p.afterTarget.Body.Alignment++ }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tampered := proposal
+			tt.mutate(&tampered)
+			if _, _, err := s.ApplyCast(tampered); err == nil {
+				t.Fatal("tampered targeted proposal was accepted")
+			}
+		})
+	}
+}

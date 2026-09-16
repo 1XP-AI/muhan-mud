@@ -127,6 +127,12 @@ func (s State) planKnowAlignmentCast(p CastProposal, actor PlayerState, room Roo
 	if err != nil {
 		return CastProposal{}, err
 	}
+	// Keep the command form and its lookup query receipt-bound. ApplyCast must
+	// not infer targeted-vs-self form from TargetName, which is an exported
+	// field on the in-memory proposal.
+	p.knowAlignmentTargeted = true
+	p.knowAlignmentTargetName = options.Target
+	p.knowAlignmentTargetOccurrence = occurrence
 	p.TargetOccurrence = occurrence
 	p.expectedSourceIDs = append([]string(nil), room.PlayerIDs...)
 	if msg := knowAlignmentGate(actor); msg != "" {
@@ -157,6 +163,8 @@ func (s State) planKnowAlignmentCast(p CastProposal, actor PlayerState, room Roo
 	p.TargetID = targetID
 	p.expectedTarget = cloneDrinkActor(target)
 	p.expectedTargetSet = true
+	p.knowAlignmentTargetID = targetID
+	p.knowAlignmentExpectedTarget = cloneDrinkActor(target)
 	p.targetRoomID = room.Resource.ID
 	p.afterBody, p.HPDelta, err = castBodyAfter(actor.Body, room, spec, options, nil, false, false)
 	if err != nil {
@@ -182,12 +190,30 @@ func (s State) planKnowAlignmentCast(p CastProposal, actor PlayerState, room Roo
 	return p, nil
 }
 
+// knowAlignmentTargetProposalPresent identifies any explicit know-alignment
+// target material, including the private form/snapshot binding. A generic
+// self-cast has none of these fields, so target material cannot be erased from
+// the exported fields to reach the generic reducer.
+func knowAlignmentTargetProposalPresent(p CastProposal) bool {
+	return p.knowAlignmentTargeted || p.TargetName != "" || p.TargetID != "" || p.TargetOccurrence != 0 || p.TargetText != "" || p.expectedTargetSet || !reflect.DeepEqual(p.expectedTarget, PlayerState{}) || !reflect.DeepEqual(p.afterTarget, PlayerState{}) || p.knowAlignmentTargetID != "" || p.knowAlignmentTargetName != "" || p.knowAlignmentTargetOccurrence != 0 || !reflect.DeepEqual(p.knowAlignmentExpectedTarget, PlayerState{})
+}
+
+func knowAlignmentTargetBindingValid(p CastProposal) bool {
+	if !p.knowAlignmentTargeted || p.TargetName == "" || p.TargetName != p.knowAlignmentTargetName || p.TargetOccurrence != p.knowAlignmentTargetOccurrence {
+		return false
+	}
+	if p.knowAlignmentTargetID == "" {
+		return p.TargetID == "" && !p.expectedTargetSet && reflect.DeepEqual(p.expectedTarget, PlayerState{}) && reflect.DeepEqual(p.knowAlignmentExpectedTarget, PlayerState{})
+	}
+	return p.TargetID == p.knowAlignmentTargetID && p.expectedTargetSet && reflect.DeepEqual(p.expectedTarget, p.knowAlignmentExpectedTarget)
+}
+
 func knowAlignmentTargetNoopFieldsInvalid(p CastProposal) bool {
 	return p.Broadcast || p.Succeeded || p.SpellFailed || p.EffectRolls != nil || p.HPDelta != 0 || p.MPDelta != 0 || p.SpellInterval != 0 || p.TimedFlag != 0 || p.TimedInterval != 0 || p.CursedItemsCleared != 0 || p.afterItemsSet || p.TargetID != "" || p.expectedTargetSet || p.TargetText != "" || p.RoomText != "" || p.TargetOccurrence < 1 || p.targetRoomID != 0 || p.LocateLinked || p.sourceRoomID != 0 || p.afterSourceIDs != nil || p.afterDestIDs != nil || p.afterDestBeenHere != 0 || p.deactivateSource || p.afterActiveSet || !reflect.DeepEqual(p.afterTarget, PlayerState{})
 }
 
 func (s State) applyKnowAlignmentCast(p CastProposal, actor PlayerState, room RoomState, spec castSpellSpec) (State, CastResult, error) {
-	if p.TargetName == "" || p.TargetOccurrence < 1 || p.TargetOccurrence > math.MaxInt32 || p.Cost != spec.Cost || spec.Index != castKnowAlignmentSpell || spec.healKind != castHealTimed || p.HealKind != castHealTimed || p.SpellIndex != castKnowAlignmentSpell {
+	if !knowAlignmentTargetBindingValid(p) || p.TargetOccurrence < 1 || p.TargetOccurrence > math.MaxInt32 || p.Cost != spec.Cost || spec.Index != castKnowAlignmentSpell || spec.healKind != castHealTimed || p.HealKind != castHealTimed || p.SpellIndex != castKnowAlignmentSpell {
 		return State{}, CastResult{}, ErrCastInvalidProposal
 	}
 	if !knowAlignmentIDsEqual(room.PlayerIDs, p.expectedSourceIDs) {
