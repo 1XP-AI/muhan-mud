@@ -38,6 +38,24 @@ type npcRandomSpawnPhaseSummary struct {
 	SpawnedNPCIDs []string `json:"spawned_npc_ids,omitempty"`
 }
 
+// npcRandomSpawnReducerError marks a deterministic failure after receipt
+// lookup and before a durable commit. RunNPCRandomSpawnTick may release its
+// pending slot for this class of error; commit/recovery errors must retain the
+// exact request because the durable outcome is not known.
+type npcRandomSpawnReducerError struct {
+	err error
+}
+
+func (e *npcRandomSpawnReducerError) Error() string { return e.err.Error() }
+func (e *npcRandomSpawnReducerError) Unwrap() error { return e.err }
+
+func wrapNPCRandomSpawnReducerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &npcRandomSpawnReducerError{err: err}
+}
+
 func npcRandomSpawnIntervalSeconds(interval time.Duration) (int64, error) {
 	if interval <= 0 || interval%time.Second != 0 {
 		return 0, errors.New("NPC random spawn interval must be a positive whole number of seconds")
@@ -91,10 +109,12 @@ func decodeNPCRandomSpawnRequest(raw json.RawMessage) (npcRandomSpawnTickRequest
 
 // RunNPCRandomSpawnTick executes one deterministic random-NPC producer slot.
 // The optional player order is an immutable snapshot of the caller's C Ply
-// descriptor order. A single occupied room may omit it; world.PlanNPCRandomProducer
-// rejects an omitted order when multiple occupied rooms would make traversal
-// order ambiguous. A retry ignores later order arguments and reuses its exact
-// pending request.
+// descriptor order and is part of the canonical command request. A single
+// occupied room may omit it; world.PlanNPCRandomProducer rejects an omitted
+// order when multiple occupied rooms would make traversal order ambiguous. A
+// retry ignores later order arguments and reuses its exact pending request.
+// After restart, the host must reconstruct the same byte-identical order in
+// the request; durable receipt binding must reject a different order.
 func (g *WorldConnector) RunNPCRandomSpawnTick(ctx context.Context, interval time.Duration, orders ...[]string) (storage.WorldReceipt, bool, error) {
 	if g == nil {
 		return storage.WorldReceipt{}, false, errors.New("nil NPC random spawn connector")
@@ -154,6 +174,13 @@ func (g *WorldConnector) RunNPCRandomSpawnTick(ctx context.Context, interval tim
 
 	receipt, err := g.runNPCRandomSpawnPhaseAt(ctx, pending.commandID, pending.request)
 	if err != nil {
+		var reducerErr *npcRandomSpawnReducerError
+		if errors.As(err, &reducerErr) {
+			// The reducer failed before CommitWorldCommand, so this request did
+			// not claim the slot. Release it so corrected deterministic input can
+			// retry at the same slot. Durable commit/recovery errors retain it.
+			g.pendingNPCRandomSpawn = nil
+		}
 		// A commit error can have an unknown outcome. Keep the exact pending
 		// request until Execute confirms a receipt on a later retry.
 		return storage.WorldReceipt{}, true, err
@@ -183,7 +210,19 @@ func (g *WorldConnector) runNPCRandomSpawnPhaseAt(ctx context.Context, commandID
 	return engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, wrapNPCRandomSpawnReducerError(err)
+		}
+		if len(parsed.PlyOrder) != 0 {
+			occupied := false
+			for _, room := range state.Rooms {
+				if len(room.PlayerIDs) != 0 {
+					occupied = true
+					break
+				}
+			}
+			if !occupied {
+				return nil, nil, wrapNPCRandomSpawnReducerError(errors.New("NPC random producer does not accept Ply order without occupied rooms"))
+			}
 		}
 		proposal, err := state.PlanNPCRandomProducer(world.NPCRandomProducerInput{
 			Now:      parsed.Now,
@@ -193,11 +232,11 @@ func (g *WorldConnector) runNPCRandomSpawnPhaseAt(ctx context.Context, commandID
 			PlyOrder: parsed.PlyOrder,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, wrapNPCRandomSpawnReducerError(err)
 		}
 		next, err := state.ApplyNPCRandomProducer(proposal)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, wrapNPCRandomSpawnReducerError(err)
 		}
 		summary := npcRandomSpawnPhaseSummary{Now: parsed.Now}
 		for _, decision := range proposal.Rooms {
@@ -211,9 +250,9 @@ func (g *WorldConnector) runNPCRandomSpawnPhaseAt(ctx context.Context, commandID
 		}
 		saved, err := json.Marshal(next)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, wrapNPCRandomSpawnReducerError(err)
 		}
 		response, err := json.Marshal(summary)
-		return saved, response, err
+		return saved, response, wrapNPCRandomSpawnReducerError(err)
 	})
 }

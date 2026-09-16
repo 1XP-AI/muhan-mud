@@ -3,13 +3,16 @@ package transport
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
@@ -81,6 +84,59 @@ func npcRandomSpawnTickState(t *testing.T, roomIDs ...int16) json.RawMessage {
 }
 
 func npcRandomSpawnTickRoll(low, _ int) int { return low }
+
+type npcRandomSpawnRequestStore struct {
+	mu             sync.Mutex
+	state          json.RawMessage
+	receipt        *storage.WorldReceipt
+	command        string
+	request        json.RawMessage
+	commits        int
+	readRequests   []json.RawMessage
+	commitRequests []json.RawMessage
+}
+
+func (s *npcRandomSpawnRequestStore) ReadWorldReceipt(_ context.Context, _ string, command string, request json.RawMessage) (storage.WorldReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readRequests = append(s.readRequests, append(json.RawMessage(nil), request...))
+	if s.receipt == nil || s.command != command {
+		return storage.WorldReceipt{}, sql.ErrNoRows
+	}
+	if !bytes.Equal(s.request, request) {
+		return storage.WorldReceipt{}, storage.ErrCommandConflict
+	}
+	receipt := *s.receipt
+	receipt.Replayed = true
+	return receipt, nil
+}
+
+func (s *npcRandomSpawnRequestStore) LoadWorld(context.Context, string) (storage.WorldSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return storage.WorldSnapshot{State: append(json.RawMessage(nil), s.state...)}, nil
+}
+
+func (s *npcRandomSpawnRequestStore) CommitWorldCommand(_ context.Context, _ string, command string, request json.RawMessage, revision int64, state, response json.RawMessage) (storage.WorldReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commitRequests = append(s.commitRequests, append(json.RawMessage(nil), request...))
+	if s.receipt != nil && s.command == command {
+		if !bytes.Equal(s.request, request) {
+			return storage.WorldReceipt{}, storage.ErrCommandConflict
+		}
+		receipt := *s.receipt
+		receipt.Replayed = true
+		return receipt, nil
+	}
+	s.commits++
+	s.state = append(json.RawMessage(nil), state...)
+	s.command = command
+	s.request = append(json.RawMessage(nil), request...)
+	receipt := storage.WorldReceipt{Revision: revision + 1, Response: append(json.RawMessage(nil), response...)}
+	s.receipt = &receipt
+	return receipt, nil
+}
 
 func TestRunNPCRandomSpawnTickPersistsOrderedSummaryAndSuppressesNotDueSlot(t *testing.T) {
 	base := &connectorCommandStore{state: npcRandomSpawnTickState(t, 1)}
@@ -240,6 +296,66 @@ func TestRunNPCRandomSpawnTickRequiresExplicitMultiRoomOrder(t *testing.T) {
 	}
 }
 
+func TestRunNPCRandomSpawnTickRetriesCorrectedOrderAfterReducerValidationError(t *testing.T) {
+	store := &npcRandomSpawnRequestStore{state: npcRandomSpawnTickState(t, 1, 2)}
+	rollCalls := 0
+	allocateCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "npc-random-spawn-order-retry", MaxSessions: 1,
+		Clock: func() (int32, int) { return 103, 12 }, Catalog: npcRandomSpawnTickCatalogFixture(),
+		Roll: func(low, high int) int {
+			rollCalls++
+			return npcRandomSpawnTickRoll(low, high)
+		},
+		Allocate: func() (string, error) {
+			allocateCalls++
+			return fmt.Sprintf("retry-order-npc-%d", allocateCalls), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran, err := connector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second); err == nil || !ran {
+		t.Fatalf("missing order ran=%v err=%v", ran, err)
+	}
+	if store.commits != 0 || rollCalls != 0 || allocateCalls != 0 || connector.pendingNPCRandomSpawn != nil || connector.lastNPCRandomSpawnSlot != -1 {
+		t.Fatalf("missing order claimed slot: commits=%d rolls=%d allocations=%d pending=%+v last=%d", store.commits, rollCalls, allocateCalls, connector.pendingNPCRandomSpawn, connector.lastNPCRandomSpawnSlot)
+	}
+
+	order := []string{"player-2", "player-1"}
+	retry, ran, err := connector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second, order)
+	if err != nil || !ran || retry.Replayed || store.commits != 1 {
+		t.Fatalf("corrected order retry=%+v ran=%v commits=%d err=%v", retry, ran, store.commits, err)
+	}
+	var request npcRandomSpawnTickRequest
+	if err := json.Unmarshal(store.request, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(request.PlyOrder, order) || request.Slot != 5 || request.Now != 100 {
+		t.Fatalf("corrected order request=%+v", request)
+	}
+}
+
+func TestRunNPCRandomSpawnTickRejectsExplicitOrderForEmptySnapshot(t *testing.T) {
+	store := &connectorCommandStore{state: npcRandomSpawnTickState(t)}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "npc-random-spawn-empty-order", MaxSessions: 1,
+		Clock: func() (int32, int) { return 103, 12 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran, err := connector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second, []string{"ghost"}); err == nil || !ran {
+		t.Fatalf("explicit order on empty snapshot ran=%v err=%v", ran, err)
+	}
+	if store.commits != 0 || connector.pendingNPCRandomSpawn != nil || connector.lastNPCRandomSpawnSlot != -1 {
+		t.Fatalf("explicit order on empty snapshot claimed slot: commits=%d pending=%+v last=%d", store.commits, connector.pendingNPCRandomSpawn, connector.lastNPCRandomSpawnSlot)
+	}
+	if _, ran, err := connector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second); err != nil || !ran || store.commits != 1 {
+		t.Fatalf("empty snapshot retry without order ran=%v commits=%d err=%v", ran, store.commits, err)
+	}
+}
+
 func TestRunNPCRandomSpawnTickUsesExplicitMultiRoomOrderAndNoFanout(t *testing.T) {
 	store := &connectorCommandStore{state: npcRandomSpawnTickState(t, 1, 2)}
 	allocateCalls := 0
@@ -272,6 +388,58 @@ func TestRunNPCRandomSpawnTickUsesExplicitMultiRoomOrderAndNoFanout(t *testing.T
 	case got := <-connections["player-1"].events:
 		t.Fatalf("random spawn fanout delivered=%q", got)
 	default:
+	}
+}
+
+func TestRunNPCRandomSpawnTickBindsExactOrderAcrossRestart(t *testing.T) {
+	store := &npcRandomSpawnRequestStore{state: npcRandomSpawnTickState(t, 1, 2)}
+	config := WorldConnectorConfig{
+		Store: store, WorldID: "npc-random-spawn-request-binding", MaxSessions: 1,
+		Clock: func() (int32, int) { return 103, 12 }, Catalog: npcRandomSpawnTickCatalogFixture(),
+		Roll: npcRandomSpawnTickRoll,
+		Allocate: func() (string, error) {
+			return "request-binding-npc", nil
+		},
+	}
+	order := []string{"player-2", "player-1"}
+	allocateCalls := 0
+	config.Allocate = func() (string, error) {
+		allocateCalls++
+		return fmt.Sprintf("request-binding-npc-%d", allocateCalls), nil
+	}
+	firstConnector, err := NewWorldConnector(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ran, err := firstConnector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second, order)
+	if err != nil || !ran || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v ran=%v commits=%d err=%v", first, ran, store.commits, err)
+	}
+	if len(store.readRequests) != 1 || len(store.commitRequests) != 1 || !bytes.Equal(store.readRequests[0], store.commitRequests[0]) {
+		t.Fatalf("first request binding read=%q commit=%q", store.readRequests, store.commitRequests)
+	}
+
+	restarted, err := NewWorldConnector(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, ran, err := restarted.RunNPCRandomSpawnTick(context.Background(), 20*time.Second, order)
+	if err != nil || !ran || !replay.Replayed || store.commits != 1 {
+		t.Fatalf("same-order restart replay=%+v ran=%v commits=%d err=%v", replay, ran, store.commits, err)
+	}
+	if len(store.readRequests) != 2 || !bytes.Equal(store.readRequests[0], store.readRequests[1]) {
+		t.Fatalf("same-order restart changed request: %q", store.readRequests)
+	}
+
+	conflictConnector, err := NewWorldConnector(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran, err := conflictConnector.RunNPCRandomSpawnTick(context.Background(), 20*time.Second, []string{"player-1", "player-2"}); !errors.Is(err, storage.ErrCommandConflict) || !ran {
+		t.Fatalf("different-order replay ran=%v err=%v", ran, err)
+	}
+	if len(store.readRequests) != 3 || bytes.Equal(store.readRequests[0], store.readRequests[2]) || store.commits != 1 {
+		t.Fatalf("different-order request binding reads=%q commits=%d", store.readRequests, store.commits)
 	}
 }
 
