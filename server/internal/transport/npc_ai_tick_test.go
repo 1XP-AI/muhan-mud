@@ -123,6 +123,57 @@ func TestNPCWorldSchedulerAcquiresAggressiveTargetAfterMaintenance(t *testing.T)
 	}
 }
 
+func TestNPCAggressiveTargetAfterMaintenanceDoesNotNormalizeCrossSecondTimer(t *testing.T) {
+	state := npcAITickState(t, 1)
+	store := newNPCAITickStore(t, state)
+	now := int32(100)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return now, 12 }, func(low, _ int) int {
+		return low
+	})
+
+	maintenance, ran, err := connector.RunNPCMaintenanceTick(context.Background(), time.Second)
+	if err != nil || !ran {
+		t.Fatalf("maintenance=%+v ran=%v err=%v", maintenance, ran, err)
+	}
+	now = 101
+	acquisition, ran, err := connector.RunNPCAggressiveTargetTickAfterMaintenance(context.Background(), time.Second, maintenance)
+	if err != nil || !ran || acquisition.Replayed {
+		t.Fatalf("cross-second acquisition=%+v ran=%v err=%v", acquisition, ran, err)
+	}
+	result := decodeNPCAggressiveTargetResult(t, acquisition.Response)
+	if result.Now != 101 || !result.NoOp || result.Changed || len(result.Events) != 0 || len(result.Actions) != 1 || result.Actions[0].Status != "not-ready" {
+		t.Fatalf("cross-second result=%+v", result)
+	}
+	if got := npcAITickStoredState(t, store).NPCs["wolf-1"].Body.Timers[world.TurnAttackTimerIndex]; got.LastTime != 100 || got.Interval != 3 {
+		t.Fatalf("cross-second timer=%+v", got)
+	}
+}
+
+func TestNPCWorldSchedulerDoesNotOverrideMaintenanceTimerAcrossUnequalCadence(t *testing.T) {
+	state := npcAITickState(t, 1)
+	store := newNPCAITickStore(t, state)
+	now := int32(101)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return now, 12 }, func(low, _ int) int {
+		return low
+	})
+	scheduler, err := NewNPCWorldScheduler(connector, 2*time.Second, 4*time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("scheduler pass=%+v ran=%v err=%v", result, ran, err)
+	}
+	acquisition := decodeNPCAggressiveTargetResult(t, result.AggressiveTarget.Response)
+	if len(acquisition.Events) != 0 || acquisition.Changed || !acquisition.NoOp || len(acquisition.Actions) != 1 || acquisition.Actions[0].Status != "not-ready" {
+		t.Fatalf("cross-cadence acquisition=%+v", acquisition)
+	}
+	if got := npcAITickStoredState(t, store).NPCs["wolf-1"].Body.Timers[world.TurnAttackTimerIndex]; got.LastTime != 100 || got.Interval != 3 {
+		t.Fatalf("cross-cadence timer=%+v", got)
+	}
+}
+
 func TestNPCAggressiveTargetCannotSwingUntilNextPass(t *testing.T) {
 	state := npcAITickState(t, 1)
 	store := newNPCAITickStore(t, state)
@@ -168,6 +219,30 @@ func TestNPCAggressiveTargetCannotSwingUntilNextPass(t *testing.T) {
 	}
 }
 
+func TestRunNPCAggressiveTargetPhaseKeepsStrictReadinessAcrossSecond(t *testing.T) {
+	state := npcAITickState(t, 1)
+	npc := state.NPCs["wolf-1"]
+	npc.Body.Timers[world.TurnAttackTimerIndex] = world.LegacyTimer{LastTime: 100, Interval: 2}
+	state.NPCs["wolf-1"] = npc
+	store := newNPCAITickStore(t, state)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return 101, 12 }, func(int, int) int {
+		t.Fatal("strict direct path consumed RNG")
+		return 0
+	})
+
+	receipt, err := connector.RunNPCAggressiveTargetPhase(context.Background(), "npc-aggressive-target-strict-cross-second", 101, 101)
+	if err != nil || receipt.Replayed {
+		t.Fatalf("strict direct receipt=%+v err=%v", receipt, err)
+	}
+	result := decodeNPCAggressiveTargetResult(t, receipt.Response)
+	if result.Now != 101 || !result.NoOp || result.Changed || len(result.Events) != 0 || len(result.Actions) != 1 || result.Actions[0].Status != "not-ready" {
+		t.Fatalf("strict direct result=%+v", result)
+	}
+	if got := npcAITickStoredState(t, store).NPCs["wolf-1"].Body.Timers[world.TurnAttackTimerIndex]; got.LastTime != 100 || got.Interval != 2 {
+		t.Fatalf("strict direct timer=%+v", got)
+	}
+}
+
 func TestNPCAggressiveTargetTickRetainsExactPendingRequestAcrossRetry(t *testing.T) {
 	state := npcAITickState(t, 1)
 	store := newNPCAITickStore(t, state)
@@ -210,6 +285,45 @@ func TestNPCAggressiveTargetTickRetainsExactPendingRequestAcrossRetry(t *testing
 	}
 	if request.Kind != "npc-aggressive-target-phase" || request.Slot != 100 || request.Now != 100 {
 		t.Fatalf("request=%+v", request)
+	}
+}
+
+func TestNPCAggressiveTargetPendingRetryFallsBackToStrictAfterMaintenanceAdvance(t *testing.T) {
+	state := npcAITickState(t, 1)
+	store := newNPCAITickStore(t, state)
+	now := int32(100)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return now, 12 }, func(low, _ int) int {
+		return low
+	})
+
+	maintenance, ran, err := connector.RunNPCMaintenanceTick(context.Background(), time.Second)
+	if err != nil || !ran {
+		t.Fatalf("maintenance=%+v ran=%v err=%v", maintenance, ran, err)
+	}
+	store.failCommitOnce = true
+	first, ran, err := connector.RunNPCAggressiveTargetTickAfterMaintenance(context.Background(), time.Second, maintenance)
+	if err == nil || !ran || first.Replayed {
+		t.Fatalf("uncertain acquisition=%+v ran=%v err=%v", first, ran, err)
+	}
+
+	now = 103
+	advancedMaintenance, ran, err := connector.RunNPCMaintenanceTick(context.Background(), time.Second)
+	if err != nil || !ran {
+		t.Fatalf("advanced maintenance=%+v ran=%v err=%v", advancedMaintenance, ran, err)
+	}
+	second, ran, err := connector.RunNPCAggressiveTargetTickAfterMaintenance(context.Background(), time.Second, advancedMaintenance)
+	if err != nil || !ran || second.Replayed {
+		t.Fatalf("pending retry=%+v ran=%v err=%v", second, ran, err)
+	}
+	result := decodeNPCAggressiveTargetResult(t, second.Response)
+	if result.Now != 100 || !result.NoOp || result.Changed || len(result.Events) != 0 || len(result.Actions) != 1 || result.Actions[0].Status != "not-ready" {
+		t.Fatalf("pending retry result=%+v", result)
+	}
+	if got := npcAITickStoredState(t, store).NPCs["wolf-1"].Body.Timers[world.TurnAttackTimerIndex]; got.LastTime != 103 || got.Interval != 3 {
+		t.Fatalf("pending retry timer=%+v", got)
+	}
+	if got, want := store.commands, []string{"npc-maintenance-100", "npc-aggressive-target-100", "npc-maintenance-103", "npc-aggressive-target-100"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pending retry commands=%v want=%v", got, want)
 	}
 }
 

@@ -191,9 +191,10 @@ func prepareNPCAggressiveTargetPostMaintenanceState(state world.State, now int32
 	}
 	sort.Strings(ids)
 	originals := make(map[string]world.LegacyTimer, len(ids))
+	applyOverride := true
 	for _, npcID := range ids {
 		expected := readyAttackTimers[npcID]
-		if expected.LastTime > now || (expected.Interval != 2 && expected.Interval != 3) {
+		if expected.LastTime < 0 || (expected.Interval != 2 && expected.Interval != 3) {
 			return world.State{}, nil, fmt.Errorf("NPC maintenance timer boundary is invalid for %q", npcID)
 		}
 		if !npcAggressiveTargetActiveNPC(state.ActiveNPCIDs, npcID) {
@@ -204,10 +205,22 @@ func prepareNPCAggressiveTargetPostMaintenanceState(state world.State, now int32
 			return world.State{}, nil, fmt.Errorf("NPC maintenance ready identity is unresolved: %q", npcID)
 		}
 		current := npc.Body.Timers[world.TurnAttackTimerIndex]
-		if current.LastTime != expected.LastTime || current.Interval != expected.Interval {
-			return world.State{}, nil, fmt.Errorf("NPC maintenance timer changed before acquisition for %q", npcID)
+		if expected.LastTime != now || current.LastTime != expected.LastTime || current.Interval != expected.Interval {
+			// The maintenance prefix is only an override for the exact target
+			// slot it produced. If a later maintenance pass has already changed
+			// the timer, keep the pending command but let the strict planner
+			// decide against the old command timestamp instead of rejecting the
+			// retry forever.
+			applyOverride = false
 		}
 		originals[npcID] = current
+	}
+	if !applyOverride {
+		return state, nil, nil
+	}
+	for _, npcID := range ids {
+		npc := state.NPCs[npcID]
+		current := originals[npcID]
 		// C's maintenance prefix has already admitted this NPC to the same
 		// update_active pass. Make only that prefix's timer due for the world
 		// planner, which still enforces strict readiness on every other path.
@@ -327,6 +340,13 @@ func (g *WorldConnector) runNPCAggressiveTargetTick(ctx context.Context, interva
 		if slotNow < 0 || slotNow > 2147483647 {
 			return storage.WorldReceipt{}, false, errors.New("NPC aggressive target slot timestamp overflow")
 		}
+		maintenanceBoundary := boundary
+		if maintenanceBoundary != nil && maintenanceBoundary.now != int32(slotNow) {
+			// The maintenance receipt may only bypass strict readiness for
+			// the same authoritative target slot/time. A phase that crossed a
+			// wall-clock boundary must use the ordinary planner gate.
+			maintenanceBoundary = nil
+		}
 		request, err := marshalNPCAggressiveTargetRequest(slot, int32(slotNow))
 		if err != nil {
 			return storage.WorldReceipt{}, false, err
@@ -336,7 +356,7 @@ func (g *WorldConnector) runNPCAggressiveTargetTick(ctx context.Context, interva
 			now:                          int32(slotNow),
 			commandID:                    npcAggressiveTargetCommandID(slot),
 			request:                      append(json.RawMessage(nil), request...),
-			maintenanceReadyAttackTimers: cloneNPCAggressiveTargetReadyAttackTimers(boundary),
+			maintenanceReadyAttackTimers: cloneNPCAggressiveTargetReadyAttackTimers(maintenanceBoundary),
 		}
 		state.pending = pending
 	}
