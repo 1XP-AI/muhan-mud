@@ -103,8 +103,13 @@ func TestNPCCombatRoundEmitsSourceAlignedHitAndMissEvents(t *testing.T) {
 		if proposal.Event == nil || !proposal.Event.Hit || proposal.Event.Damage != 6 || proposal.Event.RoomID != 1 || proposal.Event.NPCID != "wolf-id" || proposal.Event.TargetID != "a" || proposal.Event.ExcludeTargetID != "a" {
 			t.Fatalf("proposal event=%+v", proposal.Event)
 		}
-		if got, want := proposal.Event.TargetText, NPCCombatHitActorText("늑대", 6); got != want {
+		got := proposal.Event.TargetText
+		const want = "\n늑대가 당신에게 6만큼의 상처를 입혔습니다."
+		if got != want {
 			t.Fatalf("hit actor text=%q want=%q", got, want)
+		}
+		if !strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") {
+			t.Fatalf("hit actor text newline framing=%q", got)
 		}
 		if got, want := proposal.Event.RoomText, NPCCombatHitRoomText("늑대", "Alice", 6); got != want {
 			t.Fatalf("hit room text=%q want=%q", got, want)
@@ -137,8 +142,13 @@ func TestNPCCombatRoundEmitsSourceAlignedHitAndMissEvents(t *testing.T) {
 		if calls != 1 || proposal.Hit || proposal.Damage != 0 || proposal.PlayerHPAfter != proposal.PlayerHPBefore || proposal.Event == nil || proposal.Event.Hit || proposal.Event.Damage != 0 || proposal.Event.RoomText != "" {
 			t.Fatalf("miss calls=%d proposal=%+v", calls, proposal)
 		}
-		if got, want := proposal.Event.TargetText, NPCCombatMissActorText("늑대"); got != want {
+		got := proposal.Event.TargetText
+		const want = "\n당신은 늑대의 공격을 피했습니다."
+		if got != want {
 			t.Fatalf("miss actor text=%q want=%q", got, want)
+		}
+		if !strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") {
+			t.Fatalf("miss actor text newline framing=%q", got)
 		}
 		_, result, err := s.ApplyNPCCombatRound(proposal)
 		if err != nil {

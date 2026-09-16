@@ -165,10 +165,9 @@ type NPCCombatEvent struct {
 	RoomText        string
 }
 
-// NPCCombatHitActorText preserves update.c:481's private target output. The
-// trailing newline follows the existing Go actor-event convention.
+// NPCCombatHitActorText preserves update.c:481's private target output.
 func NPCCombatHitActorText(npcName string, damage int) string {
-	return fmt.Sprintf("\n%s%s 당신에게 %d만큼의 상처를 입혔습니다.\n", npcName, legacySubjectParticle(npcName), damage)
+	return fmt.Sprintf("\n%s%s 당신에게 %d만큼의 상처를 입혔습니다.", npcName, legacySubjectParticle(npcName), damage)
 }
 
 // NPCCombatHitRoomText preserves update.c:483's same-room observer output.
@@ -179,7 +178,7 @@ func NPCCombatHitRoomText(npcName, targetName string, damage int) string {
 // NPCCombatMissActorText preserves update.c:589's private target output. C
 // emits no observer line for a miss, so NPCCombatEvent.RoomText stays empty.
 func NPCCombatMissActorText(npcName string) string {
-	return fmt.Sprintf("\n당신은 %s의 공격을 피했습니다.\n", npcName)
+	return fmt.Sprintf("\n당신은 %s의 공격을 피했습니다.", npcName)
 }
 
 func npcCombatEventForRound(npcID string, npc LegacyMonster, targetID string, target LegacyMonster, hit bool, damage int) *NPCCombatEvent {
