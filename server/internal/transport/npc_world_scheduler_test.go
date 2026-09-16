@@ -102,6 +102,49 @@ func TestNPCWorldSchedulerRunsOptionalScavengeBetweenMaintenanceAndResource(t *t
 	}
 }
 
+func TestNPCWorldSchedulerReportsScavengeWhenItIsTheOnlyPhaseThatRuns(t *testing.T) {
+	runner := newNPCWorldSchedulerScavengeFake()
+	runner.phases["maintenance"].completed = true
+	runner.phases["resource"].completed = true
+	runner.phases["combat"].completed = true
+	scheduler, err := NewNPCWorldScheduler(runner, time.Second, 20*time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("result=%+v ran=%v err=%v", result, ran, err)
+	}
+	if result.MaintenanceRan || !result.ScavengeRan || result.ResourceRan || result.CombatRan {
+		t.Fatalf("phase admission=%+v", result)
+	}
+	if result.Scavenge.Revision != 1 {
+		t.Fatalf("scavenge receipt=%+v", result.Scavenge)
+	}
+}
+
+func TestNPCWorldSchedulerKeepsAggregateRanAfterScavengeAndLaterPhaseError(t *testing.T) {
+	runner := newNPCWorldSchedulerScavengeFake()
+	runner.phases["maintenance"].completed = true
+	runner.failResourceWithoutRun = true
+	scheduler, err := NewNPCWorldScheduler(runner, time.Second, 20*time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, ran, err := scheduler.RunOnce(context.Background())
+	if err == nil || !ran {
+		t.Fatalf("result=%+v ran=%v err=%v", result, ran, err)
+	}
+	if !errors.Is(err, errNPCWorldResourceUncertain) {
+		t.Fatalf("later phase err=%v", err)
+	}
+	if result.MaintenanceRan || !result.ScavengeRan || result.ResourceRan || result.CombatRan {
+		t.Fatalf("phase admission=%+v", result)
+	}
+}
+
 func TestNPCWorldSchedulerRetriesUncertainScavengeBeforeResourceAndCombat(t *testing.T) {
 	runner := newNPCWorldSchedulerScavengeFake()
 	runner.failScavenge = true
@@ -263,13 +306,14 @@ var errNPCWorldResourceUncertain = errors.New("resource durable outcome uncertai
 var errNPCWorldScavengeUncertain = errors.New("scavenge durable outcome uncertain")
 
 type npcWorldSchedulerFake struct {
-	mu           sync.Mutex
-	calls        []string
-	attempts     []string
-	intervals    []time.Duration
-	phases       map[string]*npcWorldSchedulerFakePhase
-	failResource bool
-	failScavenge bool
+	mu                     sync.Mutex
+	calls                  []string
+	attempts               []string
+	intervals              []time.Duration
+	phases                 map[string]*npcWorldSchedulerFakePhase
+	failResource           bool
+	failResourceWithoutRun bool
+	failScavenge           bool
 }
 
 type npcWorldSchedulerFakePhase struct {
@@ -327,6 +371,10 @@ func (r *npcWorldSchedulerFake) run(ctx context.Context, phase string, interval 
 		state.commandID = phase + "-1"
 	}
 	r.attempts = append(r.attempts, state.commandID)
+	if phase == "resource" && r.failResourceWithoutRun {
+		r.failResourceWithoutRun = false
+		return storage.WorldReceipt{}, false, errNPCWorldResourceUncertain
+	}
 	if phase == "resource" && r.failResource {
 		r.failResource = false
 		return storage.WorldReceipt{}, true, errNPCWorldResourceUncertain

@@ -399,22 +399,22 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 
 	result.Resource, result.ResourceRan, err = s.runner.RunNPCResourceTick(ctx, s.resourceInterval)
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan, err
 	}
 	if err := ctx.Err(); err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan, err
 	}
 
 	result.Combat, result.CombatRan, err = s.runner.RunNPCCombatTick(ctx, s.combatInterval)
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, err
 	}
 	if err := ctx.Err(); err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, err
 	}
 	postCombat, ok := s.runner.(NPCAggressiveTargetTickRunner)
 	if !ok {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, nil
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, nil
 	}
 	if ordered, ok := s.runner.(NPCAggressiveTargetPostMaintenanceRunner); ok {
 		result.AggressiveTarget, result.AggressiveTargetRan, err = ordered.RunNPCAggressiveTargetTickAfterMaintenance(ctx, s.combatInterval, result.Maintenance)
@@ -422,7 +422,7 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 		result.AggressiveTarget, result.AggressiveTargetRan, err = postCombat.RunNPCAggressiveTargetTick(ctx, s.combatInterval)
 	}
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
 	}
-	return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, nil
+	return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, nil
 }
