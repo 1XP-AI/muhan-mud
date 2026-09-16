@@ -91,6 +91,11 @@ type NPCCombatRoundProposal struct {
 	expectedDissolveReadySlot      int
 	expectedDissolveItemID         string
 	expectedDissolveItemName       string
+
+	// Event is reducer-owned ephemeral output metadata. It is carried through
+	// the round candidate so transport can publish the source-composed output
+	// only after the containing durable command commits.
+	Event *NPCCombatEvent `json:"-"`
 }
 
 // NPCCombatRoundResult is the committed projection. TargetHP is retained as
@@ -138,6 +143,71 @@ type NPCCombatRoundResult struct {
 	PlayerHP               int
 	TargetHP               int
 	Killed                 bool
+	// Event is intentionally nonserialized receipt metadata. The transport
+	// copies it into its in-memory post-commit fan-out list.
+	Event *NPCCombatEvent `json:"-"`
+}
+
+// NPCCombatEvent is the source-composed output for one ordinary NPC swing.
+// TargetText is delivered only to TargetID; RoomText is delivered to current
+// same-room observers other than ExcludeTargetID. The event is ephemeral and
+// must not become part of the public command receipt or world snapshot.
+type NPCCombatEvent struct {
+	RoomID          int16
+	NPCID           string
+	NPCName         string
+	TargetID        string
+	TargetName      string
+	ExcludeTargetID string
+	Hit             bool
+	Damage          int
+	TargetText      string
+	RoomText        string
+}
+
+// NPCCombatHitActorText preserves update.c:481's private target output. The
+// trailing newline follows the existing Go actor-event convention.
+func NPCCombatHitActorText(npcName string, damage int) string {
+	return fmt.Sprintf("\n%s%s 당신에게 %d만큼의 상처를 입혔습니다.\n", npcName, legacySubjectParticle(npcName), damage)
+}
+
+// NPCCombatHitRoomText preserves update.c:483's same-room observer output.
+func NPCCombatHitRoomText(npcName, targetName string, damage int) string {
+	return fmt.Sprintf("\n%s%s %s%s %d만큼의 피해를 입힙니다.", npcName, legacySubjectParticle(npcName), targetName, valueObjectParticle(targetName), damage)
+}
+
+// NPCCombatMissActorText preserves update.c:589's private target output. C
+// emits no observer line for a miss, so NPCCombatEvent.RoomText stays empty.
+func NPCCombatMissActorText(npcName string) string {
+	return fmt.Sprintf("\n당신은 %s의 공격을 피했습니다.\n", npcName)
+}
+
+func npcCombatEventForRound(npcID string, npc LegacyMonster, targetID string, target LegacyMonster, hit bool, damage int) *NPCCombatEvent {
+	event := &NPCCombatEvent{
+		RoomID:          npc.RoomID,
+		NPCID:           npcID,
+		NPCName:         npc.Name,
+		TargetID:        targetID,
+		TargetName:      target.Name,
+		ExcludeTargetID: targetID,
+		Hit:             hit,
+		Damage:          damage,
+	}
+	if hit {
+		event.TargetText = NPCCombatHitActorText(npc.Name, damage)
+		event.RoomText = NPCCombatHitRoomText(npc.Name, target.Name, damage)
+	} else {
+		event.TargetText = NPCCombatMissActorText(npc.Name)
+	}
+	return event
+}
+
+func cloneNPCCombatEvent(event *NPCCombatEvent) *NPCCombatEvent {
+	if event == nil {
+		return nil
+	}
+	cloned := *event
+	return &cloned
 }
 
 // NPCCombatBreathType is the two-bit MBRWP1/MBRWP2 value from mtype.h. The
@@ -511,6 +581,7 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	}
 	if n < threshold {
 		proposal.Hit = false
+		proposal.Event = npcCombatEventForRound(npcID, npc.Body, playerID, player.Body, false, 0)
 		return proposal, nil
 	}
 	nextPlayer := next.Players[playerID]
@@ -739,6 +810,7 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	proposal.Damage = damage
 	proposal.expectedDamage = damage
 	proposal.PlayerHPAfter = int(nextPlayer.Body.HPCurrent)
+	proposal.Event = npcCombatEventForRound(npcID, npc.Body, playerID, player.Body, true, damage)
 	if damage >= int(player.Body.HPCurrent) {
 		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat player death continuation pending")
 	}
@@ -761,6 +833,10 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	}
 	if proposal.Hit != proposal.expectedHit || proposal.Critical != proposal.expectedCritical || proposal.Damage != proposal.expectedDamage || (!proposal.Hit && proposal.Damage != 0) || (proposal.Critical && !proposal.Hit) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat outcome")
+	}
+	expectedEvent := npcCombatEventForRound(proposal.NPCID, npc.Body, proposal.PlayerID, player.Body, proposal.Hit, proposal.Damage)
+	if !reflect.DeepEqual(proposal.Event, expectedEvent) {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat event")
 	}
 	if proposal.Poisoned != proposal.expectedPoisoned || (proposal.Poisoned && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatPoisonerFlag))) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat poison outcome")
@@ -985,6 +1061,7 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 		DissolveReadySlot:      proposal.DissolveReadySlot, DissolveItemID: proposal.DissolveItemID,
 		DissolveItemName: proposal.DissolveItemName, Damage: proposal.Damage,
 		PlayerHP: proposal.PlayerHPAfter, TargetHP: proposal.PlayerHPAfter, Killed: false,
+		Event: cloneNPCCombatEvent(proposal.Event),
 	}
 	return proposal.next.clone(), result, nil
 }

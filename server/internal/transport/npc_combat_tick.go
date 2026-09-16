@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,10 @@ type NPCCombatTickAttack struct {
 	Damage                 int                       `json:"damage"`
 	PlayerHP               int                       `json:"player_hp"`
 	Lethal                 bool                      `json:"lethal"`
+	// Event is reducer-owned ephemeral output metadata. It is never included
+	// in the public command receipt; NPCCombatTickSummary.Events carries the
+	// in-process post-commit projection instead.
+	Event *world.NPCCombatEvent `json:"-"`
 }
 
 // NPCCombatTickSkip records a canonical active NPC for which C would not
@@ -138,6 +143,10 @@ type NPCCombatTickSummary struct {
 	FailClosed        []NPCCombatTickFailClosed `json:"fail_closed,omitempty"`
 	Deaths            []NPCCombatTickDeath      `json:"deaths,omitempty"`
 	StoppedAfterDeath bool                      `json:"stopped_after_death,omitempty"`
+
+	// Events are intentionally nonserialized. The reducer creates them in
+	// source order and runNPCCombatPhaseAt publishes them only after Commit.
+	Events []world.NPCCombatEvent `json:"-"`
 }
 
 // NPCCombatTickOptions controls the optional player-death continuation.  The
@@ -286,6 +295,7 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
+	var committedEvents []world.NPCCombatEvent
 	g.commandMu.Lock()
 	receipt, err := engine.Execute(ctx, g.config.Store, g.config.WorldID, commandID, request, func(raw json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
@@ -303,6 +313,7 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 		if err != nil {
 			return nil, nil, err
 		}
+		committedEvents = append(committedEvents, summary.Events...)
 		saved, err := json.Marshal(next)
 		if err != nil {
 			return nil, nil, err
@@ -314,15 +325,84 @@ func (g *WorldConnector) runNPCCombatPhaseAt(ctx context.Context, commandID stri
 	if err != nil {
 		return receipt, err
 	}
+	receipt.NPCCombatEvents = nil
 	if !receipt.Replayed {
+		if len(committedEvents) != 0 {
+			receipt.NPCCombatEvents = append([]world.NPCCombatEvent(nil), committedEvents...)
+		}
 		var summary NPCCombatTickSummary
 		if decodeErr := json.Unmarshal(receipt.Response, &summary); decodeErr == nil {
 			if after, ok := g.snapshot(ctx); ok {
+				for _, event := range receipt.NPCCombatEvents {
+					g.publishNPCCombat(after, event)
+				}
 				g.publishFamilyDefeat(after, familyDefeatEventsFromDeaths(summary.Deaths))
 			}
 		}
 	}
 	return receipt, nil
+}
+
+// publishNPCCombat delivers one reducer-owned combat event after its durable
+// state commit. The target receives the private line first; deterministic
+// same-room observers then receive the room line, excluding both the target
+// and any connection whose actor ID is the acting NPC.
+func (g *WorldConnector) publishNPCCombat(after world.State, event world.NPCCombatEvent) {
+	if g == nil || event.NPCID == "" || event.NPCID == event.TargetID || event.NPCName == "" || event.TargetID == "" || event.TargetName == "" || event.ExcludeTargetID != event.TargetID || event.TargetText == "" {
+		return
+	}
+	npc, ok := after.NPCs[event.NPCID]
+	if !ok || npc.Body.Type != 1 || npc.Body.RoomID != event.RoomID || npc.Body.Name != event.NPCName {
+		return
+	}
+	target, ok := after.Players[event.TargetID]
+	if !ok || !target.Online || target.Body.Name != event.TargetName {
+		return
+	}
+	if event.Hit {
+		if event.Damage < 0 || event.RoomText == "" || event.TargetText != world.NPCCombatHitActorText(event.NPCName, event.Damage) || event.RoomText != world.NPCCombatHitRoomText(event.NPCName, event.TargetName, event.Damage) {
+			return
+		}
+	} else if event.Damage != 0 || event.RoomText != "" || event.TargetText != world.NPCCombatMissActorText(event.NPCName) {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	connections := make([]*worldConnection, 0, len(g.connections))
+	for connection := range g.connections {
+		connections = append(connections, connection)
+	}
+	sort.SliceStable(connections, func(i, j int) bool {
+		return connections[i].lease.ActorID < connections[j].lease.ActorID
+	})
+
+	for _, connection := range connections {
+		if connection.lease.ActorID != event.TargetID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.TargetText:
+		default:
+		}
+	}
+	if event.RoomText == "" {
+		return
+	}
+	for _, connection := range connections {
+		actorID := connection.lease.ActorID
+		if actorID == event.ExcludeTargetID || actorID == event.NPCID || connection.events == nil {
+			continue
+		}
+		player, ok := after.Players[actorID]
+		if !ok || !player.Online || player.Body.RoomID != event.RoomID {
+			continue
+		}
+		select {
+		case connection.events <- event.RoomText:
+		default:
+		}
+	}
 }
 
 // PlanNPCCombatTick composes the source-backed one-round reducer for every
@@ -400,6 +480,9 @@ func PlanNPCCombatTickWithOptions(state world.State, slot int64, now int32, roll
 		if !lethal {
 			next = candidate
 			summary.Attacks = append(summary.Attacks, attack)
+			if attack.Event != nil {
+				summary.Events = append(summary.Events, *attack.Event)
+			}
 			continue
 		}
 
@@ -421,6 +504,9 @@ func PlanNPCCombatTickWithOptions(state world.State, slot int64, now int32, roll
 		next = deathState
 		attack.Lethal = true
 		summary.Attacks = append(summary.Attacks, attack)
+		if attack.Event != nil {
+			summary.Events = append(summary.Events, *attack.Event)
+		}
 		summary.Deaths = append(summary.Deaths, death)
 		// update_active resets cp to first_active after die().  This command
 		// stops here instead of guessing whether a restarted traversal should
@@ -482,6 +568,36 @@ func cloneNPCCombatState(state world.State) (world.State, error) {
 	return world.DecodeState(raw)
 }
 
+func npcCombatTickAttackFromResult(result world.NPCCombatRoundResult) NPCCombatTickAttack {
+	attack := NPCCombatTickAttack{
+		NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
+		Hit: result.Hit, Critical: result.Critical, Poisoned: result.Poisoned,
+		Diseased: result.Diseased, Blinded: result.Blinded,
+		BreathTriggered: result.BreathTriggered, BreathType: result.BreathType,
+		BreathRoll: result.BreathRoll, BreathDiceCount: result.BreathDiceCount,
+		BreathDiceSides: result.BreathDiceSides, BreathDicePlus: result.BreathDicePlus,
+		BreathResisted: result.BreathResisted, BreathPoisoned: result.BreathPoisoned,
+		EnergyDrainTriggered: result.EnergyDrainTriggered, EnergyRoll: result.EnergyRoll,
+		EnergyBand: result.EnergyBand, EnergyDiceCount: result.EnergyDiceCount,
+		EnergyDiceSides: result.EnergyDiceSides, EnergyDicePlus: result.EnergyDicePlus,
+		EnergyDrain: result.EnergyDrain, ExperienceBefore: result.ExperienceBefore,
+		ExperienceAfter: result.ExperienceAfter, ProficiencyBefore: result.ProficiencyBefore,
+		ProficiencyAfter: result.ProficiencyAfter, RealmBefore: result.RealmBefore,
+		RealmAfter:        result.RealmAfter,
+		DissolveSucceeded: result.DissolveSucceeded, Dissolved: result.Dissolved,
+		DissolveProtected: result.DissolveProtected, DissolveRoll: result.DissolveRoll,
+		DissolveSelectionRoll:  result.DissolveSelectionRoll,
+		DissolveCandidateCount: result.DissolveCandidateCount,
+		DissolveReadySlot:      result.DissolveReadySlot, DissolveItemID: result.DissolveItemID,
+		DissolveItemName: result.DissolveItemName, Damage: result.Damage, PlayerHP: result.PlayerHP,
+	}
+	if result.Event != nil {
+		event := *result.Event
+		attack.Event = &event
+	}
+	return attack
+}
+
 // planNPCCombatRoundForTick preserves the existing non-lethal path exactly.
 // On the one lethal error emitted by PlanNPCCombatRound, it replays the same
 // random values against a temporary 32767-HP victim to recover the source
@@ -496,28 +612,7 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 		if applyErr != nil {
 			return world.State{}, NPCCombatTickAttack{}, false, fmt.Errorf("NPC %q combat apply: %w", npcID, applyErr)
 		}
-		return candidate, NPCCombatTickAttack{
-			NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
-			Hit: result.Hit, Critical: result.Critical, Poisoned: result.Poisoned,
-			Diseased: result.Diseased, Blinded: result.Blinded,
-			BreathTriggered: result.BreathTriggered, BreathType: result.BreathType,
-			BreathRoll: result.BreathRoll, BreathDiceCount: result.BreathDiceCount,
-			BreathDiceSides: result.BreathDiceSides, BreathDicePlus: result.BreathDicePlus,
-			BreathResisted: result.BreathResisted, BreathPoisoned: result.BreathPoisoned,
-			EnergyDrainTriggered: result.EnergyDrainTriggered, EnergyRoll: result.EnergyRoll,
-			EnergyBand: result.EnergyBand, EnergyDiceCount: result.EnergyDiceCount,
-			EnergyDiceSides: result.EnergyDiceSides, EnergyDicePlus: result.EnergyDicePlus,
-			EnergyDrain: result.EnergyDrain, ExperienceBefore: result.ExperienceBefore,
-			ExperienceAfter: result.ExperienceAfter, ProficiencyBefore: result.ProficiencyBefore,
-			ProficiencyAfter: result.ProficiencyAfter, RealmBefore: result.RealmBefore,
-			RealmAfter:        result.RealmAfter,
-			DissolveSucceeded: result.DissolveSucceeded, Dissolved: result.Dissolved,
-			DissolveProtected: result.DissolveProtected, DissolveRoll: result.DissolveRoll,
-			DissolveSelectionRoll:  result.DissolveSelectionRoll,
-			DissolveCandidateCount: result.DissolveCandidateCount,
-			DissolveReadySlot:      result.DissolveReadySlot, DissolveItemID: result.DissolveItemID,
-			DissolveItemName: result.DissolveItemName, Damage: result.Damage, PlayerHP: result.PlayerHP,
-		}, false, nil
+		return candidate, npcCombatTickAttackFromResult(result), false, nil
 	}
 	if !isNPCCombatLethalBoundary(err) {
 		return world.State{}, NPCCombatTickAttack{}, false, err
@@ -562,29 +657,10 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 	if err := probeCandidate.Validate(); err != nil {
 		return world.State{}, NPCCombatTickAttack{}, true, fmt.Errorf("lethal NPC combat candidate: %w", err)
 	}
-	return probeCandidate, NPCCombatTickAttack{
-		NPCID: probeResult.NPCID, PlayerID: probeResult.PlayerID, RoomID: probeResult.RoomID,
-		Hit: probeResult.Hit, Critical: probeResult.Critical, Poisoned: probeResult.Poisoned,
-		Diseased: probeResult.Diseased, Blinded: probeResult.Blinded,
-		BreathTriggered: probeResult.BreathTriggered, BreathType: probeResult.BreathType,
-		BreathRoll: probeResult.BreathRoll, BreathDiceCount: probeResult.BreathDiceCount,
-		BreathDiceSides: probeResult.BreathDiceSides, BreathDicePlus: probeResult.BreathDicePlus,
-		BreathResisted: probeResult.BreathResisted, BreathPoisoned: probeResult.BreathPoisoned,
-		EnergyDrainTriggered: probeResult.EnergyDrainTriggered, EnergyRoll: probeResult.EnergyRoll,
-		EnergyBand: probeResult.EnergyBand, EnergyDiceCount: probeResult.EnergyDiceCount,
-		EnergyDiceSides: probeResult.EnergyDiceSides, EnergyDicePlus: probeResult.EnergyDicePlus,
-		EnergyDrain: probeResult.EnergyDrain, ExperienceBefore: probeResult.ExperienceBefore,
-		ExperienceAfter: probeResult.ExperienceAfter, ProficiencyBefore: probeResult.ProficiencyBefore,
-		ProficiencyAfter: probeResult.ProficiencyAfter, RealmBefore: probeResult.RealmBefore,
-		RealmAfter:        probeResult.RealmAfter,
-		DissolveSucceeded: probeResult.DissolveSucceeded, Dissolved: probeResult.Dissolved,
-		DissolveProtected: probeResult.DissolveProtected, DissolveRoll: probeResult.DissolveRoll,
-		DissolveSelectionRoll:  probeResult.DissolveSelectionRoll,
-		DissolveCandidateCount: probeResult.DissolveCandidateCount,
-		DissolveReadySlot:      probeResult.DissolveReadySlot, DissolveItemID: probeResult.DissolveItemID,
-		DissolveItemName: probeResult.DissolveItemName, Damage: probeResult.Damage,
-		PlayerHP: actualAfter, Lethal: true,
-	}, true, nil
+	attack := npcCombatTickAttackFromResult(probeResult)
+	attack.PlayerHP = actualAfter
+	attack.Lethal = true
+	return probeCandidate, attack, true, nil
 }
 
 func itemCount(items *world.ItemCollection) int {
