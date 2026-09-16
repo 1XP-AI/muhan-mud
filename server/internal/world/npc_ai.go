@@ -23,6 +23,7 @@ const (
 	npcAINoPlayers      = "no-players"
 	npcAIExistingEnemy  = "existing-enemy"
 	npcAINotAggressive  = "not-aggressive"
+	npcAINotReady       = "not-ready"
 	npcAINoTarget       = "no-target"
 	npcAIEscaped        = "escaped"
 	npcAITargetAcquired = "target-acquired"
@@ -34,20 +35,36 @@ const (
 // source-bound RNG draws, so Apply can verify and replay a decision without
 // calling a random source again.
 type NPCAggressiveTargetAction struct {
-	NPCID             string      `json:"npc_id"`
-	RoomID            int16       `json:"room_id"`
-	Status            string      `json:"status"`
-	TargetID          string      `json:"target_id,omitempty"`
-	TargetName        string      `json:"target_name,omitempty"`
-	TotalWeight       int         `json:"total_weight,omitempty"`
-	SelectionRoll     int         `json:"selection_roll,omitempty"`
-	TargetWeight      int         `json:"target_weight,omitempty"`
-	EscapeRoll        int         `json:"escape_roll,omitempty"`
-	Escaped           bool        `json:"escaped,omitempty"`
-	TimerWrite        bool        `json:"timer_write,omitempty"`
-	AttackTimerBefore LegacyTimer `json:"attack_timer_before"`
-	AttackTimerAfter  LegacyTimer `json:"attack_timer_after"`
-	EnemyAdded        bool        `json:"enemy_added,omitempty"`
+	NPCID             string                    `json:"npc_id"`
+	RoomID            int16                     `json:"room_id"`
+	Status            string                    `json:"status"`
+	TargetID          string                    `json:"target_id,omitempty"`
+	TargetName        string                    `json:"target_name,omitempty"`
+	TotalWeight       int                       `json:"total_weight,omitempty"`
+	SelectionRoll     int                       `json:"selection_roll,omitempty"`
+	TargetWeight      int                       `json:"target_weight,omitempty"`
+	EscapeRoll        int                       `json:"escape_roll,omitempty"`
+	Escaped           bool                      `json:"escaped,omitempty"`
+	TimerWrite        bool                      `json:"timer_write,omitempty"`
+	AttackTimerBefore LegacyTimer               `json:"attack_timer_before"`
+	AttackTimerAfter  LegacyTimer               `json:"attack_timer_after"`
+	EnemyAdded        bool                      `json:"enemy_added,omitempty"`
+	Event             *NPCAggressiveTargetEvent `json:"event,omitempty"`
+}
+
+// NPCAggressiveTargetEvent is the durable actor/room projection of the two
+// update.c:638-645 outputs. TargetText is delivered only to TargetID; RoomText
+// is delivered to the other occupants of RoomID. The identity and exclusion
+// fields keep future tick composition transport-neutral and replay-safe.
+type NPCAggressiveTargetEvent struct {
+	RoomID          int16  `json:"room_id"`
+	NPCID           string `json:"npc_id"`
+	NPCName         string `json:"npc_name"`
+	TargetID        string `json:"target_id"`
+	TargetName      string `json:"target_name"`
+	ExcludeTargetID string `json:"exclude_target_id"`
+	TargetText      string `json:"target_text"`
+	RoomText        string `json:"room_text"`
 }
 
 // NPCAggressiveTargetAcquisitionProposal is a complete-snapshot candidate
@@ -60,15 +77,17 @@ type NPCAggressiveTargetAcquisitionProposal struct {
 	Changed bool
 	NoOp    bool
 
-	before State
+	before     State
+	plannedNow int32
 }
 
 // NPCAggressiveTargetResult is the durable, transport-neutral receipt for a
-// target-acquisition pass.  It contains no socket output; output fan-out is a
-// later scheduler concern and must derive from the committed receipt.
+// target-acquisition pass. Event projections carry the source-composed actor
+// and room text; a later scheduler owns fan-out and socket delivery.
 type NPCAggressiveTargetResult struct {
 	Now     int32                       `json:"now"`
 	Actions []NPCAggressiveTargetAction `json:"actions,omitempty"`
+	Events  []NPCAggressiveTargetEvent  `json:"events,omitempty"`
 	Changed bool                        `json:"changed"`
 	NoOp    bool                        `json:"no_op,omitempty"`
 }
@@ -109,7 +128,7 @@ func (s State) PlanNPCAggressiveTargetAcquisition(now int32, roll func(int, int)
 	if s.ActiveNPCIDs == nil {
 		return NPCAggressiveTargetAcquisitionProposal{}, fmt.Errorf("NPC AI active order unresolved")
 	}
-	proposal := NPCAggressiveTargetAcquisitionProposal{Now: now, before: s.clone()}
+	proposal := NPCAggressiveTargetAcquisitionProposal{Now: now, before: s.clone(), plannedNow: now}
 	for _, npcID := range s.ActiveNPCIDs {
 		action, err := planNPCAIAggressiveTargetAction(s, npcID, now, roll)
 		if err != nil {
@@ -129,7 +148,7 @@ func (s State) ApplyNPCAggressiveTargetAcquisition(proposal NPCAggressiveTargetA
 	if err := s.Validate(); err != nil {
 		return State{}, NPCAggressiveTargetResult{}, err
 	}
-	if proposal.Now < 0 || proposal.before.Version != 1 || !reflect.DeepEqual(s, proposal.before) {
+	if proposal.Now < 0 || proposal.Now != proposal.plannedNow || proposal.before.Version != 1 || !reflect.DeepEqual(s, proposal.before) {
 		return State{}, NPCAggressiveTargetResult{}, fmt.Errorf("stale or invalid NPC AI proposal")
 	}
 	if s.NPCs == nil || s.ActiveNPCIDs == nil {
@@ -165,6 +184,7 @@ func (s State) ApplyNPCAggressiveTargetAcquisition(proposal NPCAggressiveTargetA
 	result := NPCAggressiveTargetResult{
 		Now:     proposal.Now,
 		Actions: cloneNPCAIActions(expected),
+		Events:  cloneNPCAIEvents(expected),
 		Changed: changed,
 		NoOp:    !changed,
 	}
@@ -178,7 +198,7 @@ func (s State) ApplyNPCAggressiveTargetAcquisitionProposal(proposal NPCAggressiv
 }
 
 func planNPCAIAggressiveTargetAction(s State, npcID string, now int32, roll func(int, int) int) (NPCAggressiveTargetAction, error) {
-	action, npc, room, mode, eligible, err := npcAIAggressiveTargetPrefix(s, npcID)
+	action, npc, room, mode, eligible, err := npcAIAggressiveTargetPrefix(s, npcID, now)
 	if err != nil || !eligible {
 		return action, err
 	}
@@ -222,6 +242,7 @@ func planNPCAIAggressiveTargetAction(s State, npcID string, now int32, roll func
 	action.AttackTimerAfter.LastTime = now
 	action.AttackTimerAfter.Interval = 0
 	action.EnemyAdded = !npcAIEnemyExists(npc.Enemies, EntityRef{Kind: "player", ID: targetID})
+	action.Event = npcAIAggressiveTargetEvent(npcID, npc.Body, targetID, s.Players[targetID].Body)
 	return action, nil
 }
 
@@ -233,7 +254,7 @@ func replayNPCAIAggressiveTargetAction(s State, npcID string, now int32, actions
 		return NPCAggressiveTargetAction{}, fmt.Errorf("NPC AI action count mismatch")
 	}
 	recorded := actions[index]
-	action, npc, room, mode, eligible, err := npcAIAggressiveTargetPrefix(s, npcID)
+	action, npc, room, mode, eligible, err := npcAIAggressiveTargetPrefix(s, npcID, now)
 	if err != nil || !eligible {
 		if err != nil {
 			return NPCAggressiveTargetAction{}, err
@@ -289,13 +310,14 @@ func replayNPCAIAggressiveTargetAction(s State, npcID string, now int32, actions
 	action.AttackTimerAfter.LastTime = now
 	action.AttackTimerAfter.Interval = 0
 	action.EnemyAdded = !npcAIEnemyExists(npc.Enemies, EntityRef{Kind: "player", ID: targetID})
+	action.Event = npcAIAggressiveTargetEvent(npcID, npc.Body, targetID, s.Players[targetID].Body)
 	if !reflect.DeepEqual(recorded, action) {
 		return NPCAggressiveTargetAction{}, fmt.Errorf("tampered NPC AI target action")
 	}
 	return action, nil
 }
 
-func npcAIAggressiveTargetPrefix(s State, npcID string) (NPCAggressiveTargetAction, NPCState, RoomState, npcAIAggroMode, bool, error) {
+func npcAIAggressiveTargetPrefix(s State, npcID string, now int32) (NPCAggressiveTargetAction, NPCState, RoomState, npcAIAggroMode, bool, error) {
 	npc, ok := s.NPCs[npcID]
 	if !ok || npcID == "" || npc.Body.Type != 1 {
 		return NPCAggressiveTargetAction{}, NPCState{}, RoomState{}, 0, false, fmt.Errorf("unknown active NPC %q", npcID)
@@ -305,6 +327,10 @@ func npcAIAggressiveTargetPrefix(s State, npcID string) (NPCAggressiveTargetActi
 		return NPCAggressiveTargetAction{}, NPCState{}, RoomState{}, 0, false, fmt.Errorf("active NPC %q room membership absent", npcID)
 	}
 	action := NPCAggressiveTargetAction{NPCID: npcID, RoomID: npc.Body.RoomID}
+	if !npcAIAttackReady(npc.Body.Timers[npcAIAttackTimerIndex], now) {
+		action.Status = npcAINotReady
+		return action, npc, room, 0, false, nil
+	}
 	// update_active removes an NPC from first_active before it reads the
 	// room's enemy list when no player occupies the room. This target-only seam
 	// records that as a pure no-op and intentionally does not infer peace from a
@@ -341,6 +367,38 @@ func npcAIAggroModeForBody(body LegacyMonster) (npcAIAggroMode, bool) {
 		return npcAIEvilPiety, true
 	default:
 		return 0, false
+	}
+}
+
+func npcAIAttackReady(timer LegacyTimer, now int32) bool {
+	// update.c expands LT(crt_ptr, LT_ATTCK) as ltime + interval and skips
+	// only when that deadline is strictly greater than t. Equality is ready.
+	return int64(timer.LastTime)+int64(timer.Interval) <= int64(now)
+}
+
+// NPCAggressiveTargetActorText is the direct notification printed to the
+// selected player by update.c:638.
+func NPCAggressiveTargetActorText(npcName string) string {
+	return fmt.Sprintf("\n%s%s 당신을 공격합니다.\n", npcName, legacySubjectParticle(npcName))
+}
+
+// NPCAggressiveTargetRoomText is the room notification broadcast by
+// update.c:643-645, excluding the selected player from the room fan-out.
+func NPCAggressiveTargetRoomText(npcName, targetName string) string {
+	targetDisplay := targetName + "님"
+	return fmt.Sprintf("\n%s%s %s%s 공격합니다.\n", npcName, legacySubjectParticle(npcName), targetDisplay, valueObjectParticle(targetDisplay))
+}
+
+func npcAIAggressiveTargetEvent(npcID string, npc LegacyMonster, targetID string, target LegacyMonster) *NPCAggressiveTargetEvent {
+	return &NPCAggressiveTargetEvent{
+		RoomID:          npc.RoomID,
+		NPCID:           npcID,
+		NPCName:         npc.Name,
+		TargetID:        targetID,
+		TargetName:      target.Name,
+		ExcludeTargetID: targetID,
+		TargetText:      NPCAggressiveTargetActorText(npc.Name),
+		RoomText:        NPCAggressiveTargetRoomText(npc.Name, target.Name),
 	}
 }
 
@@ -468,5 +526,21 @@ func cloneNPCAIActions(in []NPCAggressiveTargetAction) []NPCAggressiveTargetActi
 	}
 	out := make([]NPCAggressiveTargetAction, len(in))
 	copy(out, in)
+	for i := range out {
+		if in[i].Event != nil {
+			event := *in[i].Event
+			out[i].Event = &event
+		}
+	}
 	return out
+}
+
+func cloneNPCAIEvents(actions []NPCAggressiveTargetAction) []NPCAggressiveTargetEvent {
+	var events []NPCAggressiveTargetEvent
+	for _, action := range actions {
+		if action.Event != nil {
+			events = append(events, *action.Event)
+		}
+	}
+	return events
 }

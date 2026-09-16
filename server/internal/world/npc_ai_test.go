@@ -333,6 +333,53 @@ func TestNPCAggressiveTargetUsesStrictDexterityEscapeBoundary(t *testing.T) {
 	}
 }
 
+func TestNPCAggressiveTargetHonorsAttackTimerGateAndReadyBoundary(t *testing.T) {
+	state := npcAITargetFixture(t)
+	npc := state.NPCs["wolf"]
+	npcAISetFlag(&npc.Body, npcAIAggressiveFlag)
+	npc.Body.Timers[npcAIAttackTimerIndex] = LegacyTimer{LastTime: 100, Interval: 10, Misc: 7}
+	state.NPCs["wolf"] = npc
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	before := state.clone()
+	calls := 0
+	notReady, err := state.PlanNPCAggressiveTargetAcquisition(109, func(int, int) int {
+		calls++
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || !reflect.DeepEqual(state, before) {
+		t.Fatalf("not-ready plan consumed RNG or mutated state: calls=%d state=%+v before=%+v", calls, state, before)
+	}
+	if !notReady.NoOp || notReady.Changed || len(notReady.Actions) != 1 || notReady.Actions[0].Status != npcAINotReady || notReady.Actions[0].TimerWrite || notReady.Actions[0].Event != nil {
+		t.Fatalf("not-ready proposal=%+v", notReady)
+	}
+	next, result, err := state.ApplyNPCAggressiveTargetAcquisition(notReady)
+	if err != nil || result.Now != 109 || !result.NoOp || result.Changed || !reflect.DeepEqual(next, state) {
+		t.Fatalf("not-ready apply next=%+v result=%+v err=%v", next, result, err)
+	}
+
+	calls = 0
+	ready, err := state.PlanNPCAggressiveTargetAcquisition(110, func(low, high int) int {
+		calls++
+		if low != 1 || high != 27 {
+			t.Fatalf("ready selection draw=%d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil || calls != 1 || len(ready.Actions) != 1 || ready.Actions[0].Status != npcAITargetAcquired {
+		t.Fatalf("ready proposal=%+v calls=%d err=%v", ready, calls, err)
+	}
+	readyNext, readyResult, err := state.ApplyNPCAggressiveTargetAcquisition(ready)
+	if err != nil || readyResult.NoOp || !readyResult.Changed || readyNext.NPCs["wolf"].Body.Timers[npcAIAttackTimerIndex] != (LegacyTimer{LastTime: 110, Interval: 0, Misc: 7}) {
+		t.Fatalf("ready apply next=%+v result=%+v err=%v", readyNext, readyResult, err)
+	}
+}
+
 func TestNPCAggressiveTargetDoesNotRerollEqualDexterityOrDuplicateEnemy(t *testing.T) {
 	state := npcAITargetFixture(t)
 	room := state.Rooms[1]
@@ -473,6 +520,99 @@ func TestApplyNPCAggressiveTargetRejectsStaleAndTamperedAtomically(t *testing.T)
 	}
 	if !reflect.DeepEqual(state, before) {
 		t.Fatal("failed apply mutated source")
+	}
+}
+
+func TestApplyNPCAggressiveTargetBindsNoOpTimestampAtomically(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*State)
+	}{
+		{
+			name:   "peaceful active NPC",
+			mutate: func(*State) {},
+		},
+		{
+			name:   "known empty active order",
+			mutate: func(s *State) { s.ActiveNPCIDs = []string{} },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := npcAITargetFixture(t)
+			tc.mutate(&state)
+			proposal, err := state.PlanNPCAggressiveTargetAcquisition(100, func(int, int) int {
+				t.Fatal("no-op consumed RNG")
+				return 0
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.NoOp || proposal.Changed {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			tampered := proposal
+			tampered.Now++
+			before := state.clone()
+			if got, _, err := state.ApplyNPCAggressiveTargetAcquisition(tampered); err == nil || !reflect.DeepEqual(got, State{}) {
+				t.Fatalf("tampered no-op timestamp accepted got=%+v err=%v", got, err)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatal("failed no-op apply mutated source")
+			}
+		})
+	}
+}
+
+func TestNPCAggressiveTargetExposesDurableActorAndRoomEvent(t *testing.T) {
+	state := npcAITargetFixture(t)
+	npc := state.NPCs["wolf"]
+	npcAISetFlag(&npc.Body, npcAIAggressiveFlag)
+	state.NPCs["wolf"] = npc
+	proposal, err := state.PlanNPCAggressiveTargetAcquisition(100, func(low, high int) int {
+		if low != 1 || high != 27 {
+			t.Fatalf("selection draw=%d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposal.Actions) != 1 || proposal.Actions[0].Event == nil {
+		t.Fatalf("proposal action event=%+v", proposal.Actions)
+	}
+	event := proposal.Actions[0].Event
+	if event.RoomID != 1 || event.NPCID != "wolf" || event.NPCName != "늑대" || event.TargetID != "one" || event.TargetName != "하나" || event.ExcludeTargetID != "one" || event.TargetText != NPCAggressiveTargetActorText("늑대") || event.RoomText != NPCAggressiveTargetRoomText("늑대", "하나") {
+		t.Fatalf("proposal event=%+v", event)
+	}
+
+	before := state.clone()
+	next, result, err := state.ApplyNPCAggressiveTargetAcquisition(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 || !reflect.DeepEqual(result.Events[0], *event) {
+		t.Fatalf("durable events=%+v want=%+v", result.Events, event)
+	}
+	if result.Now != 100 || result.Actions[0].Event == nil || !reflect.DeepEqual(*result.Actions[0].Event, result.Events[0]) {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(next.NPCs["wolf"].Enemies, []NPCEnemy{{Target: EntityRef{Kind: "player", ID: "one"}, Damage: 0}}) {
+		t.Fatalf("enemy state=%+v", next.NPCs["wolf"].Enemies)
+	}
+	replay, replayResult, replayErr := state.ApplyNPCAggressiveTargetAcquisition(proposal)
+	if replayErr != nil || !reflect.DeepEqual(replay, next) || !reflect.DeepEqual(replayResult, result) {
+		t.Fatalf("event replay state=%+v result=%+v err=%v", replay, replayResult, replayErr)
+	}
+
+	tampered := proposal
+	tampered.Actions = cloneNPCAIActions(proposal.Actions)
+	tampered.Actions[0].Event.RoomText = "위조된 방 알림"
+	if got, _, err := state.ApplyNPCAggressiveTargetAcquisition(tampered); err == nil || !reflect.DeepEqual(got, State{}) {
+		t.Fatalf("tampered event accepted got=%+v err=%v", got, err)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatal("event apply mutated source")
 	}
 }
 
