@@ -112,18 +112,19 @@ func ParseCastLine(line string) (CastCommand, bool) {
 		if tokens[2] == "" || strings.TrimSpace(tokens[2]) != tokens[2] || (!world.IsTargetedCastSpell(tokens[1]) && !world.IsRecallCastSpell(tokens[1])) {
 			return CastCommand{}, false
 		}
-		if world.IsRecallCastSpell(tokens[1]) && strings.IndexFunc(tokens[2], unicode.IsSpace) >= 0 {
+		if (world.IsRecallCastSpell(tokens[1]) || world.IsKnowAlignmentCastSpell(tokens[1])) && strings.IndexFunc(tokens[2], unicode.IsSpace) >= 0 {
 			return CastCommand{}, false
 		}
 		// A numeric-only third token after 귀환 is the legacy val[2] with
 		// its target omitted, not a player display name. Reject it before
 		// ExecuteGame can create a deterministic missing-target receipt.
-		if world.IsRecallCastSpell(tokens[1]) && castTargetLooksLikeOccurrence(tokens[2]) {
+		if (world.IsRecallCastSpell(tokens[1]) || world.IsKnowAlignmentCastSpell(tokens[1])) && castTargetLooksLikeOccurrence(tokens[2]) {
 			return CastCommand{}, false
 		}
 		return CastCommand{SpellName: tokens[1], Target: tokens[2], Occurrence: 1}, true
 	}
-	if len(tokens) != 4 || !world.IsRecallCastSpell(tokens[1]) || tokens[2] == "" || strings.TrimSpace(tokens[2]) != tokens[2] || strings.IndexFunc(tokens[2], unicode.IsSpace) >= 0 || castTargetLooksLikeOccurrence(tokens[2]) {
+	occurrenceCast := world.IsRecallCastSpell(tokens[1]) || world.IsKnowAlignmentCastSpell(tokens[1])
+	if len(tokens) != 4 || !occurrenceCast || tokens[2] == "" || strings.TrimSpace(tokens[2]) != tokens[2] || strings.IndexFunc(tokens[2], unicode.IsSpace) >= 0 || castTargetLooksLikeOccurrence(tokens[2]) {
 		return CastCommand{}, false
 	}
 	occurrence, ok := parseCastOccurrence(tokens[3])

@@ -55,10 +55,17 @@ func IsSummonCastSpell(name string) bool {
 	return err == nil && spec.Index == castSummonSpell && spec.healKind == castHealSummon
 }
 
+// IsKnowAlignmentCastSpell reports whether the token uniquely resolves to the
+// targeted SKNOWA reducer.
+func IsKnowAlignmentCastSpell(name string) bool {
+	spec, err := castSpellSpecFor(name)
+	return err == nil && spec.Index == castKnowAlignmentSpell && spec.healKind == castHealTimed
+}
+
 // IsTargetedCastSpell admits the three-token `주문 <spell> <name>` forms that
-// already have a migrated targeted reducer (천리안, 소환).
+// already have a migrated targeted reducer (천리안, 소환, 선악감지).
 func IsTargetedCastSpell(name string) bool {
-	return IsLocateCastSpell(name) || IsSummonCastSpell(name)
+	return IsLocateCastSpell(name) || IsSummonCastSpell(name) || IsKnowAlignmentCastSpell(name)
 }
 
 func summonManaCost(class byte) int16 {

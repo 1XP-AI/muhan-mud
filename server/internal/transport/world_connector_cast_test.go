@@ -115,6 +115,103 @@ func TestWorldConnectorSubmitLocateNightHourFailsClosedWithoutItems(t *testing.T
 	}
 }
 
+func connectorKnowAlignmentFixture(t *testing.T) *connectorCommandStore {
+	t.Helper()
+	var spells [16]byte
+	spells[41/8] |= 1 << uint(41%8)
+	state := world.State{
+		Version: 1,
+		Rooms: map[int16]world.RoomState{1: {
+			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "광장"}},
+			PlayerIDs: []string{"a", "b", "c"},
+		}},
+		Players: map[string]world.PlayerState{
+			"a": {Body: world.LegacyMonster{
+				Name: "Alice", Type: 0, Class: world.ClericClass, Level: 8, RoomID: 1,
+				Stats: [5]byte{12, 12, 12, 18, 18}, MPMax: 50, MPCurrent: 30, Spells: spells,
+			}, Online: true},
+			"b": {Body: world.LegacyMonster{Name: "Bob", Type: 0, Class: 4, Level: 4, RoomID: 1}, Online: true},
+			"c": {Body: world.LegacyMonster{Name: "Bobby", Type: 0, Class: 4, Level: 4, RoomID: 1}, Online: true},
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &connectorCommandStore{state: raw}
+}
+
+func TestWorldConnectorSubmitKnowAlignmentFansOutTargetAndSuppressesReplay(t *testing.T) {
+	baseStore := connectorKnowAlignmentFixture(t)
+	store := &familyMutationReplayStore{connectorCommandStore: baseStore}
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "know-alignment-world", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"a", "b", "c"})
+	actor, observer, target := connections["a"], connections["b"], connections["c"]
+	connector.config.Clock = func() (int32, int) { return 100, 12 }
+	connector.config.Roll = func(int, int) int {
+		t.Fatal("know-alignment target consumed RNG")
+		return 0
+	}
+
+	output, err := actor.Submit(context.Background(), "주문 선악 Bob 2")
+	if err != nil || output != "당신은 Bobby에게 선악감지 주문을 외웁니다.\r\n" || store.commits != 1 {
+		t.Fatalf("know-alignment output=%q err=%v commits=%d", output, err, store.commits)
+	}
+	roomWant := "\nAlice이 Bobby에게 선악감지 주문을 외웁니다.\r\n그는 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
+	targetWant := "\nAlice이 당신에게 선악감지 주문을 외웁니다.\r\n당신은 선악을 감지할 수 있는 식별력이 높아졌습니다.\r\n"
+	select {
+	case event := <-target.events:
+		if event != targetWant {
+			t.Fatalf("target private event=%q want=%q", event, targetWant)
+		}
+	default:
+		t.Fatal("target private event missing")
+	}
+	select {
+	case event := <-observer.events:
+		if event != roomWant {
+			t.Fatalf("observer room event=%q want=%q", event, roomWant)
+		}
+	default:
+		t.Fatal("observer room event missing")
+	}
+	select {
+	case event := <-target.events:
+		t.Fatalf("target received extra event=%q", event)
+	default:
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("observer received extra event=%q", event)
+	default:
+	}
+	select {
+	case event := <-actor.events:
+		t.Fatalf("actor received own event=%q", event)
+	default:
+	}
+
+	replay, err := actor.Submit(context.Background(), "주문 선악 Bob 2")
+	if err != nil || replay != output || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v commits=%d", replay, err, store.commits)
+	}
+	select {
+	case event := <-target.events:
+		t.Fatalf("target replay event=%q", event)
+	default:
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("observer replay event=%q", event)
+	default:
+	}
+}
+
 func connectorRecallState(male bool) world.State {
 	var spells [16]byte
 	spells[16/8] |= 1 << (16 % 8)

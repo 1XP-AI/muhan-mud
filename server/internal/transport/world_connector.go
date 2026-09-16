@@ -3337,7 +3337,7 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 					if world.IsRecallCastSpell(result.SpellName) {
 						c.game.publishRecall(after, result)
 					} else {
-						publishWorldRoomEvent(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.Text)
+						publishWorldRoomEventExcludingTarget(c.game, after, result.Event.RoomID, result.Event.ActorID, result.Event.ExcludeActorID, result.Event.ExcludeTargetID, result.Event.Text)
 					}
 				}
 				c.game.publishCastTarget(after, result)
