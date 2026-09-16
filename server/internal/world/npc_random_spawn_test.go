@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -283,6 +284,36 @@ func TestNPCRandomProducerUsesRPLWANAndNumWanderBounds(t *testing.T) {
 	}
 }
 
+func TestNPCRandomProducerRPLWANOnePlayerConsumesCountRoll(t *testing.T) {
+	state := npcRandomBaseState()
+	npcRandomAddPlayer(&state, "player", 1)
+	room := state.Rooms[1]
+	room.Resource.Random[0] = 1
+	npcRandomSetFlag(&room.Resource.Flags, npcRandomGroupFlag)
+	state.Rooms[1] = room
+	catalog := &npcRandomTestCatalog{
+		monsters: map[int16]LegacyMonster{1: npcRandomTemplate("single", 1, 19)},
+		objects:  map[int16]LegacyObject{},
+	}
+	roller := &npcRandomTestRoller{t: t, values: []int{1, 0, 1, 1, 0}}
+	proposal, err := state.PlanNPCRandomProducer(NPCRandomProducerInput{
+		Catalog:  catalog,
+		Roll:     roller.roll,
+		Allocate: npcRandomAllocator("single-id"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := proposal.Rooms[0]
+	if !decision.GroupWander || decision.SpawnCount != 1 || !decision.SpawnCountRolled || decision.SpawnCountRoll != 1 {
+		t.Fatalf("single-player RPLWAN decision=%+v", decision)
+	}
+	wantCalls := [][2]int{{1, 100}, {0, 9}, {1, 1}, {1, 100}, {0, 9}}
+	if !reflect.DeepEqual(roller.calls, wantCalls) {
+		t.Fatalf("single-player RPLWAN RNG calls=%v want=%v", roller.calls, wantCalls)
+	}
+}
+
 func TestNPCRandomProducerResetsTimersAndDexterityAttackInterval(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -299,6 +330,7 @@ func TestNPCRandomProducerResetsTimersAndDexterityAttackInterval(t *testing.T) {
 			room.Resource.Random[0] = 1
 			state.Rooms[1] = room
 			template := npcRandomTemplate("timer-wolf", 1, tc.dexterity)
+			template.Timers[npcRandomHealTimer] = LegacyTimer{LastTime: -1, Interval: 1, Misc: 17}
 			catalog := &npcRandomTestCatalog{
 				monsters: map[int16]LegacyMonster{1: template},
 				objects:  map[int16]LegacyObject{},
@@ -321,6 +353,10 @@ func TestNPCRandomProducerResetsTimersAndDexterityAttackInterval(t *testing.T) {
 				if body.Timers[timer].LastTime != 9876 {
 					t.Fatalf("timer %d=%+v", timer, body.Timers[timer])
 				}
+			}
+			healTimer := body.Timers[npcRandomHealTimer]
+			if healTimer.LastTime != 9876 || healTimer.Interval != 60 || healTimer.Misc != 17 {
+				t.Fatalf("heal timer=%+v", healTimer)
 			}
 			if body.Timers[npcRandomAttackTimer].Interval != tc.wantInterval || body.Timers[npcRandomScavengeTimer].Interval != template.Timers[npcRandomScavengeTimer].Interval || body.Timers[npcRandomWanderTimer].Interval != template.Timers[npcRandomWanderTimer].Interval {
 				t.Fatalf("timer intervals=%+v", body.Timers)
@@ -442,6 +478,55 @@ func TestNPCRandomProducerReloadsTemplatesAndPreservesAdmissionOrder(t *testing.
 	}
 	if !reflect.DeepEqual(next.Rooms[1].NPCIDs, []string{"second", "third", "first"}) || !reflect.DeepEqual(next.ActiveNPCIDs, []string{"third", "second", "first"}) {
 		t.Fatalf("applied order room=%v active=%v", next.Rooms[1].NPCIDs, next.ActiveNPCIDs)
+	}
+}
+
+func TestNPCRandomProducerPreservesPlyFirstEncounterRoomOrderAndDeduplicatesTraffic(t *testing.T) {
+	state := State{
+		Version: 1,
+		Rooms: map[int16]RoomState{
+			1: {
+				Resource:  LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1}, Traffic: 100},
+				Items:     &ItemCollection{Items: map[string]Item{}},
+				PlayerIDs: []string{"third"},
+			},
+			2: {
+				Resource:  LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 2}, Traffic: 100},
+				Items:     &ItemCollection{Items: map[string]Item{}},
+				PlayerIDs: []string{"first", "second"},
+			},
+		},
+		Players: map[string]PlayerState{
+			"first":  {Body: LegacyMonster{Name: "First", Type: 0, RoomID: 2}, Online: true},
+			"second": {Body: LegacyMonster{Name: "Second", Type: 0, RoomID: 2}, Online: true},
+			"third":  {Body: LegacyMonster{Name: "Third", Type: 0, RoomID: 1}, Online: true},
+		},
+		NPCs:         map[string]NPCState{},
+		ActiveNPCIDs: []string{},
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	roller := &npcRandomTestRoller{t: t, values: []int{1, 0, 1, 0}}
+	proposal, err := state.PlanNPCRandomProducer(NPCRandomProducerInput{
+		PlyOrder: []string{"second", "third", "first"},
+		Roll:     roller.roll,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []int16{proposal.Rooms[0].RoomID, proposal.Rooms[1].RoomID}; !reflect.DeepEqual(got, []int16{2, 1}) {
+		t.Fatalf("Ply first-encounter room order=%v", got)
+	}
+	if !reflect.DeepEqual(roller.calls, [][2]int{{1, 100}, {0, 9}, {1, 100}, {0, 9}}) {
+		t.Fatalf("traffic-room dedup RNG calls=%v", roller.calls)
+	}
+	next, err := state.ApplyNPCRandomProducer(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(next, state) {
+		t.Fatalf("empty random slots changed state: %#v", next)
 	}
 }
 
@@ -595,6 +680,62 @@ func TestNPCRandomProducerRejectsStaleTamperedAndReplayAtomically(t *testing.T) 
 	}
 	if len(next.NPCs) != 1 || next.NPCs["replay-id"].Body.Name != "replay" {
 		t.Fatalf("successful candidate=%#v", next)
+	}
+}
+
+func TestNPCRandomProducerConcurrentApplyConsumesSameProposalOnce(t *testing.T) {
+	state := npcRandomBaseState()
+	npcRandomAddPlayer(&state, "player", 1)
+	room := state.Rooms[1]
+	room.Resource.Random[0] = 1
+	state.Rooms[1] = room
+	catalog := &npcRandomTestCatalog{
+		monsters: map[int16]LegacyMonster{1: npcRandomTemplate("concurrent", 1, 19)},
+		objects:  map[int16]LegacyObject{},
+	}
+	proposal, err := state.PlanNPCRandomProducer(NPCRandomProducerInput{
+		Catalog:  catalog,
+		Roll:     func(low, _ int) int { return low },
+		Allocate: npcRandomAllocator("concurrent-id"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type applyResult struct {
+		state State
+		err   error
+	}
+	results := make(chan applyResult, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			next, applyErr := state.ApplyNPCRandomProducer(proposal)
+			results <- applyResult{state: next, err: applyErr}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	failures := 0
+	for result := range results {
+		if result.err == nil {
+			successes++
+			if len(result.state.NPCs) != 1 || result.state.NPCs["concurrent-id"].Body.Name != "concurrent" {
+				t.Fatalf("successful concurrent apply state=%#v", result.state)
+			}
+		} else {
+			failures++
+			if !reflect.DeepEqual(result.state, State{}) {
+				t.Fatalf("failed concurrent apply leaked state=%#v err=%v", result.state, result.err)
+			}
+		}
+	}
+	if successes != 1 || failures != 1 {
+		t.Fatalf("concurrent same-proposal applies successes=%d failures=%d", successes, failures)
 	}
 }
 

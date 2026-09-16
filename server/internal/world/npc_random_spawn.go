@@ -16,6 +16,7 @@ const (
 	npcRandomAttackTimer   = 3  // LT_ATTCK
 	npcRandomScavengeTimer = 4  // LT_MSCAV
 	npcRandomWanderTimer   = 6  // LT_MWAND
+	npcRandomHealTimer     = 8  // LT_HEALS
 	npcRandomGroupFlag     = 23 // RPLWAN
 	npcRandomEnchantFlag   = 21 // ORENCH
 	npcRandomFixedGoldFlag = 25 // MNRGLD
@@ -35,6 +36,11 @@ type NPCRandomProducerInput struct {
 	Catalog  SpawnCatalog
 	Roll     func(int, int) int
 	Allocate func() (string, error)
+	// PlyOrder is the live descriptor traversal order used by update_random.
+	// State keeps only per-room player membership order, so multi-room random
+	// production requires this explicit snapshot-bound order to preserve C's
+	// first-encounter room sequence. A single occupied room needs no seam.
+	PlyOrder []string
 }
 
 // NPCRandomSpawn is one newly admitted NPC in source admission order.  Body is
@@ -102,12 +108,12 @@ func (t *npcRandomApplyToken) consume() bool {
 	return t != nil && atomic.CompareAndSwapUint32(&t.used, 0, 1)
 }
 
-// PlanNPCRandomProducer ports src/update.c:146-230.  Rooms are visited once
-// in sorted room/ordered PlayerIDs traversal, matching the server's canonical
-// replacement for C's first descriptor encounter.  The operation is pure:
-// all world writes happen only in ApplyNPCRandomProducer.
+// PlanNPCRandomProducer ports src/update.c:146-230. Rooms are visited once
+// in the first-encounter order of the supplied C descriptor traversal, with
+// duplicate traffic rooms suppressed. The operation is pure: all world
+// writes happen only in ApplyNPCRandomProducer.
 func (s State) PlanNPCRandomProducer(in NPCRandomProducerInput) (NPCRandomProducerProposal, error) {
-	roomIDs, err := validateNPCRandomSource(s)
+	roomIDs, err := validateNPCRandomSource(s, in.PlyOrder)
 	if err != nil {
 		return NPCRandomProducerProposal{}, err
 	}
@@ -183,8 +189,12 @@ func (s State) PlanNPCRandomProducer(in NPCRandomProducerInput) (NPCRandomProduc
 		decision.TemplateWander = template.Wander
 		decision.GroupWander = flag(room.Resource.Flags[:], npcRandomGroupFlag)
 		maxCount := 1
+		countRollRequired := false
 		if decision.GroupWander {
 			maxCount = len(room.PlayerIDs)
+			// update.c unconditionally calls mrand(1, count_ply(room))
+			// for RPLWAN, including count_ply(room) == 1.
+			countRollRequired = true
 		} else if wander := int(int8(template.Wander)); wander > 1 {
 			maxCount = wander
 		}
@@ -192,7 +202,7 @@ func (s State) PlanNPCRandomProducer(in NPCRandomProducerInput) (NPCRandomProduc
 			return NPCRandomProducerProposal{}, fmt.Errorf("NPC random room %d invalid spawn count bound", roomID)
 		}
 		decision.SpawnCount = 1
-		if maxCount > 1 {
+		if countRollRequired || maxCount > 1 {
 			count, err := npcRandomRoll(in.Roll, 1, maxCount)
 			if err != nil {
 				return NPCRandomProducerProposal{}, fmt.Errorf("NPC random room %d count: %w", roomID, err)
@@ -287,7 +297,11 @@ func (s State) ApplyNPCRandomProducer(proposal NPCRandomProducerProposal) (State
 	if err != nil || proposalDigest != proposal.proposalDigest {
 		return State{}, fmt.Errorf("tampered NPC random proposal")
 	}
-	roomIDs, err := validateNPCRandomSource(s)
+	proposalRoomIDs := make([]int16, len(proposal.Rooms))
+	for i, decision := range proposal.Rooms {
+		proposalRoomIDs[i] = decision.RoomID
+	}
+	roomIDs, err := validateNPCRandomSourceRooms(s, proposalRoomIDs)
 	if err != nil {
 		return State{}, err
 	}
@@ -378,24 +392,45 @@ func (p NPCRandomProducerProposal) Spawns() []NPCRandomSpawn {
 	return out
 }
 
-func validateNPCRandomSource(s State) ([]int16, error) {
+func validateNPCRandomSource(s State, plyOrder []string) ([]int16, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 	if s.NPCs == nil {
 		return nil, fmt.Errorf("NPC random producer requires canonical NPC state")
 	}
-	roomIDs := make([]int, 0, len(s.Rooms))
-	for roomID := range s.Rooms {
-		roomIDs = append(roomIDs, int(roomID))
+	roomIDs, err := npcRandomRoomOrderFromPly(s, plyOrder)
+	if err != nil {
+		return nil, err
 	}
-	sort.Ints(roomIDs)
-	ordered := make([]int16, 0, len(roomIDs))
-	for _, key := range roomIDs {
-		roomID := int16(key)
-		room := s.Rooms[roomID]
-		if len(room.PlayerIDs) == 0 {
-			continue
+	return validateNPCRandomSourceRooms(s, roomIDs)
+}
+
+func validateNPCRandomSourceRooms(s State, roomIDs []int16) ([]int16, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	if s.NPCs == nil {
+		return nil, fmt.Errorf("NPC random producer requires canonical NPC state")
+	}
+	seenRooms := make(map[int16]bool, len(roomIDs))
+	occupiedRooms := make(map[int16]bool)
+	for roomID, room := range s.Rooms {
+		if len(room.PlayerIDs) != 0 {
+			occupiedRooms[roomID] = true
+		}
+	}
+	if len(roomIDs) != len(occupiedRooms) {
+		return nil, fmt.Errorf("NPC random room order does not cover occupied rooms")
+	}
+	for _, roomID := range roomIDs {
+		if seenRooms[roomID] {
+			return nil, fmt.Errorf("NPC random room order repeats room %d", roomID)
+		}
+		seenRooms[roomID] = true
+		room, ok := s.Rooms[roomID]
+		if !ok || len(room.PlayerIDs) == 0 {
+			return nil, fmt.Errorf("NPC random room order contains unoccupied room %d", roomID)
 		}
 		if room.Items == nil || len(room.Resource.Objects) != 0 {
 			return nil, fmt.Errorf("NPC random room %d canonical floor unresolved", roomID)
@@ -412,9 +447,69 @@ func validateNPCRandomSource(s State) ([]int16, error) {
 				return nil, fmt.Errorf("NPC random room %d enemy relations unresolved", roomID)
 			}
 		}
-		ordered = append(ordered, roomID)
 	}
+	ordered := make([]int16, len(roomIDs))
+	copy(ordered, roomIDs)
 	return ordered, nil
+}
+
+// npcRandomRoomOrderFromPly reduces the C update_random descriptor walk to
+// the first room encounter. RoomState.PlayerIDs preserves only each room's
+// linked membership, not the global Ply[] sequence, so callers with more than
+// one occupied room must provide the descriptor order explicitly. Guessing
+// from a Go map or sorting room IDs would change the RNG stream.
+func npcRandomRoomOrderFromPly(s State, plyOrder []string) ([]int16, error) {
+	occupiedRooms := make(map[int16]bool)
+	for roomID, room := range s.Rooms {
+		if len(room.PlayerIDs) != 0 {
+			occupiedRooms[roomID] = true
+		}
+	}
+	if len(occupiedRooms) == 0 {
+		return []int16{}, nil
+	}
+	if len(plyOrder) == 0 {
+		if len(occupiedRooms) > 1 {
+			return nil, fmt.Errorf("NPC random producer requires canonical Ply order")
+		}
+		for roomID := range occupiedRooms {
+			return []int16{roomID}, nil
+		}
+	}
+
+	seenPlayers := make(map[string]bool, len(plyOrder))
+	seenRooms := make(map[int16]bool, len(occupiedRooms))
+	roomIDs := make([]int16, 0, len(occupiedRooms))
+	for _, playerID := range plyOrder {
+		player, ok := s.Players[playerID]
+		if !ok || playerID == "" || !player.Online || player.Body.Type != 0 {
+			return nil, fmt.Errorf("NPC random Ply identity %q unresolved", playerID)
+		}
+		roomID := player.Body.RoomID
+		room, ok := s.Rooms[roomID]
+		if !ok || !containsString(room.PlayerIDs, playerID) {
+			return nil, fmt.Errorf("NPC random Ply identity %q is not in room %d", playerID, roomID)
+		}
+		if seenPlayers[playerID] {
+			return nil, fmt.Errorf("NPC random Ply order repeats player %q", playerID)
+		}
+		seenPlayers[playerID] = true
+		if !seenRooms[roomID] {
+			seenRooms[roomID] = true
+			roomIDs = append(roomIDs, roomID)
+		}
+	}
+	for roomID, room := range s.Rooms {
+		for _, playerID := range room.PlayerIDs {
+			if !seenPlayers[playerID] {
+				return nil, fmt.Errorf("NPC random Ply order omits player %q in room %d", playerID, roomID)
+			}
+		}
+	}
+	if len(seenRooms) != len(occupiedRooms) {
+		return nil, fmt.Errorf("NPC random Ply order omits occupied room")
+	}
+	return roomIDs, nil
 }
 
 func validateNPCRandomTemplate(template LegacyMonster, templateID int16) error {
@@ -431,7 +526,7 @@ func validateNPCRandomBody(body LegacyMonster, roomID int16) error {
 	if body.Type != 1 || body.Name == "" || body.RoomID != roomID {
 		return fmt.Errorf("invalid spawned monster body")
 	}
-	if body.Timers[npcRandomAttackTimer].LastTime != body.Timers[npcRandomScavengeTimer].LastTime || body.Timers[npcRandomAttackTimer].LastTime != body.Timers[npcRandomWanderTimer].LastTime {
+	if body.Timers[npcRandomAttackTimer].LastTime != body.Timers[npcRandomScavengeTimer].LastTime || body.Timers[npcRandomAttackTimer].LastTime != body.Timers[npcRandomWanderTimer].LastTime || body.Timers[npcRandomAttackTimer].LastTime != body.Timers[npcRandomHealTimer].LastTime {
 		return fmt.Errorf("spawn timers are not synchronized")
 	}
 	wantInterval := int32(3)
@@ -440,6 +535,9 @@ func validateNPCRandomBody(body LegacyMonster, roomID int16) error {
 	}
 	if body.Timers[npcRandomAttackTimer].Interval != wantInterval {
 		return fmt.Errorf("spawn attack interval mismatch")
+	}
+	if body.Timers[npcRandomHealTimer].Interval != 60 {
+		return fmt.Errorf("spawn heal interval mismatch")
 	}
 	for i := 1; i < len(body.Inventory); i++ {
 		prior, current := body.Inventory[i-1], body.Inventory[i]
@@ -509,6 +607,10 @@ func spawnNPCRandomMonster(template LegacyMonster, now int32, catalog SpawnCatal
 	m.Timers[npcRandomAttackTimer].LastTime = now
 	m.Timers[npcRandomScavengeTimer].LastTime = now
 	m.Timers[npcRandomWanderTimer].LastTime = now
+	// files2.c:451-454 resets LT_HEALS when load_crt admits the body. Keep
+	// Misc untouched, as the C assignment writes only ltime and interval.
+	m.Timers[npcRandomHealTimer].LastTime = now
+	m.Timers[npcRandomHealTimer].Interval = 60
 	if int(int8(m.Stats[1])) < 20 {
 		m.Timers[npcRandomAttackTimer].Interval = 3
 	} else {
