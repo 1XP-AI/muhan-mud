@@ -21,10 +21,11 @@ import (
 // as bytes so a retry cannot silently bind a different JSON request even when
 // the clock has advanced.
 type npcAggressiveTargetTick struct {
-	slot      int64
-	now       int32
-	commandID string
-	request   json.RawMessage
+	slot                         int64
+	now                          int32
+	commandID                    string
+	request                      json.RawMessage
+	maintenanceReadyAttackTimers map[string]world.LegacyTimer
 }
 
 type npcAggressiveTargetTickRequest struct {
@@ -36,6 +37,16 @@ type npcAggressiveTargetTickRequest struct {
 type npcAggressiveTargetTickState struct {
 	lastSlot int64
 	pending  *npcAggressiveTargetTick
+}
+
+// npcAggressiveTargetMaintenanceBoundary carries only the durable
+// maintenance facts needed to reproduce C's same-pass timer boundary. The
+// original maintenance receipt remains the authority; this in-memory view is
+// retained with a pending acquisition request and rebuilt from that receipt
+// after a connector restart.
+type npcAggressiveTargetMaintenanceBoundary struct {
+	now               int32
+	readyAttackTimers map[string]world.LegacyTimer
 }
 
 // WorldConnector's struct is intentionally not widened by this phase. A
@@ -98,11 +109,190 @@ func decodeNPCAggressiveTargetRequest(raw json.RawMessage) (npcAggressiveTargetT
 	return request, nil
 }
 
+func npcAggressiveTargetMaintenanceBoundaryFromReceipt(receipt storage.WorldReceipt) (*npcAggressiveTargetMaintenanceBoundary, error) {
+	raw := bytes.TrimSpace(receipt.Response)
+	if len(raw) == 0 {
+		// A cadence that was already suppressed has no maintenance response to
+		// carry. The pending acquisition state, when present, already retains
+		// its own boundary; otherwise the strict path remains appropriate.
+		return nil, nil
+	}
+	if raw[0] != '{' {
+		return nil, errors.New("invalid NPC maintenance receipt response object")
+	}
+	var result world.NPCMaintenanceResult
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil {
+		return nil, fmt.Errorf("invalid NPC maintenance receipt response: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing NPC maintenance receipt response data")
+		}
+		return nil, fmt.Errorf("invalid NPC maintenance receipt response: %w", err)
+	}
+	if result.Now < 0 || result.ActiveNPCIDs == nil {
+		return nil, errors.New("invalid NPC maintenance receipt time")
+	}
+	boundary := &npcAggressiveTargetMaintenanceBoundary{
+		now:               result.Now,
+		readyAttackTimers: map[string]world.LegacyTimer{},
+	}
+	for _, action := range result.Actions {
+		if action.NPCID == "" {
+			return nil, errors.New("NPC maintenance receipt has an empty NPC identity")
+		}
+		if action.Wandered && !action.RemovedFromActive {
+			return nil, fmt.Errorf("NPC maintenance receipt has an invalid wander action for %q", action.NPCID)
+		}
+		if !action.AttackReady {
+			if action.AttackInterval != 0 {
+				return nil, fmt.Errorf("NPC maintenance receipt has an attack interval without readiness for %q", action.NPCID)
+			}
+			continue
+		}
+		if action.AttackInterval != 2 && action.AttackInterval != 3 {
+			return nil, fmt.Errorf("NPC maintenance receipt has an invalid attack interval for %q", action.NPCID)
+		}
+		if action.RemovedFromActive {
+			if !action.Wandered {
+				return nil, fmt.Errorf("NPC maintenance receipt removed a ready NPC without wandering %q", action.NPCID)
+			}
+			continue
+		}
+		if _, exists := boundary.readyAttackTimers[action.NPCID]; exists {
+			return nil, fmt.Errorf("NPC maintenance receipt repeated ready NPC %q", action.NPCID)
+		}
+		boundary.readyAttackTimers[action.NPCID] = world.LegacyTimer{LastTime: result.Now, Interval: action.AttackInterval}
+	}
+	return boundary, nil
+}
+
+func cloneNPCAggressiveTargetReadyAttackTimers(boundary *npcAggressiveTargetMaintenanceBoundary) map[string]world.LegacyTimer {
+	if boundary == nil || len(boundary.readyAttackTimers) == 0 {
+		return nil
+	}
+	cloned := make(map[string]world.LegacyTimer, len(boundary.readyAttackTimers))
+	for npcID, timer := range boundary.readyAttackTimers {
+		cloned[npcID] = timer
+	}
+	return cloned
+}
+
+func prepareNPCAggressiveTargetPostMaintenanceState(state world.State, now int32, readyAttackTimers map[string]world.LegacyTimer) (world.State, map[string]world.LegacyTimer, error) {
+	if len(readyAttackTimers) == 0 {
+		return state, nil, nil
+	}
+	ids := make([]string, 0, len(readyAttackTimers))
+	for npcID := range readyAttackTimers {
+		ids = append(ids, npcID)
+	}
+	sort.Strings(ids)
+	originals := make(map[string]world.LegacyTimer, len(ids))
+	for _, npcID := range ids {
+		expected := readyAttackTimers[npcID]
+		if expected.LastTime > now || (expected.Interval != 2 && expected.Interval != 3) {
+			return world.State{}, nil, fmt.Errorf("NPC maintenance timer boundary is invalid for %q", npcID)
+		}
+		if !npcAggressiveTargetActiveNPC(state.ActiveNPCIDs, npcID) {
+			return world.State{}, nil, fmt.Errorf("NPC maintenance ready identity is not active: %q", npcID)
+		}
+		npc, ok := state.NPCs[npcID]
+		if !ok || npc.Body.Type != world.TurnMonsterType {
+			return world.State{}, nil, fmt.Errorf("NPC maintenance ready identity is unresolved: %q", npcID)
+		}
+		current := npc.Body.Timers[world.TurnAttackTimerIndex]
+		if current.LastTime != expected.LastTime || current.Interval != expected.Interval {
+			return world.State{}, nil, fmt.Errorf("NPC maintenance timer changed before acquisition for %q", npcID)
+		}
+		originals[npcID] = current
+		// C's maintenance prefix has already admitted this NPC to the same
+		// update_active pass. Make only that prefix's timer due for the world
+		// planner, which still enforces strict readiness on every other path.
+		current.LastTime = now - current.Interval
+		npc.Body.Timers[world.TurnAttackTimerIndex] = current
+		state.NPCs[npcID] = npc
+	}
+	return state, originals, nil
+}
+
+func restoreNPCAggressiveTargetPostMaintenanceState(state world.State, result world.NPCAggressiveTargetResult, now int32, originals map[string]world.LegacyTimer) (world.State, world.NPCAggressiveTargetResult, error) {
+	seen := make(map[string]bool, len(originals))
+	for index := range result.Actions {
+		action := &result.Actions[index]
+		original, wasReady := originals[action.NPCID]
+		if !wasReady {
+			continue
+		}
+		seen[action.NPCID] = true
+		npc, ok := state.NPCs[action.NPCID]
+		if !ok {
+			return world.State{}, world.NPCAggressiveTargetResult{}, fmt.Errorf("NPC maintenance ready identity disappeared during acquisition: %q", action.NPCID)
+		}
+		if action.TimerWrite {
+			expectedAfter := original
+			expectedAfter.LastTime = now
+			expectedAfter.Interval = 0
+			if npc.Body.Timers[world.TurnAttackTimerIndex] != expectedAfter || action.AttackTimerAfter != expectedAfter {
+				return world.State{}, world.NPCAggressiveTargetResult{}, fmt.Errorf("NPC acquisition timer transition changed for %q", action.NPCID)
+			}
+			// Plan ran against a due view of the timer. The durable result must
+			// expose the real maintenance-before/acquisition-after transition.
+			action.AttackTimerBefore = original
+			action.AttackTimerAfter = expectedAfter
+			continue
+		}
+		npc.Body.Timers[world.TurnAttackTimerIndex] = original
+		state.NPCs[action.NPCID] = npc
+	}
+	for npcID := range originals {
+		if !seen[npcID] {
+			return world.State{}, world.NPCAggressiveTargetResult{}, fmt.Errorf("NPC maintenance ready identity missing from acquisition: %q", npcID)
+		}
+	}
+	if err := state.Validate(); err != nil {
+		return world.State{}, world.NPCAggressiveTargetResult{}, err
+	}
+	return state, result, nil
+}
+
+func npcAggressiveTargetActiveNPC(active []string, npcID string) bool {
+	for _, id := range active {
+		if id == npcID {
+			return true
+		}
+	}
+	return false
+}
+
 // RunNPCAggressiveTargetTick executes the post-combat target-acquisition
 // phase for one deterministic cadence slot. It samples the clock only while
 // creating a new pending boundary; retrying an uncertain commit reuses the
 // exact slot, timestamp, command ID, and request without another RNG draw.
+// Direct/standalone callers retain the strict world readiness gate.
 func (g *WorldConnector) RunNPCAggressiveTargetTick(ctx context.Context, interval time.Duration) (storage.WorldReceipt, bool, error) {
+	return g.runNPCAggressiveTargetTick(ctx, interval, nil)
+}
+
+// RunNPCAggressiveTargetTickAfterMaintenance is the ordered scheduler seam.
+// C's update_active advances LT_ATTCK during maintenance and then reaches the
+// aggressive branch in the same pass, so target acquisition must not re-gate
+// those exact NPCs on the timer that maintenance just advanced. The direct
+// phase API deliberately does not use this seam and remains strict.
+func (g *WorldConnector) RunNPCAggressiveTargetTickAfterMaintenance(ctx context.Context, interval time.Duration, maintenance storage.WorldReceipt) (storage.WorldReceipt, bool, error) {
+	if g == nil {
+		return storage.WorldReceipt{}, false, errors.New("nil NPC aggressive target connector")
+	}
+	boundary, err := npcAggressiveTargetMaintenanceBoundaryFromReceipt(maintenance)
+	if err != nil {
+		return storage.WorldReceipt{}, false, err
+	}
+	return g.runNPCAggressiveTargetTick(ctx, interval, boundary)
+}
+
+func (g *WorldConnector) runNPCAggressiveTargetTick(ctx context.Context, interval time.Duration, boundary *npcAggressiveTargetMaintenanceBoundary) (storage.WorldReceipt, bool, error) {
 	if g == nil {
 		return storage.WorldReceipt{}, false, errors.New("nil NPC aggressive target connector")
 	}
@@ -142,10 +332,11 @@ func (g *WorldConnector) RunNPCAggressiveTargetTick(ctx context.Context, interva
 			return storage.WorldReceipt{}, false, err
 		}
 		pending = &npcAggressiveTargetTick{
-			slot:      slot,
-			now:       int32(slotNow),
-			commandID: npcAggressiveTargetCommandID(slot),
-			request:   append(json.RawMessage(nil), request...),
+			slot:                         slot,
+			now:                          int32(slotNow),
+			commandID:                    npcAggressiveTargetCommandID(slot),
+			request:                      append(json.RawMessage(nil), request...),
+			maintenanceReadyAttackTimers: cloneNPCAggressiveTargetReadyAttackTimers(boundary),
 		}
 		state.pending = pending
 	}
@@ -153,7 +344,7 @@ func (g *WorldConnector) RunNPCAggressiveTargetTick(ctx context.Context, interva
 		return storage.WorldReceipt{}, true, errors.New("NPC aggressive target pending request is unavailable")
 	}
 
-	receipt, err := g.runNPCAggressiveTargetPhaseAt(ctx, pending.commandID, pending.request)
+	receipt, err := g.runNPCAggressiveTargetPhaseAt(ctx, pending.commandID, pending.request, pending.maintenanceReadyAttackTimers)
 	if err != nil {
 		// Do not release pending: an error from CommitWorldCommand can have an
 		// unknown outcome, and retry must use the identical command boundary.
@@ -200,10 +391,10 @@ func (g *WorldConnector) RunNPCAggressiveTargetPhase(ctx context.Context, comman
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
-	return g.runNPCAggressiveTargetPhaseAt(ctx, commandID, request)
+	return g.runNPCAggressiveTargetPhaseAt(ctx, commandID, request, nil)
 }
 
-func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, commandID string, request json.RawMessage) (storage.WorldReceipt, error) {
+func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, commandID string, request json.RawMessage, maintenanceReadyAttackTimers map[string]world.LegacyTimer) (storage.WorldReceipt, error) {
 	if g == nil {
 		return storage.WorldReceipt{}, errors.New("nil NPC aggressive target connector")
 	}
@@ -224,13 +415,23 @@ func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, comm
 		if err != nil {
 			return nil, nil, err
 		}
-		proposal, err := state.PlanNPCAggressiveTargetAcquisition(parsed.Now, g.config.Roll)
+		planningState, originalAttackTimers, err := prepareNPCAggressiveTargetPostMaintenanceState(state, parsed.Now, maintenanceReadyAttackTimers)
 		if err != nil {
 			return nil, nil, err
 		}
-		next, result, err := state.ApplyNPCAggressiveTargetAcquisition(proposal)
+		proposal, err := planningState.PlanNPCAggressiveTargetAcquisition(parsed.Now, g.config.Roll)
 		if err != nil {
 			return nil, nil, err
+		}
+		next, result, err := planningState.ApplyNPCAggressiveTargetAcquisition(proposal)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(originalAttackTimers) != 0 {
+			next, result, err = restoreNPCAggressiveTargetPostMaintenanceState(next, result, parsed.Now, originalAttackTimers)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 		saved, err := json.Marshal(next)
 		if err != nil {

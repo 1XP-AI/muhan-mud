@@ -80,6 +80,49 @@ func TestNPCWorldSchedulerKeepsThreePhaseRunnerClosedToOptionalPhase(t *testing.
 	}
 }
 
+func TestNPCWorldSchedulerAcquiresAggressiveTargetAfterMaintenance(t *testing.T) {
+	state := npcAITickState(t, 1)
+	store := newNPCAITickStore(t, state)
+	now := int32(100)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return now, 12 }, func(low, _ int) int {
+		return low
+	})
+	scheduler, err := NewNPCWorldScheduler(connector, time.Second, 20*time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("first scheduler pass=%+v ran=%v err=%v", first, ran, err)
+	}
+	firstCombat := decodeNPCAggressiveCombatSummary(t, first.Combat.Response)
+	if len(firstCombat.Attacks) != 0 || len(firstCombat.Skipped) != 1 {
+		t.Fatalf("first scheduler combat=%+v", firstCombat)
+	}
+	firstAcquisition := decodeNPCAggressiveTargetResult(t, first.AggressiveTarget.Response)
+	if len(firstAcquisition.Events) != 1 || firstAcquisition.Events[0].NPCID != "wolf-1" || firstAcquisition.Events[0].TargetID != "target" {
+		t.Fatalf("first scheduler acquisition=%+v", firstAcquisition)
+	}
+	if got := npcAITickStoredState(t, store).NPCs["wolf-1"].Body.Timers[world.TurnAttackTimerIndex]; got.LastTime != now || got.Interval != 0 {
+		t.Fatalf("first scheduler acquisition timer=%+v", got)
+	}
+
+	now++
+	second, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("second scheduler pass=%+v ran=%v err=%v", second, ran, err)
+	}
+	secondCombat := decodeNPCAggressiveCombatSummary(t, second.Combat.Response)
+	if len(secondCombat.Attacks) != 1 || secondCombat.Attacks[0].NPCID != "wolf-1" || secondCombat.Attacks[0].PlayerID != "target" {
+		t.Fatalf("second scheduler combat=%+v", secondCombat)
+	}
+	secondAcquisition := decodeNPCAggressiveTargetResult(t, second.AggressiveTarget.Response)
+	if !secondAcquisition.NoOp || secondAcquisition.Changed || len(secondAcquisition.Events) != 0 || len(secondAcquisition.Actions) != 1 || secondAcquisition.Actions[0].Status != "existing-enemy" {
+		t.Fatalf("second scheduler acquisition=%+v", secondAcquisition)
+	}
+}
+
 func TestNPCAggressiveTargetCannotSwingUntilNextPass(t *testing.T) {
 	state := npcAITickState(t, 1)
 	store := newNPCAITickStore(t, state)

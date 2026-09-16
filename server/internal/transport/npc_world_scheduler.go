@@ -33,6 +33,15 @@ type NPCAggressiveTargetTickRunner interface {
 	RunNPCAggressiveTargetTick(context.Context, time.Duration) (storage.WorldReceipt, bool, error)
 }
 
+// NPCAggressiveTargetPostMaintenanceRunner is an optional stronger seam for
+// ordered hosts. The maintenance receipt identifies the NPCs whose timer
+// prefix advanced in this pass, so the connector can preserve C's
+// maintenance -> combat -> acquisition boundary without weakening standalone
+// target-tick readiness checks.
+type NPCAggressiveTargetPostMaintenanceRunner interface {
+	RunNPCAggressiveTargetTickAfterMaintenance(context.Context, time.Duration, storage.WorldReceipt) (storage.WorldReceipt, bool, error)
+}
+
 // NPCWorldTickResult contains the receipt and admission result from each
 // ordered phase. A result returned with an error contains all phases that
 // completed before the failing phase; the failing phase's receipt is empty
@@ -386,7 +395,11 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 	if !ok {
 		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, nil
 	}
-	result.AggressiveTarget, result.AggressiveTargetRan, err = postCombat.RunNPCAggressiveTargetTick(ctx, s.combatInterval)
+	if ordered, ok := s.runner.(NPCAggressiveTargetPostMaintenanceRunner); ok {
+		result.AggressiveTarget, result.AggressiveTargetRan, err = ordered.RunNPCAggressiveTargetTickAfterMaintenance(ctx, s.combatInterval, result.Maintenance)
+	} else {
+		result.AggressiveTarget, result.AggressiveTargetRan, err = postCombat.RunNPCAggressiveTargetTick(ctx, s.combatInterval)
+	}
 	if err != nil {
 		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
 	}
