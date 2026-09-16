@@ -312,6 +312,20 @@ func TestNPCRandomProducerRPLWANOnePlayerConsumesCountRoll(t *testing.T) {
 	if !reflect.DeepEqual(roller.calls, wantCalls) {
 		t.Fatalf("single-player RPLWAN RNG calls=%v want=%v", roller.calls, wantCalls)
 	}
+	next, err := state.ApplyNPCRandomProducer(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := next.Rooms[1].NPCIDs; !reflect.DeepEqual(got, []string{"single-id"}) {
+		t.Fatalf("single-player RPLWAN room NPCs=%v", got)
+	}
+	if got := next.ActiveNPCIDs; !reflect.DeepEqual(got, []string{"single-id"}) {
+		t.Fatalf("single-player RPLWAN active NPCs=%v", got)
+	}
+	npc, ok := next.NPCs["single-id"]
+	if !ok || npc.Body.Name != "single" || npc.Body.Type != 1 || npc.Body.RoomID != 1 || npc.Enemies == nil {
+		t.Fatalf("single-player RPLWAN applied NPC=%+v present=%v", npc, ok)
+	}
 }
 
 func TestNPCRandomProducerResetsTimersAndDexterityAttackInterval(t *testing.T) {

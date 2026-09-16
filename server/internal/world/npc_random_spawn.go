@@ -588,7 +588,7 @@ func validateNPCRandomDecision(decision NPCRandomRoomDecision, room RoomState) e
 	if decision.SpawnCount > maxCount {
 		return fmt.Errorf("NPC random room %d spawn count outside template bound", decision.RoomID)
 	}
-	if maxCount > 1 {
+	if decision.GroupWander || maxCount > 1 {
 		if !decision.SpawnCountRolled || decision.SpawnCountRoll != decision.SpawnCount || decision.SpawnCountRoll < 1 || decision.SpawnCountRoll > maxCount {
 			return fmt.Errorf("NPC random room %d count roll mismatch", decision.RoomID)
 		}
