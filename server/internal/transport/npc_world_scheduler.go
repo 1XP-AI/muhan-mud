@@ -24,6 +24,15 @@ type NPCWorldTickRunner interface {
 	RunNPCCombatTick(context.Context, time.Duration) (storage.WorldReceipt, bool, error)
 }
 
+// NPCScavengeTickRunner is an optional pre-resource phase seam. It is kept
+// separate from NPCWorldTickRunner so existing hosts and test doubles that
+// implement the original three-phase contract remain valid. A production
+// WorldConnector implements this narrow interface and receives the MSCAVE
+// phase after maintenance, using the combat cadence boundary.
+type NPCScavengeTickRunner interface {
+	RunNPCScavengeTick(context.Context, time.Duration) (storage.WorldReceipt, bool, error)
+}
+
 // NPCAggressiveTargetTickRunner is an optional post-combat phase seam. It is
 // deliberately separate from NPCWorldTickRunner so existing hosts and test
 // doubles that implement the original three-phase contract remain valid. A
@@ -48,10 +57,12 @@ type NPCAggressiveTargetPostMaintenanceRunner interface {
 // unless its runner returned one alongside the error.
 type NPCWorldTickResult struct {
 	Maintenance         storage.WorldReceipt
+	Scavenge            storage.WorldReceipt
 	Resource            storage.WorldReceipt
 	Combat              storage.WorldReceipt
 	AggressiveTarget    storage.WorldReceipt
 	MaintenanceRan      bool
+	ScavengeRan         bool
 	ResourceRan         bool
 	CombatRan           bool
 	AggressiveTargetRan bool
@@ -67,11 +78,11 @@ var (
 )
 
 // NPCWorldScheduler owns one worker and the phase-specific cadences for the
-// three required NPC phases plus an optional post-combat acquisition phase.
-// Every wake-up is executed strictly as maintenance, resource, combat, then
-// acquisition when the runner implements NPCAggressiveTargetTickRunner. A
-// phase error stops that cadence immediately; the next wake-up retries the
-// phase through the runner's retained durable request.
+// three required NPC phases plus optional scavenge and post-combat acquisition
+// phases. Every wake-up is executed strictly as maintenance, optional
+// scavenge, resource, combat, then acquisition. A phase error stops that
+// cadence immediately; the next wake-up retries the phase through the
+// runner's retained durable request.
 //
 // The scheduler is single-use after Shutdown. Construct a new scheduler for a
 // later lifecycle; the phase runners' durable receipts make replacement safe
@@ -376,24 +387,34 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 		return result, result.MaintenanceRan, err
 	}
 
+	if scavenge, ok := s.runner.(NPCScavengeTickRunner); ok {
+		result.Scavenge, result.ScavengeRan, err = scavenge.RunNPCScavengeTick(ctx, s.combatInterval)
+		if err != nil {
+			return result, result.MaintenanceRan || result.ScavengeRan, err
+		}
+		if err := ctx.Err(); err != nil {
+			return result, result.MaintenanceRan || result.ScavengeRan, err
+		}
+	}
+
 	result.Resource, result.ResourceRan, err = s.runner.RunNPCResourceTick(ctx, s.resourceInterval)
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan, err
 	}
 	if err := ctx.Err(); err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan, err
 	}
 
 	result.Combat, result.CombatRan, err = s.runner.RunNPCCombatTick(ctx, s.combatInterval)
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, err
 	}
 	if err := ctx.Err(); err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, err
 	}
 	postCombat, ok := s.runner.(NPCAggressiveTargetTickRunner)
 	if !ok {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan, nil
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan, nil
 	}
 	if ordered, ok := s.runner.(NPCAggressiveTargetPostMaintenanceRunner); ok {
 		result.AggressiveTarget, result.AggressiveTargetRan, err = ordered.RunNPCAggressiveTargetTickAfterMaintenance(ctx, s.combatInterval, result.Maintenance)
@@ -401,7 +422,7 @@ func (s *NPCWorldScheduler) runCadence(ctx context.Context) (NPCWorldTickResult,
 		result.AggressiveTarget, result.AggressiveTargetRan, err = postCombat.RunNPCAggressiveTargetTick(ctx, s.combatInterval)
 	}
 	if err != nil {
-		return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
+		return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, err
 	}
-	return result, result.MaintenanceRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, nil
+	return result, result.MaintenanceRan || result.ScavengeRan || result.ResourceRan || result.CombatRan || result.AggressiveTargetRan, nil
 }
