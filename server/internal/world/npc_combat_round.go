@@ -19,6 +19,14 @@ type NPCCombatRoundProposal struct {
 	Poisoned               bool
 	Diseased               bool
 	Blinded                bool
+	BreathTriggered        bool
+	BreathType             NPCCombatBreathType
+	BreathRoll             int
+	BreathDiceCount        int
+	BreathDiceSides        int
+	BreathDicePlus         int
+	BreathResisted         bool
+	BreathPoisoned         bool
 	DissolveSucceeded      bool
 	Dissolved              bool
 	DissolveProtected      bool
@@ -39,6 +47,15 @@ type NPCCombatRoundProposal struct {
 	expectedPoisoned               bool
 	expectedDiseased               bool
 	expectedBlinded                bool
+	expectedBreathTriggered        bool
+	expectedBreathType             NPCCombatBreathType
+	expectedBreathRoll             int
+	expectedBreathDiceCount        int
+	expectedBreathDiceSides        int
+	expectedBreathDicePlus         int
+	expectedBreathResisted         bool
+	expectedBreathPoisoned         bool
+	expectedDamage                 int
 	expectedDissolveSucceeded      bool
 	expectedDissolved              bool
 	expectedDissolveProtected      bool
@@ -61,6 +78,14 @@ type NPCCombatRoundResult struct {
 	Poisoned               bool
 	Diseased               bool
 	Blinded                bool
+	BreathTriggered        bool
+	BreathType             NPCCombatBreathType
+	BreathRoll             int
+	BreathDiceCount        int
+	BreathDiceSides        int
+	BreathDicePlus         int
+	BreathResisted         bool
+	BreathPoisoned         bool
 	DissolveSucceeded      bool
 	Dissolved              bool
 	DissolveProtected      bool
@@ -76,9 +101,27 @@ type NPCCombatRoundResult struct {
 	Killed                 bool
 }
 
+// NPCCombatBreathType is the two-bit MBRWP1/MBRWP2 value from mtype.h. The
+// zero value is fire (00), so BreathTriggered must be checked before reading
+// the type. Keeping the raw source mapping avoids relabelling the legacy
+// branches whose output text and flag comments use different terminology.
+type NPCCombatBreathType byte
+
 const (
+	NPCCombatBreathFire NPCCombatBreathType = iota // MBRWP1=0, MBRWP2=0
+	NPCCombatBreathCold                            // MBRWP1=0, MBRWP2=1
+	NPCCombatBreathGas                             // MBRWP1=1, MBRWP2=0
+	NPCCombatBreathAcid                            // MBRWP1=1, MBRWP2=1
+)
+
+const (
+	npcCombatBreatherFlag       uint = 19 // MBRETH
+	npcCombatBreathWeapon1Flag  uint = 28 // MBRWP1
+	npcCombatBreathWeapon2Flag  uint = 29 // MBRWP2
 	npcCombatPoisonerFlag       uint = 13 // MPOISS
 	npcCombatVictimPoisonedFlag uint = 16 // PPOISN
+	npcCombatVictimResistFire   uint = 30 // PRFIRE
+	npcCombatVictimResistCold   uint = 36 // PRCOLD
 	npcCombatDiseaserFlag       uint = 34 // MDISEA
 	npcCombatVictimDiseasedFlag uint = 41 // PDISEA
 	npcCombatBlinderFlag        uint = 45 // MBLNDR
@@ -105,6 +148,60 @@ func npcCombatDamage(body LegacyMonster, player LegacyMonster, roll func(int, in
 	damage -= (70 - int(int8(player.Armor))) / 5
 	if damage < 1 {
 		damage = 1
+	}
+	return damage, nil
+}
+
+// npcCombatBreathSpec ports the MBRWP1/MBRWP2 branch at update.c:419-454.
+// The type is the raw two-bit source value: 00 fire, 01 cold, 10 gas, and 11
+// acid. The source's 10 branch prints a spit message, but its damage and flag
+// selection are still the 10 branch; keeping the raw value prevents a text
+// label from changing combat semantics.
+func npcCombatBreathSpec(npc, player LegacyMonster) (NPCCombatBreathType, int, int, int, bool, bool) {
+	weapon1 := flag(npc.Flags[:], npcCombatBreathWeapon1Flag)
+	weapon2 := flag(npc.Flags[:], npcCombatBreathWeapon2Flag)
+	band := (int(npc.Level) + 3) / 4
+	sides, plus := 4, 0
+	resisted := false
+	poisoned := false
+	var breathType NPCCombatBreathType
+
+	switch {
+	case weapon1 && weapon2:
+		breathType = NPCCombatBreathAcid
+		sides, plus, poisoned = 2, 1, true
+	case weapon1:
+		breathType = NPCCombatBreathGas
+		sides = 3
+	case weapon2:
+		breathType = NPCCombatBreathCold
+		resisted = flag(player.Flags[:], npcCombatVictimResistCold)
+		if resisted {
+			sides = 2
+		}
+	default:
+		breathType = NPCCombatBreathFire
+		resisted = flag(player.Flags[:], npcCombatVictimResistFire)
+		if resisted {
+			sides = 2
+		}
+	}
+	return breathType, band, sides, plus, resisted, poisoned
+}
+
+// npcCombatBreathDamage mirrors misc.c:dice: it consumes exactly one mrand
+// draw per level-band die and adds the branch-specific plus value afterwards.
+func npcCombatBreathDamage(count, sides, plus int, roll func(int, int) int) (int, error) {
+	if count < 0 || sides < 1 {
+		return 0, fmt.Errorf("invalid NPC combat breath dice")
+	}
+	damage := plus
+	for i := 0; i < count; i++ {
+		n, err := randomIn(roll, 1, sides)
+		if err != nil {
+			return 0, err
+		}
+		damage += n
 	}
 	return damage, nil
 }
@@ -234,11 +331,39 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 		proposal.Hit = false
 		return proposal, nil
 	}
-	damage, err := npcCombatDamage(npc.Body, player.Body, roll)
-	if err != nil {
-		return NPCCombatRoundProposal{}, err
-	}
 	nextPlayer := next.Players[playerID]
+	damage := 0
+	breathTriggered := false
+	breathType := NPCCombatBreathFire
+	breathRoll := 0
+	breathDiceCount := 0
+	breathDiceSides := 0
+	breathDicePlus := 0
+	breathResisted := false
+	breathPoisoned := false
+	if flag(npc.Body.Flags[:], npcCombatBreatherFlag) {
+		breathRoll, err = randomIn(roll, 1, 30)
+		if err != nil {
+			return NPCCombatRoundProposal{}, err
+		}
+		if breathRoll < 5 {
+			breathTriggered = true
+			breathType, breathDiceCount, breathDiceSides, breathDicePlus, breathResisted, breathPoisoned = npcCombatBreathSpec(npc.Body, player.Body)
+			damage, err = npcCombatBreathDamage(breathDiceCount, breathDiceSides, breathDicePlus, roll)
+			if err != nil {
+				return NPCCombatRoundProposal{}, err
+			}
+			if breathPoisoned {
+				nextPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
+			}
+		}
+	}
+	if !breathTriggered {
+		damage, err = npcCombatDamage(npc.Body, player.Body, roll)
+		if err != nil {
+			return NPCCombatRoundProposal{}, err
+		}
+	}
 	nextPlayer.Body.HPCurrent = int16(int(player.Body.HPCurrent) - damage)
 	poisoned := false
 	if flag(npc.Body.Flags[:], npcCombatPoisonerFlag) {
@@ -329,6 +454,22 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	proposal.expectedDiseased = diseased
 	proposal.Blinded = blinded
 	proposal.expectedBlinded = blinded
+	proposal.BreathTriggered = breathTriggered
+	proposal.expectedBreathTriggered = breathTriggered
+	proposal.BreathType = breathType
+	proposal.expectedBreathType = breathType
+	proposal.BreathRoll = breathRoll
+	proposal.expectedBreathRoll = breathRoll
+	proposal.BreathDiceCount = breathDiceCount
+	proposal.expectedBreathDiceCount = breathDiceCount
+	proposal.BreathDiceSides = breathDiceSides
+	proposal.expectedBreathDiceSides = breathDiceSides
+	proposal.BreathDicePlus = breathDicePlus
+	proposal.expectedBreathDicePlus = breathDicePlus
+	proposal.BreathResisted = breathResisted
+	proposal.expectedBreathResisted = breathResisted
+	proposal.BreathPoisoned = breathPoisoned
+	proposal.expectedBreathPoisoned = breathPoisoned
 	proposal.DissolveSucceeded = dissolveSucceeded
 	proposal.expectedDissolveSucceeded = dissolveSucceeded
 	proposal.Dissolved = dissolved
@@ -348,6 +489,7 @@ func (s State) PlanNPCCombatRound(npcID, playerID string, roll func(int, int) in
 	proposal.DissolveItemName = dissolveItemName
 	proposal.expectedDissolveItemName = dissolveItemName
 	proposal.Damage = damage
+	proposal.expectedDamage = damage
 	proposal.PlayerHPAfter = int(nextPlayer.Body.HPCurrent)
 	if damage >= int(player.Body.HPCurrent) {
 		return NPCCombatRoundProposal{}, fmt.Errorf("NPC combat player death continuation pending")
@@ -369,7 +511,7 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if !ok || !playerOK || npc.Body.RoomID != proposal.RoomID || player.Body.RoomID != proposal.RoomID || proposal.Damage < 0 || proposal.PlayerHPBefore != int(player.Body.HPCurrent) || proposal.PlayerHPAfter != proposal.PlayerHPBefore-proposal.Damage {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat round")
 	}
-	if proposal.Hit != proposal.expectedHit || proposal.Critical != proposal.expectedCritical || proposal.Hit != (proposal.Damage > 0) || (proposal.Critical && !proposal.Hit) {
+	if proposal.Hit != proposal.expectedHit || proposal.Critical != proposal.expectedCritical || proposal.Damage != proposal.expectedDamage || (!proposal.Hit && proposal.Damage != 0) || (proposal.Critical && !proposal.Hit) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat outcome")
 	}
 	if proposal.Poisoned != proposal.expectedPoisoned || (proposal.Poisoned && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatPoisonerFlag))) {
@@ -380,6 +522,37 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	}
 	if proposal.Blinded != proposal.expectedBlinded || (proposal.Blinded && (!proposal.Hit || !flag(npc.Body.Flags[:], npcCombatBlinderFlag))) {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat blind outcome")
+	}
+	if proposal.BreathTriggered != proposal.expectedBreathTriggered ||
+		proposal.BreathType != proposal.expectedBreathType ||
+		proposal.BreathRoll != proposal.expectedBreathRoll ||
+		proposal.BreathDiceCount != proposal.expectedBreathDiceCount ||
+		proposal.BreathDiceSides != proposal.expectedBreathDiceSides ||
+		proposal.BreathDicePlus != proposal.expectedBreathDicePlus ||
+		proposal.BreathResisted != proposal.expectedBreathResisted ||
+		proposal.BreathPoisoned != proposal.expectedBreathPoisoned {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath outcome")
+	}
+	if !proposal.Hit {
+		if proposal.BreathTriggered || proposal.BreathType != NPCCombatBreathFire || proposal.BreathRoll != 0 || proposal.BreathDiceCount != 0 || proposal.BreathDiceSides != 0 || proposal.BreathDicePlus != 0 || proposal.BreathResisted || proposal.BreathPoisoned {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath on miss")
+		}
+	} else if flag(npc.Body.Flags[:], npcCombatBreatherFlag) {
+		if proposal.BreathRoll < 1 || proposal.BreathRoll > 30 || proposal.BreathTriggered != (proposal.BreathRoll < 5) {
+			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath trigger")
+		}
+		if !proposal.BreathTriggered {
+			if proposal.BreathType != NPCCombatBreathFire || proposal.BreathDiceCount != 0 || proposal.BreathDiceSides != 0 || proposal.BreathDicePlus != 0 || proposal.BreathResisted || proposal.BreathPoisoned {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath miss")
+			}
+		} else {
+			wantType, wantCount, wantSides, wantPlus, wantResisted, wantPoisoned := npcCombatBreathSpec(npc.Body, player.Body)
+			if proposal.BreathType != wantType || proposal.BreathDiceCount != wantCount || proposal.BreathDiceSides != wantSides || proposal.BreathDicePlus != wantPlus || proposal.BreathResisted != wantResisted || proposal.BreathPoisoned != wantPoisoned {
+				return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath branch")
+			}
+		}
+	} else if proposal.BreathTriggered || proposal.BreathType != NPCCombatBreathFire || proposal.BreathRoll != 0 || proposal.BreathDiceCount != 0 || proposal.BreathDiceSides != 0 || proposal.BreathDicePlus != 0 || proposal.BreathResisted || proposal.BreathPoisoned {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat breath capability")
 	}
 	if proposal.DissolveSucceeded != proposal.expectedDissolveSucceeded ||
 		proposal.Dissolved != proposal.expectedDissolved ||
@@ -442,7 +615,7 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if !nextOK || int(nextPlayer.Body.HPCurrent) != proposal.PlayerHPAfter {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
 	}
-	wantPoisoned := flag(player.Body.Flags[:], npcCombatVictimPoisonedFlag) || proposal.Poisoned
+	wantPoisoned := flag(player.Body.Flags[:], npcCombatVictimPoisonedFlag) || proposal.Poisoned || proposal.BreathPoisoned
 	if flag(nextPlayer.Body.Flags[:], npcCombatVictimPoisonedFlag) != wantPoisoned {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat poison candidate")
 	}
@@ -454,31 +627,29 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 	if flag(nextPlayer.Body.Flags[:], npcCombatVictimBlindedFlag) != wantBlinded {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat blind candidate")
 	}
-	if flag(npc.Body.Flags[:], npcCombatDissolverFlag) {
-		expected := s.clone()
-		expectedPlayer := expected.Players[proposal.PlayerID]
-		expectedPlayer.Body.HPCurrent = int16(proposal.PlayerHPAfter)
-		if proposal.Poisoned {
-			expectedPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
+	expected := s.clone()
+	expectedPlayer := expected.Players[proposal.PlayerID]
+	expectedPlayer.Body.HPCurrent = int16(proposal.PlayerHPAfter)
+	if proposal.Poisoned || proposal.BreathPoisoned {
+		expectedPlayer.Body.Flags[npcCombatVictimPoisonedFlag/8] |= 1 << (npcCombatVictimPoisonedFlag % 8)
+	}
+	if proposal.Diseased {
+		expectedPlayer.Body.Flags[npcCombatVictimDiseasedFlag/8] |= 1 << (npcCombatVictimDiseasedFlag % 8)
+	}
+	if proposal.Blinded {
+		expectedPlayer.Body.Flags[npcCombatVictimBlindedFlag/8] |= 1 << (npcCombatVictimBlindedFlag % 8)
+	}
+	if proposal.Dissolved {
+		if err := npcCombatDeleteReadyRoot(expectedPlayer.Items, proposal.DissolveReadySlot); err != nil {
+			return State{}, NPCCombatRoundResult{}, err
 		}
-		if proposal.Diseased {
-			expectedPlayer.Body.Flags[npcCombatVictimDiseasedFlag/8] |= 1 << (npcCombatVictimDiseasedFlag % 8)
+		if err := refreshEquipmentStats(&expectedPlayer); err != nil {
+			return State{}, NPCCombatRoundResult{}, err
 		}
-		if proposal.Blinded {
-			expectedPlayer.Body.Flags[npcCombatVictimBlindedFlag/8] |= 1 << (npcCombatVictimBlindedFlag % 8)
-		}
-		if proposal.Dissolved {
-			if err := npcCombatDeleteReadyRoot(expectedPlayer.Items, proposal.DissolveReadySlot); err != nil {
-				return State{}, NPCCombatRoundResult{}, err
-			}
-			if err := refreshEquipmentStats(&expectedPlayer); err != nil {
-				return State{}, NPCCombatRoundResult{}, err
-			}
-		}
-		expected.Players[proposal.PlayerID] = expectedPlayer
-		if !reflect.DeepEqual(proposal.next, expected) {
-			return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
-		}
+	}
+	expected.Players[proposal.PlayerID] = expectedPlayer
+	if !reflect.DeepEqual(proposal.next, expected) {
+		return State{}, NPCCombatRoundResult{}, fmt.Errorf("tampered NPC combat candidate")
 	}
 	if proposal.Damage >= proposal.PlayerHPBefore {
 		return State{}, NPCCombatRoundResult{}, fmt.Errorf("NPC combat player death continuation pending")
@@ -490,6 +661,10 @@ func (s State) ApplyNPCCombatRound(proposal NPCCombatRoundProposal) (State, NPCC
 		NPCID: proposal.NPCID, PlayerID: proposal.PlayerID, RoomID: proposal.RoomID,
 		Hit: proposal.Hit, Critical: proposal.Critical, Poisoned: proposal.Poisoned,
 		Diseased: proposal.Diseased, Blinded: proposal.Blinded,
+		BreathTriggered: proposal.BreathTriggered, BreathType: proposal.BreathType,
+		BreathRoll: proposal.BreathRoll, BreathDiceCount: proposal.BreathDiceCount,
+		BreathDiceSides: proposal.BreathDiceSides, BreathDicePlus: proposal.BreathDicePlus,
+		BreathResisted: proposal.BreathResisted, BreathPoisoned: proposal.BreathPoisoned,
 		DissolveSucceeded: proposal.DissolveSucceeded, Dissolved: proposal.Dissolved,
 		DissolveProtected: proposal.DissolveProtected, DissolveRoll: proposal.DissolveRoll,
 		DissolveSelectionRoll:  proposal.DissolveSelectionRoll,

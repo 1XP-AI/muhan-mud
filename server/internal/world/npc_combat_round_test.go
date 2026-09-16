@@ -250,6 +250,327 @@ func TestNPCCombatRoundEffectsFollowPoisonDiseaseBlindOrder(t *testing.T) {
 	}
 }
 
+func TestNPCCombatRoundBreathTriggerBoundaryAndLevelBand(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		trigger       int
+		wantTriggered bool
+		wantDamage    int
+		wantCalls     [][2]int
+	}{
+		{
+			name:          "trigger below five",
+			trigger:       4,
+			wantTriggered: true,
+			wantDamage:    8,
+			wantCalls:     [][2]int{{1, 20}, {1, 30}, {1, 4}, {1, 4}},
+		},
+		{
+			name:          "trigger at five falls back to melee",
+			trigger:       5,
+			wantTriggered: false,
+			wantDamage:    6,
+			wantCalls:     [][2]int{{1, 20}, {1, 30}, {1, 6}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Level = 5                    // ((level + 3) / 4) == 2, per src/misc.c:dice.
+			npc.Body.Flags[19/8] |= 1 << (19 % 8) // MBRETH
+			s.NPCs["wolf-id"] = npc
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				switch high {
+				case 20:
+					return 20
+				case 30:
+					return tc.trigger
+				case 4, 6:
+					return high
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if proposal.BreathTriggered != tc.wantTriggered || proposal.BreathRoll != tc.trigger || proposal.Damage != tc.wantDamage {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if tc.wantTriggered && (proposal.BreathType != NPCCombatBreathFire || proposal.BreathDiceCount != 2 || proposal.BreathDiceSides != 4 || proposal.BreathDicePlus != 0) {
+				t.Fatalf("breath spec=%+v", proposal)
+			}
+			if !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("RNG calls=%v want=%v", calls, tc.wantCalls)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.BreathTriggered != tc.wantTriggered || result.Damage != tc.wantDamage || int(next.Players["a"].Body.HPCurrent) != 40-tc.wantDamage {
+				t.Fatalf("result=%+v next=%+v", result, next)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundBreathBranchesAndResistance(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		setNPCFlags    []uint
+		setPlayerFlags []uint
+		wantType       NPCCombatBreathType
+		wantSides      int
+		wantPlus       int
+		wantDamage     int
+		wantResisted   bool
+		wantPoisoned   bool
+	}{
+		{
+			name:       "fire without resistance",
+			wantType:   NPCCombatBreathFire,
+			wantSides:  4,
+			wantDamage: 4,
+		},
+		{
+			name:           "fire resistance halves dice sides",
+			setPlayerFlags: []uint{30},
+			wantType:       NPCCombatBreathFire,
+			wantSides:      2,
+			wantDamage:     2,
+			wantResisted:   true,
+		},
+		{
+			name:        "mbrwp1 gas branch",
+			setNPCFlags: []uint{28},
+			wantType:    NPCCombatBreathGas,
+			wantSides:   3,
+			wantDamage:  3,
+		},
+		{
+			name:        "cold without resistance",
+			setNPCFlags: []uint{29},
+			wantType:    NPCCombatBreathCold,
+			wantSides:   4,
+			wantDamage:  4,
+		},
+		{
+			name:           "cold resistance halves dice sides",
+			setNPCFlags:    []uint{29},
+			setPlayerFlags: []uint{36},
+			wantType:       NPCCombatBreathCold,
+			wantSides:      2,
+			wantDamage:     2,
+			wantResisted:   true,
+		},
+		{
+			name:         "acid branch sets poison",
+			setNPCFlags:  []uint{28, 29},
+			wantType:     NPCCombatBreathAcid,
+			wantSides:    2,
+			wantPlus:     1,
+			wantDamage:   3,
+			wantPoisoned: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Flags[19/8] |= 1 << (19 % 8) // MBRETH
+			for _, bit := range tc.setNPCFlags {
+				npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+			}
+			s.NPCs["wolf-id"] = npc
+			player := s.Players["a"]
+			for _, bit := range tc.setPlayerFlags {
+				player.Body.Flags[bit/8] |= 1 << (bit % 8)
+			}
+			s.Players["a"] = player
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				switch high {
+				case 20:
+					return 20
+				case 30:
+					return 4
+				case 2, 3, 4:
+					return high
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.BreathTriggered || proposal.BreathType != tc.wantType || proposal.BreathDiceCount != 1 || proposal.BreathDiceSides != tc.wantSides || proposal.BreathDicePlus != tc.wantPlus || proposal.BreathResisted != tc.wantResisted || proposal.BreathPoisoned != tc.wantPoisoned || proposal.Damage != tc.wantDamage {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if want := [][2]int{{1, 20}, {1, 30}, {1, tc.wantSides}}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("RNG calls=%v want=%v", calls, want)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.BreathType != tc.wantType || result.BreathResisted != tc.wantResisted || result.BreathPoisoned != tc.wantPoisoned || result.Damage != tc.wantDamage {
+				t.Fatalf("result=%+v", result)
+			}
+			nextPlayer := next.Players["a"]
+			if got := flag(nextPlayer.Body.Flags[:], 16); got != tc.wantPoisoned {
+				t.Fatalf("PPOISN=%v want=%v flags=%#x", got, tc.wantPoisoned, nextPlayer.Body.Flags)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundBreathAndSharedEffectsFollowSourceOrder(t *testing.T) {
+	s := npcCombatDissolveFixture(t, map[string]Item{"held": {Object: LegacyObject{Name: "쥔검"}}}, [20]string{16: "held"})
+	npc := s.NPCs["wolf-id"]
+	for _, bit := range []uint{19, 28, 29, 13, 34, 45} { // MBRETH, acid, MPOISS, MDISEA, MBLNDR
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch len(calls) {
+		case 1:
+			return 20 // hit
+		case 2:
+			return 4 // breath trigger
+		case 3:
+			return 2 // acid damage die
+		case 4:
+			return 15 // MPOISS
+		case 5, 6:
+			return 10 // MDISEA/MBLNDR
+		case 7:
+			return 15 // MDISIT
+		case 8:
+			return 0 // one ready item
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.BreathTriggered || proposal.BreathType != NPCCombatBreathAcid || !proposal.BreathPoisoned || !proposal.Poisoned || !proposal.Diseased || !proposal.Blinded || !proposal.Dissolved || proposal.Damage != 3 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	wantCalls := [][2]int{{1, 20}, {1, 30}, {1, 2}, {1, 100}, {1, 100}, {1, 100}, {1, 100}, {0, 0}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("RNG calls=%v want=%v", calls, wantCalls)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.BreathPoisoned || !result.Poisoned || !result.Diseased || !result.Blinded || !result.Dissolved {
+		t.Fatalf("result=%+v", result)
+	}
+	nextPlayer := next.Players["a"]
+	for _, bit := range []uint{16, 41, 42} {
+		if !flag(nextPlayer.Body.Flags[:], bit) {
+			t.Fatalf("status flag %d missing: flags=%#x", bit, nextPlayer.Body.Flags)
+		}
+	}
+}
+
+func TestNPCCombatRoundRejectsBreathInvalidRNGWithoutMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		invalidAt int
+		wantCalls [][2]int
+	}{
+		{name: "invalid trigger", invalidAt: 2, wantCalls: [][2]int{{1, 20}, {1, 30}}},
+		{name: "invalid dice", invalidAt: 3, wantCalls: [][2]int{{1, 20}, {1, 30}, {1, 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Flags[19/8] |= 1 << (19 % 8) // MBRETH
+			npc.Body.Flags[28/8] |= 1 << (28 % 8)
+			npc.Body.Flags[29/8] |= 1 << (29 % 8) // acid, one 1..2 die
+			s.NPCs["wolf-id"] = npc
+			before := s.clone()
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				if len(calls) == tc.invalidAt {
+					return high + 1
+				}
+				if high == 30 {
+					return 4
+				}
+				return high
+			})
+			if err == nil || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) || !reflect.DeepEqual(s, before) {
+				t.Fatalf("invalid breath RNG was not fail-closed: proposal=%+v err=%v changed=%v", proposal, err, !reflect.DeepEqual(s, before))
+			}
+			if !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("RNG calls=%v want=%v", calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundRejectsTamperedBreathAndStaleCandidatesAtomically(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	for _, bit := range []uint{19, 28, 29} { // MBRETH + acid
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	s.NPCs["wolf-id"] = npc
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		if high == 20 {
+			return 20
+		}
+		if high == 30 {
+			return 4
+		}
+		return high
+	})
+	if err != nil || !proposal.BreathTriggered || !proposal.BreathPoisoned {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	assertRejected := func(name string, candidate NPCCombatRoundProposal, state State) {
+		t.Helper()
+		if next, result, err := state.ApplyNPCCombatRound(candidate); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+			t.Fatalf("%s accepted: next=%+v result=%+v err=%v", name, next, result, err)
+		}
+	}
+
+	tampered := proposal
+	tampered.BreathTriggered = false
+	assertRejected("tampered trigger", tampered, s)
+	tampered = proposal
+	tampered.BreathType = NPCCombatBreathFire
+	assertRejected("tampered type", tampered, s)
+	tampered = proposal
+	tampered.BreathRoll = 5
+	assertRejected("tampered trigger roll", tampered, s)
+	tampered = proposal
+	tampered.BreathPoisoned = false
+	assertRejected("tampered acid poison", tampered, s)
+	tampered = proposal
+	player := tampered.next.Players["a"]
+	player.Body.Flags[16/8] &^= 1 << (16 % 8)
+	tampered.next.Players["a"] = player
+	assertRejected("tampered acid state", tampered, s)
+	changed := s.clone()
+	player = changed.Players["a"]
+	player.Body.HPCurrent--
+	changed.Players["a"] = player
+	assertRejected("stale breath candidate", proposal, changed)
+}
+
 func TestNPCCombatRoundDiseaseAndBlindThresholdBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

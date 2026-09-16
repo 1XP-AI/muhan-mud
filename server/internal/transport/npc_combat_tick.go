@@ -41,26 +41,34 @@ var npcCombatTickStates sync.Map // map[*WorldConnector]*npcCombatTickState
 // swing is followed by NPCCombatTickDeath in the same receipt; its order in
 // NPCCombatTickSummary.Attacks is still the source-backed action order.
 type NPCCombatTickAttack struct {
-	NPCID                  string `json:"npc_id"`
-	PlayerID               string `json:"player_id"`
-	RoomID                 int16  `json:"room_id"`
-	Hit                    bool   `json:"hit"`
-	Critical               bool   `json:"critical"`
-	Poisoned               bool   `json:"poisoned"`
-	Diseased               bool   `json:"diseased"`
-	Blinded                bool   `json:"blinded"`
-	DissolveSucceeded      bool   `json:"dissolve_succeeded,omitempty"`
-	Dissolved              bool   `json:"dissolved,omitempty"`
-	DissolveProtected      bool   `json:"dissolve_protected,omitempty"`
-	DissolveRoll           int    `json:"dissolve_roll,omitempty"`
-	DissolveSelectionRoll  int    `json:"dissolve_selection_roll,omitempty"`
-	DissolveCandidateCount int    `json:"dissolve_candidate_count,omitempty"`
-	DissolveReadySlot      int    `json:"dissolve_ready_slot,omitempty"`
-	DissolveItemID         string `json:"dissolve_item_id,omitempty"`
-	DissolveItemName       string `json:"dissolve_item_name,omitempty"`
-	Damage                 int    `json:"damage"`
-	PlayerHP               int    `json:"player_hp"`
-	Lethal                 bool   `json:"lethal"`
+	NPCID                  string                    `json:"npc_id"`
+	PlayerID               string                    `json:"player_id"`
+	RoomID                 int16                     `json:"room_id"`
+	Hit                    bool                      `json:"hit"`
+	Critical               bool                      `json:"critical"`
+	Poisoned               bool                      `json:"poisoned"`
+	Diseased               bool                      `json:"diseased"`
+	Blinded                bool                      `json:"blinded"`
+	BreathTriggered        bool                      `json:"breath_triggered,omitempty"`
+	BreathType             world.NPCCombatBreathType `json:"breath_type,omitempty"`
+	BreathRoll             int                       `json:"breath_roll,omitempty"`
+	BreathDiceCount        int                       `json:"breath_dice_count,omitempty"`
+	BreathDiceSides        int                       `json:"breath_dice_sides,omitempty"`
+	BreathDicePlus         int                       `json:"breath_dice_plus,omitempty"`
+	BreathResisted         bool                      `json:"breath_resisted,omitempty"`
+	BreathPoisoned         bool                      `json:"breath_poisoned,omitempty"`
+	DissolveSucceeded      bool                      `json:"dissolve_succeeded,omitempty"`
+	Dissolved              bool                      `json:"dissolved,omitempty"`
+	DissolveProtected      bool                      `json:"dissolve_protected,omitempty"`
+	DissolveRoll           int                       `json:"dissolve_roll,omitempty"`
+	DissolveSelectionRoll  int                       `json:"dissolve_selection_roll,omitempty"`
+	DissolveCandidateCount int                       `json:"dissolve_candidate_count,omitempty"`
+	DissolveReadySlot      int                       `json:"dissolve_ready_slot,omitempty"`
+	DissolveItemID         string                    `json:"dissolve_item_id,omitempty"`
+	DissolveItemName       string                    `json:"dissolve_item_name,omitempty"`
+	Damage                 int                       `json:"damage"`
+	PlayerHP               int                       `json:"player_hp"`
+	Lethal                 bool                      `json:"lethal"`
 }
 
 // NPCCombatTickSkip records a canonical active NPC for which C would not
@@ -479,6 +487,10 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 			NPCID: result.NPCID, PlayerID: result.PlayerID, RoomID: result.RoomID,
 			Hit: result.Hit, Critical: result.Critical, Poisoned: result.Poisoned,
 			Diseased: result.Diseased, Blinded: result.Blinded,
+			BreathTriggered: result.BreathTriggered, BreathType: result.BreathType,
+			BreathRoll: result.BreathRoll, BreathDiceCount: result.BreathDiceCount,
+			BreathDiceSides: result.BreathDiceSides, BreathDicePlus: result.BreathDicePlus,
+			BreathResisted: result.BreathResisted, BreathPoisoned: result.BreathPoisoned,
 			DissolveSucceeded: result.DissolveSucceeded, Dissolved: result.Dissolved,
 			DissolveProtected: result.DissolveProtected, DissolveRoll: result.DissolveRoll,
 			DissolveSelectionRoll:  result.DissolveSelectionRoll,
@@ -534,6 +546,10 @@ func planNPCCombatRoundForTick(state world.State, npcID, playerID string, roll f
 		NPCID: probeResult.NPCID, PlayerID: probeResult.PlayerID, RoomID: probeResult.RoomID,
 		Hit: probeResult.Hit, Critical: probeResult.Critical, Poisoned: probeResult.Poisoned,
 		Diseased: probeResult.Diseased, Blinded: probeResult.Blinded,
+		BreathTriggered: probeResult.BreathTriggered, BreathType: probeResult.BreathType,
+		BreathRoll: probeResult.BreathRoll, BreathDiceCount: probeResult.BreathDiceCount,
+		BreathDiceSides: probeResult.BreathDiceSides, BreathDicePlus: probeResult.BreathDicePlus,
+		BreathResisted: probeResult.BreathResisted, BreathPoisoned: probeResult.BreathPoisoned,
 		DissolveSucceeded: probeResult.DissolveSucceeded, Dissolved: probeResult.Dissolved,
 		DissolveProtected: probeResult.DissolveProtected, DissolveRoll: probeResult.DissolveRoll,
 		DissolveSelectionRoll:  probeResult.DissolveSelectionRoll,
