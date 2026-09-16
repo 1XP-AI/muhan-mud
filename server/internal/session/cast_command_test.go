@@ -196,6 +196,104 @@ func TestExecuteCastLineRejectsTargetFormBeforeReceipt(t *testing.T) {
 	}
 }
 
+func TestParseCastLineKnowAlignmentAliasAndOccurrence(t *testing.T) {
+	for _, tc := range []struct {
+		line       string
+		spell      string
+		target     string
+		occurrence int
+	}{
+		{line: "주문 선악감지 Bob", spell: "선악감지", target: "Bob", occurrence: 1},
+		{line: "주문 선악 Bob 2", spell: "선악", target: "Bob", occurrence: 2},
+		{line: "주문 선악감지 Bob 2147483647", spell: "선악감지", target: "Bob", occurrence: 2147483647},
+	} {
+		command, ok := ParseCastLine(tc.line)
+		if !ok || command.SpellName != tc.spell || command.Target != tc.target || command.Occurrence != tc.occurrence {
+			t.Fatalf("ParseCastLine(%q)=%+v ok=%v", tc.line, command, ok)
+		}
+	}
+	for _, line := range []string{
+		"주문 선악감지 2",
+		"주문 선악감지 Bob 0",
+		"주문 선악감지 Bob -1",
+		"주문 선악감지 Bob +1",
+		"주문 선악감지 Bob nope",
+		"주문 선악감지 Bob 2147483648",
+		"주문 선악감지 Bob 2 extra",
+		`주문 선악감지 "Bob Foo"`,
+	} {
+		if command, ok := ParseCastLine(line); ok {
+			t.Fatalf("invalid know-alignment target accepted: %q -> %+v", line, command)
+		}
+	}
+}
+
+func knowAlignmentSessionFixture(t *testing.T) []byte {
+	t.Helper()
+	var spells [16]byte
+	spells[41/8] |= 1 << uint(41%8)
+	s := world.State{
+		Version: 1,
+		Rooms: map[int16]world.RoomState{1: {
+			Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 1, Name: "광장"}},
+			PlayerIDs: []string{"a", "b", "c"},
+		}},
+		Players: map[string]world.PlayerState{
+			"a": {Body: world.LegacyMonster{
+				Name: "Alice", Type: 0, Class: world.ClericClass, Level: 8, RoomID: 1,
+				Stats: [5]byte{12, 12, 12, 18, 18}, MPMax: 50, MPCurrent: 30, Spells: spells,
+			}, Online: true},
+			"b": {Body: world.LegacyMonster{Name: "Bob", Type: 0, Class: 4, Level: 4, RoomID: 1}, Online: true},
+			"c": {Body: world.LegacyMonster{Name: "Bobby", Type: 0, Class: 4, Level: 4, RoomID: 1}, Online: true},
+		},
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestExecuteCastLineKnowAlignmentPersistsAndReplaysWithoutRNG(t *testing.T) {
+	store := &departureStore{state: knowAlignmentSessionFixture(t)}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteCastLine(context.Background(), store, "w", "know-1", lease, "주문 선악 Bob 2", 100, 12, func(int, int) int {
+		t.Fatal("know-alignment consumed RNG")
+		return 0
+	})
+	if err != nil || first.Replayed || first.Revision != 1 || store.commits != 1 {
+		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	var result world.CastResult
+	if err := json.Unmarshal(first.Response, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded || result.TargetID != "c" || result.TargetName != "Bobby" || result.TargetText == "" || result.Event == nil || result.Event.ExcludeTargetID != "c" {
+		t.Fatalf("result=%+v", result)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["a"].Body.MPCurrent != 24 || saved.Players["a"].Body.Timers[world.CastSpellTimerIndex] != (world.LegacyTimer{LastTime: 100, Interval: 3}) || !world.PlayerFlagSet(saved.Players["c"].Body, 33) || saved.Players["c"].Body.Timers[27] != (world.LegacyTimer{LastTime: 100, Interval: 2400}) {
+		t.Fatalf("saved actor=%+v target=%+v", saved.Players["a"].Body, saved.Players["c"].Body)
+	}
+	replay, err := owners.ExecuteCastLine(context.Background(), store, "w", "know-1", lease, "주문 선악 Bob 2", 200, 0, func(int, int) int {
+		t.Fatal("know-alignment replay consumed RNG")
+		return 0
+	})
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func locateSessionFixture(t *testing.T) []byte {
 	t.Helper()
 	var spells [16]byte

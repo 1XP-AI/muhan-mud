@@ -443,6 +443,7 @@ type CastProposal struct {
 	afterActiveNPCIDs       []string
 	afterActiveSet          bool
 	afterBody               LegacyMonster
+	afterTarget             PlayerState
 	afterItems              ItemCollection
 	afterItemsSet           bool
 }
@@ -1060,6 +1061,9 @@ func (s State) PlanCast(actorID, spellName string, options CastOptions) (CastPro
 	if spec.healKind == castHealRecall {
 		return s.planRecallCast(p, actor, room, spec, options)
 	}
+	if spec.Index == castKnowAlignmentSpell && options.Target != "" {
+		return s.planKnowAlignmentCast(p, actor, room, spec, options)
+	}
 	if actor.Body.MPCurrent < spec.Cost {
 		p.Response = "당신의 도력이 부족합니다.\r\n"
 		return p, nil
@@ -1232,6 +1236,9 @@ func (s State) ApplyCast(p CastProposal) (State, CastResult, error) {
 	}
 	if spec.healKind == castHealRecall {
 		return s.applyRecallCast(p, actor, room, spec)
+	}
+	if spec.Index == castKnowAlignmentSpell && p.TargetName != "" {
+		return s.applyKnowAlignmentCast(p, actor, room, spec)
 	}
 	if spec.Cost != p.Cost {
 		return State{}, CastResult{}, ErrCastInvalidProposal
