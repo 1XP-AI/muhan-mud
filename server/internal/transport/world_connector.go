@@ -575,7 +575,8 @@ func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line st
 		return session.NotepadAppendInvalidLineResponse, true, nil
 	}
 	if strings.HasPrefix(line, ".") {
-		if !draft.commitPending {
+		wasPending := draft.commitPending
+		if !wasPending {
 			// The first dot must admit against the latest canonical state before
 			// entering the durable command boundary. A later dot is a retry of
 			// the same command and must reach Execute first so its receipt can be
@@ -593,6 +594,18 @@ func (c *worldConnection) submitNotepadContinuation(ctx context.Context, line st
 			if !c.game.owners.Owns(c.lease) {
 				c.ready = false
 				return "", true, err
+			}
+			if errors.Is(err, world.ErrNotepadLimit) {
+				if !wasPending {
+					// The reducer saw a fresh canonical limit rejection before a
+					// receipt or mutation existed. It cannot become retryable state;
+					// clear the local editor so the connection is not wedged behind
+					// an impossible append. A pending retry keeps its stable command
+					// and buffered input because the receipt may be temporarily absent.
+					c.clearNotepad()
+					return "아직 구현되지 않은 명령입니다.\r\n", true, nil
+				}
+				return session.NotepadAppendRetryResponse, true, nil
 			}
 			return session.NotepadAppendRetryResponse, true, nil
 		}
