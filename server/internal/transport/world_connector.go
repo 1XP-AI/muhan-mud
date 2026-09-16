@@ -76,6 +76,8 @@ type WorldConnector struct {
 	pendingNPCResource     *npcResourceTick
 	lastNPCMaintenanceSlot int64
 	pendingNPCMaintenance  *npcMaintenanceTick
+	lastNPCRandomSpawnSlot int64
+	pendingNPCRandomSpawn  *npcRandomSpawnTick
 }
 
 type playerPhaseSummary struct {
@@ -118,7 +120,7 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
 	}
-	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1}
+	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1, lastNPCRandomSpawnSlot: -1}
 	g.cleanup = session.NewWorldCleanupQueue(&g.owners, config.Store, config.WorldID)
 	return g, nil
 }
