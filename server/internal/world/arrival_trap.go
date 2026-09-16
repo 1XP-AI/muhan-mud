@@ -43,6 +43,63 @@ type ArrivalTrapResult struct {
 	Dead               bool
 }
 
+// ArrivalTrapEvent is the reducer-owned projection of one triggered leader
+// arrival trap. It is intentionally separate from ArrivalTrapResult and State:
+// transport may fan it out after the candidate commits, but it is never part
+// of the persisted state or public command response. RoomID is the room in
+// which check_traps ran, before a PIT relocation or a lethal death transition.
+type ArrivalTrapEvent struct {
+	ActorID   string
+	ActorName string
+	RoomID    int16
+	Trap      byte
+	ActorText string
+	RoomText  string
+}
+
+// arrivalTrapEventFor renders the C check_traps actor and room output after
+// the effect has been planned. The caller supplies the pre-effect room and
+// actor identity because a PIT/death may leave the actor elsewhere by commit.
+// Avoided and levitating PIT results deliberately produce no event: C returns
+// before the trap-output switch in both cases.
+func arrivalTrapEventFor(actorID, actorName string, roomID int16, effect ArrivalTrapResult) (ArrivalTrapEvent, bool) {
+	if actorID == "" || actorName == "" || roomID == 0 || !effect.Triggered || effect.Avoided || effect.Suppressed {
+		return ArrivalTrapEvent{}, false
+	}
+	event := ArrivalTrapEvent{
+		ActorID:   actorID,
+		ActorName: actorName,
+		RoomID:    roomID,
+		Trap:      effect.Trap,
+	}
+	switch effect.Trap {
+	case TrapPit:
+		event.ActorText = fmt.Sprintf("당신은 구덩이에 빠졌습니다!\n당신은 %d점의 피해를 입었습니다.\n", effect.Damage)
+		event.RoomText = fmt.Sprintf("\n%s이 구덩이에 빠졌습니다.\r\n", actorName)
+	case TrapDart:
+		event.ActorText = fmt.Sprintf("당신은 숨겨진 독화살에 맞았습니다!\n당신은 %d점의 피해를 입었습니다.\n", effect.Damage)
+		event.RoomText = fmt.Sprintf("\n%s이 숨겨진 독화살에 맞았습니다.\r\n", actorName)
+	case TrapBlock:
+		event.ActorText = fmt.Sprintf("당신은 커다란 돌에 맞았습니다!\n당신은 %d점의 피해를 입었습니다.\n", effect.Damage)
+		event.RoomText = fmt.Sprintf("\n%s 위로 커다란 돌이 떨어졌습니다.\r\n", actorName)
+	case TrapMPDam:
+		event.ActorText = fmt.Sprintf("당신의 마음이 충격을 받았습니다!\n당신은 %d점의 마력을 잃었습니다.\n당신은 %d점의 피해를 입었습니다.\n", effect.MPDamage, effect.Damage)
+		event.RoomText = fmt.Sprintf("\n%s이 강한 충격을 받았습니다.\r\n", actorName)
+	case TrapRMSpl:
+		event.ActorText = "어두운 기운이 당신을 감쌉니다.\n당신의 주문이 사라집니다.\n"
+		event.RoomText = fmt.Sprintf("\n어두운 기운이 %s을 감쌉니다.\r\n", actorName)
+	case TrapNaked:
+		event.ActorText = "붉은 액체가 당신위로 쏟아집니다.\n으악!!! 당신의 장비가 녹아버립니다.\n"
+		event.RoomText = fmt.Sprintf("\n붉은 액체가 %s님위로 쏟아집니다.\r\n", actorName)
+	case TrapAlarm:
+		event.ActorText = "경보장치가 울립니다!\n근처에 경비원들이 없길 바랍니다.\n"
+		event.RoomText = fmt.Sprintf("\n%s이 경보장치를 건드렸습니다!\r\n", actorName)
+	default:
+		return ArrivalTrapEvent{}, false
+	}
+	return event, true
+}
+
 func trapRoll(roll func(int, int) int, low, high int) (int, error) {
 	if roll == nil {
 		return 0, fmt.Errorf("missing arrival trap random source")

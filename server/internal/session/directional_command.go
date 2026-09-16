@@ -66,6 +66,7 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		return storage.WorldReceipt{}, err
 	}
 	var committedNPCChaseIDs []string
+	var committedArrivalTrapEvent *world.ArrivalTrapEvent
 	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		s, err := world.DecodeState(raw)
 		if err != nil {
@@ -133,6 +134,11 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 				responseText += world.NPCFollowerChaseActorText(move.Body.Name)
 			}
 		}
+		if step.ArrivalTrapEvent != nil {
+			event := *step.ArrivalTrapEvent
+			committedArrivalTrapEvent = &event
+			responseText += event.ActorText
+		}
 		response, reduceErr := json.Marshal(responseText)
 		return state, response, reduceErr
 	})
@@ -140,8 +146,13 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		return receipt, err
 	}
 	receipt.NPCChaseIDs = nil
+	receipt.ArrivalTrapEvent = nil
 	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
 		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
+	}
+	if !receipt.Replayed && committedArrivalTrapEvent != nil {
+		event := *committedArrivalTrapEvent
+		receipt.ArrivalTrapEvent = &event
 	}
 	return receipt, nil
 }

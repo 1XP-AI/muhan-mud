@@ -31,6 +31,10 @@ type DirectionalStepResult struct {
 	// NPCMonsterFollowers is the command6 MDMFOL first_fol movement result.
 	NPCMonsterFollowers *NPCMonsterFollowerProposal
 	Alarm               *ArrivalAlarmResult
+	// ArrivalTrapEvent is set only for this command's leader. It captures the
+	// committed trap room and source-composed text; follower trap results stay
+	// inside their reducer tree and are intentionally not projected here.
+	ArrivalTrapEvent *ArrivalTrapEvent `json:"-"`
 }
 
 // directionalStepSingle performs one actor's traversal/entry and optionally
@@ -65,8 +69,16 @@ func (s State) directionalStepSingle(in TransferInput, catalog SpawnCatalog, rol
 
 func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in TransferInput, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, error) {
 	next := s
+	var trapEvent ArrivalTrapEvent
+	hasTrapEvent := false
 	if result.Transfer.ArrivalTrap != nil {
 		var err error
+		actor, ok := next.Players[actorID]
+		if !ok {
+			return State{}, fmt.Errorf("arrival trap actor absent before output")
+		}
+		trapRoomID := actor.Body.RoomID
+		trapActorName := actor.Body.Name
 		next, err = next.ApplyArrivalTrap(actorID, *result.Transfer.ArrivalTrap)
 		if err != nil {
 			return State{}, err
@@ -80,11 +92,6 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 			result.Death = &death
 		}
 		if result.Transfer.ArrivalTrap.Alarm && result.Transfer.ArrivalTrap.Triggered && result.Death == nil {
-			// C prints these two actor-local lines before moving guards. Room
-			// broadcasts remain a transport-hub concern, but the command receipt
-			// must preserve the actor's own alarm output.
-			result.Transfer.Movement.Messages = append(result.Transfer.Movement.Messages,
-				"경보장치가 울립니다!\n", "근처에 경비원들이 없길 바랍니다.\n")
 			var alarm ArrivalAlarmResult
 			next, alarm, err = next.ApplyArrivalAlarmWithCatalog(actorID, *result.Transfer.ArrivalTrap, int32(in.Movement.Now), catalog, roll, allocate)
 			if err != nil {
@@ -92,6 +99,7 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 			}
 			result.Alarm = &alarm
 		}
+		trapEvent, hasTrapEvent = arrivalTrapEventFor(actorID, trapActorName, trapRoomID, *result.Transfer.ArrivalTrap)
 	}
 	if result.Transfer.Entry != nil {
 		var err error
@@ -99,6 +107,9 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 		if err != nil {
 			return State{}, err
 		}
+	}
+	if hasTrapEvent {
+		result.ArrivalTrapEvent = &trapEvent
 	}
 	return next, nil
 }

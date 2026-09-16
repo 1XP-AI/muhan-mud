@@ -71,6 +71,9 @@ type GoProposal struct {
 	// movement. Its ordered move IDs are receipt-only projection metadata; the
 	// durable GoResult/response shape remains unchanged.
 	NPCChase *NPCFollowerChaseProposal `json:"-"`
+	// ArrivalTrapEvent is receipt-only projection metadata. It is copied from
+	// the leader step after reducer application and never enters GoResult.
+	ArrivalTrapEvent *ArrivalTrapEvent `json:"-"`
 
 	before State
 	next   State
@@ -161,6 +164,7 @@ func (s State) PlanGo(actorID, prefix string, occurrence int, options GoOptions)
 	proposal.Transfer = step.Transfer
 	proposal.Death = step.Death
 	proposal.NPCChase = step.NPCChase
+	proposal.ArrivalTrapEvent = step.ArrivalTrapEvent
 	proposal.Moved = step.Transfer.Movement.Moved
 	proposal.next = next
 	if step.Transfer.Movement.Moved {
@@ -184,6 +188,9 @@ func (s State) PlanGo(actorID, prefix string, occurrence int, options GoOptions)
 		for _, move := range step.NPCChase.Moves {
 			response += NPCGoChaseActorText(move.Body.Name)
 		}
+	}
+	if step.ArrivalTrapEvent != nil {
+		response += step.ArrivalTrapEvent.ActorText
 	}
 	proposal.Response = response
 	return proposal, nil

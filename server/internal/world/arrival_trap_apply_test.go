@@ -32,7 +32,7 @@ func TestDirectionalStepAppliesArrivalDartAfterSuccessfulTransfer(t *testing.T) 
 		rolls = rolls[1:]
 		return value
 	}, nil)
-	if err != nil || result.Transfer.ArrivalTrap == nil || !result.Transfer.ArrivalTrap.Poisoned || next.Players["a"].Body.HPCurrent != 26 || next.Players["a"].Body.RoomID != 2 {
+	if err != nil || result.Transfer.ArrivalTrap == nil || !result.Transfer.ArrivalTrap.Poisoned || next.Players["a"].Body.HPCurrent != 26 || next.Players["a"].Body.RoomID != 2 || result.ArrivalTrapEvent == nil || result.ArrivalTrapEvent.RoomID != 2 || result.ArrivalTrapEvent.RoomText != "\nAlice이 숨겨진 독화살에 맞았습니다.\r\n" {
 		t.Fatalf("next=%+v result=%+v err=%v", next, result, err)
 	}
 	if next.Players["a"].Body.Flags[24/8]&(1<<(24%8)) != 0 {
@@ -40,6 +40,33 @@ func TestDirectionalStepAppliesArrivalDartAfterSuccessfulTransfer(t *testing.T) 
 	}
 	if s.Players["a"].Body.HPCurrent != actor.Body.HPCurrent {
 		t.Fatal("input mutated")
+	}
+}
+
+func TestDirectionalStepAvoidedAndTraplessArrivalHaveNoTrapProjection(t *testing.T) {
+	s, in := canonicalTransferFixture()
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapDart
+	s.Rooms[2] = destination
+	actor := s.Players["a"]
+	actor.Body.Stats[1] = 10
+	s.Players["a"] = actor
+	calls := 0
+	next, result, err := s.DirectionalStep(in, nil, func(low, high int) int {
+		calls++
+		if low != 1 || high != 100 {
+			t.Fatalf("avoided trap consumed unexpected roll %d..%d", low, high)
+		}
+		return 1
+	}, nil)
+	if err != nil || result.Transfer.ArrivalTrap == nil || !result.Transfer.ArrivalTrap.Avoided || result.ArrivalTrapEvent != nil || calls != 1 || next.Players["a"].Body.RoomID != 2 {
+		t.Fatalf("avoided result=%+v next=%+v err=%v calls=%d", result, next, err, calls)
+	}
+
+	s, in = canonicalTransferFixture()
+	next, result, err = s.DirectionalStep(in, nil, nil, nil)
+	if err != nil || result.Transfer.ArrivalTrap == nil || result.Transfer.ArrivalTrap.Triggered || result.ArrivalTrapEvent != nil || next.Players["a"].Body.RoomID != 2 {
+		t.Fatalf("trapless result=%+v next=%+v err=%v", result, next, err)
 	}
 }
 
@@ -62,7 +89,7 @@ func TestDirectionalStepPitRelocatesBeforeNonlethalCompletion(t *testing.T) {
 		rolls = rolls[1:]
 		return value
 	}, nil)
-	if err != nil || result.Death != nil || result.Transfer.ArrivalTrap == nil || next.Players["a"].Body.RoomID != 3 || next.Players["a"].Body.HPCurrent != 28 {
+	if err != nil || result.Death != nil || result.Transfer.ArrivalTrap == nil || next.Players["a"].Body.RoomID != 3 || next.Players["a"].Body.HPCurrent != 28 || result.ArrivalTrapEvent == nil || result.ArrivalTrapEvent.RoomID != 2 || result.ArrivalTrapEvent.ActorText != "당신은 구덩이에 빠졌습니다!\n당신은 2점의 피해를 입었습니다.\n" {
 		t.Fatalf("next=%+v result=%+v err=%v", next, result, err)
 	}
 	if len(next.Rooms[2].PlayerIDs) != 0 || len(next.Rooms[3].PlayerIDs) != 1 || next.Rooms[3].Resource.BeenHere != 1 {
@@ -452,7 +479,7 @@ func TestDirectionalStepRunsAlarmAfterPlayerMovement(t *testing.T) {
 		}
 		return 100
 	}, nil)
-	if err != nil || result.Alarm == nil || len(result.Alarm.MovedNPCIDs) != 1 || next.NPCs["guard-id"].Body.RoomID != 2 {
+	if err != nil || result.Alarm == nil || len(result.Alarm.MovedNPCIDs) != 1 || next.NPCs["guard-id"].Body.RoomID != 2 || result.ArrivalTrapEvent == nil || result.ArrivalTrapEvent.Trap != TrapAlarm {
 		t.Fatalf("result=%+v next=%+v err=%v", result, next, err)
 	}
 }

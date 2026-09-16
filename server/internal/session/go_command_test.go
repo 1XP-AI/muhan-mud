@@ -144,6 +144,60 @@ func TestExecuteGoLineCommitsCanonicalMoveAndReplays(t *testing.T) {
 	}
 }
 
+func TestExecuteGoLineIncludesLeaderArrivalTrapActorTextAndEphemeralEvent(t *testing.T) {
+	s, err := world.DecodeState(goCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := s.Rooms[2]
+	destination.Resource.Trap = world.TrapDart
+	s.Rooms[2] = destination
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	first, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-trap-output", lease, "가 동굴", 100, 12, nil, func(low, high int) int {
+		calls++
+		if calls == 1 && (low != 1 || high != 100) {
+			t.Fatalf("unexpected trigger roll %d..%d", low, high)
+		}
+		if calls == 2 && (low != 1 || high != 10) {
+			t.Fatalf("unexpected dart roll %d..%d", low, high)
+		}
+		return []int{100, 7}[calls-1]
+	}, nil)
+	if err != nil || first.Replayed || store.commits != 1 || calls != 2 {
+		t.Fatalf("first=%+v err=%v commits=%d calls=%d", first, err, store.commits, calls)
+	}
+	var response string
+	if err := json.Unmarshal(first.Response, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response, "당신은 숨겨진 독화살에 맞았습니다!\n") || first.ArrivalTrapEvent == nil || first.ArrivalTrapEvent.RoomID != 2 || first.ArrivalTrapEvent.Trap != world.TrapDart {
+		t.Fatalf("response=%q event=%+v", response, first.ArrivalTrapEvent)
+	}
+	if encoded, encodeErr := json.Marshal(first); encodeErr != nil || strings.Contains(string(encoded), "ArrivalTrapEvent") || strings.Contains(string(encoded), "ActorText") {
+		t.Fatalf("arrival trap metadata leaked into receipt JSON: %s err=%v", encoded, encodeErr)
+	}
+	replay, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-trap-output", lease, "가 동굴", 100, 12, nil, func(int, int) int {
+		t.Fatal("arrival trap replay rerolled")
+		return 0
+	}, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) || replay.ArrivalTrapEvent != nil {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func TestExecuteGoLineGatesMissingLockSilentAndCombat(t *testing.T) {
 	owners := &Ownership{}
 	lease, err := owners.Acquire("actor")

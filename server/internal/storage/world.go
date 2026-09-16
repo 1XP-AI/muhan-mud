@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
 
 var ErrWorldConflict = errors.New("world revision conflict")
@@ -25,6 +27,10 @@ type WorldReceipt struct {
 	// excluded from JSON and is never read from or written to the database;
 	// receipt replay therefore always leaves it empty.
 	NPCChaseIDs []string `json:"-"`
+	// ArrivalTrapEvent is the reducer-owned, first-commit-only room projection
+	// for a leader arrival trap. It is process-local receipt metadata and is
+	// never serialized into the database/public response.
+	ArrivalTrapEvent *world.ArrivalTrapEvent `json:"-"`
 }
 
 func validState(raw json.RawMessage) bool {
