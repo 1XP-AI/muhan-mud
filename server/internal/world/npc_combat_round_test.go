@@ -1498,3 +1498,349 @@ func TestNPCCombatRoundMBEFUDRejectsStaleAndTamperedCandidatesAtomically(t *test
 	changed.Players["a"] = player
 	assertRejected("stale MBEFUD candidate", changed, proposal)
 }
+
+func npcCombatMENEDRFixture(t *testing.T, experience int32) State {
+	t.Helper()
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	player.Body.Experience = experience
+	player.Body.Proficiency = [5]int32{10, 20, 30, 40, 50}
+	player.Body.Realm = [4]int32{1, 2, 3, 4}
+	s.Players["a"] = player
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Level = 5 // MENEDR band=(level+3)/4 == 2.
+	npc.Body.DiceSides = 6
+	npc.Body.Flags[30/8] |= 1 << (30 % 8) // MENEDR
+	s.NPCs["wolf-id"] = npc
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestNPCCombatRoundMENEDRAbsentAndRollTenPreserveProgression(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		menedr     bool
+		wantCalls  [][2]int
+		energyRoll int
+	}{
+		{
+			name:      "MENEDR absent",
+			wantCalls: [][2]int{{1, 20}, {1, 6}},
+		},
+		{
+			name:       "MENEDR roll ten",
+			menedr:     true,
+			energyRoll: 10,
+			wantCalls:  [][2]int{{1, 20}, {1, 100}, {1, 6}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatMENEDRFixture(t, 1000)
+			if !tc.menedr {
+				npc := s.NPCs["wolf-id"]
+				npc.Body.Flags[30/8] &^= 1 << (30 % 8)
+				s.NPCs["wolf-id"] = npc
+			}
+			before := s.Players["a"].Body
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				switch high {
+				case 20:
+					return 20
+				case 100:
+					return tc.energyRoll
+				case 6:
+					return 6
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.Hit || proposal.Damage != 6 || proposal.EnergyDrainTriggered || proposal.EnergyDrain != 0 || proposal.ExperienceBefore != 1000 || proposal.ExperienceAfter != 1000 {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("RNG calls=%v want=%v", calls, tc.wantCalls)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.EnergyDrainTriggered || result.EnergyDrain != 0 || result.ExperienceBefore != 1000 || result.ExperienceAfter != 1000 {
+				t.Fatalf("result=%+v", result)
+			}
+			got := next.Players["a"].Body
+			if got.Experience != before.Experience || got.Proficiency != before.Proficiency || got.Realm != before.Realm || got.HPCurrent != 34 {
+				t.Fatalf("progression or HP changed: got=%+v before=%+v", got, before)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundMENEDRRollNineConsumesEnergyThenOrdinaryDamage(t *testing.T) {
+	s := npcCombatMENEDRFixture(t, 1000)
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch high {
+		case 20:
+			return 20
+		case 100:
+			return 9
+		case 5:
+			return 5
+		case 6:
+			return 6
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.Hit || !proposal.EnergyDrainTriggered || proposal.EnergyRoll != 9 || proposal.EnergyBand != 2 || proposal.EnergyDiceCount != 2 || proposal.EnergyDiceSides != 5 || proposal.EnergyDicePlus != 10 || proposal.EnergyDrain != 20 || proposal.ExperienceBefore != 1000 || proposal.ExperienceAfter != 980 || proposal.Damage != 6 || proposal.PlayerHPAfter != 34 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}, {1, 100}, {1, 5}, {1, 5}, {1, 6}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EnergyDrain != 20 || result.ExperienceBefore != 1000 || result.ExperienceAfter != 980 || result.Damage != 6 {
+		t.Fatalf("result=%+v", result)
+	}
+	player := next.Players["a"].Body
+	if player.Experience != 980 || player.Proficiency != [5]int32{8, 18, 28, 38, 1024} || player.Realm != [4]int32{} || player.HPCurrent != 34 {
+		t.Fatalf("player after MENEDR=%+v", player)
+	}
+}
+
+func TestNPCCombatRoundMENEDRClampsDrainAtZeroExperienceButKeepsRNGOrder(t *testing.T) {
+	s := npcCombatMENEDRFixture(t, 0)
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch high {
+		case 20:
+			return 20
+		case 100:
+			return 9
+		case 5:
+			return 5
+		case 6:
+			return 6
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.EnergyDrain != 0 || proposal.ExperienceBefore != 0 || proposal.ExperienceAfter != 0 || proposal.PlayerHPAfter != 34 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}, {1, 100}, {1, 5}, {1, 5}, {1, 6}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	player := next.Players["a"].Body
+	if result.EnergyDrain != 0 || player.Experience != 0 || player.Proficiency != [5]int32{10, 20, 30, 40, 1024} || player.Realm != [4]int32{1, 2, 3, 4} || player.HPCurrent != 34 {
+		t.Fatalf("clamped MENEDR result=%+v player=%+v", result, player)
+	}
+}
+
+func TestNPCCombatRoundMENEDRSkipsEnergyOnBreathAndEvaluatesOnFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		breathRoll int
+		wantDrain  int
+		wantCalls  [][2]int
+		wantXP     int32
+	}{
+		{
+			name:       "breath trigger",
+			breathRoll: 4,
+			wantCalls:  [][2]int{{1, 20}, {1, 30}, {1, 4}, {1, 4}},
+			wantXP:     1000,
+		},
+		{
+			name:       "ordinary fallback",
+			breathRoll: 5,
+			wantDrain:  20,
+			wantCalls:  [][2]int{{1, 20}, {1, 30}, {1, 100}, {1, 5}, {1, 5}, {1, 6}},
+			wantXP:     980,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatMENEDRFixture(t, 1000)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Flags[19/8] |= 1 << (19 % 8) // MBRETH
+			s.NPCs["wolf-id"] = npc
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				switch high {
+				case 20:
+					return 20
+				case 30:
+					return tc.breathRoll
+				case 4:
+					return 4
+				case 100:
+					return 9
+				case 5:
+					return 5
+				case 6:
+					return 6
+				default:
+					t.Fatalf("unexpected random request %d..%d", low, high)
+					return 0
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if proposal.BreathTriggered != (tc.breathRoll < 5) || proposal.EnergyDrain != tc.wantDrain || proposal.ExperienceAfter != tc.wantXP {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("RNG calls=%v want=%v", calls, tc.wantCalls)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.EnergyDrain != tc.wantDrain || next.Players["a"].Body.Experience != tc.wantXP {
+				t.Fatalf("result=%+v player=%+v", result, next.Players["a"].Body)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundMBEFUDDoesNotAttenuateMENEDR(t *testing.T) {
+	s := npcCombatMENEDRFixture(t, 1000)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Flags[51/8] |= 1 << (51 % 8) // MBEFUD
+	s.NPCs["wolf-id"] = npc
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		switch high {
+		case 20:
+			return 20
+		case 100:
+			return 9
+		case 5:
+			return 5
+		case 6:
+			return 6
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.EnergyDrain != 20 || proposal.Damage != 2 || proposal.PlayerHPAfter != 38 || proposal.ExperienceAfter != 980 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EnergyDrain != 20 || result.Damage != 2 || next.Players["a"].Body.Experience != 980 || next.Players["a"].Body.HPCurrent != 38 {
+		t.Fatalf("result=%+v player=%+v", result, next.Players["a"].Body)
+	}
+}
+
+func TestNPCCombatRoundMENEDRRejectsNegativeProgressionAndOverflowCandidatesAtomically(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*State)
+	}{
+		{name: "negative experience", mutate: func(s *State) { p := s.Players["a"]; p.Body.Experience = -1; s.Players["a"] = p }},
+		{name: "negative weapon proficiency", mutate: func(s *State) { p := s.Players["a"]; p.Body.Proficiency[0] = -1; s.Players["a"] = p }},
+		{name: "negative realm proficiency", mutate: func(s *State) { p := s.Players["a"]; p.Body.Realm[0] = -1; s.Players["a"] = p }},
+		{name: "proficiency total overflow", mutate: func(s *State) {
+			p := s.Players["a"]
+			maxInt32 := int32(^uint32(0) >> 1)
+			p.Body.Proficiency = [5]int32{maxInt32, maxInt32, maxInt32, maxInt32, maxInt32}
+			p.Body.Realm = [4]int32{maxInt32, maxInt32, maxInt32, maxInt32}
+			s.Players["a"] = p
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := npcCombatMENEDRFixture(t, 1000)
+			test.mutate(&s)
+			before := s.clone()
+			called := false
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(int, int) int {
+				called = true
+				return 20
+			})
+			if err == nil || called || !reflect.DeepEqual(proposal, NPCCombatRoundProposal{}) || !reflect.DeepEqual(s, before) {
+				t.Fatalf("accepted or mutated invalid progression proposal=%+v called=%v err=%v", proposal, called, err)
+			}
+		})
+	}
+
+	s := npcCombatMENEDRFixture(t, 1000)
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		switch high {
+		case 20:
+			return 20
+		case 100:
+			return 9
+		case 5:
+			return 5
+		case 6:
+			return 6
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected := func(name string, candidate NPCCombatRoundProposal) {
+		t.Helper()
+		before := s.clone()
+		next, result, applyErr := s.ApplyNPCCombatRound(candidate)
+		if applyErr == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) || !reflect.DeepEqual(s, before) {
+			t.Fatalf("%s accepted or mutated: next=%+v result=%+v err=%v", name, next, result, applyErr)
+		}
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*NPCCombatRoundProposal)
+	}{
+		{name: "tampered energy", mutate: func(p *NPCCombatRoundProposal) { p.EnergyDrain++ }},
+		{name: "tampered expected experience", mutate: func(p *NPCCombatRoundProposal) { p.ExperienceAfter++ }},
+		{name: "tampered expected weapon proficiency", mutate: func(p *NPCCombatRoundProposal) { p.ProficiencyAfter[0]++ }},
+		{name: "tampered expected realm", mutate: func(p *NPCCombatRoundProposal) { p.RealmAfter[0]++ }},
+	} {
+		tampered := proposal
+		test.mutate(&tampered)
+		assertRejected(test.name, tampered)
+	}
+	stale := s.clone()
+	player := stale.Players["a"]
+	player.Body.Experience++
+	stale.Players["a"] = player
+	if next, result, err := stale.ApplyNPCCombatRound(proposal); err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+		t.Fatalf("stale progression accepted: next=%+v result=%+v err=%v", next, result, err)
+	}
+}
