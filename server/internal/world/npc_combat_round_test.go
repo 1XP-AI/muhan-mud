@@ -1518,6 +1518,82 @@ func npcCombatMENEDRFixture(t *testing.T, experience int32) State {
 	return s
 }
 
+func TestNPCCombatRoundMissPreservesNonzeroProgression(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	player.Body.Experience = 1234
+	player.Body.Proficiency = [5]int32{10, 20, 30, 40, 50}
+	player.Body.Realm = [4]int32{1, 2, 3, 4}
+	s.Players["a"] = player
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Thaco = 20
+	s.NPCs["wolf-id"] = npc
+	before := s.Players["a"].Body
+
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		if low != 1 || high != 20 {
+			t.Fatalf("unexpected random request %d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Hit || proposal.Damage != 0 || proposal.PlayerHPBefore != 40 || proposal.PlayerHPAfter != 40 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if proposal.ExperienceBefore != before.Experience || proposal.ExperienceAfter != before.Experience || proposal.ProficiencyBefore != before.Proficiency || proposal.ProficiencyAfter != before.Proficiency || proposal.RealmBefore != before.Realm || proposal.RealmAfter != before.Realm {
+		t.Fatalf("miss progression snapshot=%+v before=%+v", proposal, before)
+	}
+	if want := [][2]int{{1, 20}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hit || result.Damage != 0 || result.PlayerHP != 40 || result.TargetHP != 40 || result.ExperienceBefore != before.Experience || result.ExperienceAfter != before.Experience || result.ProficiencyBefore != before.Proficiency || result.ProficiencyAfter != before.Proficiency || result.RealmBefore != before.Realm || result.RealmAfter != before.Realm {
+		t.Fatalf("result=%+v before=%+v", result, before)
+	}
+	if !reflect.DeepEqual(next, s) {
+		t.Fatalf("miss mutated state: next=%+v before=%+v", next, s)
+	}
+}
+
+func TestNPCCombatRoundMENEDRFreeAllowsAggregateOverflowProgression(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	player := s.Players["a"]
+	maxInt32 := int32(^uint32(0) >> 1)
+	player.Body.Experience = 1234
+	player.Body.Proficiency = [5]int32{maxInt32, maxInt32, maxInt32, maxInt32, maxInt32}
+	player.Body.Realm = [4]int32{maxInt32, maxInt32, maxInt32, maxInt32}
+	s.Players["a"] = player
+	before := s.Players["a"].Body
+
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.Hit || proposal.Damage != 6 || proposal.ExperienceBefore != before.Experience || proposal.ExperienceAfter != before.Experience || proposal.ProficiencyBefore != before.Proficiency || proposal.ProficiencyAfter != before.Proficiency || proposal.RealmBefore != before.Realm || proposal.RealmAfter != before.Realm {
+		t.Fatalf("proposal=%+v before=%+v", proposal, before)
+	}
+
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExperienceBefore != before.Experience || result.ExperienceAfter != before.Experience || result.ProficiencyBefore != before.Proficiency || result.ProficiencyAfter != before.Proficiency || result.RealmBefore != before.Realm || result.RealmAfter != before.Realm {
+		t.Fatalf("result=%+v before=%+v", result, before)
+	}
+	got := next.Players["a"].Body
+	if got.Experience != before.Experience || got.Proficiency != before.Proficiency || got.Realm != before.Realm || got.HPCurrent != 34 {
+		t.Fatalf("MENEDR-free progression changed: got=%+v before=%+v", got, before)
+	}
+}
+
 func TestNPCCombatRoundMENEDRAbsentAndRollTenPreserveProgression(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

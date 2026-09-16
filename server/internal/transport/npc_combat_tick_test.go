@@ -1145,6 +1145,83 @@ func TestRunNPCCombatTickSerializesConcurrentCallers(t *testing.T) {
 	}
 }
 
+func TestRunNPCCombatPhasePersistsMissProgressionAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	player := state.Players["player-b"]
+	player.Body.Experience = 1234
+	player.Body.Proficiency = [5]int32{10, 20, 30, 40, 50}
+	player.Body.Realm = [4]int32{1, 2, 3, 4}
+	state.Players["player-b"] = player
+	npc := state.NPCs["npc-b"]
+	npc.Body.Thaco = 20
+	state.NPCs["npc-b"] = npc
+	state.ActiveNPCIDs = []string{"npc-b"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-miss-progression-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			if low != 1 || high != 20 {
+				t.Fatalf("unexpected random request %d..%d", low, high)
+			}
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-miss-progression", 5, 100)
+	if err != nil || first.Replayed || store.commits != 1 || rollCalls != 1 {
+		t.Fatalf("first=%+v commits=%d RNG calls=%d err=%v", first, store.commits, rollCalls, err)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	attack := summary.Attacks[0]
+	if attack.Hit || attack.Damage != 0 || attack.PlayerHP != 30 || attack.ExperienceBefore != 1234 || attack.ExperienceAfter != 1234 || attack.ProficiencyBefore != [5]int32{10, 20, 30, 40, 50} || attack.ProficiencyAfter != [5]int32{10, 20, 30, 40, 50} || attack.RealmBefore != [4]int32{1, 2, 3, 4} || attack.RealmAfter != [4]int32{1, 2, 3, 4} {
+		t.Fatalf("attack=%+v", attack)
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPlayer := saved.Players["player-b"].Body
+	if savedPlayer.Experience != 1234 || savedPlayer.Proficiency != [5]int32{10, 20, 30, 40, 50} || savedPlayer.Realm != [4]int32{1, 2, 3, 4} || savedPlayer.HPCurrent != 30 {
+		t.Fatalf("saved miss progression state=%+v", savedPlayer)
+	}
+
+	replayCalls := 0
+	restarted, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-miss-progression-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(_, _ int) int {
+			replayCalls++
+			return 20
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := restarted.RunNPCCombatPhase(context.Background(), "npc-combat-miss-progression", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || replayCalls != 0 {
+		t.Fatalf("replay=%+v commits=%d replay RNG calls=%d err=%v", replay, store.commits, replayCalls, err)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
 func TestRunNPCCombatPhasePersistsMENEDRAndReplaysWithoutRNG(t *testing.T) {
 	state := npcCombatTickFixture(t)
 	player := state.Players["player-b"]
