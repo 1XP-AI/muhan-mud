@@ -373,6 +373,29 @@ func TestNPCScavengeApplyRejectsStaleReplayAndInvalidInputsAtomically(t *testing
 	}
 }
 
+func TestNPCScavengeRejectsTamperedPlanTimeAndPreservesProposalToken(t *testing.T) {
+	state := npcScavengeFixture(t)
+	proposal, err := state.PlanNPCScavenge("scavenger", 200, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := proposal
+	tampered.Now = 1000
+	tampered.TimerAfter.LastTime = 1000
+	before := state.clone()
+	if _, _, err := state.ApplyNPCScavenge(tampered); err == nil || !reflect.DeepEqual(state, before) {
+		t.Fatalf("tampered plan time accepted or mutated state: err=%v", err)
+	}
+
+	next, result, err := state.ApplyNPCScavenge(proposal)
+	if err != nil {
+		t.Fatalf("valid proposal was consumed by rejected tamper attempt: %v", err)
+	}
+	if result.Now != 200 || next.NPCs["scavenger"].Body.Timers[npcScavengeTimer].LastTime != 200 {
+		t.Fatalf("valid proposal applied with unexpected timestamp: result=%+v npc=%+v", result, next.NPCs["scavenger"])
+	}
+}
+
 func TestNPCScavengeRejectsEquivalentTargetRebindingAtomically(t *testing.T) {
 	state := npcScavengeFixture(t)
 	equivalent := state.NPCs["scavenger"]

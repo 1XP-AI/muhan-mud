@@ -88,6 +88,7 @@ type NPCScavengeProposal struct {
 
 	before     State
 	applyToken *npcScavengeApplyToken
+	plannedNow int32
 }
 
 // NPCScavengeResult is the committed, replay-visible projection.
@@ -259,7 +260,7 @@ func (s State) PlanNPCScavenge(npcID string, now int32, roll func(int, int) int)
 		NPCID: npcID, RoomID: npc.Body.RoomID, Now: now,
 		Due: due, AttackReady: attackReady, TimerBefore: npc.Body.Timers[npcScavengeTimer],
 		TimerAfter: npc.Body.Timers[npcScavengeTimer], MHASSC: flag(npc.Body.Flags[:], npcScavengedFlag),
-		before: s.clone(), applyToken: &npcScavengeApplyToken{npcID: npcID},
+		before: s.clone(), applyToken: &npcScavengeApplyToken{npcID: npcID}, plannedNow: now,
 	}
 	npcScavengeSetOrders(&proposal, room, npc)
 	if !due {
@@ -317,7 +318,7 @@ func npcScavengeProposalError(message string) (State, NPCScavengeResult, error) 
 // snapshot. It rechecks every derived decision and canonical order without
 // invoking RNG, then clones and mutates the two owning collections together.
 func (s State) ApplyNPCScavenge(proposal NPCScavengeProposal) (State, NPCScavengeResult, error) {
-	if proposal.before.Version == 0 || !proposal.applyToken.validFor(proposal.NPCID) || !reflect.DeepEqual(s, proposal.before) {
+	if proposal.before.Version == 0 || proposal.Now != proposal.plannedNow || !proposal.applyToken.validFor(proposal.NPCID) || !reflect.DeepEqual(s, proposal.before) {
 		return npcScavengeProposalError("stale or replayed proposal")
 	}
 	npc, room, due, attackReady, err := npcScavengeContext(s, proposal.NPCID, proposal.Now)
