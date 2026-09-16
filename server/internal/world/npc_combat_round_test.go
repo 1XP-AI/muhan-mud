@@ -1251,3 +1251,250 @@ func TestNPCCombatRoundRejectsStaleAndTamperedProposalAtomically(t *testing.T) {
 		t.Fatalf("tampered identity accepted: next=%+v result=%+v err=%v", next, result, err)
 	}
 }
+
+func TestNPCCombatRoundMBEFUDAttenuatesMeleeDamageWithoutExtraRNG(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		befuddled    bool
+		wantDamage   int
+		wantPlayerHP int
+	}{
+		{name: "ordinary damage unchanged without MBEFUD", wantDamage: 6, wantPlayerHP: 34},
+		{name: "ordinary damage 6 becomes 2", befuddled: true, wantDamage: 2, wantPlayerHP: 38},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.DiceSides = 6
+			if tc.befuddled {
+				npc.Body.Flags[51/8] |= 1 << (51 % 8) // MBEFUD
+			}
+			s.NPCs["wolf-id"] = npc
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				return high
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.Hit || proposal.Damage != tc.wantDamage || proposal.PlayerHPAfter != tc.wantPlayerHP {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if want := [][2]int{{1, 20}, {1, 6}}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("RNG calls=%v want=%v", calls, want)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Damage != tc.wantDamage || result.PlayerHP != tc.wantPlayerHP || next.Players["a"].Body.HPCurrent != int16(tc.wantPlayerHP) {
+				t.Fatalf("result=%+v next=%+v", result, next)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundMBEFUDAttenuatesBreathDamageWithoutChangingOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		befuddled  bool
+		wantDamage int
+	}{
+		{name: "breath damage unchanged without MBEFUD", wantDamage: 8},
+		{name: "breath damage 8 becomes 2", befuddled: true, wantDamage: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := npcCombatRoundFixture(t)
+			npc := s.NPCs["wolf-id"]
+			npc.Body.Level = 5                    // two level-band fire dice: ((5 + 3) / 4) == 2.
+			npc.Body.Flags[19/8] |= 1 << (19 % 8) // MBRETH
+			if tc.befuddled {
+				npc.Body.Flags[51/8] |= 1 << (51 % 8) // MBEFUD
+			}
+			s.NPCs["wolf-id"] = npc
+			var calls [][2]int
+			proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+				calls = append(calls, [2]int{low, high})
+				if high == 30 {
+					return 4
+				}
+				return high
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proposal.Hit || !proposal.BreathTriggered || proposal.Damage != tc.wantDamage || proposal.PlayerHPAfter != 40-tc.wantDamage {
+				t.Fatalf("proposal=%+v", proposal)
+			}
+			if want := [][2]int{{1, 20}, {1, 30}, {1, 4}, {1, 4}}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("RNG calls=%v want=%v", calls, want)
+			}
+			next, result, err := s.ApplyNPCCombatRound(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Damage != tc.wantDamage || result.PlayerHP != 40-tc.wantDamage || next.Players["a"].Body.HPCurrent != int16(40-tc.wantDamage) {
+				t.Fatalf("result=%+v next=%+v", result, next)
+			}
+		})
+	}
+}
+
+func TestNPCCombatRoundMBEFUDTurnsBaseDamageOneIntoZero(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.DiceSides = 1
+	npc.Body.Flags[51/8] |= 1 << (51 % 8) // MBEFUD
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		return high
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.Hit || proposal.Damage != 0 || proposal.PlayerHPBefore != 40 || proposal.PlayerHPAfter != 40 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}, {1, 1}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Damage != 0 || result.PlayerHP != 40 || next.Players["a"].Body.HPCurrent != 40 {
+		t.Fatalf("result=%+v next=%+v", result, next)
+	}
+}
+
+func TestNPCCombatRoundMBEFUDMissDoesNotAttenuateOrConsumeRNG(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.Thaco = 20
+	for _, bit := range []uint{19, 51, 13, 34, 45} { // MBRETH, MBEFUD, and post-hit effects.
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		if high != 20 {
+			t.Fatalf("unexpected random request %d..%d", low, high)
+		}
+		return 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Hit || proposal.Damage != 0 || proposal.PlayerHPAfter != 40 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hit || result.Damage != 0 || result.PlayerHP != 40 || !reflect.DeepEqual(next, s) {
+		t.Fatalf("result=%+v next=%+v", result, next)
+	}
+}
+
+func TestNPCCombatRoundMBEFUDRunsBeforePostHitEffects(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	for _, bit := range []uint{51, 13, 34, 45} { // MBEFUD, MPOISS, MDISEA, MBLNDR.
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	s.NPCs["wolf-id"] = npc
+	var calls [][2]int
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", func(low, high int) int {
+		calls = append(calls, [2]int{low, high})
+		switch len(calls) {
+		case 1:
+			return 20 // hit
+		case 2:
+			return 6 // ordinary damage before MBEFUD attenuation
+		case 3:
+			return 15 // MPOISS
+		case 4:
+			return 10 // MDISEA
+		case 5:
+			return 11 // MBLNDR misses
+		default:
+			t.Fatalf("unexpected random request %d..%d", low, high)
+			return 0
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proposal.Hit || proposal.Damage != 2 || !proposal.Poisoned || !proposal.Diseased || proposal.Blinded || proposal.PlayerHPAfter != 38 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	if want := [][2]int{{1, 20}, {1, 6}, {1, 100}, {1, 100}, {1, 100}}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("RNG calls=%v want=%v", calls, want)
+	}
+	next, result, err := s.ApplyNPCCombatRound(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Damage != 2 || result.PlayerHP != 38 || !result.Poisoned || !result.Diseased || result.Blinded {
+		t.Fatalf("result=%+v", result)
+	}
+	player := next.Players["a"]
+	for _, bit := range []uint{16, 41} {
+		if !flag(player.Body.Flags[:], bit) {
+			t.Fatalf("effect flag %d missing: flags=%#x", bit, player.Body.Flags)
+		}
+	}
+	if flag(player.Body.Flags[:], 42) {
+		t.Fatalf("unexpected blind flag: flags=%#x", player.Body.Flags)
+	}
+}
+
+func TestNPCCombatRoundMBEFUDRejectsStaleAndTamperedCandidatesAtomically(t *testing.T) {
+	s := npcCombatRoundFixture(t)
+	npc := s.NPCs["wolf-id"]
+	npc.Body.DiceSides = 6
+	npc.Body.Flags[51/8] |= 1 << (51 % 8) // MBEFUD
+	s.NPCs["wolf-id"] = npc
+	proposal, err := s.PlanNPCCombatRound("wolf-id", "a", npcCombatRoundRoll(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Damage != 2 {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+
+	assertRejected := func(name string, state State, candidate NPCCombatRoundProposal) {
+		t.Helper()
+		before := state.clone()
+		next, result, err := state.ApplyNPCCombatRound(candidate)
+		if err == nil || !reflect.DeepEqual(next, State{}) || !reflect.DeepEqual(result, NPCCombatRoundResult{}) {
+			t.Fatalf("%s accepted: next=%+v result=%+v err=%v", name, next, result, err)
+		}
+		if !reflect.DeepEqual(state, before) {
+			t.Fatalf("%s mutated source state", name)
+		}
+	}
+
+	tampered := proposal
+	tampered.Damage = 6 // Unattenuated candidate must not be accepted.
+	assertRejected("tampered unattenuated damage", s, tampered)
+	tampered = proposal
+	tampered.next = tampered.next.clone()
+	tamperedPlayer := tampered.next.Players["a"]
+	tamperedPlayer.Body.HPCurrent = 34
+	tampered.next.Players["a"] = tamperedPlayer
+	assertRejected("tampered unattenuated candidate state", s, tampered)
+	changed := s.clone()
+	player := changed.Players["a"]
+	player.Body.HPCurrent--
+	changed.Players["a"] = player
+	assertRejected("stale MBEFUD candidate", changed, proposal)
+}
