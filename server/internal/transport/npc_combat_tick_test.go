@@ -463,6 +463,158 @@ func TestRunNPCCombatTickPersistsDiseaseAndBlindAndReplaysWithoutRNG(t *testing.
 	}
 }
 
+func TestRunNPCCombatTickPersistsBreathAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	npc := state.NPCs["npc-b"]
+	npc.Body.Level = 5                       // two level-band dice: ((5 + 3) / 4) == 2.
+	for _, bit := range []uint{19, 28, 29} { // MBRETH + MBRWP1/MBRWP2 (acid branch)
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	state.NPCs["npc-b"] = npc
+	state.ActiveNPCIDs = []string{"npc-b"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	now := int32(103)
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-breath-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return now, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			switch {
+			case low == 1 && high == 20:
+				return 20
+			case low == 1 && high == 30:
+				return 4
+			case low == 1 && high == 2:
+				return 2
+			default:
+				t.Fatalf("unexpected random request %d..%d", low, high)
+				return 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, ran, err := connector.RunNPCCombatTick(context.Background(), 20*time.Second)
+	if err != nil || !ran || first.Replayed {
+		t.Fatalf("first=%+v ran=%v err=%v", first, ran, err)
+	}
+	if rollCalls != 4 {
+		t.Fatalf("first attack RNG calls=%d, want hit/trigger/two acid dice", rollCalls)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	attack := summary.Attacks[0]
+	if !attack.Hit || !attack.BreathTriggered || attack.BreathType != world.NPCCombatBreathAcid || attack.BreathRoll != 4 || attack.BreathDiceCount != 2 || attack.BreathDiceSides != 2 || attack.BreathDicePlus != 1 || !attack.BreathPoisoned || attack.BreathResisted || attack.Damage != 5 || attack.PlayerHP != 25 {
+		t.Fatalf("attack=%+v", attack)
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPlayer := saved.Players["player-b"]
+	if !flagForNPCCombatTest(savedPlayer.Body.Flags[:], 16) {
+		t.Fatalf("saved player omitted acid PPOISN: flags=%#x", savedPlayer.Body.Flags)
+	}
+
+	replayCalls := 0
+	restarted, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-breath-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return now, 12 },
+		Roll: func(_, _ int) int {
+			replayCalls++
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, ran, err := restarted.RunNPCCombatTick(context.Background(), 20*time.Second)
+	if err != nil || !ran || !replay.Replayed {
+		t.Fatalf("replay=%+v ran=%v err=%v", replay, ran, err)
+	}
+	if replayCalls != 0 || rollCalls != 4 {
+		t.Fatalf("replay consumed RNG: replayCalls=%d firstCalls=%d", replayCalls, rollCalls)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
+func TestRunNPCCombatPhasePersistsLethalBreathAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatLethalTickFixture(t)
+	npc := state.NPCs["npc-b"]
+	npc.Body.Level = 1
+	for _, bit := range []uint{19, 28, 29} { // MBRETH + MBRWP1/MBRWP2 (acid branch)
+		npc.Body.Flags[bit/8] |= 1 << (bit % 8)
+	}
+	state.NPCs["npc-b"] = npc
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-breath-lethal-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			switch {
+			case low == 1 && high == 20:
+				return 20
+			case low == 1 && high == 30:
+				return 4
+			case low == 1 && high == 2:
+				return 2
+			default:
+				t.Fatalf("unexpected random request %d..%d", low, high)
+				return 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-breath-lethal", 5, 100)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v commits=%d err=%v", first, store.commits, err)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || !summary.Attacks[0].BreathTriggered || summary.Attacks[0].BreathType != world.NPCCombatBreathAcid || !summary.Attacks[0].BreathPoisoned || summary.Attacks[0].Damage != 3 || summary.Attacks[0].PlayerHP >= 1 || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
+		t.Fatalf("summary=%+v", summary)
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedPlayer := saved.Players["player-b"]
+	if savedPlayer.Body.RoomID != 1008 || savedPlayer.Body.HPCurrent < 1 {
+		t.Fatalf("saved lethal breath state=%+v", savedPlayer)
+	}
+	if rollCalls != 3 {
+		t.Fatalf("attack RNG calls=%d, want hit/trigger/acid die", rollCalls)
+	}
+
+	replay, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-breath-lethal", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || rollCalls != 3 {
+		t.Fatalf("replay=%+v commits=%d RNG calls=%d err=%v", replay, store.commits, rollCalls, err)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
 func TestRunNPCCombatPhasePersistsDissolveAndReplaysWithoutRNG(t *testing.T) {
 	state := npcCombatTickFixture(t)
 	player := state.Players["player-b"]
