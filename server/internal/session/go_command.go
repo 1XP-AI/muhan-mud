@@ -159,6 +159,7 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 		return storage.WorldReceipt{}, err
 	}
 	var committedNPCChaseIDs []string
+	var committedArrivalTrapEvent *world.ArrivalTrapEvent
 	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
@@ -177,6 +178,10 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 				committedNPCChaseIDs = append(committedNPCChaseIDs, move.NPCID)
 			}
 		}
+		if proposal.ArrivalTrapEvent != nil {
+			event := *proposal.ArrivalTrapEvent
+			committedArrivalTrapEvent = &event
+		}
 		nextRaw, err := json.Marshal(next)
 		if err != nil {
 			return nil, nil, err
@@ -188,8 +193,13 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 		return receipt, err
 	}
 	receipt.NPCChaseIDs = nil
+	receipt.ArrivalTrapEvent = nil
 	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
 		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
+	}
+	if !receipt.Replayed && committedArrivalTrapEvent != nil {
+		event := *committedArrivalTrapEvent
+		receipt.ArrivalTrapEvent = &event
 	}
 	return receipt, nil
 }

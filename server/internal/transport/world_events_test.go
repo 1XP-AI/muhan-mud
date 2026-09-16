@@ -272,6 +272,33 @@ func TestWorldConnectorPublishesEventsWithoutBlockingCommand(t *testing.T) {
 	}
 }
 
+func TestWorldConnectorPublishesArrivalTrapFromCommittedRoomWhenActorDiesAndRespawns(t *testing.T) {
+	events := make(chan string, 1)
+	connection := &worldConnection{lease: session.SessionLease{ActorID: "observer"}, events: events}
+	g := &WorldConnector{connections: map[*worldConnection]struct{}{connection: {}}}
+	after := world.State{Players: map[string]world.PlayerState{
+		"actor":    {Body: world.LegacyMonster{Name: "Alice", RoomID: 1008}, Online: true},
+		"observer": {Body: world.LegacyMonster{Name: "Bob", RoomID: 2}, Online: true},
+	}}
+	event := world.ArrivalTrapEvent{
+		ActorID:   "actor",
+		ActorName: "Alice",
+		RoomID:    2,
+		Trap:      world.TrapPit,
+		ActorText: "당신은 구덩이에 빠졌습니다!\n당신은 1점의 피해를 입었습니다.\n",
+		RoomText:  "\nAlice이 구덩이에 빠졌습니다.\r\n",
+	}
+	g.publishArrivalTrap(after, event)
+	select {
+	case got := <-events:
+		if got != event.RoomText {
+			t.Fatalf("trap room text=%q want=%q", got, event.RoomText)
+		}
+	default:
+		t.Fatal("trap room event missing after actor relocation")
+	}
+}
+
 func TestWorldConnectorPublishesSayToOtherPlayersInRoom(t *testing.T) {
 	events := make(chan string, 1)
 	connection := &worldConnection{lease: session.SessionLease{ActorID: "b"}, events: events}

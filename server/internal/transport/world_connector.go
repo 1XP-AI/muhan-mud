@@ -3096,9 +3096,14 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		c.infoPending = true
 		c.infoContinuationCommandID = ""
 	}
-	if directional && !receipt.Replayed && beforeOK {
+	if directional && !receipt.Replayed {
 		if after, ok := c.game.snapshot(ctx); ok {
-			c.game.publishMovement(before, after, c.lease.ActorID, receipt.NPCChaseIDs)
+			if beforeOK {
+				c.game.publishMovement(before, after, c.lease.ActorID, receipt.NPCChaseIDs)
+			}
+			if receipt.ArrivalTrapEvent != nil {
+				c.game.publishArrivalTrap(after, *receipt.ArrivalTrapEvent)
+			}
 		}
 	}
 	if sayCommand && !receipt.Replayed {

@@ -135,6 +135,31 @@ func (g *WorldConnector) publishMovement(before, after world.State, actorID stri
 	}
 }
 
+// publishArrivalTrap delivers the reducer-owned leader trap projection to the
+// room where check_traps ran. It intentionally does not require the actor to
+// still occupy that room: PIT relocation and death/respawn can change the
+// actor's final room before the committed snapshot is published. Replay
+// suppression is enforced by the Submit caller, while this method only fans
+// out the already committed metadata and never inspects before/after effects.
+func (g *WorldConnector) publishArrivalTrap(after world.State, event world.ArrivalTrapEvent) {
+	if event.ActorID == "" || event.RoomID == 0 || event.RoomText == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for connection := range g.connections {
+		player, exists := after.Players[connection.lease.ActorID]
+		if !exists || !player.Online || player.Body.RoomID != event.RoomID || connection.lease.ActorID == event.ActorID || connection.events == nil {
+			continue
+		}
+		select {
+		case connection.events <- event.RoomText:
+		default:
+			// A slow observer cannot block the command's durable receipt.
+		}
+	}
+}
+
 func (g *WorldConnector) publishSay(after world.State, actorID, text string) {
 	event, ok, err := after.RoomSayEvent(actorID, text)
 	if err != nil || !ok {

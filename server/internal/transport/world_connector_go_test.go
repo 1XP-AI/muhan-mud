@@ -182,6 +182,138 @@ func TestWorldConnectorSubmitDispatchesGoAndSuppressesReplay(t *testing.T) {
 	}
 }
 
+func TestWorldConnectorSubmitGoPublishesLeaderArrivalTrapAfterArrivalAndSuppressesReplay(t *testing.T) {
+	state := connectorGoState()
+	destination := state.Rooms[2]
+	destination.Resource.Trap = world.TrapDart
+	state.Rooms[2] = destination
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	calls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "go-arrival-trap-output", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 3,
+		Roll: func(low, high int) int {
+			calls++
+			if calls == 1 && (low != 1 || high != 100) {
+				t.Fatalf("unexpected trigger roll %d..%d", low, high)
+			}
+			if calls == 2 && (low != 1 || high != 10) {
+				t.Fatalf("unexpected dart roll %d..%d", low, high)
+			}
+			return []int{100, 7}[calls-1]
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"actor", "observer", "away"})
+
+	output, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || !strings.Contains(output, "당신은 숨겨진 독화살에 맞았습니다!\n") || calls != 2 || store.commits != 1 {
+		t.Fatalf("go=%q err=%v calls=%d commits=%d", output, err, calls, store.commits)
+	}
+	select {
+	case event := <-connections["away"].events:
+		if !strings.Contains(event, "도착했습니다") {
+			t.Fatalf("destination arrival=%q", event)
+		}
+	default:
+		t.Fatal("destination arrival missing")
+	}
+	select {
+	case event := <-connections["away"].events:
+		if !strings.Contains(event, "숨겨진 독화살에 맞았습니다") {
+			t.Fatalf("destination trap event=%q", event)
+		}
+	default:
+		t.Fatal("destination trap event missing")
+	}
+	select {
+	case event := <-connections["actor"].events:
+		t.Fatalf("actor received own trap event=%q", event)
+	default:
+	}
+
+	replay, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || replay != output || calls != 2 || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v calls=%d commits=%d", replay, err, calls, store.commits)
+	}
+	select {
+	case event := <-connections["away"].events:
+		t.Fatalf("replay fanned out destination event=%q", event)
+	default:
+	}
+}
+
+func TestWorldConnectorSubmitGoPITPublishesCommittedPreRelocationRoom(t *testing.T) {
+	state := connectorGoState()
+	destination := state.Rooms[2]
+	destination.Resource.Trap = world.TrapPit
+	destination.Resource.TrapExit = 3
+	state.Rooms[2] = destination
+	state.Rooms[3] = world.RoomState{
+		Resource: world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 3, Name: "함정 출구"}},
+		Items:    &world.ItemCollection{Items: map[string]world.Item{}},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	calls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "go-arrival-pit-output", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 3,
+		Roll: func(low, high int) int {
+			calls++
+			if calls == 1 && (low != 1 || high != 100) {
+				t.Fatalf("unexpected trigger roll %d..%d", low, high)
+			}
+			if calls == 2 && (low != 1 || high != 15) {
+				t.Fatalf("unexpected pit roll %d..%d", low, high)
+			}
+			return []int{100, 1}[calls-1]
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"actor", "observer", "away"})
+
+	output, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || !strings.Contains(output, "당신은 구덩이에 빠졌습니다!\n") || calls != 2 || store.commits != 1 {
+		t.Fatalf("pit=%q err=%v calls=%d commits=%d", output, err, calls, store.commits)
+	}
+	select {
+	case event := <-connections["away"].events:
+		if event != "\nAlice이 구덩이에 빠졌습니다.\r\n" {
+			t.Fatalf("pit room event=%q", event)
+		}
+	default:
+		t.Fatal("pit room event missing from pre-relocation room")
+	}
+	select {
+	case event := <-connections["away"].events:
+		t.Fatalf("pit room received duplicate event=%q", event)
+	default:
+	}
+	saved, err := world.DecodeState(store.connectorCommandStore.state)
+	if err != nil || saved.Players["actor"].Body.RoomID != 3 {
+		t.Fatalf("pit final room=%d err=%v", saved.Players["actor"].Body.RoomID, err)
+	}
+	replay, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || replay != output || calls != 2 || store.commits != 1 {
+		t.Fatalf("pit replay=%q err=%v calls=%d commits=%d", replay, err, calls, store.commits)
+	}
+	select {
+	case event := <-connections["away"].events:
+		t.Fatalf("pit replay fanned out=%q", event)
+	default:
+	}
+}
+
 func TestWorldConnectorSubmitGoClosedFlyTimeSexGatesAndReplay(t *testing.T) {
 	for _, tc := range []struct {
 		id   string
