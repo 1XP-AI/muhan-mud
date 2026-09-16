@@ -202,10 +202,25 @@ func NPCGoChaseActorText(npcName string) string {
 	return npcName + legacySubjectParticle(npcName) + " 당신을 따라옵니다.\r\n"
 }
 
+// NPCFollowerChaseActorText is command2.c:move's actor print after the
+// recursive follower traversal. command2 includes a leading newline while
+// command6.go does not; the body of the notice stays shared with the go
+// projection so the two source strings cannot drift.
+func NPCFollowerChaseActorText(npcName string) string {
+	return "\n" + NPCGoChaseActorText(npcName)
+}
+
 // NPCGoChaseRoomText is command6.c:go's broadcast_rom to the vacated room.
 func NPCGoChaseRoomText(npcName, playerName string) string {
 	rendered := playerName + "님"
 	return "\n" + npcName + legacySubjectParticle(npcName) + " " + rendered + lookAtObjectParticle(rendered) + " 따라갑니다.\r\n"
+}
+
+// NPCFollowerChaseRoomText is command2.c:move's vacated-room broadcast. The
+// rendered source text is shared with command6.c:go; only the reducer's
+// eligibility predicate differs.
+func NPCFollowerChaseRoomText(npcName, playerName string) string {
+	return NPCGoChaseRoomText(npcName, playerName)
 }
 
 // NPCGoChaseFanout is the vacated-room projection of a successful command6
@@ -216,9 +231,75 @@ type NPCGoChaseFanout struct {
 	Text   string
 }
 
+// NPCFollowerChaseFanoutEvents walks the vacated room's NPCIDs in first_mon
+// order for command2.c:move. It includes ordinary and MFOLLO enemy chases,
+// while canonical MDMFOL links are excluded so pre-move first_fol transfers
+// are not mistaken for hostile chase output.
+func NPCFollowerChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFanout {
+	return npcChaseFanoutEvents(before, after, actorID, false)
+}
+
 // NPCGoChaseFanoutEvents walks the vacated room's NPCIDs in first_mon order.
 // MDMFOL first_fol movers are skipped; only MFOLLO enemy chases remain.
 func NPCGoChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFanout {
+	return npcChaseFanoutEvents(before, after, actorID, true)
+}
+
+// NPCCommittedChaseFanoutEvents is the transport-only projection for a
+// committed movement receipt. Eligibility is already decided by the reducer;
+// committedIDs are therefore the sole chase authorization input. The helper
+// validates committed IDs against the pre-move source RoomState order and
+// pre-move names only. It intentionally does not require after actor/final-room
+// presence or after NPC presence: a later allocation/removal must not suppress
+// an already committed old-room notice. Malformed or ambiguous identity fails
+// closed.
+func NPCCommittedChaseFanoutEvents(before, _ State, actorID string, committedIDs []string) []NPCGoChaseFanout {
+	if actorID == "" || len(committedIDs) == 0 || before.Players == nil || before.NPCs == nil {
+		return nil
+	}
+	actorBefore, actorOK := before.Players[actorID]
+	if !actorOK || actorBefore.Body.Type != 0 || actorBefore.Body.Name == "" {
+		return nil
+	}
+	sourceRoomID := actorBefore.Body.RoomID
+	source, sourceOK := before.Rooms[sourceRoomID]
+	if !sourceOK {
+		return nil
+	}
+	positions := make(map[string]int, len(source.NPCIDs))
+	for index, id := range source.NPCIDs {
+		if id == "" {
+			return nil
+		}
+		if _, exists := positions[id]; exists {
+			return nil
+		}
+		if npc, exists := before.NPCs[id]; !exists || npc.Body.Type != 1 || npc.Body.RoomID != sourceRoomID || npc.Body.Name == "" {
+			return nil
+		}
+		positions[id] = index
+	}
+
+	events := make([]NPCGoChaseFanout, 0, len(committedIDs))
+	seen := make(map[string]bool, len(committedIDs))
+	lastIndex := -1
+	for _, id := range committedIDs {
+		index, sourceOK := positions[id]
+		oldNPC, oldOK := before.NPCs[id]
+		if !sourceOK || seen[id] || id == "" || !oldOK || index <= lastIndex {
+			return nil
+		}
+		seen[id] = true
+		lastIndex = index
+		events = append(events, NPCGoChaseFanout{
+			RoomID: actorBefore.Body.RoomID,
+			Text:   NPCFollowerChaseRoomText(oldNPC.Body.Name, actorBefore.Body.Name),
+		})
+	}
+	return events
+}
+
+func npcChaseFanoutEvents(before, after State, actorID string, requireFollow bool) []NPCGoChaseFanout {
 	actorBefore, beforeOK := before.Players[actorID]
 	actorAfter, afterOK := after.Players[actorID]
 	if !beforeOK || !afterOK || actorBefore.Body.RoomID == actorAfter.Body.RoomID {
@@ -235,10 +316,14 @@ func NPCGoChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFan
 		if !oldOK || !newOK || oldNPC.Body.RoomID != actorBefore.Body.RoomID || newNPC.Body.RoomID != actorAfter.Body.RoomID {
 			continue
 		}
-		if newNPC.FollowingPlayerID != "" || flag(newNPC.Body.Flags[:], npcDMFollowFlag) {
+		// A canonical first_fol MDMFOL transfer is already represented by the
+		// generic NPC arrival event. Check both snapshots and the reciprocal
+		// identity edge before considering a special chase projection.
+		if oldNPC.FollowingPlayerID != "" || newNPC.FollowingPlayerID != "" ||
+			flag(oldNPC.Body.Flags[:], npcDMFollowFlag) || flag(newNPC.Body.Flags[:], npcDMFollowFlag) {
 			continue
 		}
-		if !flag(oldNPC.Body.Flags[:], npcFollowFlag) || flag(oldNPC.Body.Flags[:], npcDMFollowFlag) {
+		if requireFollow && !flag(oldNPC.Body.Flags[:], npcFollowFlag) {
 			continue
 		}
 		if len(oldNPC.Enemies) == 0 || oldNPC.Enemies[0].Target != (EntityRef{Kind: "player", ID: actorID}) {
@@ -246,7 +331,7 @@ func NPCGoChaseFanoutEvents(before, after State, actorID string) []NPCGoChaseFan
 		}
 		events = append(events, NPCGoChaseFanout{
 			RoomID: actorBefore.Body.RoomID,
-			Text:   NPCGoChaseRoomText(newNPC.Body.Name, actorAfter.Body.Name),
+			Text:   NPCFollowerChaseRoomText(newNPC.Body.Name, actorAfter.Body.Name),
 		})
 	}
 	return events

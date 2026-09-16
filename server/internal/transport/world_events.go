@@ -15,83 +15,102 @@ type roomEvent struct {
 
 // movementEvents is a committed-state projection, not an authorization
 // source. It deliberately emits only identities whose room changed between
-// the serialized before/after snapshots; replayed receipts never call it.
-// Exact legacy color/formatting remains a later renderer concern, but room
-// fan-out is now explicit and deterministic.
-func movementEvents(before, after world.State, actorID string) []roomEvent {
+// the serialized before/after snapshots; committed chase IDs are supplied by
+// the command reducer and are never inferred here. The variadic form keeps
+// direct callers that only need generic movement compatibility; omitted or
+// empty IDs produce no chase fan-out.
+func movementEvents(before, after world.State, actorID string, committedChaseIDs ...[]string) []roomEvent {
 	actorBefore, beforeExists := before.Players[actorID]
-	actorAfter, afterExists := after.Players[actorID]
-	if !beforeExists || !afterExists || actorBefore.Body.RoomID == actorAfter.Body.RoomID {
+	if !beforeExists {
 		return nil
 	}
-	name := actorAfter.Body.Name
-	events := []roomEvent{
-		{RoomID: actorBefore.Body.RoomID, ExcludeActorID: actorID, Text: fmt.Sprintf("\n%s님이 떠났습니다.\r\n", name)},
-		{RoomID: actorAfter.Body.RoomID, ExcludeActorID: actorID, Text: fmt.Sprintf("\n%s님이 도착했습니다.\r\n", name)},
+	actorAfter, afterExists := after.Players[actorID]
+	var chaseIDs []string
+	if len(committedChaseIDs) != 0 {
+		chaseIDs = committedChaseIDs[0]
 	}
+	committedChaseSet := make(map[string]struct{}, len(chaseIDs))
+	for _, id := range chaseIDs {
+		committedChaseSet[id] = struct{}{}
+	}
+	var events []roomEvent
+	if afterExists && actorBefore.Body.RoomID != actorAfter.Body.RoomID {
+		name := actorAfter.Body.Name
+		events = []roomEvent{
+			{RoomID: actorBefore.Body.RoomID, ExcludeActorID: actorID, Text: fmt.Sprintf("\n%s님이 떠났습니다.\r\n", name)},
+			{RoomID: actorAfter.Body.RoomID, ExcludeActorID: actorID, Text: fmt.Sprintf("\n%s님이 도착했습니다.\r\n", name)},
+		}
 
-	playerIDs := make(map[string]struct{}, len(before.Players)+len(after.Players))
-	for id := range before.Players {
-		playerIDs[id] = struct{}{}
-	}
-	for id := range after.Players {
-		playerIDs[id] = struct{}{}
-	}
-	orderedPlayers := make([]string, 0, len(playerIDs))
-	for id := range playerIDs {
-		orderedPlayers = append(orderedPlayers, id)
-	}
-	sort.Strings(orderedPlayers)
-	for _, id := range orderedPlayers {
-		if id == actorID {
-			continue
+		playerIDs := make(map[string]struct{}, len(before.Players)+len(after.Players))
+		for id := range before.Players {
+			playerIDs[id] = struct{}{}
 		}
-		oldPlayer, oldOK := before.Players[id]
-		newPlayer, newOK := after.Players[id]
-		if !oldOK || !newOK || oldPlayer.Body.RoomID == newPlayer.Body.RoomID {
-			continue
+		for id := range after.Players {
+			playerIDs[id] = struct{}{}
 		}
-		if newPlayer.Body.RoomID != actorAfter.Body.RoomID {
-			continue
+		orderedPlayers := make([]string, 0, len(playerIDs))
+		for id := range playerIDs {
+			orderedPlayers = append(orderedPlayers, id)
 		}
-		events = append(events, roomEvent{
-			RoomID:         newPlayer.Body.RoomID,
-			ExcludeActorID: id,
-			Text:           fmt.Sprintf("\n%s님이 따라왔습니다.\r\n", newPlayer.Body.Name),
-		})
-	}
+		sort.Strings(orderedPlayers)
+		for _, id := range orderedPlayers {
+			if id == actorID {
+				continue
+			}
+			oldPlayer, oldOK := before.Players[id]
+			newPlayer, newOK := after.Players[id]
+			if !oldOK || !newOK || oldPlayer.Body.RoomID == newPlayer.Body.RoomID {
+				continue
+			}
+			if newPlayer.Body.RoomID != actorAfter.Body.RoomID {
+				continue
+			}
+			events = append(events, roomEvent{
+				RoomID:         newPlayer.Body.RoomID,
+				ExcludeActorID: id,
+				Text:           fmt.Sprintf("\n%s님이 따라왔습니다.\r\n", newPlayer.Body.Name),
+			})
+		}
 
-	npcIDs := make(map[string]struct{}, len(before.NPCs)+len(after.NPCs))
-	for id := range before.NPCs {
-		npcIDs[id] = struct{}{}
-	}
-	for id := range after.NPCs {
-		npcIDs[id] = struct{}{}
-	}
-	orderedNPCs := make([]string, 0, len(npcIDs))
-	for id := range npcIDs {
-		orderedNPCs = append(orderedNPCs, id)
-	}
-	sort.Strings(orderedNPCs)
-	for _, id := range orderedNPCs {
-		oldNPC, oldOK := before.NPCs[id]
-		newNPC, newOK := after.NPCs[id]
-		if !oldOK || !newOK || oldNPC.Body.RoomID == newNPC.Body.RoomID || newNPC.Body.RoomID != actorAfter.Body.RoomID {
-			continue
+		npcIDs := make(map[string]struct{}, len(before.NPCs)+len(after.NPCs))
+		for id := range before.NPCs {
+			npcIDs[id] = struct{}{}
 		}
-		events = append(events, roomEvent{
-			RoomID: newNPC.Body.RoomID,
-			Text:   fmt.Sprintf("\n%s이(가) 따라왔습니다.\r\n", newNPC.Body.Name),
-		})
+		for id := range after.NPCs {
+			npcIDs[id] = struct{}{}
+		}
+		orderedNPCs := make([]string, 0, len(npcIDs))
+		for id := range npcIDs {
+			orderedNPCs = append(orderedNPCs, id)
+		}
+		sort.Strings(orderedNPCs)
+		for _, id := range orderedNPCs {
+			oldNPC, oldOK := before.NPCs[id]
+			newNPC, newOK := after.NPCs[id]
+			if !oldOK || !newOK || oldNPC.Body.RoomID == newNPC.Body.RoomID || newNPC.Body.RoomID != actorAfter.Body.RoomID {
+				continue
+			}
+			// A generic NPC arrival is a stable MDMFOL follower edge only.
+			// Alarm relocation and unrelated movement must not be rendered as
+			// following, while committed MFOLLO chase IDs use the source-room
+			// notice below as their sole chase projection.
+			if _, committed := committedChaseSet[id]; committed || oldNPC.FollowingPlayerID != actorID || newNPC.FollowingPlayerID != actorID {
+				continue
+			}
+			events = append(events, roomEvent{
+				RoomID: newNPC.Body.RoomID,
+				Text:   fmt.Sprintf("\n%s이(가) 따라왔습니다.\r\n", newNPC.Body.Name),
+			})
+		}
 	}
-	for _, chase := range world.NPCGoChaseFanoutEvents(before, after, actorID) {
+	for _, chase := range world.NPCCommittedChaseFanoutEvents(before, after, actorID, chaseIDs) {
 		events = append(events, roomEvent{RoomID: chase.RoomID, Text: chase.Text})
 	}
 	return events
 }
 
-func (g *WorldConnector) publishMovement(before, after world.State, actorID string) {
-	events := movementEvents(before, after, actorID)
+func (g *WorldConnector) publishMovement(before, after world.State, actorID string, committedChaseIDs ...[]string) {
+	events := movementEvents(before, after, actorID, committedChaseIDs...)
 	if len(events) == 0 {
 		return
 	}

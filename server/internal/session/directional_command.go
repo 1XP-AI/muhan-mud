@@ -65,7 +65,8 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 	if err != nil {
 		return storage.WorldReceipt{}, err
 	}
-	return o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
+	var committedNPCChaseIDs []string
+	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		s, err := world.DecodeState(raw)
 		if err != nil {
 			return nil, nil, err
@@ -126,9 +127,23 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 				return nil, nil, reduceErr
 			}
 		}
+		if step.NPCChase != nil {
+			for _, move := range step.NPCChase.Moves {
+				committedNPCChaseIDs = append(committedNPCChaseIDs, move.NPCID)
+				responseText += world.NPCFollowerChaseActorText(move.Body.Name)
+			}
+		}
 		response, reduceErr := json.Marshal(responseText)
 		return state, response, reduceErr
 	})
+	if err != nil {
+		return receipt, err
+	}
+	receipt.NPCChaseIDs = nil
+	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
+		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
+	}
+	return receipt, nil
 }
 
 func lastTokenIsItemMutationVerb(line string) bool {

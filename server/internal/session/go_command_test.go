@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -510,6 +511,9 @@ func TestExecuteGoLineChasesMFOLLOAndReplaysWithoutRecommit(t *testing.T) {
 	if err != nil || first.Replayed || store.commits != 1 {
 		t.Fatalf("first=%+v err=%v commits=%d", first, err, store.commits)
 	}
+	if !reflect.DeepEqual(first.NPCChaseIDs, []string{"wolf"}) {
+		t.Fatalf("committed chase IDs=%v", first.NPCChaseIDs)
+	}
 	var text string
 	if err := json.Unmarshal(first.Response, &text); err != nil {
 		t.Fatal(err)
@@ -524,6 +528,95 @@ func TestExecuteGoLineChasesMFOLLOAndReplaysWithoutRecommit(t *testing.T) {
 	replay, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-chase", lease, "가 동굴", 100, 12, nil, func(int, int) int { t.Fatal("replay rerolled chase"); return 1 }, nil)
 	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) {
 		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+	if replay.NPCChaseIDs != nil {
+		t.Fatalf("replay carried ephemeral chase IDs=%v", replay.NPCChaseIDs)
+	}
+}
+
+func TestExecuteGoLineCollectsOrderedNPCChaseIDs(t *testing.T) {
+	state, err := world.DecodeState(goCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := state.Rooms[1]
+	source.NPCIDs = []string{"zeta", "alpha"}
+	state.Rooms[1] = source
+	zeta := world.LegacyMonster{Name: "Zulu", Type: 1, RoomID: 1, HPMax: 10, HPCurrent: 10, Stats: [5]byte{0, 5}}
+	alpha := world.LegacyMonster{Name: "Alpha", Type: 1, RoomID: 1, HPMax: 10, HPCurrent: 10, Stats: [5]byte{0, 5}}
+	for id, body := range map[string]world.LegacyMonster{"zeta": zeta, "alpha": alpha} {
+		value := body
+		value.Flags[9/8] |= 1 << (9 % 8)
+		if state.NPCs == nil {
+			state.NPCs = map[string]world.NPCState{}
+		}
+		state.NPCs[id] = world.NPCState{
+			Body:    value,
+			Enemies: []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "actor"}, Damage: -1}},
+		}
+	}
+	state.ActiveNPCIDs = []string{"zeta", "alpha"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-chase-ordered", lease, "가 동굴", 100, 12, nil, func(int, int) int { return 1 }, nil)
+	if err != nil || first.Replayed || !reflect.DeepEqual(first.NPCChaseIDs, []string{"zeta", "alpha"}) {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+}
+
+func TestExecuteGoLineChaseReceiptUsesProposalMovesNotResponseNameMatching(t *testing.T) {
+	state := goChaseCommandState(t, []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "actor"}, Damage: -1}}, []string{})
+	actor := state.Players["actor"]
+	actor.NPCFollowerIDs = []string{"managed"}
+	state.Players["actor"] = actor
+	source := state.Rooms[1]
+	source.NPCIDs = []string{"managed", "wolf"}
+	state.Rooms[1] = source
+	managed := world.NPCState{
+		Body:              world.LegacyMonster{Name: "늑대", Type: 1, RoomID: 1, Stats: [5]byte{0, 5}},
+		Enemies:           []world.NPCEnemy{},
+		FollowingPlayerID: "actor",
+	}
+	managed.Body.Flags[46/8] |= 1 << (46 % 8)
+	state.NPCs["managed"] = managed
+	state.ActiveNPCIDs = []string{"managed", "wolf"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-chase-proposal-metadata", lease, "가 동굴", 100, 12, nil, func(int, int) int { return 1 }, nil)
+	if err != nil || first.Replayed || !reflect.DeepEqual(first.NPCChaseIDs, []string{"wolf"}) {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	var response string
+	if err := json.Unmarshal(first.Response, &response); err != nil || !strings.Contains(response, world.NPCGoChaseActorText("늑대")) {
+		t.Fatalf("response=%q err=%v", response, err)
 	}
 }
 
