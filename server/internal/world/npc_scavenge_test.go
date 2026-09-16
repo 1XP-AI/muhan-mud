@@ -83,6 +83,49 @@ func TestNPCScavengeNonDueNoRollOrMutation(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(next, before) || result.Roll != 0 || result.Transferred {
 		t.Fatalf("non-due apply next=%+v result=%+v err=%v", next, result, err)
 	}
+	replayBefore := next.clone()
+	if _, _, err := next.ApplyNPCScavenge(proposal); err == nil || !reflect.DeepEqual(next, replayBefore) {
+		t.Fatalf("non-due no-op replay accepted or mutated state: err=%v", err)
+	}
+}
+
+func TestNPCScavengeTimerBoundaryAndZeroSemantics(t *testing.T) {
+	tests := []struct {
+		name    string
+		last    int32
+		now     int32
+		wantDue bool
+	}{
+		{name: "exactly 20 seconds is not due", last: 100, now: 120},
+		{name: "21 seconds is due", last: 100, now: 121, wantDue: true},
+		{name: "zero timer is absent at time zero", now: 0, wantDue: true},
+		{name: "zero timer remains absent at 20 seconds", now: 20, wantDue: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := npcScavengeFixture(t)
+			npc := state.NPCs["scavenger"]
+			npc.Body.Timers[npcScavengeTimer] = LegacyTimer{LastTime: tc.last, Interval: 7}
+			state.NPCs["scavenger"] = npc
+			calls := 0
+			proposal, err := state.PlanNPCScavenge("scavenger", tc.now, func(low, high int) int {
+				calls++
+				if low != 1 || high != 100 {
+					t.Fatalf("roll bounds %d..%d", low, high)
+				}
+				return 100
+			})
+			if err != nil || proposal.Due != tc.wantDue {
+				t.Fatalf("timer boundary proposal=%+v err=%v", proposal, err)
+			}
+			if tc.wantDue && (calls != 1 || !proposal.Attempted || proposal.Roll != 100) {
+				t.Fatalf("due attempt calls=%d proposal=%+v", calls, proposal)
+			}
+			if !tc.wantDue && calls != 0 {
+				t.Fatalf("not-due attempt consumed RNG: calls=%d", calls)
+			}
+		})
+	}
 }
 
 func TestNPCScavengeDueNoEligibleConsumesRollAndUpdatesTimer(t *testing.T) {
@@ -137,6 +180,41 @@ func TestNPCScavengeFailedRollConsumesRollAndLeavesItems(t *testing.T) {
 	}
 }
 
+func TestNPCScavengeRollBoundariesRecordExactlyOneAttempt(t *testing.T) {
+	tests := []struct {
+		name        string
+		roll        int
+		want        NPCScavengeDecision
+		transferred bool
+	}{
+		{name: "15 succeeds", roll: 15, want: NPCScavengeTransferred, transferred: true},
+		{name: "100 fails", roll: 100, want: NPCScavengeRollFailed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := npcScavengeFixture(t)
+			calls := 0
+			proposal, err := state.PlanNPCScavenge("scavenger", 200, func(low, high int) int {
+				calls++
+				if low != 1 || high != 100 {
+					t.Fatalf("roll bounds %d..%d", low, high)
+				}
+				return tc.roll
+			})
+			if err != nil || calls != 1 || proposal.Roll != tc.roll || proposal.Decision != tc.want {
+				t.Fatalf("roll-boundary proposal=%+v calls=%d err=%v", proposal, calls, err)
+			}
+			next, _, err := state.ApplyNPCScavenge(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(next.NPCs["scavenger"].Items.Inventory) > 1; got != tc.transferred {
+				t.Fatalf("transferred=%v want %v; npc inventory=%v", got, tc.transferred, next.NPCs["scavenger"].Items.Inventory)
+			}
+		})
+	}
+}
+
 func TestNPCScavengeSuccessSelectsFirstEligibleFloorRootAndSubtree(t *testing.T) {
 	state := npcScavengeFixture(t)
 	proposal, err := state.PlanNPCScavenge("scavenger", 200, func(int, int) int { return 1 })
@@ -164,6 +242,36 @@ func TestNPCScavengeSuccessSelectsFirstEligibleFloorRootAndSubtree(t *testing.T)
 	nextNPC := next.NPCs["scavenger"]
 	if npcItems.Ready[0] != "held" || !flag(nextNPC.Body.Flags[:], npcScavengedFlag) || !result.MHASSCChanged {
 		t.Fatalf("ready/flag result=%+v npc=%+v", result, next.NPCs["scavenger"])
+	}
+}
+
+func TestNPCScavengeExcludesHeldEquippedAndDescendantRoots(t *testing.T) {
+	state := npcScavengeFixture(t)
+	npc := state.NPCs["scavenger"]
+	npcItems := npc.Items.clone()
+	npcItems.Items["equipped"] = Item{Object: LegacyObject{Name: "equipped"}}
+	npcItems.Ready[1] = "equipped"
+	npc.Items = &npcItems
+	state.NPCs["scavenger"] = npc
+	room := state.Rooms[1]
+	for _, id := range room.Items.Inventory {
+		item := room.Items.Items[id]
+		setNPCScavengeObjectFlag(&item.Object, npcScavengePermanentFlag, true)
+		room.Items.Items[id] = item
+	}
+	state.Rooms[1] = room
+	proposal, err := state.PlanNPCScavenge("scavenger", 200, func(int, int) int { return 1 })
+	if err != nil || proposal.EligibleItemID != "" || proposal.Decision != NPCScavengeNoEligibleItem {
+		t.Fatalf("held/equipped/descendant proposal=%+v err=%v", proposal, err)
+	}
+	next, _, err := state.ApplyNPCScavenge(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(next.Rooms[1].Items.Inventory, room.Items.Inventory) ||
+		!reflect.DeepEqual(next.NPCs["scavenger"].Items.Inventory, []string{"apple"}) ||
+		next.NPCs["scavenger"].Items.Ready[0] != "held" || next.NPCs["scavenger"].Items.Ready[1] != "equipped" {
+		t.Fatalf("held/equipped/descendant ownership changed: room=%v npc=%+v", next.Rooms[1].Items.Inventory, next.NPCs["scavenger"].Items)
 	}
 }
 
@@ -265,6 +373,65 @@ func TestNPCScavengeApplyRejectsStaleReplayAndInvalidInputsAtomically(t *testing
 	}
 }
 
+func TestNPCScavengeRejectsEquivalentTargetRebindingAtomically(t *testing.T) {
+	state := npcScavengeFixture(t)
+	equivalent := state.NPCs["scavenger"]
+	equivalent.Items = &ItemCollection{Items: map[string]Item{}}
+	state.NPCs["equivalent"] = equivalent
+	room := state.Rooms[1]
+	room.NPCIDs = append(room.NPCIDs, "equivalent")
+	state.Rooms[1] = room
+	state.ActiveNPCIDs = append(state.ActiveNPCIDs, "equivalent")
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := state.PlanNPCScavenge("scavenger", 200, func(int, int) int { return 1 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := proposal
+	tampered.NPCID = "equivalent"
+	before := state.clone()
+	if _, _, err := state.ApplyNPCScavenge(tampered); err == nil || !reflect.DeepEqual(state, before) {
+		t.Fatalf("equivalent NPC rebinding accepted or mutated state: err=%v", err)
+	}
+	if _, _, err := state.ApplyNPCScavenge(proposal); err != nil {
+		t.Fatalf("valid original target was consumed by rejected rebinding: %v", err)
+	}
+}
+
+func TestNPCScavengeRejectsTamperedCanonicalOrdersAtomically(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(*NPCScavengeProposal)
+	}{
+		{name: "source order", tamper: func(p *NPCScavengeProposal) {
+			p.SourceFloorOrder = []string{"bag", "protected", "later"}
+		}},
+		{name: "after room order", tamper: func(p *NPCScavengeProposal) {
+			p.AfterRoomFloorOrder = []string{"protected", "later", "bag"}
+		}},
+		{name: "after NPC order", tamper: func(p *NPCScavengeProposal) {
+			p.AfterNPCInventoryOrder = []string{"bag", "apple"}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := npcScavengeFixture(t)
+			proposal, err := state.PlanNPCScavenge("scavenger", 200, func(int, int) int { return 1 })
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered := proposal
+			tc.tamper(&tampered)
+			before := state.clone()
+			if _, _, err := state.ApplyNPCScavenge(tampered); err == nil || !reflect.DeepEqual(state, before) {
+				t.Fatalf("tampered %s accepted or mutated state: err=%v", tc.name, err)
+			}
+		})
+	}
+}
+
 func TestNPCScavengeRejectsInvalidCanonicalOwnershipBeforeRoll(t *testing.T) {
 	state := npcScavengeFixture(t)
 	room := state.Rooms[1]
@@ -297,5 +464,9 @@ func TestNPCScavengeAttackGateDoesNotConsumeRoll(t *testing.T) {
 	next, _, err := state.ApplyNPCScavenge(proposal)
 	if err != nil || !reflect.DeepEqual(next, state) {
 		t.Fatalf("attack gate mutated state: err=%v", err)
+	}
+	replayBefore := next.clone()
+	if _, _, err := next.ApplyNPCScavenge(proposal); err == nil || !reflect.DeepEqual(next, replayBefore) {
+		t.Fatalf("attack-blocked no-op replay accepted or mutated state: err=%v", err)
 	}
 }

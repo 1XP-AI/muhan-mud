@@ -3,6 +3,7 @@ package world
 import (
 	"fmt"
 	"reflect"
+	"sync/atomic"
 )
 
 // These are the raw update_active values from src/mtype.h.  LT_MSCAV shares
@@ -23,6 +24,23 @@ const (
 	npcScavengeRollWin  = 15
 	npcScavengeWait     = 20
 )
+
+// npcScavengeApplyToken binds a proposal to the NPC selected during planning
+// and makes even a semantically unchanged no-op apply one-shot. It is kept out
+// of the wire/result projection: a proposal reconstructed without this token
+// must fail closed rather than become replayable.
+type npcScavengeApplyToken struct {
+	npcID string
+	used  uint32
+}
+
+func (t *npcScavengeApplyToken) validFor(npcID string) bool {
+	return t != nil && t.npcID != "" && t.npcID == npcID && atomic.LoadUint32(&t.used) == 0
+}
+
+func (t *npcScavengeApplyToken) consume() bool {
+	return t != nil && atomic.CompareAndSwapUint32(&t.used, 0, 1)
+}
 
 // NPCScavengeDecision is the source-bound outcome of one active NPC pass.
 type NPCScavengeDecision string
@@ -68,7 +86,8 @@ type NPCScavengeProposal struct {
 	AfterRoomFloorOrder    []string `json:"after_room_floor_order"`
 	AfterNPCInventoryOrder []string `json:"after_npc_inventory_order"`
 
-	before State
+	before     State
+	applyToken *npcScavengeApplyToken
 }
 
 // NPCScavengeResult is the committed, replay-visible projection.
@@ -240,7 +259,7 @@ func (s State) PlanNPCScavenge(npcID string, now int32, roll func(int, int) int)
 		NPCID: npcID, RoomID: npc.Body.RoomID, Now: now,
 		Due: due, AttackReady: attackReady, TimerBefore: npc.Body.Timers[npcScavengeTimer],
 		TimerAfter: npc.Body.Timers[npcScavengeTimer], MHASSC: flag(npc.Body.Flags[:], npcScavengedFlag),
-		before: s.clone(),
+		before: s.clone(), applyToken: &npcScavengeApplyToken{npcID: npcID},
 	}
 	npcScavengeSetOrders(&proposal, room, npc)
 	if !due {
@@ -298,7 +317,7 @@ func npcScavengeProposalError(message string) (State, NPCScavengeResult, error) 
 // snapshot. It rechecks every derived decision and canonical order without
 // invoking RNG, then clones and mutates the two owning collections together.
 func (s State) ApplyNPCScavenge(proposal NPCScavengeProposal) (State, NPCScavengeResult, error) {
-	if proposal.before.Version == 0 || !reflect.DeepEqual(s, proposal.before) {
+	if proposal.before.Version == 0 || !proposal.applyToken.validFor(proposal.NPCID) || !reflect.DeepEqual(s, proposal.before) {
 		return npcScavengeProposalError("stale or replayed proposal")
 	}
 	npc, room, due, attackReady, err := npcScavengeContext(s, proposal.NPCID, proposal.Now)
@@ -323,6 +342,9 @@ func (s State) ApplyNPCScavenge(proposal NPCScavengeProposal) (State, NPCScaveng
 			return npcScavengeProposalError("invalid no-op decision")
 		}
 		next := s.clone()
+		if !proposal.applyToken.consume() {
+			return npcScavengeProposalError("stale or replayed proposal")
+		}
 		return next, npcScavengeResult(proposal), nil
 	}
 	if !proposal.Attempted || proposal.Roll < 1 || proposal.Roll > npcScavengeRollHigh || proposal.RollSuccess != (proposal.Roll <= npcScavengeRollWin) {
@@ -378,6 +400,9 @@ func (s State) ApplyNPCScavenge(proposal NPCScavengeProposal) (State, NPCScaveng
 	}
 	if err := next.Validate(); err != nil {
 		return State{}, NPCScavengeResult{}, fmt.Errorf("NPC MSCAVE result invalid: %w", err)
+	}
+	if !proposal.applyToken.consume() {
+		return npcScavengeProposalError("stale or replayed proposal")
 	}
 	return next, npcScavengeResult(proposal), nil
 }
