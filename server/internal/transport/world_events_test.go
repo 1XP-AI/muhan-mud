@@ -92,7 +92,7 @@ func TestMovementEventsDirectionalNPCChaseUsesSourceOrderAndSkipsManagedFollower
 
 	events := movementEvents(before, after, "a", []string{"zeta", "alpha"})
 	var sourceChases []string
-	managedArrivals, playerFollowerArrivals := 0, 0
+	managedArrivals, playerFollowerArrivals, committedChaseArrivals := 0, 0, 0
 	for _, event := range events {
 		if event.RoomID == 1 && strings.Contains(event.Text, "따라갑니다") {
 			sourceChases = append(sourceChases, event.Text)
@@ -103,12 +103,18 @@ func TestMovementEventsDirectionalNPCChaseUsesSourceOrderAndSkipsManagedFollower
 		if event.RoomID == 2 && strings.Contains(event.Text, "Follower") && strings.Contains(event.Text, "따라왔습니다") {
 			playerFollowerArrivals++
 		}
+		if event.RoomID == 2 && (strings.Contains(event.Text, "Zulu") || strings.Contains(event.Text, "Alpha")) && strings.Contains(event.Text, "따라왔습니다") {
+			committedChaseArrivals++
+		}
 	}
 	if len(sourceChases) != 2 || !strings.Contains(sourceChases[0], "Zulu") || !strings.Contains(sourceChases[1], "Alpha") {
 		t.Fatalf("source chase order=%v events=%+v", sourceChases, events)
 	}
 	if managedArrivals != 1 || playerFollowerArrivals != 1 {
 		t.Fatalf("generic follower arrivals managed=%d player=%d events=%+v", managedArrivals, playerFollowerArrivals, events)
+	}
+	if committedChaseArrivals != 0 {
+		t.Fatalf("committed chase was duplicated as destination arrival=%d events=%+v", committedChaseArrivals, events)
 	}
 
 	sourceEvents := make(chan string, 8)
@@ -152,8 +158,8 @@ func TestMovementEventsWithoutCommittedNPCChaseIDsDoesNotInferChase(t *testing.T
 	destination.NPCIDs = append(destination.NPCIDs, "alarm")
 	after.Rooms[2] = destination
 	for _, event := range movementEvents(before, after, "a") {
-		if strings.Contains(event.Text, "따라갑니다") {
-			t.Fatalf("inferred chase without committed IDs: %+v", event)
+		if strings.Contains(event.Text, "Alarm Guard") {
+			t.Fatalf("alarm relocation was presented as NPC follower movement: %+v", event)
 		}
 	}
 }
@@ -215,7 +221,7 @@ func TestMovementEventsPreserveCommittedActorFollowerAndNPCOrder(t *testing.T) {
 			"b": {Body: world.LegacyMonster{Name: "Bob", RoomID: 1}},
 		},
 		NPCs: map[string]world.NPCState{
-			"guard": {Body: world.LegacyMonster{Name: "Guard", Type: 1, RoomID: 1}},
+			"guard": {Body: world.LegacyMonster{Name: "Guard", Type: 1, RoomID: 1}, FollowingPlayerID: "a"},
 		},
 	}
 	after := world.State{

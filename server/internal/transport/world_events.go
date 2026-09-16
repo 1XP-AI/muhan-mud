@@ -25,6 +25,14 @@ func movementEvents(before, after world.State, actorID string, committedChaseIDs
 		return nil
 	}
 	actorAfter, afterExists := after.Players[actorID]
+	var chaseIDs []string
+	if len(committedChaseIDs) != 0 {
+		chaseIDs = committedChaseIDs[0]
+	}
+	committedChaseSet := make(map[string]struct{}, len(chaseIDs))
+	for _, id := range chaseIDs {
+		committedChaseSet[id] = struct{}{}
+	}
 	var events []roomEvent
 	if afterExists && actorBefore.Body.RoomID != actorAfter.Body.RoomID {
 		name := actorAfter.Body.Name
@@ -82,15 +90,18 @@ func movementEvents(before, after world.State, actorID string, committedChaseIDs
 			if !oldOK || !newOK || oldNPC.Body.RoomID == newNPC.Body.RoomID || newNPC.Body.RoomID != actorAfter.Body.RoomID {
 				continue
 			}
+			// A generic NPC arrival is a stable MDMFOL follower edge only.
+			// Alarm relocation and unrelated movement must not be rendered as
+			// following, while committed MFOLLO chase IDs use the source-room
+			// notice below as their sole chase projection.
+			if _, committed := committedChaseSet[id]; committed || oldNPC.FollowingPlayerID != actorID || newNPC.FollowingPlayerID != actorID {
+				continue
+			}
 			events = append(events, roomEvent{
 				RoomID: newNPC.Body.RoomID,
 				Text:   fmt.Sprintf("\n%s이(가) 따라왔습니다.\r\n", newNPC.Body.Name),
 			})
 		}
-	}
-	var chaseIDs []string
-	if len(committedChaseIDs) != 0 {
-		chaseIDs = committedChaseIDs[0]
 	}
 	for _, chase := range world.NPCCommittedChaseFanoutEvents(before, after, actorID, chaseIDs) {
 		events = append(events, roomEvent{RoomID: chase.RoomID, Text: chase.Text})
