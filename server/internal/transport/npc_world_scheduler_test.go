@@ -47,7 +47,7 @@ func TestNPCWorldSchedulerRunsDeterministicOrderAndSuppressesDuplicateCadence(t 
 	if got, want := runner.calls, []string{"maintenance", "resource", "combat"}; !equalStrings(got, want) {
 		t.Fatalf("first order=%v want=%v", got, want)
 	}
-	if first.MaintenanceRan != true || first.ResourceRan != true || first.CombatRan != true {
+	if first.MaintenanceRan != true || first.ScavengeRan || first.ResourceRan != true || first.CombatRan != true || first.Scavenge.Revision != 0 {
 		t.Fatalf("first phase results=%+v", first)
 	}
 	if got, want := runner.attempts, []string{"maintenance-1", "resource-1", "combat-1"}; !equalStrings(got, want) {
@@ -74,6 +74,79 @@ func TestNPCWorldSchedulerRunsDeterministicOrderAndSuppressesDuplicateCadence(t 
 	}
 	if got, want := runner.intervals, []time.Duration{time.Second, 20 * time.Second, time.Second, time.Second, 20 * time.Second, time.Second}; !equalDurations(got, want) {
 		t.Fatalf("phase intervals=%v want=%v", got, want)
+	}
+}
+
+func TestNPCWorldSchedulerRunsOptionalScavengeBetweenMaintenanceAndResource(t *testing.T) {
+	runner := newNPCWorldSchedulerScavengeFake()
+	scheduler, err := NewNPCWorldScheduler(runner, 2*time.Second, 20*time.Second, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("result=%+v ran=%v err=%v", result, ran, err)
+	}
+	if got, want := runner.calls, []string{"maintenance", "scavenge", "resource", "combat"}; !equalStrings(got, want) {
+		t.Fatalf("phase order=%v want=%v", got, want)
+	}
+	if got, want := runner.intervals, []time.Duration{2 * time.Second, 3 * time.Second, 20 * time.Second, 3 * time.Second}; !equalDurations(got, want) {
+		t.Fatalf("phase intervals=%v want=%v", got, want)
+	}
+	if result.Maintenance.Revision != 1 || result.Scavenge.Revision != 2 || result.Resource.Revision != 3 || result.Combat.Revision != 4 {
+		t.Fatalf("phase receipts=%+v", result)
+	}
+	if !result.MaintenanceRan || !result.ScavengeRan || !result.ResourceRan || !result.CombatRan {
+		t.Fatalf("phase admission=%+v", result)
+	}
+}
+
+func TestNPCWorldSchedulerRetriesUncertainScavengeBeforeResourceAndCombat(t *testing.T) {
+	runner := newNPCWorldSchedulerScavengeFake()
+	runner.failScavenge = true
+	scheduler, err := NewNPCWorldScheduler(runner, time.Second, 20*time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, ran, err := scheduler.RunOnce(context.Background())
+	if err == nil || !ran {
+		t.Fatalf("failed cadence=%+v ran=%v err=%v", first, ran, err)
+	}
+	if !errors.Is(err, errNPCWorldScavengeUncertain) {
+		t.Fatalf("failed cadence err=%v", err)
+	}
+	if got, want := runner.calls, []string{"maintenance", "scavenge"}; !equalStrings(got, want) {
+		t.Fatalf("failed order=%v want=%v", got, want)
+	}
+	if got, want := runner.attempts, []string{"maintenance-1", "scavenge-1"}; !equalStrings(got, want) {
+		t.Fatalf("failed commands=%v want=%v", got, want)
+	}
+	if first.Maintenance.Revision != 1 || !first.MaintenanceRan || first.Scavenge.Revision != 0 || !first.ScavengeRan || first.ResourceRan || first.CombatRan {
+		t.Fatalf("failed phase results=%+v", first)
+	}
+
+	second, ran, err := scheduler.RunOnce(context.Background())
+	if err != nil || !ran {
+		t.Fatalf("retry cadence=%+v ran=%v err=%v", second, ran, err)
+	}
+	if got, want := runner.calls, []string{
+		"maintenance", "scavenge",
+		"maintenance", "scavenge", "resource", "combat",
+	}; !equalStrings(got, want) {
+		t.Fatalf("retry order=%v want=%v", got, want)
+	}
+	if got, want := runner.attempts, []string{
+		"maintenance-1", "scavenge-1", "scavenge-1", "resource-1", "combat-1",
+	}; !equalStrings(got, want) {
+		t.Fatalf("retry commands=%v want=%v", got, want)
+	}
+	if second.MaintenanceRan || !second.ScavengeRan || !second.ResourceRan || !second.CombatRan {
+		t.Fatalf("retry phase admission=%+v", second)
+	}
+	if second.Maintenance.Revision != 0 || second.Scavenge.Revision != 3 || second.Resource.Revision != 4 || second.Combat.Revision != 5 {
+		t.Fatalf("retry phase receipts=%+v", second)
 	}
 }
 
@@ -187,6 +260,7 @@ func TestNPCWorldSchedulerRejectsOverlappingWorkerAndRunOnce(t *testing.T) {
 }
 
 var errNPCWorldResourceUncertain = errors.New("resource durable outcome uncertain")
+var errNPCWorldScavengeUncertain = errors.New("scavenge durable outcome uncertain")
 
 type npcWorldSchedulerFake struct {
 	mu           sync.Mutex
@@ -195,6 +269,7 @@ type npcWorldSchedulerFake struct {
 	intervals    []time.Duration
 	phases       map[string]*npcWorldSchedulerFakePhase
 	failResource bool
+	failScavenge bool
 }
 
 type npcWorldSchedulerFakePhase struct {
@@ -210,6 +285,16 @@ func newNPCWorldSchedulerFake() *npcWorldSchedulerFake {
 	}}
 }
 
+type npcWorldSchedulerScavengeFake struct {
+	*npcWorldSchedulerFake
+}
+
+func newNPCWorldSchedulerScavengeFake() *npcWorldSchedulerScavengeFake {
+	runner := newNPCWorldSchedulerFake()
+	runner.phases["scavenge"] = &npcWorldSchedulerFakePhase{}
+	return &npcWorldSchedulerScavengeFake{npcWorldSchedulerFake: runner}
+}
+
 func (r *npcWorldSchedulerFake) RunNPCMaintenanceTick(ctx context.Context, interval time.Duration) (storage.WorldReceipt, bool, error) {
 	return r.run(ctx, "maintenance", interval)
 }
@@ -220,6 +305,10 @@ func (r *npcWorldSchedulerFake) RunNPCResourceTick(ctx context.Context, interval
 
 func (r *npcWorldSchedulerFake) RunNPCCombatTick(ctx context.Context, interval time.Duration) (storage.WorldReceipt, bool, error) {
 	return r.run(ctx, "combat", interval)
+}
+
+func (r *npcWorldSchedulerScavengeFake) RunNPCScavengeTick(ctx context.Context, interval time.Duration) (storage.WorldReceipt, bool, error) {
+	return r.run(ctx, "scavenge", interval)
 }
 
 func (r *npcWorldSchedulerFake) run(ctx context.Context, phase string, interval time.Duration) (storage.WorldReceipt, bool, error) {
@@ -241,6 +330,10 @@ func (r *npcWorldSchedulerFake) run(ctx context.Context, phase string, interval 
 	if phase == "resource" && r.failResource {
 		r.failResource = false
 		return storage.WorldReceipt{}, true, errNPCWorldResourceUncertain
+	}
+	if phase == "scavenge" && r.failScavenge {
+		r.failScavenge = false
+		return storage.WorldReceipt{}, true, errNPCWorldScavengeUncertain
 	}
 	state.completed = true
 	return storage.WorldReceipt{Revision: int64(len(r.attempts))}, true, nil
