@@ -171,6 +171,15 @@ func TestPlanNPCFollowerChaseMatchesCommand2VisibilityPredicate(t *testing.T) {
 	}
 }
 
+func TestNPCFollowerChaseActorTextPreservesCommand2LeadingNewline(t *testing.T) {
+	if got, want := NPCFollowerChaseActorText("Alpha"), "\nAlpha가 당신을 따라옵니다.\r\n"; got != want {
+		t.Fatalf("directional chase actor text=%q want=%q", got, want)
+	}
+	if got := NPCGoChaseActorText("Alpha"); got == NPCFollowerChaseActorText("Alpha") {
+		t.Fatalf("directional and go chase actor text unexpectedly identical: %q", got)
+	}
+}
+
 func TestPlanNPCFollowerChaseRejectsUnresolvedOrInvalidInputsAtomically(t *testing.T) {
 	tests := []struct {
 		name   string

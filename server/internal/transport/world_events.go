@@ -84,7 +84,12 @@ func movementEvents(before, after world.State, actorID string) []roomEvent {
 			Text:   fmt.Sprintf("\n%s이(가) 따라왔습니다.\r\n", newNPC.Body.Name),
 		})
 	}
-	for _, chase := range world.NPCGoChaseFanoutEvents(before, after, actorID) {
+	// command2 and command6 share the committed before/after eligibility
+	// contract; the command2 projection includes MFOLLO candidates so mixed
+	// first_mon order remains source-stable, while canonical MDMFOL links are
+	// excluded as generic follower arrivals. The existing go helper remains
+	// available to callers that need its stricter MFOLLO-only predicate.
+	for _, chase := range world.NPCFollowerChaseFanoutEvents(before, after, actorID) {
 		events = append(events, roomEvent{RoomID: chase.RoomID, Text: chase.Text})
 	}
 	return events

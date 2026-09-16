@@ -126,6 +126,11 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 				return nil, nil, reduceErr
 			}
 		}
+		if step.NPCChase != nil {
+			for _, move := range step.NPCChase.Moves {
+				responseText += world.NPCFollowerChaseActorText(move.Body.Name)
+			}
+		}
 		response, reduceErr := json.Marshal(responseText)
 		return state, response, reduceErr
 	})

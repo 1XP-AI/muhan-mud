@@ -24,6 +24,116 @@ func directionalCommandFixture() []byte {
 	return raw
 }
 
+func directionalNPCChaseFixture(t *testing.T) []byte {
+	t.Helper()
+	s, err := world.DecodeState(directionalCommandFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := s.Rooms[1]
+	source.NPCIDs = []string{"zeta", "alpha"}
+	s.Rooms[1] = source
+	s.NPCs = map[string]world.NPCState{
+		"zeta": {
+			Body:    world.LegacyMonster{Name: "Zulu", Type: 1, RoomID: 1, HPMax: 40, HPCurrent: 40, Stats: [5]byte{0, 10}},
+			Enemies: []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "a"}, Damage: -1}},
+		},
+		"alpha": {
+			Body:    world.LegacyMonster{Name: "Alpha", Type: 1, RoomID: 1, HPMax: 40, HPCurrent: 40, Stats: [5]byte{0, 10}},
+			Enemies: []world.NPCEnemy{{Target: world.EntityRef{Kind: "player", ID: "a"}, Damage: -1}},
+		},
+	}
+	s.ActiveNPCIDs = []string{"zeta", "alpha"}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestExecuteDirectionalLineIncludesOrderedNPCChaseActorNoticesAndReplays(t *testing.T) {
+	store := &departureStore{state: directionalNPCChaseFixture(t)}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	rolls := 0
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "directional-chase", lease, "북", 100, 12, world.SceneOptions{}, nil, func(low, high int) int {
+		rolls++
+		if low != 1 || high != 50 {
+			t.Fatalf("unexpected chase roll %d..%d", low, high)
+		}
+		return 1
+	}, nil)
+	if err != nil || first.Replayed || store.commits != 1 || rolls != 2 {
+		t.Fatalf("first=%+v err=%v commits=%d rolls=%d", first, err, store.commits, rolls)
+	}
+	var response string
+	if err := json.Unmarshal(first.Response, &response); err != nil {
+		t.Fatal(err)
+	}
+	firstNotice := world.NPCFollowerChaseActorText("Zulu")
+	secondNotice := world.NPCFollowerChaseActorText("Alpha")
+	firstAt := strings.Index(response, firstNotice)
+	secondAt := strings.Index(response, secondNotice)
+	if firstAt < 0 || secondAt < 0 || firstAt >= secondAt {
+		t.Fatalf("ordered directional chase notices missing or reversed: %q", response)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 2 || saved.NPCs["zeta"].Body.RoomID != 2 || saved.NPCs["alpha"].Body.RoomID != 2 {
+		t.Fatalf("saved directional chase state=%+v err=%v", saved, err)
+	}
+	replay, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "directional-chase", lease, "북", 100, 12, world.SceneOptions{}, nil, func(int, int) int {
+		t.Fatal("directional chase replay rerolled")
+		return 1
+	}, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
+func TestExecuteDirectionalLineRejectedGateDoesNotMoveOrChaseNPCs(t *testing.T) {
+	s, err := world.DecodeState(directionalNPCChaseFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := s.Rooms[1]
+	room.Resource.Exits[0].Flags[3/8] |= 1 << (3 % 8)
+	s.Rooms[1] = room
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "directional-chase-gate", lease, "북", 100, 12, world.SceneOptions{}, nil, func(int, int) int {
+		t.Fatal("rejected directional gate rolled chase")
+		return 1
+	}, nil)
+	var response string
+	if decodeErr := json.Unmarshal(first.Response, &response); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if err != nil || first.Replayed || response != "문이 닫혀 있습니다." || store.commits != 1 {
+		t.Fatalf("gate first=%+v err=%v commits=%d", first, err, store.commits)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || saved.Players["a"].Body.RoomID != 1 || saved.NPCs["zeta"].Body.RoomID != 1 || saved.NPCs["alpha"].Body.RoomID != 1 {
+		t.Fatalf("rejected gate moved state=%+v err=%v", saved, err)
+	}
+}
+
 func TestExecuteDirectionalLineCommitsCanonicalMovementAndReplays(t *testing.T) {
 	store := &departureStore{state: directionalCommandFixture()}
 	var owners Ownership
