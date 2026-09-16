@@ -21,11 +21,11 @@ import (
 // as bytes so a retry cannot silently bind a different JSON request even when
 // the clock has advanced.
 type npcAggressiveTargetTick struct {
-	slot                         int64
-	now                          int32
-	commandID                    string
-	request                      json.RawMessage
-	maintenanceReadyAttackTimers map[string]world.LegacyTimer
+	slot                int64
+	now                 int32
+	commandID           string
+	request             json.RawMessage
+	maintenanceBoundary *npcAggressiveTargetMaintenanceBoundary
 }
 
 type npcAggressiveTargetTickRequest struct {
@@ -47,6 +47,7 @@ type npcAggressiveTargetTickState struct {
 type npcAggressiveTargetMaintenanceBoundary struct {
 	now               int32
 	readyAttackTimers map[string]world.LegacyTimer
+	activeNPCIDs      []string
 }
 
 // WorldConnector's struct is intentionally not widened by this phase. A
@@ -139,6 +140,14 @@ func npcAggressiveTargetMaintenanceBoundaryFromReceipt(receipt storage.WorldRece
 	boundary := &npcAggressiveTargetMaintenanceBoundary{
 		now:               result.Now,
 		readyAttackTimers: map[string]world.LegacyTimer{},
+		activeNPCIDs:      append([]string{}, result.ActiveNPCIDs...),
+	}
+	active := make(map[string]bool, len(result.ActiveNPCIDs))
+	for _, npcID := range result.ActiveNPCIDs {
+		if npcID == "" || active[npcID] {
+			return nil, errors.New("NPC maintenance receipt has an invalid active NPC identity")
+		}
+		active[npcID] = true
 	}
 	for _, action := range result.Actions {
 		if action.NPCID == "" {
@@ -162,6 +171,9 @@ func npcAggressiveTargetMaintenanceBoundaryFromReceipt(receipt storage.WorldRece
 			}
 			continue
 		}
+		if !active[action.NPCID] {
+			return nil, fmt.Errorf("NPC maintenance receipt ready identity is not active: %q", action.NPCID)
+		}
 		if _, exists := boundary.readyAttackTimers[action.NPCID]; exists {
 			return nil, fmt.Errorf("NPC maintenance receipt repeated ready NPC %q", action.NPCID)
 		}
@@ -181,46 +193,65 @@ func cloneNPCAggressiveTargetReadyAttackTimers(boundary *npcAggressiveTargetMain
 	return cloned
 }
 
-func prepareNPCAggressiveTargetPostMaintenanceState(state world.State, now int32, readyAttackTimers map[string]world.LegacyTimer) (world.State, map[string]world.LegacyTimer, error) {
-	if len(readyAttackTimers) == 0 {
+func cloneNPCAggressiveTargetMaintenanceBoundary(boundary *npcAggressiveTargetMaintenanceBoundary) *npcAggressiveTargetMaintenanceBoundary {
+	if boundary == nil {
+		return nil
+	}
+	return &npcAggressiveTargetMaintenanceBoundary{
+		now:               boundary.now,
+		readyAttackTimers: cloneNPCAggressiveTargetReadyAttackTimers(boundary),
+		activeNPCIDs:      append([]string{}, boundary.activeNPCIDs...),
+	}
+}
+
+func prepareNPCAggressiveTargetPostMaintenanceState(state world.State, now int32, boundary *npcAggressiveTargetMaintenanceBoundary) (world.State, map[string]world.LegacyTimer, error) {
+	if boundary == nil || len(boundary.readyAttackTimers) == 0 {
 		return state, nil, nil
 	}
-	ids := make([]string, 0, len(readyAttackTimers))
-	for npcID := range readyAttackTimers {
+	if boundary.activeNPCIDs == nil {
+		return world.State{}, nil, errors.New("NPC maintenance active order unavailable")
+	}
+	ids := make([]string, 0, len(boundary.readyAttackTimers))
+	for npcID := range boundary.readyAttackTimers {
 		ids = append(ids, npcID)
 	}
 	sort.Strings(ids)
 	originals := make(map[string]world.LegacyTimer, len(ids))
-	applyOverride := true
 	for _, npcID := range ids {
-		expected := readyAttackTimers[npcID]
+		expected := boundary.readyAttackTimers[npcID]
 		if expected.LastTime < 0 || (expected.Interval != 2 && expected.Interval != 3) {
 			return world.State{}, nil, fmt.Errorf("NPC maintenance timer boundary is invalid for %q", npcID)
 		}
-		if !npcAggressiveTargetActiveNPC(state.ActiveNPCIDs, npcID) {
+		if !npcAggressiveTargetActiveNPC(boundary.activeNPCIDs, npcID) {
 			return world.State{}, nil, fmt.Errorf("NPC maintenance ready identity is not active: %q", npcID)
+		}
+		if !npcAggressiveTargetActiveNPC(state.ActiveNPCIDs, npcID) {
+			// Combat can legitimately deactivate every NPC in a room after the
+			// maintenance prefix has marked one ready. Discard only that stale
+			// override; the strict planner below will walk the current active list.
+			continue
 		}
 		npc, ok := state.NPCs[npcID]
 		if !ok || npc.Body.Type != world.TurnMonsterType {
 			return world.State{}, nil, fmt.Errorf("NPC maintenance ready identity is unresolved: %q", npcID)
 		}
 		current := npc.Body.Timers[world.TurnAttackTimerIndex]
-		if expected.LastTime != now || current.LastTime != expected.LastTime || current.Interval != expected.Interval {
+		if boundary.now != now || expected.LastTime != now || current.LastTime != expected.LastTime || current.Interval != expected.Interval {
 			// The maintenance prefix is only an override for the exact target
 			// slot it produced. If a later maintenance pass has already changed
 			// the timer, keep the pending command but let the strict planner
 			// decide against the old command timestamp instead of rejecting the
-			// retry forever.
-			applyOverride = false
+			// retry forever. Other exact entries remain eligible for the override.
+			continue
 		}
 		originals[npcID] = current
 	}
-	if !applyOverride {
-		return state, nil, nil
-	}
 	for _, npcID := range ids {
+		current, ok := originals[npcID]
+		if !ok {
+			continue
+		}
 		npc := state.NPCs[npcID]
-		current := originals[npcID]
 		// C's maintenance prefix has already admitted this NPC to the same
 		// update_active pass. Make only that prefix's timer due for the world
 		// planner, which still enforces strict readiness on every other path.
@@ -352,11 +383,11 @@ func (g *WorldConnector) runNPCAggressiveTargetTick(ctx context.Context, interva
 			return storage.WorldReceipt{}, false, err
 		}
 		pending = &npcAggressiveTargetTick{
-			slot:                         slot,
-			now:                          int32(slotNow),
-			commandID:                    npcAggressiveTargetCommandID(slot),
-			request:                      append(json.RawMessage(nil), request...),
-			maintenanceReadyAttackTimers: cloneNPCAggressiveTargetReadyAttackTimers(maintenanceBoundary),
+			slot:                slot,
+			now:                 int32(slotNow),
+			commandID:           npcAggressiveTargetCommandID(slot),
+			request:             append(json.RawMessage(nil), request...),
+			maintenanceBoundary: cloneNPCAggressiveTargetMaintenanceBoundary(maintenanceBoundary),
 		}
 		state.pending = pending
 	}
@@ -364,7 +395,7 @@ func (g *WorldConnector) runNPCAggressiveTargetTick(ctx context.Context, interva
 		return storage.WorldReceipt{}, true, errors.New("NPC aggressive target pending request is unavailable")
 	}
 
-	receipt, err := g.runNPCAggressiveTargetPhaseAt(ctx, pending.commandID, pending.request, pending.maintenanceReadyAttackTimers)
+	receipt, err := g.runNPCAggressiveTargetPhaseAt(ctx, pending.commandID, pending.request, pending.maintenanceBoundary)
 	if err != nil {
 		// Do not release pending: an error from CommitWorldCommand can have an
 		// unknown outcome, and retry must use the identical command boundary.
@@ -414,7 +445,7 @@ func (g *WorldConnector) RunNPCAggressiveTargetPhase(ctx context.Context, comman
 	return g.runNPCAggressiveTargetPhaseAt(ctx, commandID, request, nil)
 }
 
-func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, commandID string, request json.RawMessage, maintenanceReadyAttackTimers map[string]world.LegacyTimer) (storage.WorldReceipt, error) {
+func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, commandID string, request json.RawMessage, maintenanceBoundary *npcAggressiveTargetMaintenanceBoundary) (storage.WorldReceipt, error) {
 	if g == nil {
 		return storage.WorldReceipt{}, errors.New("nil NPC aggressive target connector")
 	}
@@ -435,7 +466,7 @@ func (g *WorldConnector) runNPCAggressiveTargetPhaseAt(ctx context.Context, comm
 		if err != nil {
 			return nil, nil, err
 		}
-		planningState, originalAttackTimers, err := prepareNPCAggressiveTargetPostMaintenanceState(state, parsed.Now, maintenanceReadyAttackTimers)
+		planningState, originalAttackTimers, err := prepareNPCAggressiveTargetPostMaintenanceState(state, parsed.Now, maintenanceBoundary)
 		if err != nil {
 			return nil, nil, err
 		}

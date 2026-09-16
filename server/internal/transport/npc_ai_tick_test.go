@@ -327,6 +327,106 @@ func TestNPCAggressiveTargetPendingRetryFallsBackToStrictAfterMaintenanceAdvance
 	}
 }
 
+func TestNPCAggressiveTargetPendingRetryReconcilesPostCombatActiveListDrift(t *testing.T) {
+	state := npcCombatLethalTickFixture(t)
+	source := state.Rooms[1]
+	source.PlayerIDs = []string{"player-b"}
+	source.NPCIDs = []string{"npc-b"}
+	state.Rooms[1] = source
+
+	observer := state.Players["player-a"]
+	observer.Body.RoomID = 2
+	state.Players["player-a"] = observer
+	state.Rooms[2] = world.RoomState{
+		Resource:  world.LegacyRoom{LegacyRoomHeader: world.LegacyRoomHeader{ID: 2, Name: "관찰실"}},
+		PlayerIDs: []string{"player-a"},
+		NPCIDs:    []string{"npc-a"},
+	}
+	acquisitionNPC := state.NPCs["npc-a"]
+	acquisitionNPC.Body.RoomID = 2
+	acquisitionNPC.Body.Flags[6/8] |= 1 << (6 % 8) // MAGGRE
+	acquisitionNPC.Enemies = []world.NPCEnemy{}
+	state.NPCs["npc-a"] = acquisitionNPC
+	state.ActiveNPCIDs = []string{"npc-b", "npc-a"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newNPCAITickStore(t, state)
+	now := int32(100)
+	connector := newNPCAITickConnector(t, store, func() (int32, int) { return now, 12 }, func(_ int, high int) int {
+		return high
+	})
+
+	maintenance, ran, err := connector.RunNPCMaintenanceTick(context.Background(), time.Second)
+	if err != nil || !ran {
+		t.Fatalf("maintenance=%+v ran=%v err=%v", maintenance, ran, err)
+	}
+	var maintenanceResult world.NPCMaintenanceResult
+	if err := json.Unmarshal(maintenance.Response, &maintenanceResult); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(maintenanceResult.ActiveNPCIDs, []string{"npc-b", "npc-a"}) || len(maintenanceResult.Actions) != 2 || !maintenanceResult.Actions[0].AttackReady || !maintenanceResult.Actions[1].AttackReady {
+		t.Fatalf("maintenance result=%+v", maintenanceResult)
+	}
+
+	combat, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-last-player", 100, 100)
+	if err != nil || combat.Replayed {
+		t.Fatalf("combat=%+v err=%v", combat, err)
+	}
+	combatSummary := decodeNPCAggressiveCombatSummary(t, combat.Response)
+	if len(combatSummary.Deaths) != 1 || !combatSummary.Attacks[0].Lethal {
+		t.Fatalf("combat summary=%+v", combatSummary)
+	}
+	postCombat := npcAITickStoredState(t, store)
+	if !reflect.DeepEqual(postCombat.ActiveNPCIDs, []string{"npc-a"}) || postCombat.Players["player-b"].Body.RoomID != 1008 {
+		t.Fatalf("post-combat state active=%v player=%+v", postCombat.ActiveNPCIDs, postCombat.Players["player-b"])
+	}
+
+	store.failCommitOnce = true
+	first, ran, err := connector.RunNPCAggressiveTargetTickAfterMaintenance(context.Background(), time.Second, maintenance)
+	if err == nil || !ran || first.Replayed {
+		t.Fatalf("uncertain acquisition=%+v ran=%v err=%v", first, ran, err)
+	}
+	if store.commitAttempts != 3 || store.commits != 2 {
+		t.Fatalf("uncertain acquisition did not reach commit attempts=%d commits=%d", store.commitAttempts, store.commits)
+	}
+
+	now = 101
+	advancedMaintenance, ran, err := connector.RunNPCMaintenanceTick(context.Background(), time.Second)
+	if err != nil || !ran {
+		t.Fatalf("advanced maintenance=%+v ran=%v err=%v", advancedMaintenance, ran, err)
+	}
+	advancedState := npcAITickStoredState(t, store)
+	if !reflect.DeepEqual(advancedState.ActiveNPCIDs, []string{"npc-a"}) {
+		t.Fatalf("advanced maintenance active=%v", advancedState.ActiveNPCIDs)
+	}
+
+	retry, ran, err := connector.RunNPCAggressiveTargetTickAfterMaintenance(context.Background(), time.Second, advancedMaintenance)
+	if err != nil || !ran || retry.Replayed {
+		t.Fatalf("pending retry=%+v ran=%v err=%v", retry, ran, err)
+	}
+	retryResult := decodeNPCAggressiveTargetResult(t, retry.Response)
+	if retryResult.Now != 100 || !retryResult.Changed || len(retryResult.Events) != 1 || len(retryResult.Actions) != 1 || retryResult.Actions[0].NPCID != "npc-a" || retryResult.Actions[0].Status != "target-acquired" || retryResult.Events[0].TargetID != "player-a" {
+		t.Fatalf("pending retry result=%+v", retryResult)
+	}
+	if len(store.requests) != 5 || !bytes.Equal(store.requests[2], store.requests[4]) {
+		t.Fatalf("pending request changed across retry requests=%q", store.requests)
+	}
+
+	later, ran, err := connector.RunNPCAggressiveTargetTick(context.Background(), time.Second)
+	if err != nil || !ran || later.Replayed {
+		t.Fatalf("later acquisition=%+v ran=%v err=%v", later, ran, err)
+	}
+	laterResult := decodeNPCAggressiveTargetResult(t, later.Response)
+	if laterResult.Now != 101 || !laterResult.NoOp || laterResult.Changed || len(laterResult.Actions) != 1 || laterResult.Actions[0].NPCID != "npc-a" || laterResult.Actions[0].Status != "existing-enemy" {
+		t.Fatalf("later acquisition result=%+v", laterResult)
+	}
+	if got, want := store.commands, []string{"npc-maintenance-100", "npc-combat-last-player", "npc-aggressive-target-100", "npc-maintenance-101", "npc-aggressive-target-100", "npc-aggressive-target-101"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("phase commands=%v want=%v", got, want)
+	}
+}
+
 func TestNPCAggressiveTargetTickReplaysWithoutRNGOrFanout(t *testing.T) {
 	state := npcAITickState(t, 1)
 	store := newNPCAITickStore(t, state)
