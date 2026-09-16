@@ -463,6 +463,192 @@ func TestRunNPCCombatTickPersistsDiseaseAndBlindAndReplaysWithoutRNG(t *testing.
 	}
 }
 
+func TestRunNPCCombatPhasePersistsDissolveAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatTickFixture(t)
+	player := state.Players["player-b"]
+	player.Body.Class = 4
+	player.Body.Level = 1
+	player.Body.Stats = [5]byte{10, 10, 10, 10, 10}
+	player.Items = &world.ItemCollection{
+		Items: map[string]world.Item{
+			"held":  {Object: world.LegacyObject{Name: "held"}},
+			"wield": {Object: world.LegacyObject{Name: "wield"}},
+		},
+		Ready: [20]string{16: "held", 19: "wield"},
+	}
+	state.Players["player-b"] = player
+	npc := state.NPCs["npc-b"]
+	npc.Body.Flags[35/8] |= 1 << (35 % 8) // MDISIT
+	state.NPCs["npc-b"] = npc
+	state.ActiveNPCIDs = []string{"npc-b"}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-dissolve-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			switch {
+			case low == 1 && high == 20:
+				return 20
+			case low == 1 && high == 4:
+				return 4
+			case low == 1 && high == 100:
+				return 15
+			case low == 0 && high == 1:
+				return 1
+			default:
+				t.Fatalf("unexpected random request %d..%d", low, high)
+				return 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-dissolve", 5, 100)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v commits=%d err=%v", first, store.commits, err)
+	}
+	if rollCalls != 4 {
+		t.Fatalf("attack RNG calls=%d, want hit/damage/dissolve/selection", rollCalls)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	attack := summary.Attacks[0]
+	if !attack.Hit || !attack.DissolveSucceeded || !attack.Dissolved || attack.DissolveProtected || attack.DissolveRoll != 15 || attack.DissolveSelectionRoll != 1 || attack.DissolveCandidateCount != 2 || attack.DissolveReadySlot != 19 || attack.DissolveItemID != "wield" || attack.PlayerHP != 26 {
+		t.Fatalf("attack=%+v", attack)
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedItems := saved.Players["player-b"].Items
+	if savedItems.Ready[16] != "held" || savedItems.Ready[19] != "" {
+		t.Fatalf("saved ready=%v", savedItems.Ready)
+	}
+	if _, ok := savedItems.Items["wield"]; ok {
+		t.Fatal("dissolved wield root remains in durable state")
+	}
+	stats, err := savedItems.CombatStats(saved.Players["player-b"].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int8(saved.Players["player-b"].Body.Armor) != stats.Armor || int8(saved.Players["player-b"].Body.Thaco) != stats.Thaco {
+		t.Fatalf("saved equipment stats not refreshed: body=%+v stats=%+v", saved.Players["player-b"].Body, stats)
+	}
+
+	replayCalls := 0
+	restarted, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-dissolve-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(_, _ int) int {
+			replayCalls++
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := restarted.RunNPCCombatPhase(context.Background(), "npc-combat-dissolve", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || replayCalls != 0 {
+		t.Fatalf("replay=%+v commits=%d replay RNG calls=%d err=%v", replay, store.commits, replayCalls, err)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
+func TestRunNPCCombatPhasePersistsLethalDissolveAndReplaysWithoutRNG(t *testing.T) {
+	state := npcCombatLethalTickFixture(t)
+	npc := state.NPCs["npc-b"]
+	npc.Body.Flags[35/8] |= 1 << (35 % 8) // MDISIT
+	state.NPCs["npc-b"] = npc
+	store := &npcCombatTickStore{state: encodeNPCCombatTickState(t, state)}
+	rollCalls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-dissolve-lethal-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(low, high int) int {
+			rollCalls++
+			switch {
+			case low == 1 && high == 20:
+				return 20
+			case low == 1 && high == 4:
+				return 4
+			case low == 1 && high == 100:
+				return 15
+			case low == 0 && high == 0:
+				return 0
+			default:
+				t.Fatalf("unexpected random request %d..%d", low, high)
+				return 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := connector.RunNPCCombatPhase(context.Background(), "npc-combat-dissolve-lethal", 5, 100)
+	if err != nil || first.Replayed || store.commits != 1 {
+		t.Fatalf("first=%+v commits=%d err=%v", first, store.commits, err)
+	}
+	if rollCalls != 4 {
+		t.Fatalf("attack RNG calls=%d, want hit/damage/dissolve/selection", rollCalls)
+	}
+	summary := decodeNPCCombatTickSummary(t, first.Response)
+	if len(summary.Attacks) != 1 || !summary.Attacks[0].Lethal || !summary.Attacks[0].DissolveSucceeded || !summary.Attacks[0].Dissolved || summary.Attacks[0].DissolveReadySlot != 19 || summary.Attacks[0].DissolveItemID != "weapon" || len(summary.Deaths) != 1 || !summary.StoppedAfterDeath {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if summary.Deaths[0].DroppedItemCount != 0 {
+		t.Fatalf("lethal MDISIT counted dissolved item as floor drop: death=%+v", summary.Deaths[0])
+	}
+	saved, err := world.DecodeState(store.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Players["player-b"].Body.RoomID != 1008 || saved.Players["player-b"].Body.HPCurrent < 1 || len(saved.Players["player-b"].Items.Items) != 0 || saved.Rooms[1].Items == nil {
+		t.Fatalf("saved lethal dissolve state=%+v", saved)
+	}
+	sourceItems := saved.Rooms[1].Items
+	if sourceItems == nil || len(sourceItems.Items) != 0 || len(sourceItems.Inventory) != 0 || sourceItems.Ready != [20]string{} {
+		t.Fatalf("lethal MDISIT left a source-floor item graph: items=%+v", sourceItems)
+	}
+
+	replayCalls := 0
+	restarted, err := NewWorldConnector(WorldConnectorConfig{
+		Store:       store,
+		WorldID:     "npc-combat-dissolve-lethal-world",
+		MaxSessions: 1,
+		Clock:       func() (int32, int) { return 100, 12 },
+		Roll: func(_, _ int) int {
+			replayCalls++
+			return 1
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := restarted.RunNPCCombatPhase(context.Background(), "npc-combat-dissolve-lethal", 5, 100)
+	if err != nil || !replay.Replayed || store.commits != 1 || replayCalls != 0 {
+		t.Fatalf("replay=%+v commits=%d replay RNG calls=%d err=%v", replay, store.commits, replayCalls, err)
+	}
+	if !bytes.Equal(replay.Response, first.Response) {
+		t.Fatalf("replay response changed: first=%s replay=%s", first.Response, replay.Response)
+	}
+}
+
 func flagForNPCCombatTest(flags []byte, bit uint) bool {
 	return flags[bit/8]&(1<<(bit%8)) != 0
 }
@@ -608,8 +794,11 @@ func TestRunNPCCombatPhaseCommitsLethalPlayerDeathAndReplays(t *testing.T) {
 	}
 	death := summary.Deaths[0]
 	if death.NPCID != "npc-b" || death.PlayerID != "player-b" || death.SourceRoomID != 1 || death.DestinationRoomID != 1008 ||
-		!death.BroadcastDeath || death.ExperienceAfter >= death.ExperienceBefore || death.DroppedItemCount != 1 || !death.EnemyRemoved {
+		!death.BroadcastDeath || death.ExperienceAfter >= death.ExperienceBefore || !death.EnemyRemoved {
 		t.Fatalf("death=%+v", death)
+	}
+	if death.DroppedItemCount != 1 {
+		t.Fatalf("ordinary lethal equipment loss dropped item count=%d, want 1", death.DroppedItemCount)
 	}
 	saved, err := world.DecodeState(store.snapshot())
 	if err != nil {
