@@ -86,7 +86,7 @@ func TestMagicStopClassVisibilityCooldownAndOccurrenceAreFailClosed(t *testing.T
 		t.Fatal("invisible target should not consume RNG")
 		return 1
 	})
-	if err != nil || !p.NoOp || p.TargetFound || p.ClearInvisible || p.Response != "그런 괴물은 존재하지 않습니다.\n" {
+	if err != nil || !p.NoOp || p.TargetFound || p.ClearInvisible || p.Response != "\n그런 괴물은 존재하지 않습니다.\n" {
 		t.Fatalf("hidden target proposal=%+v err=%v", p, err)
 	}
 	if next, result, err := s.ApplyMagicStop(p); err != nil || result.Changed || !reflect.DeepEqual(next, s) {
@@ -116,6 +116,48 @@ func TestMagicStopClassVisibilityCooldownAndOccurrenceAreFailClosed(t *testing.T
 	}
 	if next.Players["actor"].Body.Timers[MagicStopCooldownTimerIndex] != actor.Body.Timers[MagicStopCooldownTimerIndex] {
 		t.Fatal("cooldown rewrote timer")
+	}
+}
+
+func TestMagicStopNoArgumentPrecedesAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		class      byte
+		authorized bool
+	}{
+		{name: "unauthorized", class: 4},
+		{name: "ranger", class: MagicStopRangerClass, authorized: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := magicStopTestState(tc.class)
+			before := s.clone()
+			p, err := s.PlanMagicStop("actor", "", 1000, func(int, int) int {
+				t.Fatal("no-argument magic_stop consumed RNG")
+				return 1
+			})
+			if err != nil || !p.NoOp || p.Authorized != tc.authorized || p.TargetFound || p.Response != magicStopNoArgumentResponse() {
+				t.Fatalf("no-argument proposal=%+v err=%v", p, err)
+			}
+			next, result, err := s.ApplyMagicStop(p)
+			if err != nil || result.Response != magicStopNoArgumentResponse() || result.Authorized != tc.authorized || result.Changed || !reflect.DeepEqual(next, before) {
+				t.Fatalf("no-argument apply result=%+v err=%v next=%+v", result, err, next)
+			}
+		})
+	}
+}
+
+func TestMagicStopNoTargetResponseKeepsLeadingNewline(t *testing.T) {
+	s := magicStopTestState(MagicStopRangerClass)
+	p, err := s.PlanMagicStop("actor", "도깨비", 1000, func(int, int) int {
+		t.Fatal("missing-target magic_stop consumed RNG")
+		return 1
+	})
+	if err != nil || !p.NoOp || p.TargetFound || p.Response != "\n그런 괴물은 존재하지 않습니다.\n" {
+		t.Fatalf("missing-target proposal=%+v err=%v", p, err)
+	}
+	next, result, err := s.ApplyMagicStop(p)
+	if err != nil || result.Response != p.Response || result.Changed || !reflect.DeepEqual(next, s) {
+		t.Fatalf("missing-target apply result=%+v err=%v next=%+v", result, err, next)
 	}
 }
 
@@ -188,6 +230,9 @@ func TestPlanApplyMagicStopMissCommitsHostilityRevealAndTimers(t *testing.T) {
 	if p.Response != magicStopRevealResponse()+magicStopMissResponse() || p.ExpectedEvent == nil || len(p.ExpectedEvent.Texts) != 2 {
 		t.Fatalf("miss projection response=%q event=%+v", p.Response, p.ExpectedEvent)
 	}
+	if got, want := p.ExpectedEvent.Text, "\n수호자님의 모습이 보이기 시작합니다.\n\n수호자님이 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 늑대가 살짝 피했습니다.\n"; got != want {
+		t.Fatalf("miss room output=%q want=%q", got, want)
+	}
 
 	next, result, err := s.ApplyMagicStop(p)
 	if err != nil {
@@ -240,6 +285,9 @@ func TestPlanApplyMagicStopHitWithoutDamageConsumesDurationRolls(t *testing.T) {
 	if strings.Contains(p.Response, "피해를 입혔습니다") || len(p.ExpectedEvent.Texts) != 1 {
 		t.Fatalf("no-damage output response=%q event=%+v", p.Response, p.ExpectedEvent)
 	}
+	if got, want := p.ExpectedEvent.Text, "\n수호자님이 적의 혈도를 재빨리 봉쇄했습니다.\n늑대의 혈도가 짚혀 주문이 봉쇄되었습니다.\n"; got != want {
+		t.Fatalf("no-damage room output=%q want=%q", got, want)
+	}
 
 	next, result, err := s.ApplyMagicStop(p)
 	if err != nil {
@@ -277,6 +325,9 @@ func TestPlanApplyMagicStopHitWithDamageUpdatesHPEnemyAndOutput(t *testing.T) {
 	}
 	if !strings.Contains(p.Response, "50의 피해를 입혔습니다") || p.ExpectedEvent == nil || len(p.ExpectedEvent.Texts) != 2 || !strings.Contains(p.ExpectedEvent.Text, "50의 피해를 입혔습니다") {
 		t.Fatalf("damage output response=%q event=%+v", p.Response, p.ExpectedEvent)
+	}
+	if got, want := p.ExpectedEvent.Text, "\n수호자님이 적의 혈도를 재빨리 봉쇄했습니다.\n늑대의 혈도가 짚혀 주문이 봉쇄되었습니다.\n수호자님이 늑대의 급소를 짚어서 50의 피해를 입혔습니다.\n"; got != want {
+		t.Fatalf("damage room output=%q want=%q", got, want)
 	}
 	next, result, err := s.ApplyMagicStop(p)
 	if err != nil {
@@ -393,6 +444,41 @@ func TestMagicStopAccumulatesExistingEnemyWithoutDuplicate(t *testing.T) {
 	next, _, err = next.ApplyMagicStop(p)
 	if err != nil || len(next.NPCs["wolf-1"].Enemies) != 2 || next.NPCs["wolf-1"].Enemies[1].Damage != 57 {
 		t.Fatalf("second accumulation state=%+v err=%v", next.NPCs["wolf-1"].Enemies, err)
+	}
+}
+
+func TestMagicStopAddingEnemyResetsNumHitsLikeLegacy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		enemies    []NPCEnemy
+		wantNumHit byte
+	}{
+		{name: "first enemy", enemies: []NPCEnemy{}, wantNumHit: 7},
+		{name: "existing enemy list", enemies: []NPCEnemy{{Target: EntityRef{Kind: "npc", ID: "wolf-2"}, Damage: 4}}, wantNumHit: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := magicStopTestState(MagicStopRangerClass)
+			npc := s.NPCs["wolf-1"]
+			npc.Body.Quests[0] = 7
+			npc.Enemies = tc.enemies
+			s.NPCs["wolf-1"] = npc
+			p, err := s.PlanMagicStop("actor", "늑대", 1000, func(low, high int) int {
+				if low != 1 || high != 100 {
+					t.Fatalf("miss should stop after first roll: %d..%d", low, high)
+				}
+				return 100
+			})
+			if err != nil || !p.EnemyAdded {
+				t.Fatalf("proposal=%+v err=%v", p, err)
+			}
+			next, _, err := s.ApplyMagicStop(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := next.NPCs["wolf-1"].Body.Quests[0]; got != tc.wantNumHit {
+				t.Fatalf("NUMHITS=%d want=%d enemies=%+v", got, tc.wantNumHit, next.NPCs["wolf-1"].Enemies)
+			}
+		})
 	}
 }
 

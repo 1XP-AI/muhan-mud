@@ -439,6 +439,7 @@ func magicStopAddEnemyDamage(npc *NPCState, actorID string, added bool, amount i
 	if npc == nil || npc.Enemies == nil || actorID == "" || amount < 0 || int64(amount) > math.MaxInt32 {
 		return fmt.Errorf("invalid magic_stop enemy damage")
 	}
+	firstEnemy := len(npc.Enemies) == 0
 	want := EntityRef{Kind: "player", ID: actorID}
 	matching := -1
 	for i, enemy := range npc.Enemies {
@@ -455,6 +456,11 @@ func magicStopAddEnemyDamage(npc *NPCState, actorID string, added bool, amount i
 		}
 		npc.Enemies = append(npc.Enemies, NPCEnemy{Target: want})
 		matching = len(npc.Enemies) - 1
+		// creature.c:add_enm_crt leaves NUMHITS alone for the first edge, but
+		// resets it after appending to an already populated enemy list.
+		if !firstEnemy {
+			npc.Body.Quests[0] = 0
+		}
 	} else if matching < 0 {
 		return fmt.Errorf("magic_stop NPC enemy relation absent")
 	}
@@ -469,8 +475,15 @@ func magicStopDamageResponse(target LegacyMonster, damage int) string {
 	return fmt.Sprintf("%s의 급소를 짚어서 %d의 피해를 입혔습니다.\n", target.Name, damage)
 }
 
+// magicStopActorRoomName mirrors command7.c's room-side %M for the player
+// actor after magic_stop has cleared PINVIS. %M supplies the player honorific;
+// the following particles are literal source text, not name-derived josa.
+func magicStopActorRoomName(actor LegacyMonster) string {
+	return combatPlayerLabel(actor.Name, false)
+}
+
 func magicStopDamageRoom(actor, target LegacyMonster, damage int) string {
-	return fmt.Sprintf("%s%s %s의 급소를 짚어서 %d의 피해를 입혔습니다.\n", actor.Name, legacySubjectParticle(actor.Name), target.Name, damage)
+	return fmt.Sprintf("%s이 %s의 급소를 짚어서 %d의 피해를 입혔습니다.\n", magicStopActorRoomName(actor), target.Name, damage)
 }
 
 func magicStopRevealResponse() string {
@@ -485,11 +498,11 @@ func magicStopRevealResponseIf(reveal bool) string {
 }
 
 func magicStopRevealRoom(actor LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s의 모습이 보이기 시작합니다.\n", actor.Name, legacySubjectParticle(actor.Name))
+	return fmt.Sprintf("\n%s의 모습이 보이기 시작합니다.\n", magicStopActorRoomName(actor))
 }
 
 func magicStopNoTargetResponse() string {
-	return "그런 괴물은 존재하지 않습니다.\n"
+	return "\n그런 괴물은 존재하지 않습니다.\n"
 }
 
 func magicStopNoArgumentResponse() string {
@@ -517,11 +530,11 @@ func magicStopSuccessResponse() string {
 }
 
 func magicStopMissRoom(actor, target LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 %s%s 살짝 피했습니다.\n", actor.Name, legacySubjectParticle(actor.Name), target.Name, legacySubjectParticle(target.Name))
+	return fmt.Sprintf("\n%s이 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 %s가 살짝 피했습니다.\n", magicStopActorRoomName(actor), target.Name)
 }
 
 func magicStopSuccessRoom(actor, target LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s 적의 혈도를 재빨리 봉쇄했습니다.\n%s%s의 혈도가 짚혀 주문이 봉쇄되었습니다.\n", actor.Name, legacySubjectParticle(actor.Name), target.Name, legacySubjectParticle(target.Name))
+	return fmt.Sprintf("\n%s이 적의 혈도를 재빨리 봉쇄했습니다.\n%s의 혈도가 짚혀 주문이 봉쇄되었습니다.\n", magicStopActorRoomName(actor), target.Name)
 }
 
 func magicStopEvent(actorID string, actor LegacyMonster, resolution magicStopResolution, texts []string) *MagicStopEvent {
@@ -550,10 +563,10 @@ func (s State) PlanMagicStop(actorID, targetName string, now int32, roll func(in
 }
 
 // PlanMagicStopWithOccurrence ports the confirmed command7.c ordering:
-// class -> canonical same-room visible NPC lookup -> reveal -> LT_TURNS
-// cooldown -> MUNKIL gate -> canonical combat graph/HP -> add_enm_crt and
-// actor timers -> chance/damage/duration draws. Death and flee continuation
-// remain deliberately outside this nonlethal candidate.
+// argument/class -> canonical same-room visible NPC lookup -> reveal ->
+// LT_TURNS cooldown -> MUNKIL gate -> canonical combat graph/HP -> add_enm_crt
+// and actor timers -> chance/damage/duration draws. Death and flee
+// continuation remain deliberately outside this nonlethal candidate.
 func (s State) PlanMagicStopWithOccurrence(actorID, targetName string, occurrence int, now int32, roll func(int, int) int) (MagicStopProposal, error) {
 	zero := MagicStopProposal{}
 	if err := s.Validate(); err != nil {
@@ -575,15 +588,15 @@ func (s State) PlanMagicStopWithOccurrence(actorID, targetName string, occurrenc
 	if actor.Body.Class > magicStopMaxLegacyClass {
 		return zero, fmt.Errorf("magic_stop actor class outside legacy table")
 	}
-	if actor.Body.Class != magicStopRangerClass && actor.Body.Class < magicStopInvincibleClass {
-		p.NoOp = true
-		p.Response = magicStopUnauthorizedResponse()
-		return p, nil
-	}
-	p.Authorized = true
+	p.Authorized = actor.Body.Class == magicStopRangerClass || actor.Body.Class >= magicStopInvincibleClass
 	if targetName == "" {
 		p.NoOp = true
 		p.Response = magicStopNoArgumentResponse()
+		return p, nil
+	}
+	if !p.Authorized {
+		p.NoOp = true
+		p.Response = magicStopUnauthorizedResponse()
 		return p, nil
 	}
 	if !validMagicStopSelector(targetName) {
@@ -763,15 +776,6 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	}
 	result := magicStopProposalResult(p)
 
-	// Permission failure is deliberately resolved before target lookup, as in
-	// command7.c.  This branch cannot carry any target, timer, RNG, or event.
-	if !authorized {
-		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.Cooldown || p.Rejected || p.ExpectedEvent != nil || p.Broadcast || !magicStopProposalCombatFieldsEmpty(p) || p.Response != magicStopUnauthorizedResponse() {
-			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop authorization proposal")
-		}
-		return s.clone(), result, nil
-	}
-
 	if p.TargetOccurrence < 1 {
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop target occurrence")
 	}
@@ -781,6 +785,16 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 		}
 		return s.clone(), result, nil
 	}
+
+	// Permission failure is deliberately resolved before target lookup, as in
+	// command7.c.  This branch cannot carry any target, timer, RNG, or event.
+	if !authorized {
+		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.Cooldown || p.Rejected || p.ExpectedEvent != nil || p.Broadcast || !magicStopProposalCombatFieldsEmpty(p) || p.Response != magicStopUnauthorizedResponse() {
+			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop authorization proposal")
+		}
+		return s.clone(), result, nil
+	}
+
 	if !validMagicStopSelector(p.QueryName) {
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop target selector")
 	}
