@@ -146,3 +146,54 @@ func TestBankItemGraphRejectsContainersAndSupportsAll(t *testing.T) {
 		t.Fatalf("withdraw all=%+v err=%v", all, err)
 	}
 }
+
+func bankInvisibleItemFixture(detect bool) State {
+	s := bankItemFixture()
+	p := s.Players["a"]
+	invisible := p.Items.Items["stone"]
+	invisible.Object.Flags[objectInvisibleFlag/8] |= 1 << (objectInvisibleFlag % 8)
+	p.Items.Items["stone"] = invisible
+	if detect {
+		p.Body.Flags[playerDetectInvisibleFlag/8] |= 1 << (playerDetectInvisibleFlag % 8)
+	}
+	s.Players["a"] = p
+	return s
+}
+
+func TestDepositAllBankItemsSkipsInvisibleRootWithoutDetectInvisible(t *testing.T) {
+	next, result, err := bankInvisibleItemFixture(false).DepositAllBankItems("a")
+	if err != nil || result.Action != "bank-deposit-all" || result.Count != 1 || result.ItemName != "검" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := next.BankAccounts["a"].Items.Inventory; len(got) != 1 || got[0] != "sword" {
+		t.Fatalf("bank inventory=%v", got)
+	}
+	if got := next.Players["a"].Items.Inventory; len(got) != 2 || got[0] != "stone" || got[1] != "bag" {
+		t.Fatalf("player inventory=%v", got)
+	}
+	if _, ok := next.Players["a"].Items.Items["stone"]; !ok {
+		t.Fatal("invisible root lost from player ownership")
+	}
+	if _, ok := next.BankAccounts["a"].Items.Items["stone"]; ok {
+		t.Fatal("invisible root moved into bank without detect-invisible")
+	}
+}
+
+func TestDepositAllBankItemsAdmitsInvisibleRootWithDetectInvisible(t *testing.T) {
+	next, result, err := bankInvisibleItemFixture(true).DepositAllBankItems("a")
+	if err != nil || result.Action != "bank-deposit-all" || result.Count != 2 || result.ItemName != "검, 돌" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := next.BankAccounts["a"].Items.Inventory; len(got) != 2 || got[0] != "sword" || got[1] != "stone" {
+		t.Fatalf("bank inventory=%v", got)
+	}
+	if got := next.Players["a"].Items.Inventory; len(got) != 1 || got[0] != "bag" {
+		t.Fatalf("player inventory=%v", got)
+	}
+	if _, ok := next.BankAccounts["a"].Items.Items["stone"]; !ok {
+		t.Fatal("detected invisible root missing from bank ownership")
+	}
+	if _, ok := next.Players["a"].Items.Items["stone"]; ok {
+		t.Fatal("detected invisible root remained in player ownership")
+	}
+}
