@@ -184,7 +184,7 @@ func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events [
 	g.mu.Lock()
 	connections := make(map[string]*worldConnection, len(g.connections))
 	for connection := range g.connections {
-		if connection.lease.ActorID == "" || connection.events == nil {
+		if connection.lease.ActorID == "" || (connection.events == nil && connection.projectionEvents == nil) {
 			continue
 		}
 		connections[connection.lease.ActorID] = connection

@@ -85,12 +85,25 @@ type WorldConnector struct {
 type followerProjectionRecipient struct {
 	connection *worldConnection
 	accepted   bool
+	written    bool
 }
 
 type followerProjectionState struct {
 	expected      map[string]struct{}
 	recipients    map[string]followerProjectionRecipient
 	acknowledging bool
+}
+
+// followerProjectionDelivery is kept separate from the ordinary event
+// channel because enqueueing a string only proves that it reached an in-memory
+// buffer. The WebSocket writer acknowledges this envelope only after its
+// wsjson.Write call succeeds, which is the first client-write boundary the
+// transport can observe.
+type followerProjectionDelivery struct {
+	commandID  string
+	key        string
+	text       string
+	connection *worldConnection
 }
 
 type playerPhaseSummary struct {
@@ -294,7 +307,7 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	if err != nil {
 		return nil, "", err
 	}
-	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32), accountName: c.Name}
+	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32), projectionEvents: make(chan followerProjectionDelivery, 32), accountName: c.Name}
 	now, hour := g.config.Clock()
 	receipt, err := g.owners.EnterWorld(ctx, g.config.Store, g.config.WorldID, "enter-"+rand.Text(), lease, now, world.SceneOptions{ViewOptions: world.ViewOptions{Hour: hour}}, g.config.Catalog, g.config.Roll, g.config.Allocate)
 	if err != nil {
@@ -330,15 +343,16 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 }
 
 type worldConnection struct {
-	mu            sync.Mutex
-	game          *WorldConnector
-	lease         session.SessionLease
-	events        chan string
-	eventMu       sync.Mutex
-	pendingEvents []string
-	eventWake     chan struct{}
-	eventStop     chan struct{}
-	eventWG       sync.WaitGroup
+	mu               sync.Mutex
+	game             *WorldConnector
+	lease            session.SessionLease
+	events           chan string
+	projectionEvents chan followerProjectionDelivery
+	eventMu          sync.Mutex
+	pendingEvents    []string
+	eventWake        chan struct{}
+	eventStop        chan struct{}
+	eventWG          sync.WaitGroup
 	// accountName is the canonical account identity used only by the
 	// connection-local password flow. It is never copied into world receipts.
 	accountName string
@@ -515,15 +529,53 @@ type notepadDraft struct {
 // connectors can continue to implement only Submit/Close.
 func (c *worldConnection) Events() <-chan string { return c.events }
 
-// tryDeliverEvent is reserved for durable follower projections. Unlike
-// enqueueEvent, it never accepts output into pendingEvents: a connection
-// close may discard that queue before a client sees the event.
+// followerProjectionEvents is consumed by the WebSocket transport's durable
+// projection writer. It deliberately does not expose follower deliveries via
+// Events: a receive from that string channel is not evidence that the client
+// actually received the frame.
+func (c *worldConnection) followerProjectionEvents() <-chan followerProjectionDelivery {
+	if c == nil {
+		return nil
+	}
+	return c.projectionEvents
+}
+
+// followerProjectionWrite records the wire-write boundary after the
+// transport has successfully written one projection frame. Direct test
+// connections without a projection channel use the legacy string channel and
+// do not call this callback.
+func (c *worldConnection) followerProjectionWrite(delivery followerProjectionDelivery) {
+	if c == nil || c.game == nil {
+		return
+	}
+	c.game.markFollowerProjectionWritten(delivery)
+}
+
+// tryDeliverEvent is the legacy direct string-channel helper used only by
+// non-durable projection callers. Durable follower receipts use the typed
+// envelope path below so enqueueing cannot be mistaken for a client write.
 func (c *worldConnection) tryDeliverEvent(text string) bool {
 	if c == nil || c.events == nil || text == "" {
 		return false
 	}
 	select {
 	case c.events <- text:
+		return true
+	default:
+		return false
+	}
+}
+
+// tryDeliverFollowerProjection is the enqueue half of the durable projection
+// boundary. Its typed envelopes are acknowledged only by
+// followerProjectionWrite after a successful client write. A connection that
+// does not expose this channel cannot receive a durable projection.
+func (c *worldConnection) tryDeliverFollowerProjection(delivery followerProjectionDelivery) bool {
+	if c == nil || c.projectionEvents == nil || delivery.text == "" {
+		return false
+	}
+	select {
+	case c.projectionEvents <- delivery:
 		return true
 	default:
 		return false
@@ -4170,10 +4222,10 @@ func (g *WorldConnector) followerProjectionPublished(commandID string) bool {
 }
 
 // enqueueFollowerProjection records the recipient before sending so a later
-// retry can distinguish an already delivered recipient from one that was
-// absent or backpressured. Callers hold g.mu. Follower projections bypass the
-// in-memory backpressure queue: a queued item could disappear on connection
-// close after the durable receipt was acknowledged.
+// retry can distinguish an already enqueued recipient from one that was absent
+// or backpressured. Callers hold g.mu. Production follower projections bypass
+// the ordinary in-memory backpressure queue; a queued item is acknowledged
+// only by the WebSocket writer after a successful client write.
 func (g *WorldConnector) enqueueFollowerProjection(commandID, key string, connection *worldConnection, text string, available bool) bool {
 	if connection == nil || !available {
 		if commandID != "" {
@@ -4189,7 +4241,7 @@ func (g *WorldConnector) enqueueFollowerProjection(commandID, key string, connec
 	state.expected[key] = struct{}{}
 	if prior, exists := state.recipients[key]; exists {
 		if prior.accepted {
-			return true
+			return prior.written
 		}
 		if prior.connection != nil {
 			if _, active := g.connections[prior.connection]; active {
@@ -4200,11 +4252,12 @@ func (g *WorldConnector) enqueueFollowerProjection(commandID, key string, connec
 			delete(state.recipients, key)
 		}
 	}
-	if !connection.tryDeliverEvent(text) {
+	delivery := followerProjectionDelivery{commandID: commandID, key: key, text: text, connection: connection}
+	if !connection.tryDeliverFollowerProjection(delivery) {
 		return false
 	}
 	state.recipients[key] = followerProjectionRecipient{connection: connection, accepted: true}
-	return true
+	return false
 }
 
 func (g *WorldConnector) followerProjectionStateLocked(commandID string) *followerProjectionState {
@@ -4225,11 +4278,39 @@ func followerProjectionComplete(state *followerProjectionState) bool {
 	}
 	for key := range state.expected {
 		recipient, ok := state.recipients[key]
-		if !ok || !recipient.accepted {
+		if !ok || !recipient.accepted || !recipient.written {
 			return false
 		}
 	}
 	return true
+}
+
+// markFollowerProjectionWritten is called by the WebSocket writer only after
+// wsjson.Write returns nil. It advances one exact event/role/recipient key and
+// then attempts the aggregate durable acknowledgement once every expected
+// recipient has crossed that client-write boundary.
+func (g *WorldConnector) markFollowerProjectionWritten(delivery followerProjectionDelivery) {
+	if g == nil || delivery.commandID == "" || delivery.key == "" || delivery.connection == nil {
+		return
+	}
+	g.mu.Lock()
+	state := g.followerProjections[delivery.commandID]
+	if state == nil {
+		g.mu.Unlock()
+		return
+	}
+	recipient, ok := state.recipients[delivery.key]
+	if !ok || recipient.connection != delivery.connection || !recipient.accepted {
+		g.mu.Unlock()
+		return
+	}
+	recipient.written = true
+	state.recipients[delivery.key] = recipient
+	complete := followerProjectionComplete(state)
+	g.mu.Unlock()
+	if complete {
+		g.finalizeFollowerProjection(delivery.commandID)
+	}
 }
 
 func (g *WorldConnector) finalizeFollowerProjection(commandID string) {
@@ -4314,6 +4395,9 @@ func (g *WorldConnector) unregister(connection *worldConnection) {
 	g.dropFollowerProjectionDeliveries(connection)
 	if connection.events != nil {
 		close(connection.events)
+	}
+	if connection.projectionEvents != nil {
+		close(connection.projectionEvents)
 	}
 }
 
