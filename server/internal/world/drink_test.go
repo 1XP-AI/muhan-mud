@@ -109,6 +109,61 @@ func TestPlanApplyDrinkVigorConsumesOneChargeAndClearsHidden(t *testing.T) {
 	}
 }
 
+func TestPlanApplyDrinkHealingClampsAtHPMaxAndReplaysWithoutRNG(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		magicPower byte
+		hpCurrent  int16
+		rolls      []int
+		wantRanges [][2]int
+		wantDelta  int32
+	}{
+		{name: "vigor below max", magicPower: 1, hpCurrent: 29, rolls: []int{6}, wantRanges: [][2]int{{1, 6}}, wantDelta: 1},
+		{name: "vigor at max", magicPower: 1, hpCurrent: 30, rolls: []int{6}, wantRanges: [][2]int{{1, 6}}, wantDelta: 0},
+		{name: "mend below max", magicPower: 19, hpCurrent: 29, rolls: []int{6, 6}, wantRanges: [][2]int{{1, 6}, {1, 6}}, wantDelta: 1},
+		{name: "mend at max", magicPower: 19, hpCurrent: 30, rolls: []int{6, 6}, wantRanges: [][2]int{{1, 6}, {1, 6}}, wantDelta: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := drinkTestState(LegacyObject{Name: "회복약", Type: drinkPotionType, MagicPower: tc.magicPower, ShotsCurrent: 1}, false)
+			actor := s.Players["a"]
+			actor.Body.HPCurrent = tc.hpCurrent
+			s.Players["a"] = actor
+			var gotRanges [][2]int
+			rollCalls := 0
+			p, err := s.PlanDrink("a", "회복약", 1, DrinkOptions{Now: 100, Roll: func(low, high int) int {
+				gotRanges = append(gotRanges, [2]int{low, high})
+				value := tc.rolls[rollCalls]
+				rollCalls++
+				return value
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(gotRanges, tc.wantRanges) || !reflect.DeepEqual(p.Rolls, tc.rolls) || p.HPDelta != tc.wantDelta {
+				t.Fatalf("proposal=%+v calls=%d ranges=%v", p, rollCalls, gotRanges)
+			}
+			if p.Effect != map[byte]string{1: "vigor", 19: "mend"}[tc.magicPower] || !p.Consumed || p.ShotsAfter != 0 {
+				t.Fatalf("healing proposal=%+v", p)
+			}
+
+			next, result, err := s.ApplyDrink(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rollCalls != len(tc.rolls) {
+				t.Fatalf("apply replay consumed another RNG draw: calls=%d", rollCalls)
+			}
+			got := next.Players["a"]
+			if got.Body.HPCurrent != 30 || len(got.Items.Items) != 0 {
+				t.Fatalf("actor after healing=%+v items=%+v", got.Body, got.Items)
+			}
+			if !result.Changed || !result.Consumed || !result.Broadcast || result.HPDelta != tc.wantDelta || result.MPDelta != 0 {
+				t.Fatalf("healing result=%+v", result)
+			}
+		})
+	}
+}
+
 func TestDrinkRestoreManaAdmitsIndex51ClampsHPAndFillsMPWithThreeDraws(t *testing.T) {
 	s := drinkTestState(LegacyObject{Name: "전회복약", Type: drinkPotionType, MagicPower: 52, ShotsCurrent: 1}, false)
 	actor := s.Players["a"]
