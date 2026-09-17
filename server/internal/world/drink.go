@@ -337,7 +337,7 @@ func applyDrinkSpell(body LegacyMonster, spec drinkSpellSpec, now int32, options
 		if err != nil {
 			return LegacyMonster{}, "", 0, 0, nil, err
 		}
-		if err := drinkHP(&after, int32(n)); err != nil {
+		if err := drinkHPClamped(&after, int32(n)); err != nil {
 			return LegacyMonster{}, "", 0, 0, nil, err
 		}
 	case "mend":
@@ -346,7 +346,7 @@ func applyDrinkSpell(body LegacyMonster, spec drinkSpellSpec, now int32, options
 			if err != nil {
 				return LegacyMonster{}, "", 0, 0, nil, err
 			}
-			if err := drinkHP(&after, int32(n)); err != nil {
+			if err := drinkHPClamped(&after, int32(n)); err != nil {
 				return LegacyMonster{}, "", 0, 0, nil, err
 			}
 		}
