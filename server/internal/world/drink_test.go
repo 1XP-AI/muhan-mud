@@ -109,6 +109,73 @@ func TestPlanApplyDrinkVigorConsumesOneChargeAndClearsHidden(t *testing.T) {
 	}
 }
 
+func TestDrinkRestoreManaAdmitsIndex51ClampsHPAndFillsMPWithThreeDraws(t *testing.T) {
+	s := drinkTestState(LegacyObject{Name: "전회복약", Type: drinkPotionType, MagicPower: 52, ShotsCurrent: 1}, false)
+	actor := s.Players["a"]
+	actor.Body.HPCurrent = 29
+	actor.Body.MPCurrent = 5
+	s.Players["a"] = actor
+	values := []int{7, 8, 59}
+	wantRanges := [][2]int{{1, 10}, {1, 10}, {1, 100}}
+	var gotRanges [][2]int
+	rollCalls := 0
+	p, err := s.PlanDrink("a", "전회복약", 1, DrinkOptions{Now: 100, Roll: func(low, high int) int {
+		gotRanges = append(gotRanges, [2]int{low, high})
+		value := values[rollCalls]
+		rollCalls++
+		return value
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollCalls != 3 || !reflect.DeepEqual(gotRanges, wantRanges) || !reflect.DeepEqual(p.Rolls, values) {
+		t.Fatalf("restore draws=%d ranges=%v rolls=%v", rollCalls, gotRanges, p.Rolls)
+	}
+	if p.SpellIndex != 51 || p.SpellName != "전회복" || p.Effect != "restore-mana" || p.HPDelta != 1 || p.MPDelta != 15 {
+		t.Fatalf("restore proposal=%+v", p)
+	}
+	next, result, err := s.ApplyDrink(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollCalls != 3 {
+		t.Fatalf("apply replay consumed a second RNG sequence: calls=%d", rollCalls)
+	}
+	got := next.Players["a"]
+	if got.Body.HPCurrent != 30 || got.Body.MPCurrent != 20 || len(got.Items.Items) != 0 || !result.Consumed || !result.Broadcast {
+		t.Fatalf("restore result=%+v actor=%+v items=%+v", result, got.Body, got.Items)
+	}
+}
+
+func TestDrinkRestoreManaConsumesWithoutMPFillAtRoll60(t *testing.T) {
+	s := drinkTestState(LegacyObject{Name: "전회복약", Type: drinkPotionType, MagicPower: 52, ShotsCurrent: 1}, false)
+	actor := s.Players["a"]
+	actor.Body.HPCurrent = 10
+	actor.Body.MPCurrent = 5
+	s.Players["a"] = actor
+	values := []int{1, 2, 60}
+	rollCalls := 0
+	p, err := s.PlanDrink("a", "전회복약", 1, DrinkOptions{Now: 100, Roll: func(low, high int) int {
+		value := values[rollCalls]
+		rollCalls++
+		return value
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Consumed || p.HPDelta != 3 || p.MPDelta != 0 || !reflect.DeepEqual(p.Rolls, values) {
+		t.Fatalf("roll-60 proposal=%+v calls=%d", p, rollCalls)
+	}
+	next, result, err := s.ApplyDrink(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := next.Players["a"]
+	if rollCalls != 3 || got.Body.HPCurrent != 13 || got.Body.MPCurrent != 5 || len(got.Items.Items) != 0 || !result.Consumed || !result.Broadcast {
+		t.Fatalf("roll-60 result=%+v actor=%+v items=%+v calls=%d", result, got.Body, got.Items, rollCalls)
+	}
+}
+
 func TestDrinkRejectsUnsupportedSpellBeforeConsuming(t *testing.T) {
 	s := drinkTestState(LegacyObject{Name: "삭풍약", Type: drinkPotionType, MagicPower: 2, ShotsCurrent: 1}, false)
 	before := s.Players["a"].Items.clone()
