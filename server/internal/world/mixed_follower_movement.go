@@ -70,6 +70,10 @@ func (s State) moveMixedFollowerTree(leaderID string, sourceRoomID int16, in Tra
 					return State{}, nil, nil, nil, err
 				}
 				childResult.Transfer, childResult.Death = childForTrap.Transfer, childForTrap.Death
+				if childForTrap.ArrivalTrapEvent != nil && childForTrap.Death == nil {
+					event := *childForTrap.ArrivalTrapEvent
+					childResult.ArrivalTrapEvent = &event
+				}
 				npcMoves = append(npcMoves, childNPCMoves...)
 				order = append(order, childOrder...)
 			}

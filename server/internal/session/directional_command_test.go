@@ -41,6 +41,35 @@ func directionalArrivalDartFixture(t *testing.T) []byte {
 	return raw
 }
 
+func directionalFollowerArrivalDartFixture(t *testing.T) []byte {
+	t.Helper()
+	s, err := world.DecodeState(directionalCommandFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := s.Players["a"]
+	leader.FollowerIDs = []string{"b"}
+	leader.Body.Stats[1] = 1
+	s.Players["a"] = leader
+	s.Players["b"] = world.PlayerState{
+		Body:        world.LegacyMonster{Name: "Bob", Type: 0, RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}},
+		Online:      true,
+		FollowingID: "a",
+		Items:       &world.ItemCollection{Items: map[string]world.Item{}},
+	}
+	source := s.Rooms[1]
+	source.PlayerIDs = []string{"a", "b"}
+	s.Rooms[1] = source
+	destination := s.Rooms[2]
+	destination.Resource.Trap = world.TrapDart
+	s.Rooms[2] = destination
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestExecuteDirectionalLineIncludesLeaderArrivalTrapActorTextAndReplays(t *testing.T) {
 	store := &departureStore{state: directionalArrivalDartFixture(t)}
 	var owners Ownership
@@ -93,6 +122,50 @@ func TestExecuteDirectionalLineIncludesLeaderArrivalTrapActorTextAndReplays(t *t
 	}
 	if replay.ArrivalTrapEvent != nil {
 		t.Fatalf("replay carried ephemeral arrival trap event=%+v", replay.ArrivalTrapEvent)
+	}
+}
+
+func TestExecuteDirectionalLineCarriesFollowerArrivalTrapEventsAndSuppressesReplay(t *testing.T) {
+	store := &departureStore{state: directionalFollowerArrivalDartFixture(t)}
+	var owners Ownership
+	lease, err := owners.Acquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	rolls := []int{100, 7, 100, 8}
+	first, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "directional-follower-trap", lease, "북", 100, 12, world.SceneOptions{}, nil, func(low, high int) int {
+		if low != 1 || (high != 100 && high != 10) {
+			t.Fatalf("unexpected trap roll %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil)
+	if err != nil || first.Replayed || store.commits != 1 || len(rolls) != 0 {
+		t.Fatalf("first=%+v err=%v commits=%d rolls=%v", first, err, store.commits, rolls)
+	}
+	if len(first.FollowerArrivalTrapEvents) != 1 || first.FollowerArrivalTrapEvents[0].ActorID != "b" || first.FollowerArrivalTrapEvents[0].ActorName != "Bob" || first.FollowerArrivalTrapEvents[0].RoomID != 2 || first.FollowerArrivalTrapEvents[0].Trap != world.TrapDart {
+		t.Fatalf("missing follower trap event=%+v", first.FollowerArrivalTrapEvents)
+	}
+	var response string
+	if err := json.Unmarshal(first.Response, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response, "8점의 피해") || strings.Contains(response, "7점의 피해") {
+		t.Fatalf("leader response included follower output=%q", response)
+	}
+	if encoded, encodeErr := json.Marshal(first); encodeErr != nil || strings.Contains(string(encoded), "FollowerArrivalTrapEvents") || strings.Contains(string(encoded), "ActorText") || strings.Contains(string(encoded), "RoomText") {
+		t.Fatalf("follower trap metadata leaked into receipt JSON: %s err=%v", encoded, encodeErr)
+	}
+	replay, err := owners.ExecuteDirectionalLine(context.Background(), store, "w", "directional-follower-trap", lease, "북", 100, 12, world.SceneOptions{}, nil, func(int, int) int {
+		t.Fatal("follower arrival trap replay rerolled")
+		return 0
+	}, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) || replay.FollowerArrivalTrapEvents != nil {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
 	}
 }
 

@@ -160,6 +160,50 @@ func (g *WorldConnector) publishArrivalTrap(after world.State, event world.Arriv
 	}
 }
 
+// publishFollowerArrivalTraps delivers canonical player follower trap
+// projections in the reducer's recursive C first_fol order. A follower's
+// actor-local text goes to that follower's connection even when PIT/death
+// relocation changed its committed room; the room text is sent to the other
+// committed occupants of the room where check_traps ran. The Submit caller
+// invokes this only for a fresh receipt, so replay cannot duplicate output.
+func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events []world.ArrivalTrapEvent) {
+	if len(events) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, event := range events {
+		if event.ActorID == "" || event.RoomID == 0 || (event.ActorText == "" && event.RoomText == "") {
+			continue
+		}
+		for connection := range g.connections {
+			player, exists := after.Players[connection.lease.ActorID]
+			if !exists || !player.Online || connection.events == nil {
+				continue
+			}
+			if connection.lease.ActorID == event.ActorID {
+				if event.ActorText == "" {
+					continue
+				}
+				select {
+				case connection.events <- event.ActorText:
+				default:
+					// A slow follower cannot block its leader's durable command.
+				}
+				continue
+			}
+			if player.Body.RoomID != event.RoomID || event.RoomText == "" {
+				continue
+			}
+			select {
+			case connection.events <- event.RoomText:
+			default:
+				// A slow observer cannot block the durable movement receipt.
+			}
+		}
+	}
+}
+
 func (g *WorldConnector) publishSay(after world.State, actorID, text string) {
 	event, ok, err := after.RoomSayEvent(actorID, text)
 	if err != nil || !ok {

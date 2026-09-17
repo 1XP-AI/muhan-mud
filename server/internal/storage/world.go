@@ -31,6 +31,10 @@ type WorldReceipt struct {
 	// for a leader arrival trap. It is process-local receipt metadata and is
 	// never serialized into the database/public response.
 	ArrivalTrapEvent *world.ArrivalTrapEvent `json:"-"`
+	// FollowerArrivalTrapEvents is the ordered, first-commit-only projection of
+	// canonical player follower trap output. It is process-local receipt
+	// metadata and is never serialized into the database/public response.
+	FollowerArrivalTrapEvents []world.ArrivalTrapEvent `json:"-"`
 	// NPCCombatEvents is the reducer-owned, first-commit-only projection of
 	// ordinary NPC combat output. It is process-local receipt metadata and is
 	// never serialized into the database/public response; replay leaves it

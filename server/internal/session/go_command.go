@@ -160,6 +160,7 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 	}
 	var committedNPCChaseIDs []string
 	var committedArrivalTrapEvent *world.ArrivalTrapEvent
+	var committedFollowerArrivalTrapEvents []world.ArrivalTrapEvent
 	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
@@ -182,6 +183,7 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 			event := *proposal.ArrivalTrapEvent
 			committedArrivalTrapEvent = &event
 		}
+		committedFollowerArrivalTrapEvents = append(committedFollowerArrivalTrapEvents[:0], proposal.FollowerArrivalTrapEvents...)
 		nextRaw, err := json.Marshal(next)
 		if err != nil {
 			return nil, nil, err
@@ -194,12 +196,16 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 	}
 	receipt.NPCChaseIDs = nil
 	receipt.ArrivalTrapEvent = nil
+	receipt.FollowerArrivalTrapEvents = nil
 	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
 		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
 	}
 	if !receipt.Replayed && committedArrivalTrapEvent != nil {
 		event := *committedArrivalTrapEvent
 		receipt.ArrivalTrapEvent = &event
+	}
+	if !receipt.Replayed && len(committedFollowerArrivalTrapEvents) != 0 {
+		receipt.FollowerArrivalTrapEvents = append([]world.ArrivalTrapEvent(nil), committedFollowerArrivalTrapEvents...)
 	}
 	return receipt, nil
 }

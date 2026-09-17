@@ -3101,6 +3101,9 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 			if beforeOK {
 				c.game.publishMovement(before, after, c.lease.ActorID, receipt.NPCChaseIDs)
 			}
+			if len(receipt.FollowerArrivalTrapEvents) != 0 {
+				c.game.publishFollowerArrivalTraps(after, receipt.FollowerArrivalTrapEvents)
+			}
 			if receipt.ArrivalTrapEvent != nil {
 				c.game.publishArrivalTrap(after, *receipt.ArrivalTrapEvent)
 			}

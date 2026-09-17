@@ -10,6 +10,25 @@ type FollowerStepResult struct {
 	Transfer  TransferProposal
 	Death     *PlayerDeathResult
 	Followers []FollowerStepResult
+	// ArrivalTrapEvent is the follower-local projection committed after all
+	// nested first_fol children, matching recursive C move(). Lethal follower
+	// traps deliberately do not expose a new output event.
+	ArrivalTrapEvent *ArrivalTrapEvent `json:"-"`
+}
+
+// FlattenFollowerArrivalTrapEvents returns follower trap projections in the
+// exact recursive C order: descendants first, then their direct follower,
+// followed by the next first_fol sibling. The values are receipt metadata and
+// are copied so callers cannot mutate reducer-owned result trees.
+func FlattenFollowerArrivalTrapEvents(results []FollowerStepResult) []ArrivalTrapEvent {
+	var events []ArrivalTrapEvent
+	for _, result := range results {
+		events = append(events, FlattenFollowerArrivalTrapEvents(result.Followers)...)
+		if result.ArrivalTrapEvent != nil {
+			events = append(events, *result.ArrivalTrapEvent)
+		}
+	}
+	return events
 }
 
 // Transfer is the pre-death movement event; State returned by DirectionalStep
@@ -33,7 +52,7 @@ type DirectionalStepResult struct {
 	Alarm               *ArrivalAlarmResult
 	// ArrivalTrapEvent is set only for this command's leader. It captures the
 	// committed trap room and source-composed text; follower trap results stay
-	// inside their reducer tree and are intentionally not projected here.
+	// in the recursive follower tree and are flattened by the command boundary.
 	ArrivalTrapEvent *ArrivalTrapEvent `json:"-"`
 }
 
@@ -164,6 +183,10 @@ func (s State) moveFollowerTree(leaderID string, in TransferInput, catalog Spawn
 				return State{}, nil, err
 			}
 			childResult.Transfer, childResult.Death = childForTrap.Transfer, childForTrap.Death
+			if childForTrap.ArrivalTrapEvent != nil && childForTrap.Death == nil {
+				event := *childForTrap.ArrivalTrapEvent
+				childResult.ArrivalTrapEvent = &event
+			}
 		}
 		results = append(results, childResult)
 	}
