@@ -2,6 +2,7 @@ package world
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -372,6 +373,53 @@ func TestPlanGoMovesPlayerFollowersAndMDMFOLMonsters(t *testing.T) {
 	}
 	if next.NPCs["guard"].Body.RoomID != 2 || len(next.Rooms[1].NPCIDs) != 0 {
 		t.Fatalf("MDMFOL stayed behind npcs=%+v rooms=%+v", next.NPCs, next.Rooms)
+	}
+}
+
+func TestPlanGoSkipsStaleLegacyFollowersOutsideSourceRoom(t *testing.T) {
+	s := goNamedExitState()
+	s.Rooms[3] = RoomState{
+		Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 3}},
+		Items:    &ItemCollection{Items: map[string]Item{}},
+		PlayerIDs: []string{
+			"stale",
+			"nested-stale",
+		},
+	}
+	s.Players["stale"] = PlayerState{
+		Body:        LegacyMonster{Name: "Stale", Type: 0, RoomID: 3, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30},
+		Online:      true,
+		Items:       &ItemCollection{Items: map[string]Item{}},
+		FollowingID: "actor",
+		FollowerIDs: []string{"nested-stale"},
+	}
+	s.Players["nested-stale"] = PlayerState{
+		Body:        LegacyMonster{Name: "Nested stale", Type: 0, RoomID: 3, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30},
+		Online:      true,
+		Items:       &ItemCollection{Items: map[string]Item{}},
+		FollowingID: "stale",
+	}
+	actor := s.Players["actor"]
+	actor.FollowerIDs = []string{"stale", "observer"}
+	actor.FollowerRefs = nil
+	s.Players["actor"] = actor
+	observer := s.Players["observer"]
+	observer.FollowingID = "actor"
+	s.Players["observer"] = observer
+
+	proposal, err := s.PlanGo("actor", "동굴", 1, GoOptions{Now: 100, Hour: 12})
+	if err != nil || !proposal.Moved {
+		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	}
+	next, result, err := s.ApplyGo(proposal)
+	if err != nil || !result.Moved {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if next.Players["actor"].Body.RoomID != 2 || next.Players["observer"].Body.RoomID != 2 || next.Players["stale"].Body.RoomID != 3 || next.Players["nested-stale"].Body.RoomID != 3 {
+		t.Fatalf("player rooms=%+v", next.Players)
+	}
+	if !reflect.DeepEqual(next.Rooms[3].PlayerIDs, []string{"stale", "nested-stale"}) || !containsString(next.Rooms[2].PlayerIDs, "actor") || !containsString(next.Rooms[2].PlayerIDs, "observer") {
+		t.Fatalf("room membership=%+v", next.Rooms)
 	}
 }
 
