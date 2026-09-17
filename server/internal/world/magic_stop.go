@@ -912,6 +912,16 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	if attackTimer.LastTime < 0 || attackTimer.Interval < 0 {
 		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop attack timer outside legacy range")
 	}
+	next := s.clone()
+	nextActor := next.Players[p.ActorID]
+	nextNPC := next.NPCs[p.TargetID]
+	// add_enm_crt precedes chance and all later timer/damage work in
+	// command7.c. Apply the zero-damage insertion first, then the successful
+	// branch accumulates its separately recorded min(previous HP, damage) value
+	// below.
+	if err := magicStopAddEnemyDamage(&nextNPC, p.ActorID, p.EnemyAdded, 0); err != nil {
+		return State{}, MagicStopResult{}, err
+	}
 	chance, chanceErr := MagicStopChance(actor.Body, npc.Body)
 	if chanceErr != nil || chance != p.Chance || p.Roll < 1 || p.Roll > 100 || !p.Attempted || p.Succeeded != (p.Roll <= p.Chance) {
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop chance outcome")
@@ -920,15 +930,6 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop miss HP projection")
 	}
 
-	next := s.clone()
-	nextActor := next.Players[p.ActorID]
-	nextNPC := next.NPCs[p.TargetID]
-	// add_enm_crt precedes the actor timer writes in command7.c. Apply the
-	// zero-damage insertion first, then the successful branch accumulates its
-	// separately recorded min(previous HP, damage) value below.
-	if err := magicStopAddEnemyDamage(&nextNPC, p.ActorID, p.EnemyAdded, 0); err != nil {
-		return State{}, MagicStopResult{}, err
-	}
 	if p.ClearInvisible {
 		setSettingFlag(&nextActor.Body, magicStopPlayerInvisibleFlag, false)
 	}
