@@ -168,7 +168,7 @@ func arrivalTrapRoomRecipients(s State, roomID int16, actorID string) []string {
 // therefore authoritative at each step, and a denied follower remains behind
 // without preventing later siblings from trying. A follower's own children are
 // processed before that follower's arrival trap, matching recursive C move().
-func (s State) moveFollowerTree(leaderID string, in TransferInput, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, []FollowerStepResult, error) {
+func (s State) moveFollowerTree(leaderID string, sourceRoomID int16, in TransferInput, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, []FollowerStepResult, error) {
 	leader, ok := s.Players[leaderID]
 	if !ok {
 		return State{}, nil, fmt.Errorf("follower leader absent")
@@ -180,6 +180,9 @@ func (s State) moveFollowerTree(leaderID string, in TransferInput, catalog Spawn
 		follower, exists := next.Players[followerID]
 		if !exists || !follower.Online {
 			return State{}, nil, fmt.Errorf("follower absent or offline")
+		}
+		if follower.Body.RoomID != sourceRoomID {
+			continue
 		}
 		leaderState, exists := next.Players[leaderID]
 		if !exists {
@@ -200,7 +203,7 @@ func (s State) moveFollowerTree(leaderID string, in TransferInput, catalog Spawn
 		next = childState
 		childResult := FollowerStepResult{ActorID: followerID, Transfer: child.Transfer, Death: child.Death}
 		if child.Transfer.Movement.Moved && child.Death == nil {
-			next, childResult.Followers, err = next.moveFollowerTree(followerID, childInput, catalog, roll, allocate)
+			next, childResult.Followers, err = next.moveFollowerTree(followerID, sourceRoomID, childInput, catalog, roll, allocate)
 			if err != nil {
 				return State{}, nil, err
 			}
@@ -256,7 +259,7 @@ func (s State) DirectionalStep(in TransferInput, catalog SpawnCatalog, roll func
 			}
 		}
 	} else if len(leader.FollowerIDs) > 0 {
-		next, result.Followers, err = next.moveFollowerTree(in.ActorID, in, catalog, roll, allocate)
+		next, result.Followers, err = next.moveFollowerTree(in.ActorID, sourceRoomID, in, catalog, roll, allocate)
 		if err != nil {
 			return State{}, DirectionalStepResult{}, err
 		}

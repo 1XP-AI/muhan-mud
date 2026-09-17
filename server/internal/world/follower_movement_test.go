@@ -31,6 +31,46 @@ func TestDirectionalStepMovesFollowersInCHeadOrder(t *testing.T) {
 	}
 }
 
+func TestDirectionalStepSkipsStaleLegacyFollowersOutsideSourceRoom(t *testing.T) {
+	s, in := followerMovementFixture(t)
+	s.Rooms[3] = RoomState{
+		Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 3}},
+		Items:    &ItemCollection{Items: map[string]Item{}},
+		PlayerIDs: []string{
+			"stale",
+			"nested-stale",
+		},
+	}
+	s.Players["stale"] = PlayerState{
+		Body:        LegacyMonster{Name: "Stale", RoomID: 3, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30},
+		Online:      true,
+		Items:       &ItemCollection{Items: map[string]Item{}},
+		FollowingID: "a",
+		FollowerIDs: []string{"nested-stale"},
+	}
+	s.Players["nested-stale"] = PlayerState{
+		Body:        LegacyMonster{Name: "Nested stale", RoomID: 3, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30},
+		Online:      true,
+		FollowingID: "stale",
+		Items:       &ItemCollection{Items: map[string]Item{}},
+	}
+	leader := s.Players["a"]
+	leader.FollowerIDs = []string{"stale", "b"}
+	leader.FollowerRefs = nil
+	s.Players["a"] = leader
+
+	next, result, err := s.DirectionalStep(in, nil, nil, nil)
+	if err != nil || len(result.Followers) != 1 || result.Followers[0].ActorID != "b" || !result.Followers[0].Transfer.Movement.Moved {
+		t.Fatalf("next=%+v result=%+v err=%v", next, result, err)
+	}
+	if next.Players["a"].Body.RoomID != 2 || next.Players["b"].Body.RoomID != 2 || next.Players["stale"].Body.RoomID != 3 || next.Players["nested-stale"].Body.RoomID != 3 {
+		t.Fatalf("player rooms=%+v", next.Players)
+	}
+	if !reflect.DeepEqual(next.Rooms[3].PlayerIDs, []string{"stale", "nested-stale"}) || !reflect.DeepEqual(next.Rooms[2].PlayerIDs, []string{"a", "b"}) {
+		t.Fatalf("room membership=%+v", next.Rooms)
+	}
+}
+
 func TestDirectionalStepRechecksCapacityForFollowersAfterLeader(t *testing.T) {
 	s, in := followerMovementFixture(t)
 	r := s.Rooms[2]

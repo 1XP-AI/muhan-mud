@@ -233,7 +233,7 @@ func (s State) goStep(in TransferInput, catalog SpawnCatalog, roll func(int, int
 			}
 		}
 	} else if len(leader.FollowerIDs) > 0 {
-		next, result.Followers, err = next.moveGoFollowerTree(in.ActorID, in, catalog, roll, allocate)
+		next, result.Followers, err = next.moveGoFollowerTree(in.ActorID, sourceRoomID, in, catalog, roll, allocate)
 		if err != nil {
 			return State{}, DirectionalStepResult{}, err
 		}
@@ -305,7 +305,7 @@ func (s State) goStepSingle(in TransferInput, catalog SpawnCatalog, roll func(in
 	return next, result, nil
 }
 
-func (s State) moveGoFollowerTree(leaderID string, in TransferInput, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, []FollowerStepResult, error) {
+func (s State) moveGoFollowerTree(leaderID string, sourceRoomID int16, in TransferInput, catalog SpawnCatalog, roll func(int, int) int, allocate func() (string, error)) (State, []FollowerStepResult, error) {
 	leader, ok := s.Players[leaderID]
 	if !ok {
 		return State{}, nil, fmt.Errorf("follower leader absent")
@@ -317,6 +317,9 @@ func (s State) moveGoFollowerTree(leaderID string, in TransferInput, catalog Spa
 		follower, exists := next.Players[followerID]
 		if !exists || !follower.Online {
 			return State{}, nil, fmt.Errorf("follower absent or offline")
+		}
+		if follower.Body.RoomID != sourceRoomID {
+			continue
 		}
 		leaderState, exists := next.Players[leaderID]
 		if !exists {
@@ -337,7 +340,7 @@ func (s State) moveGoFollowerTree(leaderID string, in TransferInput, catalog Spa
 		next = childState
 		childResult := FollowerStepResult{ActorID: followerID, Transfer: child.Transfer, Death: child.Death}
 		if child.Transfer.Movement.Moved && child.Death == nil {
-			next, childResult.Followers, err = next.moveGoFollowerTree(followerID, childInput, catalog, roll, allocate)
+			next, childResult.Followers, err = next.moveGoFollowerTree(followerID, sourceRoomID, childInput, catalog, roll, allocate)
 			if err != nil {
 				return State{}, nil, err
 			}
