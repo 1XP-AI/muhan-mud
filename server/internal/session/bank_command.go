@@ -15,6 +15,11 @@ import (
 
 var ErrUnsupportedBankLine = errors.New("line is not an implemented bank money command")
 
+const (
+	bankAllByNamePrefix = "모든"
+	bankResponseLimit   = 2048
+)
+
 type bankAction struct {
 	kind       string
 	operation  world.BankMoneyOperation
@@ -70,6 +75,16 @@ func parseBankVerbRest(verb string, rest []string) (bankAction, bool) {
 			}
 			return bankAction{kind: kind, name: rest[0], all: true, occurrence: 1}, true
 		}
+		if rest[0] == bankAllByNamePrefix {
+			return bankAction{}, false
+		}
+		if name, ok := strings.CutPrefix(rest[0], bankAllByNamePrefix); ok {
+			kind := "withdraw-items-by-name"
+			if verb == "보관물" {
+				kind = "deposit-items-by-name"
+			}
+			return bankAction{kind: kind, name: name, occurrence: 1}, true
+		}
 		kind := "withdraw-item"
 		if verb == "보관물" {
 			kind = "deposit-item"
@@ -101,6 +116,25 @@ func parseBankVerbRest(verb string, rest []string) (bankAction, bool) {
 		action.operation = world.BankWithdraw
 	}
 	return action, true
+}
+
+func bankItemResponse(itemNames, suffix string) string {
+	if len(itemNames)+len(suffix) <= bankResponseLimit {
+		return itemNames + suffix
+	}
+	nameLimit := bankResponseLimit - len(suffix)
+	if nameLimit <= 0 {
+		return suffix[:bankResponseLimit]
+	}
+	if len(itemNames) > nameLimit {
+		itemNames = itemNames[:nameLimit]
+		if separator := strings.LastIndex(itemNames, ", "); separator >= 0 {
+			itemNames = itemNames[:separator]
+		} else {
+			itemNames = ""
+		}
+	}
+	return itemNames + suffix
 }
 
 func IsBankLine(line string) bool {
@@ -167,6 +201,17 @@ func (o *Ownership) ExecuteBankLine(ctx context.Context, store engine.CommandSto
 			} else {
 				responseText = fmt.Sprintf("%s을(를) 은행에 보관했습니다.\r\n", result.ItemName)
 			}
+		case "deposit-items-by-name":
+			next, result, applyErr := s.DepositBankItemsByName(actorID, action.name)
+			if applyErr != nil {
+				return nil, nil, applyErr
+			}
+			state, err = json.Marshal(next)
+			if result.Count == 0 {
+				responseText = "은행에 보관할 수 있는 물건이 없습니다.\r\n"
+			} else {
+				responseText = bankItemResponse(result.ItemName, "을(를) 은행에 보관했습니다.\r\n")
+			}
 		case "withdraw-item":
 			next, result, applyErr := s.WithdrawBankItem(actorID, action.name, action.occurrence)
 			if applyErr != nil {
@@ -184,6 +229,17 @@ func (o *Ownership) ExecuteBankLine(ctx context.Context, store engine.CommandSto
 				responseText = "은행에서 받을 수 있는 물건이 없습니다.\r\n"
 			} else {
 				responseText = fmt.Sprintf("%s을(를) 은행에서 받았습니다.\r\n", result.ItemName)
+			}
+		case "withdraw-items-by-name":
+			next, result, applyErr := s.WithdrawBankItemsByName(actorID, action.name)
+			if applyErr != nil {
+				return nil, nil, applyErr
+			}
+			state, err = json.Marshal(next)
+			if result.Count == 0 {
+				responseText = "은행에서 받을 수 있는 물건이 없습니다.\r\n"
+			} else {
+				responseText = bankItemResponse(result.ItemName, "을(를) 은행에서 받았습니다.\r\n")
 			}
 		default:
 			return nil, nil, fmt.Errorf("unknown bank action")
