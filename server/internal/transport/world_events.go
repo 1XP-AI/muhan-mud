@@ -164,16 +164,24 @@ func (g *WorldConnector) publishArrivalTrap(after world.State, event world.Arriv
 // projections in the reducer's recursive C first_fol order. Each event owns
 // the exact room recipient IDs captured immediately before its check_traps;
 // the final world snapshot is deliberately not consulted for membership.
-// Enqueueing is explicit: a full connection channel retains output in that
-// connection's pending queue instead of silently dropping it.
-func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events []world.ArrivalTrapEvent) bool {
+// Delivery is explicit: a full connection channel leaves the projection
+// pending instead of placing it in the close-prone backpressure queue. The
+// optional command ID enables durable per-recipient progress; callers that
+// omit it retain the direct helper's historical fire-and-forget behavior.
+func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events []world.ArrivalTrapEvent, commandIDs ...string) bool {
 	if len(events) == 0 {
 		return true
 	}
 	_ = after
+	commandID := ""
+	if len(commandIDs) != 0 {
+		commandID = commandIDs[0]
+	}
+	if commandID != "" && g.followerProjectionPublished(commandID) {
+		return true
+	}
 	delivered := true
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	connections := make(map[string]*worldConnection, len(g.connections))
 	for connection := range g.connections {
 		if connection.lease.ActorID == "" || connection.events == nil {
@@ -181,13 +189,15 @@ func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events [
 		}
 		connections[connection.lease.ActorID] = connection
 	}
-	for _, event := range events {
+	for eventIndex := range events {
+		event := events[eventIndex]
 		if event.ActorID == "" || event.RoomID == 0 || (event.ActorText == "" && event.RoomText == "") {
 			continue
 		}
 		if event.ActorText != "" {
 			connection, ok := connections[event.ActorID]
-			if !ok || !connection.enqueueEvent(event.ActorText) {
+			key := followerProjectionKey(eventIndex, "actor", event.ActorID)
+			if !g.enqueueFollowerProjection(commandID, key, connection, event.ActorText, ok) {
 				delivered = false
 			}
 		}
@@ -199,12 +209,25 @@ func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events [
 				continue
 			}
 			connection, ok := connections[recipientID]
-			if !ok || !connection.enqueueEvent(event.RoomText) {
+			key := followerProjectionKey(eventIndex, "room", recipientID)
+			if !g.enqueueFollowerProjection(commandID, key, connection, event.RoomText, ok) {
 				delivered = false
 			}
 		}
 	}
+	g.mu.Unlock()
+	if commandID != "" {
+		g.finalizeFollowerProjection(commandID)
+	}
 	return delivered
+}
+
+// followerProjectionKey uses the durable projection's event order, not
+// recipient map iteration, so partial retries preserve C first_fol and room
+// PlayerIDs order while still distinguishing repeated recipients in separate
+// trap events.
+func followerProjectionKey(eventIndex int, role, recipientID string) string {
+	return fmt.Sprintf("%d:%s:%s", eventIndex, role, recipientID)
 }
 
 func (g *WorldConnector) publishSay(after world.State, actorID, text string) {

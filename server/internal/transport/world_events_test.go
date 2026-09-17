@@ -1,13 +1,36 @@
 package transport
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/session"
+	"github.com/1XP-Inc/muhan-mud/server/internal/storage"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
 )
+
+type followerProjectionAckStore struct {
+	*connectorCommandStore
+	mu   sync.Mutex
+	acks []string
+}
+
+func (s *followerProjectionAckStore) MarkWorldReceiptProjectionDelivered(_ context.Context, _ string, commandID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.acks = append(s.acks, commandID)
+	return nil
+}
+
+func (s *followerProjectionAckStore) ackCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.acks)
+}
+
+var _ storage.ReceiptProjectionStore = (*followerProjectionAckStore)(nil)
 
 func directionalChaseMovementStates() (world.State, world.State) {
 	before := world.State{
@@ -336,7 +359,7 @@ func TestWorldConnectorFollowerTrapUsesCheckTimeRecipients(t *testing.T) {
 	}
 }
 
-func TestWorldConnectorFollowerTrapQueuesBackpressureWithoutDropping(t *testing.T) {
+func TestWorldConnectorFollowerTrapBackpressureStaysPending(t *testing.T) {
 	actorEvents := make(chan string, 1)
 	observerEvents := make(chan string, 1)
 	actor := &worldConnection{lease: session.SessionLease{ActorID: "follower"}, events: actorEvents}
@@ -352,22 +375,127 @@ func TestWorldConnectorFollowerTrapQueuesBackpressureWithoutDropping(t *testing.
 		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
 		RoomRecipientIDs: []string{"observer"},
 	}
-	if !g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}) {
-		t.Fatal("queued follower projection was not accepted")
+	if g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}) {
+		t.Fatal("backpressured follower projection was treated as delivered")
 	}
-	if len(observer.pendingEvents) != 1 || observer.pendingEvents[0] != event.RoomText {
-		t.Fatalf("pending follower events=%q", observer.pendingEvents)
+	if len(observer.pendingEvents) != 0 {
+		t.Fatalf("backpressured follower event entered retry-unsafe queue=%q", observer.pendingEvents)
 	}
 	if got := <-observerEvents; got != "busy" {
 		t.Fatalf("backpressure sentinel=%q", got)
 	}
 	select {
 	case got := <-observerEvents:
-		if got != event.RoomText {
-			t.Fatalf("queued trap event=%q", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queued trap event was dropped under backpressure")
+		t.Fatalf("backpressured trap event was delivered unexpectedly=%q", got)
+	default:
+	}
+}
+
+func TestWorldConnectorFollowerTrapBackpressureRemainsReplayableAfterClose(t *testing.T) {
+	store := &followerProjectionAckStore{connectorCommandStore: &connectorCommandStore{}}
+	actorEvents := make(chan string, 1)
+	observerEvents := make(chan string, 1)
+	actor := &worldConnection{lease: session.SessionLease{ActorID: "follower"}, events: actorEvents}
+	observer := &worldConnection{lease: session.SessionLease{ActorID: "observer"}, events: observerEvents}
+	g := &WorldConnector{
+		config:               WorldConnectorConfig{Store: store, WorldID: "follower-close"},
+		connections:          map[*worldConnection]struct{}{actor: {}, observer: {}},
+		publishedProjections: map[string]struct{}{},
+		followerProjections:  map[string]*followerProjectionState{},
+	}
+	actor.game, observer.game = g, g
+	event := world.ArrivalTrapEvent{
+		ActorID:          "follower",
+		ActorText:        "당신은 숨겨진 독화살에 맞았습니다!\n",
+		RoomID:           2,
+		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
+		RoomRecipientIDs: []string{"observer"},
+	}
+	observer.startEventQueue()
+	observerEvents <- "busy"
+	if g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-close-1") {
+		t.Fatal("backpressured projection was treated as delivered before connection close")
+	}
+	if store.ackCount() != 0 {
+		t.Fatal("projection acknowledged while still in the backpressure queue")
+	}
+	if len(observer.pendingEvents) != 0 {
+		t.Fatalf("backpressured follower event entered pending queue=%q", observer.pendingEvents)
+	}
+	g.unregister(observer)
+	if store.ackCount() != 0 {
+		t.Fatal("closing connection acknowledged a dropped pending projection")
+	}
+
+	// A fresh connector models process restart. The durable projection is
+	// replayed to both recipients because the previous attempt never reached
+	// the public event channel for observer.
+	restarted := &WorldConnector{
+		config:               WorldConnectorConfig{Store: store, WorldID: "follower-close"},
+		connections:          map[*worldConnection]struct{}{},
+		publishedProjections: map[string]struct{}{},
+	}
+	actorRestarted := &worldConnection{game: restarted, lease: actor.lease, events: make(chan string, 1)}
+	observerRestarted := &worldConnection{game: restarted, lease: observer.lease, events: make(chan string, 1)}
+	restarted.connections[actorRestarted] = struct{}{}
+	restarted.connections[observerRestarted] = struct{}{}
+	if !restarted.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-close-1") {
+		t.Fatal("replayed follower projection was not accepted")
+	}
+	if store.ackCount() != 1 {
+		t.Fatalf("replayed projection acknowledgements=%d want=1", store.ackCount())
+	}
+	if got := <-actorRestarted.events; got != event.ActorText {
+		t.Fatalf("replayed actor event=%q", got)
+	}
+	if got := <-observerRestarted.events; got != event.RoomText {
+		t.Fatalf("replayed room event=%q", got)
+	}
+}
+
+func TestWorldConnectorFollowerTrapPartialRecipientRetryIsIdempotent(t *testing.T) {
+	store := &followerProjectionAckStore{connectorCommandStore: &connectorCommandStore{}}
+	actor := &worldConnection{lease: session.SessionLease{ActorID: "follower"}, events: make(chan string, 2)}
+	g := &WorldConnector{
+		config:               WorldConnectorConfig{Store: store, WorldID: "follower-partial"},
+		connections:          map[*worldConnection]struct{}{actor: {}},
+		publishedProjections: map[string]struct{}{},
+		followerProjections:  map[string]*followerProjectionState{},
+	}
+	actor.game = g
+	event := world.ArrivalTrapEvent{
+		ActorID:          "follower",
+		ActorText:        "당신은 숨겨진 독화살에 맞았습니다!\n",
+		RoomID:           2,
+		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
+		RoomRecipientIDs: []string{"observer"},
+	}
+	if g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-partial-1") {
+		t.Fatal("partial recipient enqueue reported complete")
+	}
+	observer := &worldConnection{game: g, lease: session.SessionLease{ActorID: "observer"}, events: make(chan string, 2)}
+	g.connections[observer] = struct{}{}
+	if !g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-partial-1") {
+		t.Fatal("retry with missing recipient present was not accepted")
+	}
+	if store.ackCount() != 1 {
+		t.Fatalf("partial retry acknowledgements=%d want=1", store.ackCount())
+	}
+	if got := <-actor.events; got != event.ActorText {
+		t.Fatalf("actor event=%q", got)
+	}
+	if got := <-observer.events; got != event.RoomText {
+		t.Fatalf("observer event=%q", got)
+	}
+	select {
+	case got := <-actor.events:
+		t.Fatalf("actor recipient duplicated on retry: %q", got)
+	default:
+	}
+	select {
+	case got := <-observer.events:
+		t.Fatalf("room recipient duplicated on retry: %q", got)
+	default:
 	}
 }
 
