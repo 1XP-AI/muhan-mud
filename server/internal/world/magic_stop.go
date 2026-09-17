@@ -498,7 +498,7 @@ func magicStopRevealResponseIf(reveal bool) string {
 }
 
 func magicStopRevealRoom(actor LegacyMonster) string {
-	return fmt.Sprintf("\n%s의 모습이 보이기 시작합니다.\n", magicStopActorRoomName(actor))
+	return fmt.Sprintf("\n%s의 모습이 보이기 시작합니다.", magicStopActorRoomName(actor))
 }
 
 func magicStopNoTargetResponse() string {

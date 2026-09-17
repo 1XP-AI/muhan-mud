@@ -161,6 +161,13 @@ func TestMagicStopNoTargetResponseKeepsLeadingNewline(t *testing.T) {
 	}
 }
 
+func TestMagicStopRevealRoomMatchesLegacyBroadcast(t *testing.T) {
+	actor := magicStopTestState(MagicStopRangerClass).Players["actor"].Body
+	if got, want := magicStopRevealRoom(actor), "\n수호자님의 모습이 보이기 시작합니다."; got != want {
+		t.Fatalf("reveal room output=%q want=%q", got, want)
+	}
+}
+
 func TestMagicStopRejectsStaleAndUnresolvedState(t *testing.T) {
 	s := magicStopTestState(MagicStopRangerClass)
 	actor := s.Players["actor"]
@@ -230,7 +237,7 @@ func TestPlanApplyMagicStopMissCommitsHostilityRevealAndTimers(t *testing.T) {
 	if p.Response != magicStopRevealResponse()+magicStopMissResponse() || p.ExpectedEvent == nil || len(p.ExpectedEvent.Texts) != 2 {
 		t.Fatalf("miss projection response=%q event=%+v", p.Response, p.ExpectedEvent)
 	}
-	if got, want := p.ExpectedEvent.Text, "\n수호자님의 모습이 보이기 시작합니다.\n\n수호자님이 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 늑대가 살짝 피했습니다.\n"; got != want {
+	if got, want := p.ExpectedEvent.Text, "\n수호자님의 모습이 보이기 시작합니다.\n수호자님이 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 늑대가 살짝 피했습니다.\n"; got != want {
 		t.Fatalf("miss room output=%q want=%q", got, want)
 	}
 
