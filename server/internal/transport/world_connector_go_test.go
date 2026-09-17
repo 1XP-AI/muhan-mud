@@ -110,7 +110,13 @@ func admitConnectorPlayers(t *testing.T, connector *WorldConnector, ids []string
 		if err := connector.owners.Admit(lease, func() error { return nil }); err != nil {
 			t.Fatal(err)
 		}
-		conn := &worldConnection{game: connector, lease: lease, ready: true, events: make(chan string, 4)}
+		conn := &worldConnection{
+			game:             connector,
+			lease:            lease,
+			ready:            true,
+			events:           make(chan string, 4),
+			projectionEvents: make(chan followerProjectionDelivery, 4),
+		}
 		connections[id] = conn
 		connector.connections[conn] = struct{}{}
 	}
@@ -290,44 +296,39 @@ func TestWorldConnectorSubmitPublishesFollowerArrivalTrapLocallyAndToRoomOnce(t 
 	if err != nil || !strings.Contains(output, "8점의 피해") || strings.Contains(output, "7점의 피해") || calls != 4 || store.commits != 1 {
 		t.Fatalf("go=%q err=%v calls=%d commits=%d", output, err, calls, store.commits)
 	}
-	if countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살") != 1 {
-		t.Fatalf("follower-local trap output count=%d", countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살"))
+	var followerDelivery followerProjectionDelivery
+	select {
+	case followerDelivery = <-connections["follower"].projectionEvents:
+		if !strings.Contains(followerDelivery.text, "당신은 숨겨진 독화살") {
+			t.Fatalf("follower-local trap output=%+v", followerDelivery)
+		}
+	default:
+		t.Fatal("follower-local trap projection missing")
 	}
-	if countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살") != 1 {
-		t.Fatalf("follower room trap output count=%d", countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살"))
+	var roomDelivery followerProjectionDelivery
+	select {
+	case roomDelivery = <-connections["away"].projectionEvents:
+		if !strings.Contains(roomDelivery.text, "Bob이 숨겨진 독화살") {
+			t.Fatalf("follower room trap output=%+v", roomDelivery)
+		}
+	default:
+		t.Fatal("follower room trap projection missing")
 	}
-	drainQueuedEvents(connections["follower"].events)
-	drainQueuedEvents(connections["away"].events)
+	connections["follower"].followerProjectionWrite(followerDelivery)
+	connections["away"].followerProjectionWrite(roomDelivery)
 	replay, err := connections["actor"].Submit(context.Background(), "가 동굴")
 	if err != nil || replay != output || calls != 4 || store.commits != 1 {
 		t.Fatalf("replay=%q err=%v calls=%d commits=%d", replay, err, calls, store.commits)
 	}
-	if countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살") != 0 || countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살") != 0 {
-		t.Fatal("replay emitted follower trap output")
+	select {
+	case delivery := <-connections["follower"].projectionEvents:
+		t.Fatalf("replay emitted follower trap output=%+v", delivery)
+	default:
 	}
-}
-
-func countQueuedEventContaining(events <-chan string, want string) int {
-	count := 0
-	for {
-		select {
-		case event := <-events:
-			if strings.Contains(event, want) {
-				count++
-			}
-		default:
-			return count
-		}
-	}
-}
-
-func drainQueuedEvents(events <-chan string) {
-	for {
-		select {
-		case <-events:
-		default:
-			return
-		}
+	select {
+	case delivery := <-connections["away"].projectionEvents:
+		t.Fatalf("replay emitted follower room trap output=%+v", delivery)
+	default:
 	}
 }
 
