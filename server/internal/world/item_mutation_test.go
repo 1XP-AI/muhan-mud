@@ -1,6 +1,7 @@
 package world
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -35,6 +36,188 @@ func swordFloorFixture(t *testing.T) State {
 	player.Items = &ItemCollection{Items: map[string]Item{}}
 	s.Players["a"] = player
 	return s
+}
+
+func questItemFloorFixture(t *testing.T, quests ...byte) State {
+	t.Helper()
+	s := swordFloorFixture(t)
+	items := ItemCollection{Items: map[string]Item{}}
+	for index, quest := range quests {
+		rootID := fmt.Sprintf("quest-root-%d", index)
+		childID := fmt.Sprintf("quest-child-%d", index)
+		items.Items[rootID] = Item{
+			Object:   LegacyObject{Name: fmt.Sprintf("임무%d", index), Quest: quest},
+			Contents: []string{childID},
+		}
+		items.Items[childID] = Item{Object: LegacyObject{Name: fmt.Sprintf("보상물%d", index)}}
+		items.Inventory = append(items.Inventory, rootID)
+	}
+	room := s.Rooms[1]
+	room.Items = &items
+	s.Rooms[1] = room
+	return s
+}
+
+func TestTakeItemCompletesQuestAndPreservesCanonicalSubtree(t *testing.T) {
+	s := questItemFloorFixture(t, 1)
+	before := s.clone()
+	next, result, err := s.TakeItem("a", "임무0", 1)
+	if err != nil || result.Action != "take" {
+		t.Fatalf("quest take result=%+v err=%v", result, err)
+	}
+	wantExperience, ok := npcQuestExperience(1)
+	if !ok {
+		t.Fatal("quest 1 has no source experience")
+	}
+	body := next.Players["a"].Body
+	if !flag(body.Quests[:], 0) || body.Experience != wantExperience {
+		t.Fatalf("quest reward body=%+v want experience=%d", body, wantExperience)
+	}
+	wantProficiency := wantExperience / 9
+	for index, value := range body.Proficiency {
+		if value != wantProficiency {
+			t.Fatalf("proficiency[%d]=%d want=%d", index, value, wantProficiency)
+		}
+	}
+	for index, value := range body.Realm {
+		if value != wantProficiency {
+			t.Fatalf("realm[%d]=%d want=%d", index, value, wantProficiency)
+		}
+	}
+	if len(next.Rooms[1].Items.Items) != 0 || !containsID(next.Players["a"].Items.Inventory, "quest-root-0") {
+		t.Fatalf("quest root ownership room=%+v player=%+v", next.Rooms[1].Items, next.Players["a"].Items)
+	}
+	root := next.Players["a"].Items.Items["quest-root-0"]
+	if !reflect.DeepEqual(root.Contents, []string{"quest-child-0"}) || next.Players["a"].Items.Items["quest-child-0"].Object.Name != "보상물0" {
+		t.Fatalf("quest subtree was not preserved: root=%+v items=%+v", root, next.Players["a"].Items.Items)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("quest take mutated the input snapshot")
+	}
+}
+
+func TestTakeAllItemsCompletesEachQuestAndPreservesRootChildren(t *testing.T) {
+	s := questItemFloorFixture(t, 1, 2)
+	next, result, err := s.TakeAllItems("a")
+	if err != nil || result.Action != "take-all" || result.Count != 2 {
+		t.Fatalf("quest take-all result=%+v err=%v", result, err)
+	}
+	wantExperience := int32(120 + 500)
+	body := next.Players["a"].Body
+	if !flag(body.Quests[:], 0) || !flag(body.Quests[:], 1) || body.Experience != wantExperience {
+		t.Fatalf("quest take-all body=%+v want experience=%d", body, wantExperience)
+	}
+	wantProficiency := wantExperience / 9
+	for index, value := range body.Proficiency {
+		if value != wantProficiency {
+			t.Fatalf("take-all proficiency[%d]=%d want=%d", index, value, wantProficiency)
+		}
+	}
+	for index, value := range body.Realm {
+		if value != wantProficiency {
+			t.Fatalf("take-all realm[%d]=%d want=%d", index, value, wantProficiency)
+		}
+	}
+	if len(next.Rooms[1].Items.Items) != 0 || len(next.Players["a"].Items.Items) != 4 {
+		t.Fatalf("take-all ownership room=%+v player=%+v", next.Rooms[1].Items, next.Players["a"].Items)
+	}
+	for index := range []byte{0, 1} {
+		rootID := fmt.Sprintf("quest-root-%d", index)
+		childID := fmt.Sprintf("quest-child-%d", index)
+		if !containsID(next.Players["a"].Items.Inventory, rootID) || !reflect.DeepEqual(next.Players["a"].Items.Items[rootID].Contents, []string{childID}) {
+			t.Fatalf("take-all subtree %q missing: items=%+v", rootID, next.Players["a"].Items)
+		}
+	}
+}
+
+func TestTakeItemRejectsCompletedQuestWithoutMutation(t *testing.T) {
+	s := questItemFloorFixture(t, 1)
+	p := s.Players["a"]
+	p.Body.Quests[0] = 1
+	s.Players["a"] = p
+	before := s.clone()
+	if next, _, err := s.TakeItem("a", "임무0", 1); err == nil || !strings.Contains(err.Error(), "이미 완수한") || !reflect.DeepEqual(next, State{}) {
+		t.Fatalf("completed quest accepted: next=%+v err=%v", next, err)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("completed quest rejection mutated the input snapshot")
+	}
+
+	all := questItemFloorFixture(t, 1, 2)
+	p = all.Players["a"]
+	p.Body.Quests[0] = 1
+	all.Players["a"] = p
+	next, result, err := all.TakeAllItems("a")
+	if err != nil || result.Count != 1 || containsID(next.Players["a"].Items.Inventory, "quest-root-0") || !containsID(next.Rooms[1].Items.Inventory, "quest-root-0") {
+		t.Fatalf("take-all duplicate handling result=%+v err=%v next=%+v", result, err, next)
+	}
+	nextBody := next.Players["a"].Body
+	if !flag(nextBody.Quests[:], 1) || nextBody.Experience != 500 {
+		t.Fatalf("take-all duplicate reward body=%+v", nextBody)
+	}
+}
+
+func TestTakeItemQuestNumberBounds(t *testing.T) {
+	for _, tc := range []struct {
+		quest byte
+		valid bool
+	}{
+		{quest: 1, valid: true},
+		{quest: 128, valid: true},
+		{quest: 129, valid: false},
+	} {
+		t.Run(fmt.Sprintf("quest-%d", tc.quest), func(t *testing.T) {
+			s := questItemFloorFixture(t, tc.quest)
+			before := s.clone()
+			next, _, err := s.TakeItem("a", "임무0", 1)
+			if !tc.valid {
+				if err == nil || !reflect.DeepEqual(next, State{}) {
+					t.Fatalf("out-of-range quest accepted: next=%+v err=%v", next, err)
+				}
+				if !reflect.DeepEqual(s, before) {
+					t.Fatal("out-of-range quest rejection mutated the input snapshot")
+				}
+				return
+			}
+			nextBody := next.Players["a"].Body
+			if err != nil || nextBody.Experience == 0 || !flag(nextBody.Quests[:], uint(tc.quest-1)) {
+				t.Fatalf("valid quest not awarded: next=%+v err=%v", next.Players["a"].Body, err)
+			}
+			if !reflect.DeepEqual(s, before) {
+				t.Fatal("valid quest take mutated the input snapshot")
+			}
+		})
+	}
+}
+
+func TestTakeItemQuestRewardOverflowFailsClosed(t *testing.T) {
+	for _, configure := range []struct {
+		name string
+		set  func(*LegacyMonster)
+	}{
+		{name: "experience", set: func(body *LegacyMonster) { body.Experience = int32(^uint32(0) >> 1) }},
+		{name: "proficiency", set: func(body *LegacyMonster) {
+			body.Proficiency = [5]int32{int32(^uint32(0) >> 1), int32(^uint32(0) >> 1), int32(^uint32(0) >> 1), int32(^uint32(0) >> 1), int32(^uint32(0) >> 1)}
+			body.Realm = [4]int32{int32(^uint32(0) >> 1), int32(^uint32(0) >> 1), int32(^uint32(0) >> 1), int32(^uint32(0) >> 1)}
+		}},
+	} {
+		t.Run(configure.name, func(t *testing.T) {
+			s := questItemFloorFixture(t, 1)
+			p := s.Players["a"]
+			configure.set(&p.Body)
+			s.Players["a"] = p
+			before := s.clone()
+			if next, _, err := s.TakeItem("a", "임무0", 1); err == nil || !reflect.DeepEqual(next, State{}) {
+				t.Fatalf("overflow quest accepted: next=%+v err=%v", next, err)
+			}
+			if !reflect.DeepEqual(s, before) {
+				t.Fatal("overflow rejection mutated the input snapshot")
+			}
+			if !containsID(s.Rooms[1].Items.Inventory, "quest-root-0") || containsID(s.Players["a"].Items.Inventory, "quest-root-0") {
+				t.Fatalf("overflow changed item ownership room=%+v player=%+v", s.Rooms[1].Items, s.Players["a"].Items)
+			}
+		})
+	}
 }
 
 func TestSelectInventoryRootUsesLegacyEqualFieldsAndStoredOrder(t *testing.T) {
