@@ -282,6 +282,18 @@ func drinkHP(body *LegacyMonster, delta int32) error {
 	return nil
 }
 
+func drinkHPClamped(body *LegacyMonster, delta int32) error {
+	value := int64(body.HPCurrent) + int64(delta)
+	if value < 0 || value > math.MaxInt16 || body.HPMax < 0 {
+		return fmt.Errorf("drink hit point result outside legacy range")
+	}
+	if value > int64(body.HPMax) {
+		value = int64(body.HPMax)
+	}
+	body.HPCurrent = int16(value)
+	return nil
+}
+
 func drinkTimer(body *LegacyMonster, index int, now int32, interval int64) error {
 	if index < 0 || index >= len(body.Timers) || now < 0 || interval < 0 || interval > math.MaxInt32 {
 		return fmt.Errorf("drink timer outside legacy range")
@@ -300,7 +312,7 @@ var drinkSpells = map[int]drinkSpellSpec{
 	12: {"confuse"}, 18: {"mend"}, 19: {"heal"}, 21: {"levitate"}, 22: {"fire-resist"},
 	23: {"fly"}, 24: {"magic-resist"}, 43: {"cold-resist"}, 44: {"water-breathe"},
 	45: {"shield"}, 48: {"cure-disease"}, 49: {"remove-blindness"}, 50: {"fear"},
-	53: {"blind"}, 54: {"silence"}, 55: {"charm"},
+	51: {"restore-mana"}, 53: {"blind"}, 54: {"silence"}, 55: {"charm"},
 }
 
 func applyDrinkSpell(body LegacyMonster, spec drinkSpellSpec, now int32, options DrinkOptions, replay []int) (LegacyMonster, string, int32, int32, []int, error) {
@@ -362,12 +374,12 @@ func applyDrinkSpell(body LegacyMonster, spec drinkSpellSpec, now int32, options
 			if err != nil {
 				return LegacyMonster{}, "", 0, 0, nil, err
 			}
-			if err := drinkHP(&after, int32(n)); err != nil {
+			if err := drinkHPClamped(&after, int32(n)); err != nil {
 				return LegacyMonster{}, "", 0, 0, nil, err
 			}
 		}
 		// The original first restores 2d10 HP and then has a 60% chance to
-		// fill MP. Keep both draws explicit for deterministic receipts.
+		// fill MP. Keep all three draws explicit for deterministic receipts.
 		if n, err := draw(1, 100); err != nil {
 			return LegacyMonster{}, "", 0, 0, nil, err
 		} else if n < 60 {

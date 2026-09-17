@@ -83,6 +83,47 @@ func TestPlanApplyReadScrollSuccessConsumesScrollAndStoresDraws(t *testing.T) {
 	}
 }
 
+func TestReadScrollRestoreManaAdmitsIndex51ConsumesAtRoll60AndReplays(t *testing.T) {
+	s := readScrollTestState(LegacyObject{
+		Name: "전회복부", Type: readScrollType, DiceCount: 1, MagicPower: 52, ShotsCurrent: 1,
+	}, false)
+	actor := s.Players["alice"]
+	actor.Body.HPCurrent = 29
+	actor.Body.MPCurrent = 5
+	setSettingFlag(&actor.Body, readScrollHiddenFlag, true)
+	s.Players["alice"] = actor
+	values := []int{1, 7, 8, 60}
+	wantRanges := [][2]int{{1, 100}, {1, 10}, {1, 10}, {1, 100}}
+	var gotRanges [][2]int
+	rollCalls := 0
+	p, err := s.PlanReadScroll("alice", "전회복부", 1, ScrollOptions{Now: 100, Roll: func(low, high int) int {
+		gotRanges = append(gotRanges, [2]int{low, high})
+		value := values[rollCalls]
+		rollCalls++
+		return value
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollCalls != 4 || !reflect.DeepEqual(gotRanges, wantRanges) || !reflect.DeepEqual(p.Rolls, values) {
+		t.Fatalf("restore scroll draws=%d ranges=%v rolls=%v", rollCalls, gotRanges, p.Rolls)
+	}
+	if p.SpellIndex != 51 || p.SpellName != "전회복" || p.Effect != "restore-mana" || !p.Succeeded || !p.Consumed || p.HPDelta != 1 || p.MPDelta != 0 {
+		t.Fatalf("restore scroll proposal=%+v", p)
+	}
+	next, result, err := s.ApplyReadScroll(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollCalls != 4 {
+		t.Fatalf("apply replay consumed a second RNG sequence: calls=%d", rollCalls)
+	}
+	got := next.Players["alice"]
+	if got.Body.HPCurrent != 30 || got.Body.MPCurrent != 5 || flag(got.Body.Flags[:], readScrollHiddenFlag) || len(got.Items.Items) != 0 || !result.Succeeded || !result.Consumed {
+		t.Fatalf("restore scroll result=%+v actor=%+v items=%+v", result, got.Body, got.Items)
+	}
+}
+
 func TestReadScrollSpellFailureConsumesWithoutEffectRoll(t *testing.T) {
 	s := readScrollTestState(LegacyObject{
 		Name: "실패부", Type: readScrollType, DiceCount: 1, MagicPower: 1, ShotsCurrent: 1,
