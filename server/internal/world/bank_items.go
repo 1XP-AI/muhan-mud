@@ -198,12 +198,13 @@ func (s State) DepositAllBankItems(actorID string) (State, BankItemResult, error
 	ids := append([]string(nil), source.Inventory...)
 	count := 0
 	var names []string
+	detect := flag(p.Body.Flags[:], playerDetectInvisibleFlag)
 	for _, id := range ids {
 		if len(destination.Inventory) >= bankItemCapacity {
 			break
 		}
 		item, ok := source.Items[id]
-		if !ok || flag(item.Object.Flags[:], itemContainerFlag) || (item.Object.Quest != 0 && p.Body.Class < playerDMClass) || flag(item.Object.Flags[:], objectEventFlag) {
+		if !ok || (flag(item.Object.Flags[:], objectInvisibleFlag) && !detect) || flag(item.Object.Flags[:], itemContainerFlag) || (item.Object.Quest != 0 && p.Body.Class < playerDMClass) || flag(item.Object.Flags[:], objectEventFlag) {
 			continue
 		}
 		plan, err := TransferItemRoots(source, destination, []string{id})
