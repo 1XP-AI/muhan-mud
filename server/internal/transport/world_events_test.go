@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,14 +14,20 @@ import (
 
 type followerProjectionAckStore struct {
 	*connectorCommandStore
-	mu   sync.Mutex
-	acks []string
+	mu        sync.Mutex
+	acks      []string
+	ackErrors []error
 }
 
 func (s *followerProjectionAckStore) MarkWorldReceiptProjectionDelivered(_ context.Context, _ string, commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.acks = append(s.acks, commandID)
+	if len(s.ackErrors) != 0 {
+		err := s.ackErrors[0]
+		s.ackErrors = s.ackErrors[1:]
+		return err
+	}
 	return nil
 }
 
@@ -546,6 +553,123 @@ func TestWorldConnectorFollowerTrapEnqueueBeforeWireWriteReplaysAfterClose(t *te
 	newObserver.followerProjectionWrite(observerDelivery)
 	if store.ackCount() != 1 {
 		t.Fatalf("replacement wire writes acknowledgements=%d want=1", store.ackCount())
+	}
+}
+
+func TestWorldConnectorFollowerTrapWrittenRecipientSurvivesCloseAndAckRetry(t *testing.T) {
+	store := &followerProjectionAckStore{
+		connectorCommandStore: &connectorCommandStore{},
+		ackErrors:             []error{errors.New("transient projection acknowledgement failure")},
+	}
+	g := &WorldConnector{
+		config:               WorldConnectorConfig{Store: store, WorldID: "follower-wire-written-close"},
+		connections:          map[*worldConnection]struct{}{},
+		publishedProjections: map[string]struct{}{},
+		followerProjections:  map[string]*followerProjectionState{},
+	}
+	oldActor := &worldConnection{
+		game:             g,
+		lease:            session.SessionLease{ActorID: "follower"},
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	oldObserver := &worldConnection{
+		game:             g,
+		lease:            session.SessionLease{ActorID: "observer"},
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	g.connections[oldActor] = struct{}{}
+	g.connections[oldObserver] = struct{}{}
+	event := world.ArrivalTrapEvent{
+		ActorID:          "follower",
+		ActorText:        "당신은 숨겨진 독화살에 맞았습니다!\n",
+		RoomID:           2,
+		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
+		RoomRecipientIDs: []string{"observer"},
+	}
+	if g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-wire-written-close-1") {
+		t.Fatal("initial enqueue was reported as a wire delivery")
+	}
+	actorDelivery := <-oldActor.projectionEvents
+	oldActor.followerProjectionWrite(actorDelivery)
+	if store.ackCount() != 0 {
+		t.Fatal("aggregate projection acknowledged before the missing recipient was written")
+	}
+
+	// The actor frame reached the wire, but the room recipient is still
+	// pending. Closing both old connections must retain the actor's written
+	// progress and discard only the observer's accepted-but-unwritten frame.
+	g.unregister(oldActor)
+	g.unregister(oldObserver)
+	if store.ackCount() != 0 {
+		t.Fatal("connection close acknowledged an incomplete projection")
+	}
+
+	newActor := &worldConnection{
+		game:             g,
+		lease:            oldActor.lease,
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	newObserver := &worldConnection{
+		game:             g,
+		lease:            oldObserver.lease,
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	g.connections[newActor] = struct{}{}
+	g.connections[newObserver] = struct{}{}
+	if g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-wire-written-close-1") {
+		t.Fatal("replacement enqueue was reported as a wire delivery")
+	}
+	select {
+	case duplicate := <-newActor.projectionEvents:
+		t.Fatalf("already-written actor recipient was duplicated after reconnect=%+v", duplicate)
+	default:
+	}
+	observerDelivery := <-newObserver.projectionEvents
+	if observerDelivery.text != event.RoomText || observerDelivery.key != "0:room:observer" {
+		t.Fatalf("replacement observer delivery=%+v", observerDelivery)
+	}
+	newObserver.followerProjectionWrite(observerDelivery)
+	if store.ackCount() != 1 {
+		t.Fatal("durable acknowledgement failure was not attempted after all recipients were written")
+	}
+	if _, published := g.publishedProjections["follower-wire-written-close-1"]; published {
+		t.Fatal("failed durable acknowledgement was marked published")
+	}
+
+	// A second reconnect retries the failed aggregate acknowledgement without
+	// replaying either recipient: both wire-write boundaries already succeeded.
+	g.unregister(newActor)
+	g.unregister(newObserver)
+	retryActor := &worldConnection{
+		game:             g,
+		lease:            oldActor.lease,
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	retryObserver := &worldConnection{
+		game:             g,
+		lease:            oldObserver.lease,
+		projectionEvents: make(chan followerProjectionDelivery, 1),
+	}
+	g.connections[retryActor] = struct{}{}
+	g.connections[retryObserver] = struct{}{}
+	if !g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}, "follower-wire-written-close-1") {
+		t.Fatal("retry of fully written projection was not reported complete")
+	}
+	if store.ackCount() != 2 {
+		t.Fatalf("durable acknowledgement retry count=%d want=2", store.ackCount())
+	}
+	if _, published := g.publishedProjections["follower-wire-written-close-1"]; !published {
+		t.Fatal("successful durable acknowledgement did not mark projection published")
+	}
+	select {
+	case duplicate := <-retryActor.projectionEvents:
+		t.Fatalf("actor recipient replayed during durable acknowledgement retry=%+v", duplicate)
+	default:
+	}
+	select {
+	case duplicate := <-retryObserver.projectionEvents:
+		t.Fatalf("observer recipient replayed during durable acknowledgement retry=%+v", duplicate)
+	default:
 	}
 }
 

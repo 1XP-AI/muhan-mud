@@ -4341,9 +4341,11 @@ func (g *WorldConnector) finalizeFollowerProjection(commandID string) {
 }
 
 // dropFollowerProjectionDeliveries forgets events retained by a connection
-// that is closing. Accepted recipients are also reset when the receipt is
-// still pending: channel acceptance is not a durable client acknowledgement,
-// and the next connection must be able to replay the private/room output.
+// that is closing. An accepted recipient that already crossed the client-write
+// boundary remains part of the pending aggregate receipt: reconnect replay
+// must not duplicate it while durable acknowledgement is still pending. Only
+// accepted-but-unwritten recipients are reset so the next connection can
+// replay the output.
 func (g *WorldConnector) dropFollowerProjectionDeliveries(connection *worldConnection) {
 	if g == nil || connection == nil {
 		return
@@ -4355,7 +4357,7 @@ func (g *WorldConnector) dropFollowerProjectionDeliveries(connection *worldConne
 			continue
 		}
 		for key, recipient := range state.recipients {
-			if recipient.connection == connection {
+			if recipient.connection == connection && !recipient.written {
 				delete(state.recipients, key)
 			}
 		}
