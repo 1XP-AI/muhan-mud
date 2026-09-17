@@ -110,6 +110,60 @@ func itemTreeContainsProtected(c ItemCollection, root string) (bool, error) {
 	return visit(root)
 }
 
+type questPickupPlan struct {
+	quest      byte
+	index      int
+	experience int32
+	duplicate  bool
+}
+
+// planQuestPickup ports the quest gate in command2.c after the ordinary item
+// admission checks. A duplicate is a semantic rejection for the single-item
+// command and a skipped root for get_all_rom; an out-of-range quest is invalid
+// canonical data and must fail closed in both paths.
+func planQuestPickup(body LegacyMonster, object LegacyObject) (questPickupPlan, error) {
+	if object.Quest == 0 {
+		return questPickupPlan{}, nil
+	}
+	index := int(object.Quest) - 1
+	if index < 0 || index >= len(body.Quests)*8 {
+		return questPickupPlan{}, fmt.Errorf("quest number %d outside canonical range", object.Quest)
+	}
+	experience, ok := npcQuestExperience(object.Quest)
+	if !ok {
+		return questPickupPlan{}, fmt.Errorf("quest number %d has no experience", object.Quest)
+	}
+	return questPickupPlan{
+		quest:      object.Quest,
+		index:      index,
+		experience: experience,
+		duplicate:  flag(body.Quests[:], uint(index)),
+	}, nil
+}
+
+// applyQuestPickupPlan applies the quest bit and both source-backed rewards to
+// a private body candidate. The candidate copy makes proficiency or XP
+// overflow fail closed without partially mutating the caller's body.
+func applyQuestPickupPlan(body *LegacyMonster, plan questPickupPlan) error {
+	if plan.quest == 0 || plan.duplicate {
+		return nil
+	}
+	if body == nil || plan.index < 0 || plan.index >= len(body.Quests)*8 || plan.experience < 0 {
+		return fmt.Errorf("invalid quest pickup plan")
+	}
+	if body.Experience < 0 || int64(body.Experience)+int64(plan.experience) > int64(^uint32(0)>>1) {
+		return fmt.Errorf("quest experience award overflow")
+	}
+	candidate := *body
+	candidate.Quests[plan.index/8] |= 1 << (plan.index % 8)
+	candidate.Experience += plan.experience
+	if err := addUnassignedProficiency(&candidate, plan.experience); err != nil {
+		return err
+	}
+	*body = candidate
+	return nil
+}
+
 func validateTakeCandidate(p PlayerState, source, destination ItemCollection, id string, checkCapacity bool) error {
 	item, ok := source.Items[id]
 	if !ok {
@@ -117,13 +171,6 @@ func validateTakeCandidate(p PlayerState, source, destination ItemCollection, id
 	}
 	if flag(item.Object.Flags[:], objectNotTakeFlag) || flag(item.Object.Flags[:], objectSceneryFlag) {
 		return fmt.Errorf("주울 수 있는 물건이 아닙니다")
-	}
-	if item.Object.Quest != 0 {
-		quest := int(item.Object.Quest) - 1
-		if quest >= 0 && quest < len(p.Body.Quests)*8 && flag(p.Body.Quests[:], uint(quest)) {
-			return fmt.Errorf("이미 완수한 임무 물건입니다")
-		}
-		return fmt.Errorf("임무 물건은 아직 quest reducer가 필요합니다")
 	}
 	if item.Object.Type == 10 {
 		return fmt.Errorf("돈 물건은 gold reducer가 필요합니다")
@@ -172,6 +219,14 @@ func (s State) TakeItem(actorID, name string, occurrence int) (State, ItemMutati
 	if err := validateTakeCandidate(p, *room.Items, *p.Items, id, true); err != nil {
 		return State{}, ItemMutationResult{}, err
 	}
+	item := room.Items.Items[id]
+	questPlan, err := planQuestPickup(p.Body, item.Object)
+	if err != nil {
+		return State{}, ItemMutationResult{}, err
+	}
+	if questPlan.duplicate {
+		return State{}, ItemMutationResult{}, fmt.Errorf("이미 완수한 임무 물건입니다")
+	}
 	plan, err := TransferItemRoots(*room.Items, *p.Items, []string{id})
 	if err != nil {
 		return State{}, ItemMutationResult{}, err
@@ -181,6 +236,9 @@ func (s State) TakeItem(actorID, name string, occurrence int) (State, ItemMutati
 	nextRoom.Items = &plan.Source
 	next.Rooms[p.Body.RoomID] = nextRoom
 	nextPlayer := next.Players[actorID]
+	if err := applyQuestPickupPlan(&nextPlayer.Body, questPlan); err != nil {
+		return State{}, ItemMutationResult{}, err
+	}
 	nextPlayer.Items = &plan.Destination
 	next.Players[actorID] = nextPlayer
 	if err := next.Validate(); err != nil {
@@ -205,6 +263,7 @@ func (s State) TakeAllItems(actorID string) (State, ItemMutationResult, error) {
 	detect := flag(p.Body.Flags[:], playerDetectInvisibleFlag)
 	source := room.Items.clone()
 	destination := p.Items.clone()
+	candidatePlayer := p
 	ids := append([]string(nil), source.Inventory...)
 	names := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -212,7 +271,14 @@ func (s State) TakeAllItems(actorID string) (State, ItemMutationResult, error) {
 		if !ok || (flag(item.Object.Flags[:], objectInvisibleFlag) && !detect) || (flag(item.Object.Flags[:], objectHiddenFlag) && !detect) {
 			continue
 		}
-		if err := validateTakeCandidate(p, source, destination, id, true); err != nil {
+		if err := validateTakeCandidate(candidatePlayer, source, destination, id, true); err != nil {
+			continue
+		}
+		questPlan, err := planQuestPickup(candidatePlayer.Body, item.Object)
+		if err != nil {
+			return State{}, ItemMutationResult{}, err
+		}
+		if questPlan.duplicate {
 			continue
 		}
 		plan, err := TransferItemRoots(source, destination, []string{id})
@@ -220,6 +286,9 @@ func (s State) TakeAllItems(actorID string) (State, ItemMutationResult, error) {
 			return State{}, ItemMutationResult{}, err
 		}
 		source, destination = plan.Source, plan.Destination
+		if err := applyQuestPickupPlan(&candidatePlayer.Body, questPlan); err != nil {
+			return State{}, ItemMutationResult{}, err
+		}
 		names = append(names, item.Object.Name)
 	}
 	if len(names) == 0 {
@@ -230,6 +299,7 @@ func (s State) TakeAllItems(actorID string) (State, ItemMutationResult, error) {
 	nextRoom.Items = &source
 	next.Rooms[p.Body.RoomID] = nextRoom
 	nextPlayer := next.Players[actorID]
+	nextPlayer.Body = candidatePlayer.Body
 	nextPlayer.Items = &destination
 	next.Players[actorID] = nextPlayer
 	if err := next.Validate(); err != nil {
