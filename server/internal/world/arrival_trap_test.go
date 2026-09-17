@@ -1,5 +1,7 @@
 package world
 
+import "reflect"
+
 import "testing"
 
 func TestPlanArrivalTrapClearsPreparationWithoutTrap(t *testing.T) {
@@ -188,7 +190,7 @@ func TestArrivalTrapEventRendersLeaderActorAndRoomTexts(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := arrivalTrapEventFor("actor", "Alice", 2, tc.effect)
+			got, ok := arrivalTrapEventFor("actor", "Alice", 2, tc.effect, nil)
 			if !ok || got.Trap != tc.trap || got.ActorID != "actor" || got.ActorName != "Alice" || got.RoomID != 2 {
 				t.Fatalf("event=%+v ok=%t", got, ok)
 			}
@@ -205,7 +207,7 @@ func TestArrivalTrapEventSkipsAvoidedAndSuppressedEffects(t *testing.T) {
 		{Trap: TrapPit, Triggered: true, Suppressed: true},
 		{Trap: TrapDart, Triggered: false},
 	} {
-		if got, ok := arrivalTrapEventFor("actor", "Alice", 2, effect); ok || got != (ArrivalTrapEvent{}) {
+		if got, ok := arrivalTrapEventFor("actor", "Alice", 2, effect, nil); ok || !reflect.DeepEqual(got, ArrivalTrapEvent{}) {
 			t.Fatalf("effect=%+v produced event=%+v ok=%t", effect, got, ok)
 		}
 	}

@@ -67,6 +67,7 @@ type WorldConnector struct {
 	cleanup                *session.CleanupQueue
 	connections            map[*worldConnection]struct{}
 	stopping               bool
+	publishedProjections   map[string]struct{}
 	lastPublicAdmissionAt  int32
 	lastVitalSlot          int64
 	pendingVital           *playerVitalTick
@@ -120,7 +121,7 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
 	}
-	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1, lastNPCRandomSpawnSlot: -1}
+	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, publishedProjections: map[string]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1, lastNPCRandomSpawnSlot: -1}
 	g.cleanup = session.NewWorldCleanupQueue(&g.owners, config.Store, config.WorldID)
 	return g, nil
 }
@@ -291,6 +292,7 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	if err = json.Unmarshal(receipt.Response, &entry); err != nil {
 		return connection, "", err
 	}
+	connection.startEventQueue()
 	// New characters are registered before a canonical account name is
 	// attached to storage.Character. Resolve that name from the admitted
 	// player once, without making it part of world state or a command receipt.
@@ -316,10 +318,15 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 }
 
 type worldConnection struct {
-	mu     sync.Mutex
-	game   *WorldConnector
-	lease  session.SessionLease
-	events chan string
+	mu            sync.Mutex
+	game          *WorldConnector
+	lease         session.SessionLease
+	events        chan string
+	eventMu       sync.Mutex
+	pendingEvents []string
+	eventWake     chan struct{}
+	eventStop     chan struct{}
+	eventWG       sync.WaitGroup
 	// accountName is the canonical account identity used only by the
 	// connection-local password flow. It is never copied into world receipts.
 	accountName string
@@ -495,6 +502,78 @@ type notepadDraft struct {
 // transport consumes it with one writer lock, while non-WebSocket test
 // connectors can continue to implement only Submit/Close.
 func (c *worldConnection) Events() <-chan string { return c.events }
+
+func (c *worldConnection) startEventQueue() {
+	if c.events == nil || c.eventStop != nil {
+		return
+	}
+	c.eventWake = make(chan struct{}, 1)
+	c.eventStop = make(chan struct{})
+	c.eventWG.Add(1)
+	go func() {
+		defer c.eventWG.Done()
+		for {
+			c.eventMu.Lock()
+			if len(c.pendingEvents) == 0 {
+				c.eventMu.Unlock()
+				select {
+				case <-c.eventWake:
+					continue
+				case <-c.eventStop:
+					return
+				}
+			}
+			text := c.pendingEvents[0]
+			c.eventMu.Unlock()
+			select {
+			case c.events <- text:
+				c.eventMu.Lock()
+				if len(c.pendingEvents) != 0 {
+					c.pendingEvents = c.pendingEvents[1:]
+				}
+				c.eventMu.Unlock()
+			case <-c.eventStop:
+				return
+			}
+		}
+	}()
+}
+
+// enqueueEvent accepts a projected event immediately when possible and keeps
+// it in an explicit per-connection queue when the public channel is full.
+// Callers hold the connector lock while resolving recipients, but queue state
+// has its own lock so the writer goroutine and direct test connections remain
+// race-safe.
+func (c *worldConnection) enqueueEvent(text string) bool {
+	if c == nil || c.events == nil || text == "" {
+		return false
+	}
+	c.eventMu.Lock()
+	defer c.eventMu.Unlock()
+	if len(c.pendingEvents) == 0 {
+		select {
+		case c.events <- text:
+			return true
+		default:
+		}
+	}
+	c.pendingEvents = append(c.pendingEvents, text)
+	if c.eventWake != nil {
+		select {
+		case c.eventWake <- struct{}{}:
+		default:
+		}
+	}
+	return true
+}
+
+func (c *worldConnection) stopEventQueue() {
+	if c == nil || c.eventStop == nil {
+		return
+	}
+	close(c.eventStop)
+	c.eventWG.Wait()
+}
 
 // ShouldClose is observed by the WebSocket loop after the quit receipt has
 // been sent. Close itself still performs the durable departure/cleanup.
@@ -3096,16 +3175,22 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		c.infoPending = true
 		c.infoContinuationCommandID = ""
 	}
-	if directional && !receipt.Replayed {
+	if directional {
 		if after, ok := c.game.snapshot(ctx); ok {
-			if beforeOK {
+			if !receipt.Replayed && beforeOK {
 				c.game.publishMovement(before, after, c.lease.ActorID, receipt.NPCChaseIDs)
 			}
-			if len(receipt.FollowerArrivalTrapEvents) != 0 {
-				c.game.publishFollowerArrivalTraps(after, receipt.FollowerArrivalTrapEvents)
-			}
-			if receipt.ArrivalTrapEvent != nil {
+			if !receipt.Replayed && receipt.ArrivalTrapEvent != nil {
 				c.game.publishArrivalTrap(after, *receipt.ArrivalTrapEvent)
+			}
+		}
+		// Follower trap events carry their own check-time recipient IDs and do
+		// not depend on a successful final snapshot. A replay is publishable
+		// only while its durable projection remains pending; the connector-local
+		// marker covers stores without acknowledgement support.
+		if len(receipt.FollowerArrivalTrapEvents) != 0 && !receipt.ProjectionDelivered && !c.game.followerProjectionPublished(commandID) {
+			if c.game.publishFollowerArrivalTraps(world.State{}, receipt.FollowerArrivalTrapEvents) {
+				c.game.acknowledgeFollowerProjection(ctx, commandID)
 			}
 		}
 	}
@@ -4049,6 +4134,34 @@ func (g *WorldConnector) snapshot(ctx context.Context) (world.State, bool) {
 	return s, true
 }
 
+func (g *WorldConnector) followerProjectionPublished(commandID string) bool {
+	if g == nil || commandID == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.publishedProjections[commandID]
+	return ok
+}
+
+func (g *WorldConnector) acknowledgeFollowerProjection(ctx context.Context, commandID string) {
+	if g == nil || commandID == "" {
+		return
+	}
+	if projected, ok := g.config.Store.(storage.ReceiptProjectionStore); ok {
+		// A failed acknowledgement remains recoverable from the durable pending
+		// projection after restart. The local marker prevents a normal retry on
+		// this connector from duplicating output already queued successfully.
+		_ = projected.MarkWorldReceiptProjectionDelivered(ctx, g.config.WorldID, commandID)
+	}
+	g.mu.Lock()
+	if g.publishedProjections == nil {
+		g.publishedProjections = make(map[string]struct{})
+	}
+	g.publishedProjections[commandID] = struct{}{}
+	g.mu.Unlock()
+}
+
 func (g *WorldConnector) unregister(connection *worldConnection) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -4056,6 +4169,7 @@ func (g *WorldConnector) unregister(connection *worldConnection) {
 		return
 	}
 	delete(g.connections, connection)
+	connection.stopEventQueue()
 	if connection.events != nil {
 		close(connection.events)
 	}

@@ -171,3 +171,62 @@ func TestDirectionalStepDoesNotProjectDeadFollowerArrivalTrap(t *testing.T) {
 		t.Fatalf("dead follower projected trap event result=%+v", result.Followers)
 	}
 }
+
+func TestDirectionalStepCapturesFollowerTrapRecipientsAtCheckTime(t *testing.T) {
+	s, in := followerMovementFixture(t)
+	s.Players["c"] = PlayerState{Body: LegacyMonster{Name: "Carol", RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}}, Online: true, Items: &ItemCollection{Items: map[string]Item{}}}
+	r := s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "c")
+	s.Rooms[1] = r
+	leaderWithFollowers := s.Players["a"]
+	leaderWithFollowers.FollowerIDs = []string{"c", "b"}
+	leaderWithFollowers.FollowerRefs = nil
+	s.Players["a"] = leaderWithFollowers
+	child := s.Players["c"]
+	child.FollowingID = "a"
+	s.Players["c"] = child
+	leader := s.Players["a"]
+	leader.Body.Stats[1] = 1
+	s.Players["a"] = leader
+	follower := s.Players["b"]
+	follower.Body.Stats[1] = 1
+	s.Players["b"] = follower
+	child = s.Players["c"]
+	child.Body.Stats[1] = 1
+	s.Players["c"] = child
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapDart
+	destination.PlayerIDs = []string{"observer"}
+	s.Players["observer"] = PlayerState{Body: LegacyMonster{Name: "Observer", RoomID: 2, Class: 4, Level: 1, HPMax: 20, HPCurrent: 20}, Online: true, Items: &ItemCollection{Items: map[string]Item{}}}
+	s.Rooms[2] = destination
+	r = s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "observer")
+	s.Rooms[1] = r
+	// Keep the observer in the destination only; the source append above is
+	// intentionally removed to make the fixture's room membership explicit.
+	r.PlayerIDs = r.PlayerIDs[:len(r.PlayerIDs)-1]
+	s.Rooms[1] = r
+
+	rolls := []int{100, 2, 100, 3, 100, 4}
+	_, result, err := s.DirectionalStep(in, nil, func(low, high int) int {
+		if low != 1 || (high != 100 && high != 10) {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := FlattenFollowerArrivalTrapEvents(result.Followers)
+	if len(events) != 2 || events[0].ActorID != "c" || events[1].ActorID != "b" {
+		t.Fatalf("follower trap order=%+v", events)
+	}
+	if containsString(events[0].RoomRecipientIDs, "b") || !containsString(events[1].RoomRecipientIDs, "c") {
+		t.Fatalf("check-time recipients=%+v", events)
+	}
+	if containsString(events[0].RoomRecipientIDs, "c") || containsString(events[1].RoomRecipientIDs, "b") {
+		t.Fatalf("event actor leaked as room recipient=%+v", events)
+	}
+}

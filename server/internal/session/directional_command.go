@@ -67,19 +67,18 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 	}
 	var committedNPCChaseIDs []string
 	var committedArrivalTrapEvent *world.ArrivalTrapEvent
-	var committedFollowerArrivalTrapEvents []world.ArrivalTrapEvent
-	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
+	receipt, err := o.ExecuteGameWithProjection(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, json.RawMessage, error) {
 		s, err := world.DecodeState(raw)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		player, exists := s.Players[actorID]
 		if !exists || !player.Online {
-			return nil, nil, errors.New("online movement actor absent")
+			return nil, nil, nil, errors.New("online movement actor absent")
 		}
 		room, exists := s.Rooms[player.Body.RoomID]
 		if !exists {
-			return nil, nil, errors.New("movement source room absent")
+			return nil, nil, nil, errors.New("movement source room absent")
 		}
 		var destination *world.LegacyRoom
 		index := world.SelectDirectionalExit(room.Resource.Exits, token)
@@ -88,7 +87,7 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 			if target, ok := s.Rooms[room.Resource.Exits[index].Destination]; ok {
 				projected, projectErr := s.ProjectRoom(target.Resource.ID)
 				if projectErr != nil {
-					return nil, nil, projectErr
+					return nil, nil, nil, projectErr
 				}
 				destination = &projected
 				destExists = true
@@ -108,14 +107,14 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		input.View.ViewOptions.Hour = hour
 		next, step, reduceErr := s.DirectionalStep(input, catalog, roll, allocate)
 		if reduceErr != nil {
-			return nil, nil, reduceErr
+			return nil, nil, nil, reduceErr
 		}
 		if index >= 0 && !destExists && (step.Transfer.Movement.Moved || (!step.Transfer.Movement.Traversal.Stop && step.Death == nil)) {
-			return nil, nil, ErrDirectionalDestinationUnresolved
+			return nil, nil, nil, ErrDirectionalDestinationUnresolved
 		}
 		state, reduceErr := json.Marshal(next)
 		if reduceErr != nil {
-			return nil, nil, reduceErr
+			return nil, nil, nil, reduceErr
 		}
 		responseText := strings.Join(step.Transfer.Movement.Messages, "")
 		if step.Death != nil {
@@ -126,7 +125,7 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		if responseText == "" {
 			responseText, reduceErr = next.CurrentScene(actorID, hour)
 			if reduceErr != nil {
-				return nil, nil, reduceErr
+				return nil, nil, nil, reduceErr
 			}
 		}
 		if step.NPCChase != nil {
@@ -140,9 +139,14 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 			committedArrivalTrapEvent = &event
 			responseText += event.ActorText
 		}
-		committedFollowerArrivalTrapEvents = append(committedFollowerArrivalTrapEvents[:0], world.FlattenFollowerArrivalTrapEvents(step.Followers)...)
 		response, reduceErr := json.Marshal(responseText)
-		return state, response, reduceErr
+		projection, projectionErr := json.Marshal(movementReceiptProjection{
+			FollowerArrivalTrapEvents: world.FlattenFollowerArrivalTrapEvents(step.Followers),
+		})
+		if reduceErr != nil {
+			return nil, nil, nil, reduceErr
+		}
+		return state, response, projection, projectionErr
 	})
 	if err != nil {
 		return receipt, err
@@ -157,8 +161,8 @@ func (o *Ownership) ExecuteDirectionalLine(ctx context.Context, store engine.Com
 		event := *committedArrivalTrapEvent
 		receipt.ArrivalTrapEvent = &event
 	}
-	if !receipt.Replayed && len(committedFollowerArrivalTrapEvents) != 0 {
-		receipt.FollowerArrivalTrapEvents = append([]world.ArrivalTrapEvent(nil), committedFollowerArrivalTrapEvents...)
+	if err := decodeMovementReceiptProjection(&receipt); err != nil {
+		return storage.WorldReceipt{}, err
 	}
 	return receipt, nil
 }

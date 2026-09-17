@@ -3,6 +3,7 @@ package transport
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1XP-Inc/muhan-mud/server/internal/session"
 	"github.com/1XP-Inc/muhan-mud/server/internal/world"
@@ -296,6 +297,77 @@ func TestWorldConnectorPublishesArrivalTrapFromCommittedRoomWhenActorDiesAndResp
 		}
 	default:
 		t.Fatal("trap room event missing after actor relocation")
+	}
+}
+
+func TestWorldConnectorFollowerTrapUsesCheckTimeRecipients(t *testing.T) {
+	observerEvents := make(chan string, 1)
+	lateEvents := make(chan string, 1)
+	observer := &worldConnection{lease: session.SessionLease{ActorID: "observer"}, events: observerEvents}
+	late := &worldConnection{lease: session.SessionLease{ActorID: "late"}, events: lateEvents}
+	g := &WorldConnector{connections: map[*worldConnection]struct{}{observer: {}, late: {}}}
+	event := world.ArrivalTrapEvent{
+		ActorID:          "follower",
+		RoomID:           2,
+		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
+		RoomRecipientIDs: []string{"observer"},
+	}
+	// The observer left after check_traps, while late arrived after it. The
+	// durable event must still follow the captured descriptor membership.
+	after := world.State{Players: map[string]world.PlayerState{
+		"observer": {Body: world.LegacyMonster{RoomID: 3}, Online: true},
+		"late":     {Body: world.LegacyMonster{RoomID: 2}, Online: true},
+	}}
+	if !g.publishFollowerArrivalTraps(after, []world.ArrivalTrapEvent{event}) {
+		t.Fatal("captured recipient was not accepted")
+	}
+	select {
+	case got := <-observerEvents:
+		if got != event.RoomText {
+			t.Fatalf("observer event=%q", got)
+		}
+	default:
+		t.Fatal("check-time observer missed trap event")
+	}
+	select {
+	case got := <-lateEvents:
+		t.Fatalf("final-state-only recipient received event=%q", got)
+	default:
+	}
+}
+
+func TestWorldConnectorFollowerTrapQueuesBackpressureWithoutDropping(t *testing.T) {
+	actorEvents := make(chan string, 1)
+	observerEvents := make(chan string, 1)
+	actor := &worldConnection{lease: session.SessionLease{ActorID: "follower"}, events: actorEvents}
+	observer := &worldConnection{lease: session.SessionLease{ActorID: "observer"}, events: observerEvents}
+	observer.startEventQueue()
+	defer observer.stopEventQueue()
+	observerEvents <- "busy"
+	g := &WorldConnector{connections: map[*worldConnection]struct{}{actor: {}, observer: {}}}
+	event := world.ArrivalTrapEvent{
+		ActorID:          "follower",
+		ActorText:        "당신은 숨겨진 독화살에 맞았습니다!\n",
+		RoomID:           2,
+		RoomText:         "\nBob이 숨겨진 독화살에 맞았습니다.\r\n",
+		RoomRecipientIDs: []string{"observer"},
+	}
+	if !g.publishFollowerArrivalTraps(world.State{}, []world.ArrivalTrapEvent{event}) {
+		t.Fatal("queued follower projection was not accepted")
+	}
+	if len(observer.pendingEvents) != 1 || observer.pendingEvents[0] != event.RoomText {
+		t.Fatalf("pending follower events=%q", observer.pendingEvents)
+	}
+	if got := <-observerEvents; got != "busy" {
+		t.Fatalf("backpressure sentinel=%q", got)
+	}
+	select {
+	case got := <-observerEvents:
+		if got != event.RoomText {
+			t.Fatalf("queued trap event=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued trap event was dropped under backpressure")
 	}
 }
 

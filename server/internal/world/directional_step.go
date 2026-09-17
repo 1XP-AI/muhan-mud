@@ -98,6 +98,7 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 		}
 		trapRoomID := actor.Body.RoomID
 		trapActorName := actor.Body.Name
+		trapRoomRecipients := arrivalTrapRoomRecipients(next, trapRoomID, actorID)
 		next, err = next.ApplyArrivalTrap(actorID, *result.Transfer.ArrivalTrap)
 		if err != nil {
 			return State{}, err
@@ -118,7 +119,7 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 			}
 			result.Alarm = &alarm
 		}
-		trapEvent, hasTrapEvent = arrivalTrapEventFor(actorID, trapActorName, trapRoomID, *result.Transfer.ArrivalTrap)
+		trapEvent, hasTrapEvent = arrivalTrapEventFor(actorID, trapActorName, trapRoomID, *result.Transfer.ArrivalTrap, trapRoomRecipients)
 	}
 	if result.Transfer.Entry != nil {
 		var err error
@@ -131,6 +132,35 @@ func applyArrivalStep(s State, actorID string, result *DirectionalStepResult, in
 		result.ArrivalTrapEvent = &trapEvent
 	}
 	return next, nil
+}
+
+// arrivalTrapRoomRecipients snapshots the descriptor-visible players in the
+// room immediately before check_traps mutates its actor. C broadcast_rom walks
+// that room at trap time; using this snapshot avoids consulting the command's
+// final state after later first_fol entries have moved or the trap relocated
+// the actor. PlayerIDs preserves the canonical room order for durable replay.
+func arrivalTrapRoomRecipients(s State, roomID int16, actorID string) []string {
+	room, ok := s.Rooms[roomID]
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(room.PlayerIDs))
+	recipients := make([]string, 0, len(room.PlayerIDs))
+	for _, id := range room.PlayerIDs {
+		if id == "" || id == actorID {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		player, exists := s.Players[id]
+		if !exists || !player.Online {
+			continue
+		}
+		seen[id] = struct{}{}
+		recipients = append(recipients, id)
+	}
+	return recipients
 }
 
 // moveFollowerTree re-evaluates the same directional command for each follower

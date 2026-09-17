@@ -161,47 +161,50 @@ func (g *WorldConnector) publishArrivalTrap(after world.State, event world.Arriv
 }
 
 // publishFollowerArrivalTraps delivers canonical player follower trap
-// projections in the reducer's recursive C first_fol order. A follower's
-// actor-local text goes to that follower's connection even when PIT/death
-// relocation changed its committed room; the room text is sent to the other
-// committed occupants of the room where check_traps ran. The Submit caller
-// invokes this only for a fresh receipt, so replay cannot duplicate output.
-func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events []world.ArrivalTrapEvent) {
+// projections in the reducer's recursive C first_fol order. Each event owns
+// the exact room recipient IDs captured immediately before its check_traps;
+// the final world snapshot is deliberately not consulted for membership.
+// Enqueueing is explicit: a full connection channel retains output in that
+// connection's pending queue instead of silently dropping it.
+func (g *WorldConnector) publishFollowerArrivalTraps(after world.State, events []world.ArrivalTrapEvent) bool {
 	if len(events) == 0 {
-		return
+		return true
 	}
+	_ = after
+	delivered := true
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	connections := make(map[string]*worldConnection, len(g.connections))
+	for connection := range g.connections {
+		if connection.lease.ActorID == "" || connection.events == nil {
+			continue
+		}
+		connections[connection.lease.ActorID] = connection
+	}
 	for _, event := range events {
 		if event.ActorID == "" || event.RoomID == 0 || (event.ActorText == "" && event.RoomText == "") {
 			continue
 		}
-		for connection := range g.connections {
-			player, exists := after.Players[connection.lease.ActorID]
-			if !exists || !player.Online || connection.events == nil {
+		if event.ActorText != "" {
+			connection, ok := connections[event.ActorID]
+			if !ok || !connection.enqueueEvent(event.ActorText) {
+				delivered = false
+			}
+		}
+		if event.RoomText == "" {
+			continue
+		}
+		for _, recipientID := range event.RoomRecipientIDs {
+			if recipientID == "" || recipientID == event.ActorID {
 				continue
 			}
-			if connection.lease.ActorID == event.ActorID {
-				if event.ActorText == "" {
-					continue
-				}
-				select {
-				case connection.events <- event.ActorText:
-				default:
-					// A slow follower cannot block its leader's durable command.
-				}
-				continue
-			}
-			if player.Body.RoomID != event.RoomID || event.RoomText == "" {
-				continue
-			}
-			select {
-			case connection.events <- event.RoomText:
-			default:
-				// A slow observer cannot block the durable movement receipt.
+			connection, ok := connections[recipientID]
+			if !ok || !connection.enqueueEvent(event.RoomText) {
+				delivered = false
 			}
 		}
 	}
+	return delivered
 }
 
 func (g *WorldConnector) publishSay(after world.State, actorID, text string) {
