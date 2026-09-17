@@ -33,6 +33,7 @@ const (
 	magicStopNPCNoHarmFlag       = 24 // MUNKIL
 	magicStopNPCResistMagicFlag  = 27 // MRMAGI
 	magicStopNPCResistBefuddle   = 43 // MRBEFD
+	magicStopNPCSummonFlag       = 61 // MSUMMO
 )
 
 // Exported aliases expose only source-confirmed slots and constants to the
@@ -72,9 +73,10 @@ var (
 	// ErrMagicStopNPCStateUnresolved prevents a command from silently
 	// consulting Resource.Monsters or another non-canonical identity source.
 	ErrMagicStopNPCStateUnresolved = errors.New("magic_stop canonical NPC state unresolved")
-	// ErrMagicStopCombatSideEffectPending documents the intentionally omitted
-	// add_enm_crt/damage/death/flee continuation.  It is exported for a later
-	// composite reducer; the bounded command records the hit and timer only.
+	// ErrMagicStopCombatSideEffectPending remains the fail-closed boundary for
+	// lethal, summoned, legacy, or otherwise unresolved combat continuations.
+	// Ordinary canonical NPC nonlethal continuation is admitted below; death
+	// and flee are still deliberately outside this reducer.
 	ErrMagicStopCombatSideEffectPending = errors.New("magic_stop combat side effect pending")
 )
 
@@ -105,9 +107,9 @@ type MagicStopEvent struct {
 }
 
 // MagicStopResult contains the actor response, all random draws, and the
-// post-commit room projection.  Combat fields are explicit: this reducer does
-// not mutate HP, enemy relations, death, or flee state until those contracts
-// are admitted by a composite combat reducer.
+// post-commit room projection. Combat fields are explicit so a durable receipt
+// can replay the NPC hostility, nonlethal HP, and timer transition without
+// re-running the random source.
 type MagicStopResult struct {
 	Action             string              `json:"action"`
 	Response           string              `json:"response"`
@@ -123,6 +125,11 @@ type MagicStopResult struct {
 	Succeeded          bool                `json:"succeeded,omitempty"`
 	Chance             int                 `json:"chance,omitempty"`
 	Roll               int                 `json:"roll,omitempty"`
+	DamageRoll         int                 `json:"damage_roll,omitempty"`
+	Damage             int                 `json:"damage,omitempty"`
+	EnemyDamage        int                 `json:"enemy_damage,omitempty"`
+	TargetHPBefore     int                 `json:"target_hp_before,omitempty"`
+	TargetHP           int                 `json:"target_hp,omitempty"`
 	DurationRoll1      int                 `json:"duration_roll_1,omitempty"`
 	DurationRoll2      int                 `json:"duration_roll_2,omitempty"`
 	SpellInterval      int32               `json:"spell_interval,omitempty"`
@@ -161,6 +168,11 @@ type MagicStopProposal struct {
 	Now              int32
 	Chance           int
 	Roll             int
+	DamageRoll       int
+	Damage           int
+	EnemyDamage      int
+	TargetHPBefore   int
+	TargetHP         int
 	DurationRoll1    int
 	DurationRoll2    int
 	SpellInterval    int32
@@ -361,16 +373,136 @@ func magicStopDurationFromRolls(actor LegacyMonster, target LegacyMonster, first
 	return int32(duration), nil
 }
 
+func magicStopPendingError(reason string) error {
+	return fmt.Errorf("%w: %s", ErrMagicStopCombatSideEffectPending, reason)
+}
+
+func magicStopUnresolvedError(reason string) error {
+	return fmt.Errorf("%w: %w: %s", ErrMagicStopCombatSideEffectPending, ErrMagicStopNPCStateUnresolved, reason)
+}
+
+// magicStopNPCCombatState is the ordinary-NPC continuation boundary. The
+// source routine only reaches add_enm_crt after the visible-target,
+// cooldown, and MUNKIL gates; this helper is intentionally called after those
+// gates so unresolved canonical relations never consume randomness or create a
+// receipt. A negative enemy damage value is the recovery/import unresolved
+// marker and must not be treated as zero.
+func magicStopNPCCombatState(s State, resolution magicStopResolution, actorID string) (NPCState, int, error) {
+	if s.NPCs == nil || resolution.id == "" {
+		return NPCState{}, -1, magicStopUnresolvedError("canonical NPC map absent")
+	}
+	npc, ok := s.NPCs[resolution.id]
+	if !ok || npc.Body.Type != magicStopMonsterType || npc.Body.RoomID != resolution.target.RoomID || !validMagicStopBodyName(npc.Body.Name) {
+		return NPCState{}, -1, magicStopUnresolvedError("canonical NPC identity changed")
+	}
+	if npc.Body.Class > magicStopMaxLegacyClass {
+		return NPCState{}, -1, magicStopUnresolvedError("NPC class outside legacy range")
+	}
+	if len(npc.Body.Inventory) != 0 {
+		return NPCState{}, -1, magicStopUnresolvedError("legacy NPC inventory unresolved")
+	}
+	if npc.Enemies == nil {
+		return NPCState{}, -1, magicStopUnresolvedError("NPC enemy relations unresolved")
+	}
+	if npc.Body.HPCurrent < 1 {
+		return NPCState{}, -1, magicStopPendingError("NPC target HP is not positive")
+	}
+	if flag(npc.Body.Flags[:], magicStopNPCSummonFlag) {
+		return NPCState{}, -1, magicStopPendingError("summoned NPC combat continuation pending")
+	}
+
+	want := EntityRef{Kind: "player", ID: actorID}
+	seen := make(map[EntityRef]bool, len(npc.Enemies))
+	matching := -1
+	for i, enemy := range npc.Enemies {
+		if enemy.Target.ID == "" || (enemy.Target.Kind != "player" && enemy.Target.Kind != "npc") || seen[enemy.Target] {
+			return NPCState{}, -1, magicStopUnresolvedError("invalid NPC enemy graph")
+		}
+		seen[enemy.Target] = true
+		if enemy.Damage < 0 {
+			return NPCState{}, -1, magicStopUnresolvedError("negative NPC enemy damage")
+		}
+		if enemy.Target == want {
+			matching = i
+		}
+	}
+	if matching >= 0 && int64(npc.Enemies[matching].Damage)+int64(npc.Body.HPCurrent/2) > math.MaxInt32 {
+		return NPCState{}, -1, magicStopPendingError("NPC enemy damage overflow")
+	}
+	return npc, matching, nil
+}
+
+// magicStopAddEnemyDamage mirrors add_enm_crt/add_enm_dmg while preserving the
+// canonical room/NPC order. A newly inserted edge is appended, and an existing
+// edge is accumulated exactly once; State.Validate rejects duplicate edges.
+func magicStopAddEnemyDamage(npc *NPCState, actorID string, added bool, amount int) error {
+	if npc == nil || npc.Enemies == nil || actorID == "" || amount < 0 || int64(amount) > math.MaxInt32 {
+		return fmt.Errorf("invalid magic_stop enemy damage")
+	}
+	firstEnemy := len(npc.Enemies) == 0
+	want := EntityRef{Kind: "player", ID: actorID}
+	matching := -1
+	for i, enemy := range npc.Enemies {
+		if enemy.Target == want {
+			if matching >= 0 {
+				return fmt.Errorf("magic_stop duplicate NPC enemy relation")
+			}
+			matching = i
+		}
+	}
+	if added {
+		if matching >= 0 {
+			return fmt.Errorf("magic_stop NPC enemy relation already exists")
+		}
+		npc.Enemies = append(npc.Enemies, NPCEnemy{Target: want})
+		matching = len(npc.Enemies) - 1
+		// creature.c:add_enm_crt leaves NUMHITS alone for the first edge, but
+		// resets it after appending to an already populated enemy list.
+		if !firstEnemy {
+			npc.Body.Quests[0] = 0
+		}
+	} else if matching < 0 {
+		return fmt.Errorf("magic_stop NPC enemy relation absent")
+	}
+	if int64(npc.Enemies[matching].Damage)+int64(amount) > math.MaxInt32 {
+		return fmt.Errorf("magic_stop enemy damage overflow")
+	}
+	npc.Enemies[matching].Damage += int32(amount)
+	return nil
+}
+
+func magicStopDamageResponse(target LegacyMonster, damage int) string {
+	return fmt.Sprintf("%s의 급소를 짚어서 %d의 피해를 입혔습니다.\n", target.Name, damage)
+}
+
+// magicStopActorRoomName mirrors command7.c's room-side %M for the player
+// actor after magic_stop has cleared PINVIS. %M supplies the player honorific;
+// the following particles are literal source text, not name-derived josa.
+func magicStopActorRoomName(actor LegacyMonster) string {
+	return combatPlayerLabel(actor.Name, false)
+}
+
+func magicStopDamageRoom(actor, target LegacyMonster, damage int) string {
+	return fmt.Sprintf("%s이 %s의 급소를 짚어서 %d의 피해를 입혔습니다.\n", magicStopActorRoomName(actor), target.Name, damage)
+}
+
 func magicStopRevealResponse() string {
 	return "\n당신의 모습이 나타나기 시작합니다.\n"
 }
 
+func magicStopRevealResponseIf(reveal bool) string {
+	if !reveal {
+		return ""
+	}
+	return magicStopRevealResponse()
+}
+
 func magicStopRevealRoom(actor LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s의 모습이 보이기 시작합니다.\n", actor.Name, legacySubjectParticle(actor.Name))
+	return fmt.Sprintf("\n%s의 모습이 보이기 시작합니다.", magicStopActorRoomName(actor))
 }
 
 func magicStopNoTargetResponse() string {
-	return "그런 괴물은 존재하지 않습니다.\n"
+	return "\n그런 괴물은 존재하지 않습니다.\n"
 }
 
 func magicStopNoArgumentResponse() string {
@@ -398,11 +530,11 @@ func magicStopSuccessResponse() string {
 }
 
 func magicStopMissRoom(actor, target LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 %s%s 살짝 피했습니다.\n", actor.Name, legacySubjectParticle(actor.Name), target.Name, legacySubjectParticle(target.Name))
+	return fmt.Sprintf("\n%s이 적의 혈도를 재빨리 봉쇄했습니다.\n그러나 %s가 살짝 피했습니다.\n", magicStopActorRoomName(actor), target.Name)
 }
 
 func magicStopSuccessRoom(actor, target LegacyMonster) string {
-	return fmt.Sprintf("\n%s%s 적의 혈도를 재빨리 봉쇄했습니다.\n%s%s의 혈도가 짚혀 주문이 봉쇄되었습니다.\n", actor.Name, legacySubjectParticle(actor.Name), target.Name, legacySubjectParticle(target.Name))
+	return fmt.Sprintf("\n%s이 적의 혈도를 재빨리 봉쇄했습니다.\n%s의 혈도가 짚혀 주문이 봉쇄되었습니다.\n", magicStopActorRoomName(actor), target.Name)
 }
 
 func magicStopEvent(actorID string, actor LegacyMonster, resolution magicStopResolution, texts []string) *MagicStopEvent {
@@ -431,9 +563,10 @@ func (s State) PlanMagicStop(actorID, targetName string, now int32, roll func(in
 }
 
 // PlanMagicStopWithOccurrence ports the confirmed command7.c ordering:
-// class -> canonical same-room visible NPC lookup -> reveal -> LT_TURNS
-// cooldown -> MUNKIL gate -> chance/draw.  Enemy relations, damage/death,
-// and flee continuation are deliberately absent from this candidate.
+// argument/class -> canonical same-room visible NPC lookup -> reveal ->
+// LT_TURNS cooldown -> MUNKIL gate -> canonical combat graph/HP -> add_enm_crt
+// and actor timers -> chance/damage/duration draws. Death and flee
+// continuation remain deliberately outside this nonlethal candidate.
 func (s State) PlanMagicStopWithOccurrence(actorID, targetName string, occurrence int, now int32, roll func(int, int) int) (MagicStopProposal, error) {
 	zero := MagicStopProposal{}
 	if err := s.Validate(); err != nil {
@@ -455,15 +588,15 @@ func (s State) PlanMagicStopWithOccurrence(actorID, targetName string, occurrenc
 	if actor.Body.Class > magicStopMaxLegacyClass {
 		return zero, fmt.Errorf("magic_stop actor class outside legacy table")
 	}
-	if actor.Body.Class != magicStopRangerClass && actor.Body.Class < magicStopInvincibleClass {
-		p.NoOp = true
-		p.Response = magicStopUnauthorizedResponse()
-		return p, nil
-	}
-	p.Authorized = true
+	p.Authorized = actor.Body.Class == magicStopRangerClass || actor.Body.Class >= magicStopInvincibleClass
 	if targetName == "" {
 		p.NoOp = true
 		p.Response = magicStopNoArgumentResponse()
+		return p, nil
+	}
+	if !p.Authorized {
+		p.NoOp = true
+		p.Response = magicStopUnauthorizedResponse()
 		return p, nil
 	}
 	if !validMagicStopSelector(targetName) {
@@ -514,11 +647,87 @@ func (s State) PlanMagicStopWithOccurrence(actorID, targetName string, occurrenc
 		return p, nil
 	}
 
-	// The source enters the combat continuation here (add_enm_crt followed by
-	// the damage/death/flee path). Those transitions are not represented by the
-	// bounded canonical snapshot, so do not consume RNG or manufacture a timer
-	// candidate that could be durably committed as a successful command.
-	return zero, fmt.Errorf("%w: target=%s", ErrMagicStopCombatSideEffectPending, resolution.id)
+	npc, enemyIndex, err := magicStopNPCCombatState(s, resolution, actorID)
+	if err != nil {
+		return zero, err
+	}
+	p.TargetHPBefore = int(npc.Body.HPCurrent)
+	p.TargetHP = p.TargetHPBefore
+	p.EnemyAdded = enemyIndex < 0
+	p.CombatApplied = true
+
+	// C assigns LT_TURNS.interval but only updates LT_ATTCK.ltime. Preserve
+	// both timers' non-owned fields and reject malformed values before RNG.
+	cooldownTimer := actor.Body.Timers[magicStopCooldownTimerIndex]
+	attackTimer := actor.Body.Timers[magicStopAttackTimerIndex]
+	if cooldownTimer.LastTime < 0 || cooldownTimer.Interval < 0 || attackTimer.LastTime < 0 || attackTimer.Interval < 0 {
+		return zero, fmt.Errorf("magic_stop combat timer outside legacy range")
+	}
+	p.TimerWrite = true
+	p.Chance, err = MagicStopChance(actor.Body, npc.Body)
+	if err != nil {
+		return zero, err
+	}
+	p.Roll, err = magicStopRoll(roll, 1, 100)
+	if err != nil {
+		return zero, err
+	}
+	p.Attempted = true
+	p.Succeeded = p.Roll <= p.Chance
+	if !p.Succeeded {
+		p.Response += magicStopMissResponse()
+		roomTexts = append(roomTexts, magicStopMissRoom(actor.Body, npc.Body))
+		p.ExpectedEvent = magicStopEvent(actorID, actor.Body, resolution, roomTexts)
+		p.Broadcast = p.ExpectedEvent != nil
+		return p, nil
+	}
+
+	p.DamageRoll, err = magicStopRoll(roll, 25, 100)
+	if err != nil {
+		return zero, err
+	}
+	p.DamageApplied = p.DamageRoll <= p.Chance
+	if p.DamageApplied {
+		p.Damage = p.TargetHPBefore / 2
+		p.TargetHP = p.TargetHPBefore - p.Damage
+		p.EnemyDamage = min(p.TargetHPBefore, p.Damage)
+		if p.TargetHP < 1 {
+			return zero, magicStopPendingError("lethal NPC target transition pending")
+		}
+	}
+
+	// C always evaluates dice(2,6,0) after a successful first chance roll,
+	// including when the separate damage chance misses.
+	p.DurationRoll1, err = magicStopRoll(roll, 1, 6)
+	if err != nil {
+		return zero, err
+	}
+	p.DurationRoll2, err = magicStopRoll(roll, 1, 6)
+	if err != nil {
+		return zero, err
+	}
+	p.SpellInterval, err = magicStopDurationFromRolls(actor.Body, npc.Body, p.DurationRoll1, p.DurationRoll2)
+	if err != nil {
+		return zero, err
+	}
+	p.SpellTimerWrite = true
+	p.Response += magicStopSuccessResponse()
+	roomTexts = append(roomTexts, magicStopSuccessRoom(actor.Body, npc.Body))
+	if p.DamageApplied {
+		p.Response += magicStopDamageResponse(npc.Body, p.Damage)
+		roomTexts = append(roomTexts, magicStopDamageRoom(actor.Body, npc.Body, p.Damage))
+	}
+	p.ExpectedEvent = magicStopEvent(actorID, actor.Body, resolution, roomTexts)
+	p.Broadcast = p.ExpectedEvent != nil
+	return p, nil
+}
+
+func magicStopProposalCombatFieldsEmpty(p MagicStopProposal) bool {
+	return !p.Attempted && !p.Succeeded && p.Chance == 0 && p.Roll == 0 && p.DamageRoll == 0 &&
+		p.Damage == 0 && p.EnemyDamage == 0 && p.TargetHPBefore == 0 && p.TargetHP == 0 &&
+		p.DurationRoll1 == 0 && p.DurationRoll2 == 0 && p.SpellInterval == 0 &&
+		!p.TimerWrite && !p.SpellTimerWrite && !p.StatusTimerWrite && !p.StatusBitChanged &&
+		!p.CombatApplied && !p.CombatDeferred && !p.DamageApplied && !p.EnemyAdded
 }
 
 func magicStopProposalResult(p MagicStopProposal) MagicStopResult {
@@ -528,7 +737,10 @@ func magicStopProposalResult(p MagicStopProposal) MagicStopResult {
 		Broadcast: p.Broadcast, NoOp: p.NoOp, Authorized: p.Authorized,
 		TargetFound: p.TargetFound, Cooldown: p.Cooldown, Rejected: p.Rejected,
 		WaitSeconds: p.WaitSeconds, Attempted: p.Attempted, Succeeded: p.Succeeded,
-		Chance: p.Chance, Roll: p.Roll, DurationRoll1: p.DurationRoll1,
+		Chance: p.Chance, Roll: p.Roll, DamageRoll: p.DamageRoll,
+		Damage: p.Damage, EnemyDamage: p.EnemyDamage,
+		TargetHPBefore: p.TargetHPBefore, TargetHP: p.TargetHP,
+		DurationRoll1: p.DurationRoll1,
 		DurationRoll2: p.DurationRoll2, SpellInterval: p.SpellInterval,
 		SpellTimerWritten: p.SpellTimerWrite, StatusTimerWritten: p.StatusTimerWrite,
 		StatusBitChanged: p.StatusBitChanged, CombatApplied: p.CombatApplied,
@@ -541,9 +753,9 @@ func magicStopProposalResult(p MagicStopProposal) MagicStopResult {
 }
 
 // ApplyMagicStop validates a proposal against the exact planned snapshot and
-// atomically applies only safe no-op/rejection projections. An ordinary target
-// would enter the unimplemented combat continuation, so it returns
-// ErrMagicStopCombatSideEffectPending and writes no state or durable receipt.
+// atomically applies the canonical NPC nonlethal continuation. It never calls
+// the random source; every draw and projection is checked against the source
+// ordering captured by PlanMagicStop.
 func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, error) {
 	if err := s.Validate(); err != nil {
 		return State{}, MagicStopResult{}, err
@@ -564,24 +776,25 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	}
 	result := magicStopProposalResult(p)
 
+	if p.TargetOccurrence < 1 {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop target occurrence")
+	}
+	if p.QueryName == "" {
+		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.Cooldown || p.Rejected || p.WaitSeconds != 0 || p.ExpectedEvent != nil || p.Broadcast || !magicStopProposalCombatFieldsEmpty(p) || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent || p.Response != magicStopNoArgumentResponse() {
+			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop missing-target proposal")
+		}
+		return s.clone(), result, nil
+	}
+
 	// Permission failure is deliberately resolved before target lookup, as in
 	// command7.c.  This branch cannot carry any target, timer, RNG, or event.
 	if !authorized {
-		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Cooldown || p.Rejected || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || p.ExpectedEvent != nil || p.Broadcast || p.Response != magicStopUnauthorizedResponse() {
+		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.Cooldown || p.Rejected || p.ExpectedEvent != nil || p.Broadcast || !magicStopProposalCombatFieldsEmpty(p) || p.Response != magicStopUnauthorizedResponse() {
 			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop authorization proposal")
 		}
 		return s.clone(), result, nil
 	}
 
-	if p.TargetOccurrence < 1 {
-		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop target occurrence")
-	}
-	if p.QueryName == "" {
-		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Cooldown || p.Rejected || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || p.WaitSeconds != 0 || p.CombatDeferred || p.ExpectedEvent != nil || p.Broadcast || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent || p.Response != magicStopNoArgumentResponse() {
-			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop missing-target proposal")
-		}
-		return s.clone(), result, nil
-	}
 	if !validMagicStopSelector(p.QueryName) {
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop target selector")
 	}
@@ -590,7 +803,7 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 		return State{}, MagicStopResult{}, err
 	}
 	if resolution.id == "" {
-		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Cooldown || p.Rejected || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || p.WaitSeconds != 0 || p.CombatDeferred || p.ExpectedEvent != nil || p.Broadcast || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent || p.Response != magicStopNoTargetResponse() {
+		if !p.NoOp || p.TargetFound || p.TargetID != "" || p.TargetName != "" || p.TargetKind != "" || p.ClearInvisible || p.Cooldown || p.Rejected || p.WaitSeconds != 0 || p.ExpectedEvent != nil || p.Broadcast || !magicStopProposalCombatFieldsEmpty(p) || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent || p.Response != magicStopNoTargetResponse() {
 			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop absent-target proposal")
 		}
 		return s.clone(), result, nil
@@ -602,7 +815,7 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	if p.ClearInvisible != reveal {
 		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop invisibility proposal changed")
 	}
-	if p.CombatApplied || p.DamageApplied || p.EnemyAdded || p.StatusBitChanged || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent {
+	if p.StatusBitChanged || p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent {
 		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop deferred side-effect projection")
 	}
 	if p.CombatDeferred {
@@ -623,7 +836,7 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	}
 	deadline := int64(timer.LastTime) + int64(timer.Interval)
 	if p.Cooldown {
-		if !p.NoOp || p.Rejected || p.CombatDeferred || p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || int64(p.Now) >= deadline {
+		if !p.NoOp || p.Rejected || int64(p.Now) >= deadline || !magicStopProposalCombatFieldsEmpty(p) {
 			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop cooldown proposal")
 		}
 		wait := deadline - int64(p.Now)
@@ -654,7 +867,7 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 	}
 
 	if p.Rejected {
-		if !p.NoOp || p.CombatDeferred || p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || int64(p.Now) < deadline || !flag(resolution.target.Flags[:], magicStopNPCNoHarmFlag) {
+		if !p.NoOp || int64(p.Now) < deadline || !flag(resolution.target.Flags[:], magicStopNPCNoHarmFlag) || !magicStopProposalCombatFieldsEmpty(p) {
 			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop protected-target proposal")
 		}
 		response := responsePrefix + magicStopNoHarmResponse(resolution.target)
@@ -676,10 +889,137 @@ func (s State) ApplyMagicStop(p MagicStopProposal) (State, MagicStopResult, erro
 		return next, result, nil
 	}
 
-	if p.TimerWrite || p.SpellTimerWrite || p.StatusTimerWrite || p.Attempted || p.Succeeded || p.Roll != 0 || p.Chance != 0 || p.DurationRoll1 != 0 || p.DurationRoll2 != 0 || p.SpellInterval != 0 {
-		return State{}, MagicStopResult{}, ErrMagicStopCombatSideEffectPending
+	// Ordinary canonical NPC continuation starts only after the same
+	// post-gate graph/HP checks used by planning. A stale or tampered proposal
+	// cannot turn a missing relation, summon, legacy inventory, or dead target
+	// into a durable combat receipt.
+	npc, enemyIndex, err := magicStopNPCCombatState(s, resolution, p.ActorID)
+	if err != nil {
+		return State{}, MagicStopResult{}, err
 	}
-	return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop unsupported attempt proposal")
+	if p.NoOp || p.Rejected || p.Cooldown || !p.CombatApplied || p.CombatDeferred || !p.TimerWrite || p.StatusTimerWrite || p.StatusBitChanged ||
+		p.MPBefore != actor.Body.MPCurrent || p.MPAfter != actor.Body.MPCurrent || p.TargetHPBefore != int(npc.Body.HPCurrent) || p.TargetHPBefore < 1 ||
+		p.TargetHP < 1 || p.EnemyAdded != (enemyIndex < 0) {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop combat projection")
+	}
+	if p.ClearInvisible != reveal {
+		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop invisibility proposal changed")
+	}
+	if p.Now < 0 {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop clock")
+	}
+	attackTimer := actor.Body.Timers[magicStopAttackTimerIndex]
+	if attackTimer.LastTime < 0 || attackTimer.Interval < 0 {
+		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop attack timer outside legacy range")
+	}
+	next := s.clone()
+	nextActor := next.Players[p.ActorID]
+	nextNPC := next.NPCs[p.TargetID]
+	// add_enm_crt precedes chance and all later timer/damage work in
+	// command7.c. Apply the zero-damage insertion first, then the successful
+	// branch accumulates its separately recorded min(previous HP, damage) value
+	// below.
+	if err := magicStopAddEnemyDamage(&nextNPC, p.ActorID, p.EnemyAdded, 0); err != nil {
+		return State{}, MagicStopResult{}, err
+	}
+	chance, chanceErr := MagicStopChance(actor.Body, npc.Body)
+	if chanceErr != nil || chance != p.Chance || p.Roll < 1 || p.Roll > 100 || !p.Attempted || p.Succeeded != (p.Roll <= p.Chance) {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop chance outcome")
+	}
+	if p.TargetHP != p.TargetHPBefore && !p.Succeeded {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop miss HP projection")
+	}
+
+	if p.ClearInvisible {
+		setSettingFlag(&nextActor.Body, magicStopPlayerInvisibleFlag, false)
+	}
+	nextCooldown := nextActor.Body.Timers[magicStopCooldownTimerIndex]
+	nextCooldown.LastTime = p.Now
+	nextActor.Body.Timers[magicStopCooldownTimerIndex] = nextCooldown
+	nextAttack := nextActor.Body.Timers[magicStopAttackTimerIndex]
+	nextAttack.LastTime = p.Now
+	nextActor.Body.Timers[magicStopAttackTimerIndex] = nextAttack
+	nextCooldown = nextActor.Body.Timers[magicStopCooldownTimerIndex]
+	nextCooldown.Interval = magicStopCooldownSeconds
+	nextActor.Body.Timers[magicStopCooldownTimerIndex] = nextCooldown
+	if !p.Succeeded {
+		if p.SpellTimerWrite || p.DamageRoll != 0 || p.DamageApplied || p.Damage != 0 || p.EnemyDamage != 0 || p.DurationRoll1 != 0 || p.DurationRoll2 != 0 || p.SpellInterval != 0 || p.TargetHP != p.TargetHPBefore {
+			return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop chance miss projection")
+		}
+		wantResponse := magicStopRevealResponseIf(reveal) + magicStopMissResponse()
+		wantTexts := make([]string, 0, 2)
+		if reveal {
+			wantTexts = append(wantTexts, magicStopRevealRoom(actor.Body))
+		}
+		wantTexts = append(wantTexts, magicStopMissRoom(actor.Body, npc.Body))
+		wantEvent := magicStopEvent(p.ActorID, actor.Body, resolution, wantTexts)
+		if p.Response != wantResponse || !reflect.DeepEqual(p.ExpectedEvent, wantEvent) || p.Broadcast != (wantEvent != nil) {
+			return State{}, MagicStopResult{}, fmt.Errorf("stale magic_stop miss projection")
+		}
+		next.NPCs[p.TargetID] = nextNPC
+		next.Players[p.ActorID] = nextActor
+		result.Response, result.Changed, result.Event = p.Response, true, wantEvent
+		result.Broadcast, result.TargetFound = wantEvent != nil, true
+		if err := next.Validate(); err != nil {
+			return State{}, MagicStopResult{}, err
+		}
+		return next, result, nil
+	}
+
+	if p.DamageRoll < 25 || p.DamageRoll > 100 || p.DamageApplied != (p.DamageRoll <= p.Chance) || p.SpellTimerWrite == false ||
+		p.DurationRoll1 < 1 || p.DurationRoll1 > 6 || p.DurationRoll2 < 1 || p.DurationRoll2 > 6 {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop hit projection")
+	}
+	interval, intervalErr := magicStopDurationFromRolls(actor.Body, npc.Body, p.DurationRoll1, p.DurationRoll2)
+	if intervalErr != nil || p.SpellInterval != interval {
+		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop duration projection changed")
+	}
+	wantDamage := 0
+	wantEnemyDamage := 0
+	wantTargetHP := p.TargetHPBefore
+	if p.DamageApplied {
+		wantDamage = p.TargetHPBefore / 2
+		wantTargetHP = p.TargetHPBefore - wantDamage
+		wantEnemyDamage = min(p.TargetHPBefore, wantDamage)
+		if wantTargetHP < 1 {
+			return State{}, MagicStopResult{}, magicStopPendingError("lethal NPC target transition pending")
+		}
+	} else if p.Damage != 0 || p.EnemyDamage != 0 || p.TargetHP != p.TargetHPBefore {
+		return State{}, MagicStopResult{}, fmt.Errorf("invalid magic_stop no-damage projection")
+	}
+	if p.Damage != wantDamage || p.EnemyDamage != wantEnemyDamage || p.TargetHP != wantTargetHP {
+		return State{}, MagicStopResult{}, fmt.Errorf("magic_stop damage projection changed")
+	}
+	if err := magicStopAddEnemyDamage(&nextNPC, p.ActorID, false, p.EnemyDamage); err != nil {
+		return State{}, MagicStopResult{}, err
+	}
+	nextNPC.Body.HPCurrent = int16(p.TargetHP)
+	spellTimer := nextNPC.Body.Timers[magicStopSpellTimerIndex]
+	spellTimer.LastTime = p.Now
+	spellTimer.Interval = p.SpellInterval
+	nextNPC.Body.Timers[magicStopSpellTimerIndex] = spellTimer
+	wantResponse := magicStopRevealResponseIf(reveal) + magicStopSuccessResponse()
+	wantTexts := make([]string, 0, 3)
+	if reveal {
+		wantTexts = append(wantTexts, magicStopRevealRoom(actor.Body))
+	}
+	wantTexts = append(wantTexts, magicStopSuccessRoom(actor.Body, npc.Body))
+	if p.DamageApplied {
+		wantResponse += magicStopDamageResponse(npc.Body, p.Damage)
+		wantTexts = append(wantTexts, magicStopDamageRoom(actor.Body, npc.Body, p.Damage))
+	}
+	wantEvent := magicStopEvent(p.ActorID, actor.Body, resolution, wantTexts)
+	if p.Response != wantResponse || !reflect.DeepEqual(p.ExpectedEvent, wantEvent) || p.Broadcast != (wantEvent != nil) {
+		return State{}, MagicStopResult{}, fmt.Errorf("stale magic_stop success projection")
+	}
+	next.NPCs[p.TargetID] = nextNPC
+	next.Players[p.ActorID] = nextActor
+	result.Response, result.Changed, result.Event = p.Response, true, wantEvent
+	result.Broadcast, result.TargetFound = wantEvent != nil, true
+	if err := next.Validate(); err != nil {
+		return State{}, MagicStopResult{}, err
+	}
+	return next, result, nil
 }
 
 // MagicStop is a convenience wrapper for callers that do not need to retain
