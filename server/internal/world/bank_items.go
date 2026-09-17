@@ -185,6 +185,189 @@ func (s State) WithdrawBankItem(actorID, name string, occurrence int) (State, Ba
 	return next, BankItemResult{ItemName: item.Object.Name, Action: "bank-withdraw-item"}, nil
 }
 
+// selectBankItemRootsByName resolves each matching direct root once, in the
+// canonical source order. It intentionally reuses EQUAL's display/key prefix
+// selector and does not inspect nested descendants.
+func selectBankItemRootsByName(items ItemCollection, name string, visible func(LegacyObject) bool) ([]string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("item name required")
+	}
+	roots := make([]string, 0, len(items.Inventory))
+	for _, id := range items.Inventory {
+		item, ok := items.Items[id]
+		if !ok || !equalInventorySelector(item.Object, name) || (visible != nil && !visible(item.Object)) {
+			continue
+		}
+		roots = append(roots, id)
+	}
+	return roots, nil
+}
+
+// transferBankItemRoots keeps the order in which matching roots appeared in
+// the source. TransferItemRoots still validates and moves complete canonical
+// subtrees; this wrapper only replaces its name-sorted destination root order
+// for the new multi-selector bank operation.
+func transferBankItemRoots(source, destination ItemCollection, roots []string) (ItemTransferPlan, error) {
+	plan, err := TransferItemRoots(source, destination, roots)
+	if err != nil {
+		return ItemTransferPlan{}, err
+	}
+	selected := make(map[string]bool, len(roots))
+	for _, id := range roots {
+		selected[id] = true
+	}
+	ordered := make([]string, 0, len(plan.Destination.Inventory))
+	for _, id := range plan.Destination.Inventory {
+		if !selected[id] {
+			ordered = append(ordered, id)
+		}
+	}
+	ordered = append(ordered, roots...)
+	plan.Destination.Inventory = ordered
+	if err := plan.Destination.Validate(); err != nil {
+		return ItemTransferPlan{}, err
+	}
+	return plan, nil
+}
+
+func bankItemNames(items ItemCollection, roots []string) string {
+	names := make([]string, 0, len(roots))
+	for _, id := range roots {
+		if item, ok := items.Items[id]; ok {
+			names = append(names, item.Object.Name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// DepositBankItemsByName atomically moves every eligible direct player root
+// matching name into the bank. It is the Go boundary for C's 모든<name>
+// input_bank form; ineligible matches are skipped just like 보관물 모두.
+func (s State) DepositBankItemsByName(actorID, name string) (State, BankItemResult, error) {
+	s, p, account, err := s.bankItemsContext(actorID)
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	roots, err := selectBankItemRootsByName(*p.Items, name, nil)
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	source := p.Items.clone()
+	destination := emptyBankItems(account)
+	detect := flag(p.Body.Flags[:], playerDetectInvisibleFlag)
+	selected := make([]string, 0, len(roots))
+	for _, id := range roots {
+		if len(destination.Inventory)+len(selected) >= bankItemCapacity {
+			break
+		}
+		item := source.Items[id]
+		if (flag(item.Object.Flags[:], objectInvisibleFlag) && !detect) ||
+			flag(item.Object.Flags[:], itemContainerFlag) ||
+			(item.Object.Quest != 0 && p.Body.Class < playerDMClass) ||
+			flag(item.Object.Flags[:], objectEventFlag) {
+			continue
+		}
+		selected = append(selected, id)
+	}
+	if len(selected) == 0 {
+		return s.clone(), BankItemResult{Action: "bank-deposit-all-by-name"}, nil
+	}
+	plan, err := transferBankItemRoots(source, destination, selected)
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	next := s.clone()
+	nextPlayer := next.Players[actorID]
+	nextPlayer.Items = &plan.Source
+	next.Players[actorID] = nextPlayer
+	if next.BankAccounts == nil {
+		next.BankAccounts = map[string]BankAccount{}
+	}
+	next.BankAccounts[actorID] = BankAccount{Balance: account.Balance, Items: &plan.Destination}
+	if err := next.Validate(); err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	return next, BankItemResult{ItemName: bankItemNames(source, selected), Action: "bank-deposit-all-by-name", Count: len(selected)}, nil
+}
+
+// WithdrawBankItemsByName atomically moves every eligible direct bank root
+// matching name into the player. It retains C's bank visibility/event/capacity
+// and weight gates while keeping canonical IDs and source order.
+func (s State) WithdrawBankItemsByName(actorID, name string) (State, BankItemResult, error) {
+	s, p, account, err := s.bankItemsContext(actorID)
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	if account.Items == nil {
+		if strings.TrimSpace(name) == "" {
+			return State{}, BankItemResult{}, fmt.Errorf("item name required")
+		}
+		return s.clone(), BankItemResult{Action: "bank-withdraw-all-by-name"}, nil
+	}
+	detect := flag(p.Body.Flags[:], playerDetectInvisibleFlag)
+	roots, err := selectBankItemRootsByName(*account.Items, name, func(object LegacyObject) bool {
+		return bankVisible(object, detect)
+	})
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	source := account.Items.clone()
+	destination := p.Items.clone()
+	workingSource := source.clone()
+	workingDestination := destination.clone()
+	selected := make([]string, 0, len(roots))
+	for _, id := range roots {
+		capacity, err := workingDestination.CapacityCount()
+		if err != nil {
+			return State{}, BankItemResult{}, err
+		}
+		if capacity >= 150 {
+			break
+		}
+		item := workingSource.Items[id]
+		rootWeight, err := workingSource.objectWeight(id)
+		if err != nil {
+			return State{}, BankItemResult{}, err
+		}
+		carried, err := workingDestination.Weight()
+		if err != nil {
+			return State{}, BankItemResult{}, err
+		}
+		if carried+rootWeight > maxPlayerWeight(p.Body) {
+			continue
+		}
+		if flag(item.Object.Flags[:], objectEventFlag) && !flag(item.Object.Flags[:], objectOneWevFlag) {
+			continue
+		}
+		selected = append(selected, id)
+		plan, err := TransferItemRoots(workingSource, workingDestination, []string{id})
+		if err != nil {
+			return State{}, BankItemResult{}, err
+		}
+		workingSource, workingDestination = plan.Source, plan.Destination
+	}
+	if len(selected) == 0 {
+		return s.clone(), BankItemResult{Action: "bank-withdraw-all-by-name"}, nil
+	}
+	plan, err := transferBankItemRoots(source, *p.Items, selected)
+	if err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	next := s.clone()
+	nextPlayer := next.Players[actorID]
+	nextPlayer.Items = &plan.Destination
+	next.Players[actorID] = nextPlayer
+	if next.BankAccounts == nil {
+		next.BankAccounts = map[string]BankAccount{}
+	}
+	next.BankAccounts[actorID] = BankAccount{Balance: account.Balance, Items: &plan.Source}
+	if err := next.Validate(); err != nil {
+		return State{}, BankItemResult{}, err
+	}
+	return next, BankItemResult{ItemName: bankItemNames(source, selected), Action: "bank-withdraw-all-by-name", Count: len(selected)}, nil
+}
+
 // DepositAllBankItems and WithdrawAllBankItems implement the source's
 // `보관물 모두`/`받아 모두` shape. Ineligible roots are skipped; successful
 // moves remain one atomic candidate and never allocate new IDs.

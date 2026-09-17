@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,6 +36,22 @@ func bankCommandItemFixture() []byte {
 		"sword": {Object: world.LegacyObject{Name: "검", Weight: 1}},
 		"stone": {Object: world.LegacyObject{Name: "돌", Weight: 1}},
 	}, Inventory: []string{"sword", "stone"}}
+	s.Players["a"] = p
+	raw, _ := json.Marshal(s)
+	return raw
+}
+
+func bankCommandByNameFixture() []byte {
+	s, err := world.DecodeState(bankCommandFixture())
+	if err != nil {
+		panic(err)
+	}
+	p := s.Players["a"]
+	p.Items = &world.ItemCollection{Items: map[string]world.Item{
+		"beta":  {Object: world.LegacyObject{Name: "BladeTwo", Keys: [3]string{"blade-alias"}, Weight: 1}},
+		"alpha": {Object: world.LegacyObject{Name: "BladeOne", Keys: [3]string{"blade-alias"}, Weight: 1}},
+		"other": {Object: world.LegacyObject{Name: "Rock", Keys: [3]string{"stone"}, Weight: 1}},
+	}, Inventory: []string{"beta", "alpha", "other"}}
 	s.Players["a"] = p
 	raw, _ := json.Marshal(s)
 	return raw
@@ -92,11 +109,24 @@ func TestParseBankLine(t *testing.T) {
 	if !ok || withdraw.kind != "withdraw-item" || withdraw.name != "검" || withdraw.occurrence != 1 {
 		t.Fatalf("last-token withdraw item=%+v ok=%t", withdraw, ok)
 	}
+	for _, tc := range []struct {
+		line, kind, name string
+	}{
+		{"모든검 보관물", "deposit-items-by-name", "검"},
+		{"보관물 모든검", "deposit-items-by-name", "검"},
+		{"모든검 받아", "withdraw-items-by-name", "검"},
+		{"받아 모든검", "withdraw-items-by-name", "검"},
+	} {
+		got, ok := parseBankLine(tc.line)
+		if !ok || got.kind != tc.kind || got.name != tc.name || got.occurrence != 1 || got.all {
+			t.Fatalf("by-name line=%q got=%+v ok=%t", tc.line, got, ok)
+		}
+	}
 	both, ok := parseBankLine("보관물 받아")
 	if !ok || both.kind != "withdraw-item" || both.name != "보관물" {
 		t.Fatalf("last-token wins=%+v ok=%t", both, ok)
 	}
-	for _, line := range []string{"", "검", "동 입금 extra", "입금 250냥 extra"} {
+	for _, line := range []string{"", "검", "동 입금 extra", "입금 250냥 extra", "모든 보관물", "보관물 모든", "모든 받아", "받아 모든"} {
 		if _, ok := parseBankLine(line); ok {
 			t.Fatalf("accepted %q", line)
 		}
@@ -239,5 +269,30 @@ func TestExecuteBankLineLastTokenItemsWithoutMoving(t *testing.T) {
 	saved, err = world.DecodeState(store.state)
 	if err != nil || saved.Players["a"].Body.RoomID != 1 || !bankTestHasID(saved.Players["a"].Items.Inventory, "sword") || bankTestHasID(saved.BankAccounts["a"].Items.Inventory, "sword") {
 		t.Fatalf("withdraw item moved or mutated player=%+v bank=%+v err=%v", saved.Players["a"], saved.BankAccounts["a"], err)
+	}
+}
+
+func TestExecuteBankLineByNameMovesAtomicallyAndReplays(t *testing.T) {
+	store := &departureStore{state: bankCommandByNameFixture()}
+	owners, lease := admitBankOwner(t)
+	first := executeParsedBankLine(t, owners, store, lease, "bank-by-name-1", "모든blade 보관물")
+	if first.Replayed || store.commits != 1 || !strings.Contains(string(first.Response), "BladeTwo, BladeOne") {
+		t.Fatalf("deposit=%q commits=%d replayed=%t", first.Response, store.commits, first.Replayed)
+	}
+	saved, err := world.DecodeState(store.state)
+	if err != nil || !reflect.DeepEqual(saved.BankAccounts["a"].Items.Inventory, []string{"beta", "alpha"}) || !reflect.DeepEqual(saved.Players["a"].Items.Inventory, []string{"other"}) {
+		t.Fatalf("deposit state=%+v err=%v", saved, err)
+	}
+	replay := executeParsedBankLine(t, owners, store, lease, "bank-by-name-1", "모든blade 보관물")
+	if !replay.Replayed || store.commits != 1 || string(replay.Response) != string(first.Response) {
+		t.Fatalf("deposit replay=%+v commits=%d", replay, store.commits)
+	}
+	withdraw := executeParsedBankLine(t, owners, store, lease, "bank-by-name-2", "받아 모든blade")
+	if withdraw.Replayed || store.commits != 2 || !strings.Contains(string(withdraw.Response), "BladeTwo, BladeOne") {
+		t.Fatalf("withdraw=%q commits=%d replayed=%t", withdraw.Response, store.commits, withdraw.Replayed)
+	}
+	saved, err = world.DecodeState(store.state)
+	if err != nil || len(saved.BankAccounts["a"].Items.Inventory) != 0 || !reflect.DeepEqual(saved.Players["a"].Items.Inventory, []string{"other", "beta", "alpha"}) {
+		t.Fatalf("withdraw state=%+v err=%v", saved, err)
 	}
 }

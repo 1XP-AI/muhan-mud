@@ -58,6 +58,10 @@ func TestParseCommandClassifiesImplementedAliases(t *testing.T) {
 		{"모두 출금", CommandBank},
 		{"검 보관물", CommandBank},
 		{"검 받아", CommandBank},
+		{"모든검 보관물", CommandBank},
+		{"보관물 모든검", CommandBank},
+		{"모든검 받아", CommandBank},
+		{"받아 모든검", CommandBank},
 		{"동 보관물", CommandBank},
 		{"동 받아", CommandBank},
 		{"끝", CommandQuit},
@@ -297,6 +301,10 @@ func TestParseCommandLastTokenBankIsNeverDirectional(t *testing.T) {
 		{"모두 출금", "money", "", true, 0},
 		{"검 보관물", "deposit-item", "검", false, 0},
 		{"검 받아", "withdraw-item", "검", false, 0},
+		{"모든검 보관물", "deposit-items-by-name", "검", false, 0},
+		{"보관물 모든검", "deposit-items-by-name", "검", false, 0},
+		{"모든검 받아", "withdraw-items-by-name", "검", false, 0},
+		{"받아 모든검", "withdraw-items-by-name", "검", false, 0},
 		{"동 보관물", "deposit-item", "동", false, 0},
 		{"동 받아", "withdraw-item", "동", false, 0},
 	} {
@@ -309,7 +317,7 @@ func TestParseCommandLastTokenBankIsNeverDirectional(t *testing.T) {
 			t.Fatalf("parseBankLine(%q)=%+v ok=%v want kind=%s name=%s all=%t amt=%d", tt.line, action, ok, tt.kind, tt.name, tt.all, tt.amt)
 		}
 	}
-	for _, line := range []string{"동 입금 extra", "북 출금 junk"} {
+	for _, line := range []string{"동 입금 extra", "북 출금 junk", "모든 보관물", "보관물 모든"} {
 		got, err := ParseCommand(line)
 		if err != nil {
 			t.Fatalf("ParseCommand(%q) err=%v", line, err)

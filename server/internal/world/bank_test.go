@@ -1,6 +1,10 @@
 package world
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"testing"
+)
 
 func bankFixture() State {
 	var flags [8]byte
@@ -195,5 +199,138 @@ func TestDepositAllBankItemsAdmitsInvisibleRootWithDetectInvisible(t *testing.T)
 	}
 	if _, ok := next.Players["a"].Items.Items["stone"]; ok {
 		t.Fatal("detected invisible root remained in player ownership")
+	}
+}
+
+func bankByNameItemFixture() State {
+	s := bankFixture()
+	p := s.Players["a"]
+	flagged := func(bit uint) [8]byte {
+		var flags [8]byte
+		flags[bit/8] |= 1 << (bit % 8)
+		return flags
+	}
+	p.Items = &ItemCollection{Items: map[string]Item{
+		"beta":     {Object: LegacyObject{Name: "BladeTwo", Keys: [3]string{"blade-alias"}, Weight: 1}, Contents: []string{"beta-gem"}},
+		"alpha":    {Object: LegacyObject{Name: "BladeOne", Keys: [3]string{"blade-alias"}, Weight: 1}},
+		"hidden":   {Object: LegacyObject{Name: "BladeHidden", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flagged(objectInvisibleFlag)}},
+		"quest":    {Object: LegacyObject{Name: "BladeQuest", Keys: [3]string{"blade-alias"}, Weight: 1, Quest: 1}},
+		"event":    {Object: LegacyObject{Name: "BladeEvent", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flagged(objectEventFlag)}},
+		"bag":      {Object: LegacyObject{Name: "BladeBag", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flagged(itemContainerFlag)}},
+		"other":    {Object: LegacyObject{Name: "Rock", Keys: [3]string{"stone"}, Weight: 1}},
+		"beta-gem": {Object: LegacyObject{Name: "Gem", Weight: 1}},
+	}, Inventory: []string{"beta", "alpha", "hidden", "quest", "event", "bag", "other"}}
+	s.Players["a"] = p
+	s.BankAccounts = map[string]BankAccount{"a": BankAccount{Items: &ItemCollection{
+		Items:     map[string]Item{"old": {Object: LegacyObject{Name: "VaultOld", Weight: 1}}},
+		Inventory: []string{"old"},
+	}}}
+	return s
+}
+
+func bankByNameWithdrawFixture() State {
+	s := bankFixture()
+	p := s.Players["a"]
+	p.Items = &ItemCollection{Items: map[string]Item{
+		"owned": {Object: LegacyObject{Name: "Owned", Weight: 1}},
+	}, Inventory: []string{"owned"}}
+	s.Players["a"] = p
+	flags := func(bit uint) [8]byte {
+		var out [8]byte
+		out[bit/8] |= 1 << (bit % 8)
+		return out
+	}
+	s.BankAccounts = map[string]BankAccount{"a": BankAccount{Items: &ItemCollection{Items: map[string]Item{
+		"beta":     {Object: LegacyObject{Name: "BladeTwo", Keys: [3]string{"blade-alias"}, Weight: 1}, Contents: []string{"beta-gem"}},
+		"alpha":    {Object: LegacyObject{Name: "BladeOne", Keys: [3]string{"blade-alias"}, Weight: 1}},
+		"hidden":   {Object: LegacyObject{Name: "BladeHidden", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flags(objectInvisibleFlag)}},
+		"event":    {Object: LegacyObject{Name: "BladeEvent", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flags(objectEventFlag)}},
+		"bag":      {Object: LegacyObject{Name: "BladeBag", Keys: [3]string{"blade-alias"}, Weight: 1, Flags: flags(itemContainerFlag)}},
+		"other":    {Object: LegacyObject{Name: "Rock", Keys: [3]string{"stone"}, Weight: 1}},
+		"beta-gem": {Object: LegacyObject{Name: "Gem", Weight: 1}},
+	}, Inventory: []string{"beta", "alpha", "hidden", "event", "bag", "other"}}}}
+	return s
+}
+
+func TestBankItemsByNameMovesMatchingRootsByKeyAndSkipsDepositIneligibleRoots(t *testing.T) {
+	s := bankByNameItemFixture()
+	before := append([]string(nil), s.Players["a"].Items.Inventory...)
+	next, result, err := s.DepositBankItemsByName("a", "BLADE")
+	if err != nil || result.Action != "bank-deposit-all-by-name" || result.Count != 2 || result.ItemName != "BladeTwo, BladeOne" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := next.BankAccounts["a"].Items.Inventory; !reflect.DeepEqual(got, []string{"old", "beta", "alpha"}) {
+		t.Fatalf("bank order=%v", got)
+	}
+	if got := next.Players["a"].Items.Inventory; !reflect.DeepEqual(got, []string{"hidden", "quest", "event", "bag", "other"}) {
+		t.Fatalf("player order=%v", got)
+	}
+	if !reflect.DeepEqual(s.Players["a"].Items.Inventory, before) {
+		t.Fatal("deposit mutated source snapshot")
+	}
+	if _, ok := next.BankAccounts["a"].Items.Items["beta-gem"]; !ok {
+		t.Fatal("canonical child was not moved with beta root")
+	}
+	if _, ok := next.Players["a"].Items.Items["beta"]; ok {
+		t.Fatal("beta root retained by player")
+	}
+	noMatch, noMatchResult, err := next.DepositBankItemsByName("a", "missing")
+	if err != nil || noMatchResult.Count != 0 || !reflect.DeepEqual(noMatch.Players["a"].Items.Inventory, next.Players["a"].Items.Inventory) {
+		t.Fatalf("nonmatching result=%+v err=%v state=%v", noMatchResult, err, noMatch.Players["a"].Items.Inventory)
+	}
+}
+
+func TestBankItemsByNameWithdrawsVisibleRootsAndSkipsInvisibleEvent(t *testing.T) {
+	s := bankByNameWithdrawFixture()
+	next, result, err := s.WithdrawBankItemsByName("a", "blade")
+	if err != nil || result.Action != "bank-withdraw-all-by-name" || result.Count != 3 || result.ItemName != "BladeTwo, BladeOne, BladeBag" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := next.Players["a"].Items.Inventory; !reflect.DeepEqual(got, []string{"owned", "beta", "alpha", "bag"}) {
+		t.Fatalf("player order=%v", got)
+	}
+	if got := next.BankAccounts["a"].Items.Inventory; !reflect.DeepEqual(got, []string{"hidden", "event", "other"}) {
+		t.Fatalf("bank order=%v", got)
+	}
+	if _, ok := next.Players["a"].Items.Items["beta-gem"]; !ok {
+		t.Fatal("canonical child was not moved with beta root")
+	}
+	noMatch, noMatchResult, err := next.WithdrawBankItemsByName("a", "missing")
+	if err != nil || noMatchResult.Count != 0 || !reflect.DeepEqual(noMatch.BankAccounts["a"].Items.Inventory, next.BankAccounts["a"].Items.Inventory) {
+		t.Fatalf("nonmatching result=%+v err=%v state=%v", noMatchResult, err, noMatch.BankAccounts["a"].Items.Inventory)
+	}
+}
+
+func TestBankItemsByNameWithdrawSkipsWeightAndCapacity(t *testing.T) {
+	heavy := bankByNameWithdrawFixture()
+	account := heavy.BankAccounts["a"]
+	item := account.Items.Items["beta"]
+	item.Object.Weight = 25
+	account.Items.Items["beta"] = item
+	heavy.BankAccounts["a"] = account
+	next, result, err := heavy.WithdrawBankItemsByName("a", "blade")
+	if err != nil || result.Count != 2 || result.ItemName != "BladeOne, BladeBag" {
+		t.Fatalf("weight result=%+v err=%v", result, err)
+	}
+	if containsID(next.Players["a"].Items.Inventory, "beta") {
+		t.Fatal("overweight matching root was withdrawn")
+	}
+
+	capacity := bankFixture()
+	p := capacity.Players["a"]
+	p.Items = &ItemCollection{Items: map[string]Item{}, Inventory: make([]string, 0, 150)}
+	for i := 0; i < 150; i++ {
+		id := fmt.Sprintf("owned-%03d", i)
+		p.Items.Items[id] = Item{Object: LegacyObject{Name: id, Weight: 1}}
+		p.Items.Inventory = append(p.Items.Inventory, id)
+	}
+	capacity.Players["a"] = p
+	capacity.BankAccounts = map[string]BankAccount{"a": BankAccount{Items: &ItemCollection{
+		Items:     map[string]Item{"blade": {Object: LegacyObject{Name: "Blade", Keys: [3]string{"blade"}, Weight: 1}}},
+		Inventory: []string{"blade"},
+	}}}
+	next, result, err = capacity.WithdrawBankItemsByName("a", "blade")
+	if err != nil || result.Count != 0 || len(next.BankAccounts["a"].Items.Inventory) != 1 || len(next.Players["a"].Items.Inventory) != 150 {
+		t.Fatalf("capacity result=%+v err=%v bank=%v player=%d", result, err, next.BankAccounts["a"].Items.Inventory, len(next.Players["a"].Items.Inventory))
 	}
 }
