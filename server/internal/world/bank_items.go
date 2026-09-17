@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const bankItemCapacity = 200
+const (
+	bankItemCapacity      = 200
+	bankItemResponseLimit = 2048
+)
 
 type BankItemResult struct {
 	ItemName string
@@ -41,7 +44,10 @@ func emptyBankItems(account BankAccount) ItemCollection {
 }
 
 func bankVisible(object LegacyObject, detect bool) bool {
-	return detect || (!flag(object.Flags[:], objectInvisibleFlag) && !flag(object.Flags[:], objectHiddenFlag) && !flag(object.Flags[:], objectNotTakeFlag) && !flag(object.Flags[:], objectSceneryFlag))
+	if flag(object.Flags[:], objectHiddenFlag) || flag(object.Flags[:], objectNotTakeFlag) || flag(object.Flags[:], objectSceneryFlag) {
+		return false
+	}
+	return detect || !flag(object.Flags[:], objectInvisibleFlag)
 }
 
 func bankItemListing(items ItemCollection, detect bool) string {
@@ -204,41 +210,38 @@ func selectBankItemRootsByName(items ItemCollection, name string, visible func(L
 	return roots, nil
 }
 
-// transferBankItemRoots keeps the order in which matching roots appeared in
-// the source. TransferItemRoots still validates and moves complete canonical
-// subtrees; this wrapper only replaces its name-sorted destination root order
-// for the new multi-selector bank operation.
-func transferBankItemRoots(source, destination ItemCollection, roots []string) (ItemTransferPlan, error) {
-	plan, err := TransferItemRoots(source, destination, roots)
-	if err != nil {
-		return ItemTransferPlan{}, err
-	}
-	selected := make(map[string]bool, len(roots))
-	for _, id := range roots {
-		selected[id] = true
-	}
-	ordered := make([]string, 0, len(plan.Destination.Inventory))
-	for _, id := range plan.Destination.Inventory {
-		if !selected[id] {
-			ordered = append(ordered, id)
-		}
-	}
-	ordered = append(ordered, roots...)
-	plan.Destination.Inventory = ordered
-	if err := plan.Destination.Validate(); err != nil {
-		return ItemTransferPlan{}, err
-	}
-	return plan, nil
-}
-
 func bankItemNames(items ItemCollection, roots []string) string {
-	names := make([]string, 0, len(roots))
-	for _, id := range roots {
-		if item, ok := items.Items[id]; ok {
-			names = append(names, item.Object.Name)
+	var out strings.Builder
+	for i := 0; i < len(roots); {
+		item, ok := items.Items[roots[i]]
+		if !ok {
+			i++
+			continue
 		}
+		end := i + 1
+		for end < len(roots) {
+			next, ok := items.Items[roots[end]]
+			if !ok || next.Object.Name != item.Object.Name || next.Object.Adjustment != item.Object.Adjustment {
+				break
+			}
+			end++
+		}
+		name := displayItemName(item)
+		if count := end - i; count > 1 {
+			name = fmt.Sprintf("%s x%d", name, count)
+		}
+		separator := ""
+		if out.Len() > 0 {
+			separator = ", "
+		}
+		if out.Len()+len(separator)+len(name) > bankItemResponseLimit {
+			break
+		}
+		out.WriteString(separator)
+		out.WriteString(name)
+		i = end
 	}
-	return strings.Join(names, ", ")
+	return out.String()
 }
 
 // DepositBankItemsByName atomically moves every eligible direct player root
@@ -273,7 +276,7 @@ func (s State) DepositBankItemsByName(actorID, name string) (State, BankItemResu
 	if len(selected) == 0 {
 		return s.clone(), BankItemResult{Action: "bank-deposit-all-by-name"}, nil
 	}
-	plan, err := transferBankItemRoots(source, destination, selected)
+	plan, err := TransferItemRoots(source, destination, selected)
 	if err != nil {
 		return State{}, BankItemResult{}, err
 	}
@@ -322,7 +325,7 @@ func (s State) WithdrawBankItemsByName(actorID, name string) (State, BankItemRes
 		if err != nil {
 			return State{}, BankItemResult{}, err
 		}
-		if capacity >= 150 {
+		if capacity > 150 {
 			break
 		}
 		item := workingSource.Items[id]
@@ -350,7 +353,7 @@ func (s State) WithdrawBankItemsByName(actorID, name string) (State, BankItemRes
 	if len(selected) == 0 {
 		return s.clone(), BankItemResult{Action: "bank-withdraw-all-by-name"}, nil
 	}
-	plan, err := transferBankItemRoots(source, *p.Items, selected)
+	plan, err := TransferItemRoots(source, *p.Items, selected)
 	if err != nil {
 		return State{}, BankItemResult{}, err
 	}
