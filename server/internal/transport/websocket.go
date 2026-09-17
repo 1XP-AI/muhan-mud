@@ -40,6 +40,15 @@ type GameConnection interface {
 type EventSource interface {
 	Events() <-chan string
 }
+
+// followerProjectionEventSource is the transport-only extension used for
+// receipt-backed follower output. Unlike EventSource, its envelope carries
+// the exact receipt key so the writer can acknowledge one recipient only
+// after wsjson.Write succeeds.
+type followerProjectionEventSource interface {
+	followerProjectionEvents() <-chan followerProjectionDelivery
+	followerProjectionWrite(followerProjectionDelivery)
+}
 type CloseAfterSubmit interface {
 	ShouldClose() bool
 }
@@ -85,36 +94,66 @@ func NewGameHandler(lifetime context.Context, accounts session.Accounts, origins
 			return wsjson.Write(writeCtx, conn, output)
 		}
 		var eventDone chan struct{}
-		defer func() {
-			if eventDone != nil {
-				close(eventDone)
-			}
-		}()
+		var eventWG sync.WaitGroup
 		startEvents := func(game GameConnection) {
-			source, ok := game.(EventSource)
-			if !ok {
+			source, hasEvents := game.(EventSource)
+			projectionSource, hasProjections := game.(followerProjectionEventSource)
+			if !hasEvents && !hasProjections {
 				return
 			}
-			events := source.Events()
-			if events == nil {
+			var events <-chan string
+			if hasEvents {
+				events = source.Events()
+			}
+			var projectionEvents <-chan followerProjectionDelivery
+			if hasProjections {
+				projectionEvents = projectionSource.followerProjectionEvents()
+			}
+			if events == nil && projectionEvents == nil {
 				return
 			}
 			eventDone = make(chan struct{})
-			go func() {
-				for {
-					select {
-					case text, ok := <-events:
-						if !ok {
+			if events != nil {
+				eventWG.Add(1)
+				go func() {
+					defer eventWG.Done()
+					for {
+						select {
+						case text, ok := <-events:
+							if !ok {
+								return
+							}
+							writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
+							_ = writeOutput(writeCtx, Output{Type: "event", Text: text})
+							writeCancel()
+						case <-eventDone:
 							return
 						}
-						writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
-						_ = writeOutput(writeCtx, Output{Type: "event", Text: text})
-						writeCancel()
-					case <-eventDone:
-						return
 					}
-				}
-			}()
+				}()
+			}
+			if projectionEvents != nil {
+				eventWG.Add(1)
+				go func() {
+					defer eventWG.Done()
+					for {
+						select {
+						case delivery, ok := <-projectionEvents:
+							if !ok {
+								return
+							}
+							writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
+							writeErr := writeOutput(writeCtx, Output{Type: "event", Text: delivery.text})
+							writeCancel()
+							if writeErr == nil {
+								projectionSource.followerProjectionWrite(delivery)
+							}
+						case <-eventDone:
+							return
+						}
+					}
+				}()
+			}
 		}
 		login := session.NewLogin(accounts)
 		defer login.Close()
@@ -126,6 +165,15 @@ func NewGameHandler(lifetime context.Context, accounts session.Accounts, origins
 				cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				game.Close(cleanup)
+			}
+		}()
+		// Stop and join event writers before closing the game connection. This
+		// prevents a successful projection write from racing unregister/close and
+		// makes the callback's wire boundary explicit.
+		defer func() {
+			if eventDone != nil {
+				close(eventDone)
+				eventWG.Wait()
 			}
 		}()
 		for {

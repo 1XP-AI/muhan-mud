@@ -67,6 +67,8 @@ type WorldConnector struct {
 	cleanup                *session.CleanupQueue
 	connections            map[*worldConnection]struct{}
 	stopping               bool
+	publishedProjections   map[string]struct{}
+	followerProjections    map[string]*followerProjectionState
 	lastPublicAdmissionAt  int32
 	lastVitalSlot          int64
 	pendingVital           *playerVitalTick
@@ -78,6 +80,30 @@ type WorldConnector struct {
 	pendingNPCMaintenance  *npcMaintenanceTick
 	lastNPCRandomSpawnSlot int64
 	pendingNPCRandomSpawn  *npcRandomSpawnTick
+}
+
+type followerProjectionRecipient struct {
+	connection *worldConnection
+	accepted   bool
+	written    bool
+}
+
+type followerProjectionState struct {
+	expected      map[string]struct{}
+	recipients    map[string]followerProjectionRecipient
+	acknowledging bool
+}
+
+// followerProjectionDelivery is kept separate from the ordinary event
+// channel because enqueueing a string only proves that it reached an in-memory
+// buffer. The WebSocket writer acknowledges this envelope only after its
+// wsjson.Write call succeeds, which is the first client-write boundary the
+// transport can observe.
+type followerProjectionDelivery struct {
+	commandID  string
+	key        string
+	text       string
+	connection *worldConnection
 }
 
 type playerPhaseSummary struct {
@@ -120,7 +146,7 @@ func NewWorldConnector(config WorldConnectorConfig) (*WorldConnector, error) {
 	if config.WallClock == nil {
 		config.WallClock = func() time.Time { return time.Now().In(mudPST) }
 	}
-	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1, lastNPCRandomSpawnSlot: -1}
+	g := &WorldConnector{config: config, connections: map[*worldConnection]struct{}{}, publishedProjections: map[string]struct{}{}, followerProjections: map[string]*followerProjectionState{}, lastVitalSlot: -1, lastRoomResourceSlot: -1, lastNPCResourceSlot: -1, lastNPCMaintenanceSlot: -1, lastNPCRandomSpawnSlot: -1}
 	g.cleanup = session.NewWorldCleanupQueue(&g.owners, config.Store, config.WorldID)
 	return g, nil
 }
@@ -281,7 +307,7 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	if err != nil {
 		return nil, "", err
 	}
-	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32), accountName: c.Name}
+	connection := &worldConnection{game: g, lease: lease, events: make(chan string, 32), projectionEvents: make(chan followerProjectionDelivery, 32), accountName: c.Name}
 	now, hour := g.config.Clock()
 	receipt, err := g.owners.EnterWorld(ctx, g.config.Store, g.config.WorldID, "enter-"+rand.Text(), lease, now, world.SceneOptions{ViewOptions: world.ViewOptions{Hour: hour}}, g.config.Catalog, g.config.Roll, g.config.Allocate)
 	if err != nil {
@@ -291,6 +317,7 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 	if err = json.Unmarshal(receipt.Response, &entry); err != nil {
 		return connection, "", err
 	}
+	connection.startEventQueue()
 	// New characters are registered before a canonical account name is
 	// attached to storage.Character. Resolve that name from the admitted
 	// player once, without making it part of world state or a command receipt.
@@ -316,10 +343,16 @@ func (g *WorldConnector) Open(ctx context.Context, c storage.Character) (GameCon
 }
 
 type worldConnection struct {
-	mu     sync.Mutex
-	game   *WorldConnector
-	lease  session.SessionLease
-	events chan string
+	mu               sync.Mutex
+	game             *WorldConnector
+	lease            session.SessionLease
+	events           chan string
+	projectionEvents chan followerProjectionDelivery
+	eventMu          sync.Mutex
+	pendingEvents    []string
+	eventWake        chan struct{}
+	eventStop        chan struct{}
+	eventWG          sync.WaitGroup
 	// accountName is the canonical account identity used only by the
 	// connection-local password flow. It is never copied into world receipts.
 	accountName string
@@ -495,6 +528,131 @@ type notepadDraft struct {
 // transport consumes it with one writer lock, while non-WebSocket test
 // connectors can continue to implement only Submit/Close.
 func (c *worldConnection) Events() <-chan string { return c.events }
+
+// followerProjectionEvents is consumed by the WebSocket transport's durable
+// projection writer. It deliberately does not expose follower deliveries via
+// Events: a receive from that string channel is not evidence that the client
+// actually received the frame.
+func (c *worldConnection) followerProjectionEvents() <-chan followerProjectionDelivery {
+	if c == nil {
+		return nil
+	}
+	return c.projectionEvents
+}
+
+// followerProjectionWrite records the wire-write boundary after the
+// transport has successfully written one projection frame. Direct test
+// connections without a projection channel use the legacy string channel and
+// do not call this callback.
+func (c *worldConnection) followerProjectionWrite(delivery followerProjectionDelivery) {
+	if c == nil || c.game == nil {
+		return
+	}
+	c.game.markFollowerProjectionWritten(delivery)
+}
+
+// tryDeliverEvent is the legacy direct string-channel helper used only by
+// non-durable projection callers. Durable follower receipts use the typed
+// envelope path below so enqueueing cannot be mistaken for a client write.
+func (c *worldConnection) tryDeliverEvent(text string) bool {
+	if c == nil || c.events == nil || text == "" {
+		return false
+	}
+	select {
+	case c.events <- text:
+		return true
+	default:
+		return false
+	}
+}
+
+// tryDeliverFollowerProjection is the enqueue half of the durable projection
+// boundary. Its typed envelopes are acknowledged only by
+// followerProjectionWrite after a successful client write. A connection that
+// does not expose this channel cannot receive a durable projection.
+func (c *worldConnection) tryDeliverFollowerProjection(delivery followerProjectionDelivery) bool {
+	if c == nil || c.projectionEvents == nil || delivery.text == "" {
+		return false
+	}
+	select {
+	case c.projectionEvents <- delivery:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *worldConnection) startEventQueue() {
+	if c.events == nil || c.eventStop != nil {
+		return
+	}
+	c.eventWake = make(chan struct{}, 1)
+	c.eventStop = make(chan struct{})
+	c.eventWG.Add(1)
+	go func() {
+		defer c.eventWG.Done()
+		for {
+			c.eventMu.Lock()
+			if len(c.pendingEvents) == 0 {
+				c.eventMu.Unlock()
+				select {
+				case <-c.eventWake:
+					continue
+				case <-c.eventStop:
+					return
+				}
+			}
+			text := c.pendingEvents[0]
+			c.eventMu.Unlock()
+			select {
+			case c.events <- text:
+				c.eventMu.Lock()
+				if len(c.pendingEvents) != 0 {
+					c.pendingEvents = c.pendingEvents[1:]
+				}
+				c.eventMu.Unlock()
+			case <-c.eventStop:
+				return
+			}
+		}
+	}()
+}
+
+// enqueueEvent accepts a projected event immediately when possible and keeps
+// it in an explicit per-connection queue when the public channel is full.
+// Callers hold the connector lock while resolving recipients, but queue state
+// has its own lock so the writer goroutine and direct test connections remain
+// race-safe.
+func (c *worldConnection) enqueueEvent(text string) bool {
+	if c == nil || c.events == nil || text == "" {
+		return false
+	}
+	c.eventMu.Lock()
+	defer c.eventMu.Unlock()
+	if len(c.pendingEvents) == 0 {
+		select {
+		case c.events <- text:
+			return true
+		default:
+		}
+	}
+	c.pendingEvents = append(c.pendingEvents, text)
+	if c.eventWake != nil {
+		select {
+		case c.eventWake <- struct{}{}:
+		default:
+		}
+	}
+	return true
+}
+
+func (c *worldConnection) stopEventQueue() {
+	if c == nil || c.eventStop == nil {
+		return
+	}
+	close(c.eventStop)
+	c.eventWG.Wait()
+}
 
 // ShouldClose is observed by the WebSocket loop after the quit receipt has
 // been sent. Close itself still performs the durable departure/cleanup.
@@ -3096,14 +3254,21 @@ func (c *worldConnection) Submit(ctx context.Context, line string) (string, erro
 		c.infoPending = true
 		c.infoContinuationCommandID = ""
 	}
-	if directional && !receipt.Replayed {
+	if directional {
 		if after, ok := c.game.snapshot(ctx); ok {
-			if beforeOK {
+			if !receipt.Replayed && beforeOK {
 				c.game.publishMovement(before, after, c.lease.ActorID, receipt.NPCChaseIDs)
 			}
-			if receipt.ArrivalTrapEvent != nil {
+			if !receipt.Replayed && receipt.ArrivalTrapEvent != nil {
 				c.game.publishArrivalTrap(after, *receipt.ArrivalTrapEvent)
 			}
+		}
+		// Follower trap events carry their own check-time recipient IDs and do
+		// not depend on a successful final snapshot. A replay is publishable
+		// only while its durable projection remains pending; per-recipient
+		// progress prevents a partial retry from duplicating earlier output.
+		if len(receipt.FollowerArrivalTrapEvents) != 0 && !receipt.ProjectionDelivered && !c.game.followerProjectionPublished(commandID) {
+			c.game.publishFollowerArrivalTraps(world.State{}, receipt.FollowerArrivalTrapEvents, commandID)
 		}
 	}
 	if sayCommand && !receipt.Replayed {
@@ -4046,15 +4211,195 @@ func (g *WorldConnector) snapshot(ctx context.Context) (world.State, bool) {
 	return s, true
 }
 
-func (g *WorldConnector) unregister(connection *worldConnection) {
+func (g *WorldConnector) followerProjectionPublished(commandID string) bool {
+	if g == nil || commandID == "" {
+		return false
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	_, ok := g.publishedProjections[commandID]
+	return ok
+}
+
+// enqueueFollowerProjection records the recipient before sending so a later
+// retry can distinguish an already enqueued recipient from one that was absent
+// or backpressured. Callers hold g.mu. Production follower projections bypass
+// the ordinary in-memory backpressure queue; a queued item is acknowledged
+// only by the WebSocket writer after a successful client write.
+func (g *WorldConnector) enqueueFollowerProjection(commandID, key string, connection *worldConnection, text string, available bool) bool {
+	if connection == nil || !available {
+		if commandID != "" {
+			state := g.followerProjectionStateLocked(commandID)
+			state.expected[key] = struct{}{}
+		}
+		return false
+	}
+	if commandID == "" {
+		return connection.tryDeliverEvent(text)
+	}
+	state := g.followerProjectionStateLocked(commandID)
+	state.expected[key] = struct{}{}
+	if prior, exists := state.recipients[key]; exists {
+		if prior.accepted {
+			return prior.written
+		}
+		if prior.connection != nil {
+			if _, active := g.connections[prior.connection]; active {
+				// The first attempt delivered this recipient to the live
+				// connection. Retrying must not append a duplicate.
+				return true
+			}
+			delete(state.recipients, key)
+		}
+	}
+	delivery := followerProjectionDelivery{commandID: commandID, key: key, text: text, connection: connection}
+	if !connection.tryDeliverFollowerProjection(delivery) {
+		return false
+	}
+	state.recipients[key] = followerProjectionRecipient{connection: connection, accepted: true}
+	return false
+}
+
+func (g *WorldConnector) followerProjectionStateLocked(commandID string) *followerProjectionState {
+	if g.followerProjections == nil {
+		g.followerProjections = make(map[string]*followerProjectionState)
+	}
+	state := g.followerProjections[commandID]
+	if state == nil {
+		state = &followerProjectionState{expected: make(map[string]struct{}), recipients: make(map[string]followerProjectionRecipient)}
+		g.followerProjections[commandID] = state
+	}
+	return state
+}
+
+func followerProjectionComplete(state *followerProjectionState) bool {
+	if state == nil {
+		return false
+	}
+	for key := range state.expected {
+		recipient, ok := state.recipients[key]
+		if !ok || !recipient.accepted || !recipient.written {
+			return false
+		}
+	}
+	return true
+}
+
+// markFollowerProjectionWritten is called by the WebSocket writer only after
+// wsjson.Write returns nil. It advances one exact event/role/recipient key and
+// then attempts the aggregate durable acknowledgement once every expected
+// recipient has crossed that client-write boundary.
+func (g *WorldConnector) markFollowerProjectionWritten(delivery followerProjectionDelivery) {
+	if g == nil || delivery.commandID == "" || delivery.key == "" || delivery.connection == nil {
+		return
+	}
+	g.mu.Lock()
+	state := g.followerProjections[delivery.commandID]
+	if state == nil {
+		g.mu.Unlock()
+		return
+	}
+	recipient, ok := state.recipients[delivery.key]
+	if !ok || recipient.connection != delivery.connection || !recipient.accepted {
+		g.mu.Unlock()
+		return
+	}
+	recipient.written = true
+	state.recipients[delivery.key] = recipient
+	complete := followerProjectionComplete(state)
+	g.mu.Unlock()
+	if complete {
+		g.finalizeFollowerProjection(delivery.commandID)
+	}
+}
+
+func (g *WorldConnector) finalizeFollowerProjection(commandID string) {
+	if g == nil || commandID == "" {
+		return
+	}
+	g.mu.Lock()
+	state := g.followerProjections[commandID]
+	if state == nil || state.acknowledging || !followerProjectionComplete(state) {
+		g.mu.Unlock()
+		return
+	}
+	state.acknowledging = true
+	g.mu.Unlock()
+	if !g.acknowledgeFollowerProjection(context.Background(), commandID) {
+		g.mu.Lock()
+		if current := g.followerProjections[commandID]; current == state {
+			current.acknowledging = false
+		}
+		g.mu.Unlock()
+		return
+	}
+	g.mu.Lock()
+	if current := g.followerProjections[commandID]; current == state {
+		delete(g.followerProjections, commandID)
+	}
+	g.mu.Unlock()
+}
+
+// dropFollowerProjectionDeliveries forgets events retained by a connection
+// that is closing. An accepted recipient that already crossed the client-write
+// boundary remains part of the pending aggregate receipt: reconnect replay
+// must not duplicate it while durable acknowledgement is still pending. Only
+// accepted-but-unwritten recipients are reset so the next connection can
+// replay the output.
+func (g *WorldConnector) dropFollowerProjectionDeliveries(connection *worldConnection) {
+	if g == nil || connection == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for commandID, state := range g.followerProjections {
+		if _, published := g.publishedProjections[commandID]; published {
+			continue
+		}
+		for key, recipient := range state.recipients {
+			if recipient.connection == connection && !recipient.written {
+				delete(state.recipients, key)
+			}
+		}
+	}
+}
+
+func (g *WorldConnector) acknowledgeFollowerProjection(ctx context.Context, commandID string) bool {
+	if g == nil || commandID == "" {
+		return false
+	}
+	if projected, ok := g.config.Store.(storage.ReceiptProjectionStore); ok {
+		// A failed acknowledgement remains recoverable from the durable pending
+		// projection after restart. Never mark the connector-local marker when
+		// the durable acknowledgement itself failed.
+		if err := projected.MarkWorldReceiptProjectionDelivered(ctx, g.config.WorldID, commandID); err != nil {
+			return false
+		}
+	}
+	g.mu.Lock()
+	if g.publishedProjections == nil {
+		g.publishedProjections = make(map[string]struct{})
+	}
+	g.publishedProjections[commandID] = struct{}{}
+	g.mu.Unlock()
+	return true
+}
+
+func (g *WorldConnector) unregister(connection *worldConnection) {
+	g.mu.Lock()
 	if _, exists := g.connections[connection]; !exists {
+		g.mu.Unlock()
 		return
 	}
 	delete(g.connections, connection)
+	g.mu.Unlock()
+	connection.stopEventQueue()
+	g.dropFollowerProjectionDeliveries(connection)
 	if connection.events != nil {
 		close(connection.events)
+	}
+	if connection.projectionEvents != nil {
+		close(connection.projectionEvents)
 	}
 }
 

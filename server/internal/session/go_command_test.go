@@ -198,6 +198,74 @@ func TestExecuteGoLineIncludesLeaderArrivalTrapActorTextAndEphemeralEvent(t *tes
 	}
 }
 
+func TestExecuteGoLineCarriesFollowerArrivalTrapEventsAndSuppressesReplay(t *testing.T) {
+	s, err := world.DecodeState(goCommandFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := s.Players["actor"]
+	leader.FollowerIDs = []string{"follower"}
+	leader.Body.Stats[1] = 1
+	s.Players["actor"] = leader
+	s.Players["follower"] = world.PlayerState{
+		Body:        world.LegacyMonster{Name: "Bob", Type: 0, RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}},
+		Online:      true,
+		FollowingID: "actor",
+		Items:       &world.ItemCollection{Items: map[string]world.Item{}},
+	}
+	source := s.Rooms[1]
+	source.PlayerIDs = []string{"actor", "follower"}
+	s.Rooms[1] = source
+	destination := s.Rooms[2]
+	destination.Resource.Trap = world.TrapDart
+	s.Rooms[2] = destination
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &departureStore{state: raw}
+	owners := &Ownership{}
+	lease, err := owners.Acquire("actor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owners.Admit(lease, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	rolls := []int{100, 7, 100, 8}
+	first, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-follower-trap", lease, "가 동굴", 100, 12, nil, func(low, high int) int {
+		if low != 1 || (high != 100 && high != 10) {
+			t.Fatalf("unexpected trap roll %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil)
+	if err != nil || first.Replayed || store.commits != 1 || len(rolls) != 0 {
+		t.Fatalf("first=%+v err=%v commits=%d rolls=%v", first, err, store.commits, rolls)
+	}
+	if len(first.FollowerArrivalTrapEvents) != 1 || first.FollowerArrivalTrapEvents[0].ActorID != "follower" || first.FollowerArrivalTrapEvents[0].ActorName != "Bob" || first.FollowerArrivalTrapEvents[0].RoomID != 2 || first.FollowerArrivalTrapEvents[0].Trap != world.TrapDart {
+		t.Fatalf("missing follower trap event=%+v", first.FollowerArrivalTrapEvents)
+	}
+	var response string
+	if err := json.Unmarshal(first.Response, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response, "8점의 피해") || strings.Contains(response, "7점의 피해") {
+		t.Fatalf("leader response included follower output=%q", response)
+	}
+	if encoded, encodeErr := json.Marshal(first); encodeErr != nil || strings.Contains(string(encoded), "FollowerArrivalTrapEvents") || strings.Contains(string(encoded), "ActorText") || strings.Contains(string(encoded), "RoomText") {
+		t.Fatalf("follower trap metadata leaked into receipt JSON: %s err=%v", encoded, encodeErr)
+	}
+	replay, err := owners.ExecuteGoLine(context.Background(), store, "w", "go-follower-trap", lease, "가 동굴", 100, 12, nil, func(int, int) int {
+		t.Fatal("follower arrival trap replay rerolled")
+		return 0
+	}, nil)
+	if err != nil || !replay.Replayed || store.commits != 1 || !bytes.Equal(replay.Response, first.Response) || replay.FollowerArrivalTrapEvents != nil {
+		t.Fatalf("replay=%+v err=%v commits=%d", replay, err, store.commits)
+	}
+}
+
 func TestExecuteGoLineGatesMissingLockSilentAndCombat(t *testing.T) {
 	owners := &Ownership{}
 	lease, err := owners.Acquire("actor")

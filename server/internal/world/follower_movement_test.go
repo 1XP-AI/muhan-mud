@@ -88,7 +88,145 @@ func TestDirectionalStepRunsFollowerTrapBeforeLeaderTrap(t *testing.T) {
 	if err != nil || len(rolls) != 0 || len(result.Followers) != 1 || result.Followers[0].Transfer.ArrivalTrap == nil || result.Transfer.ArrivalTrap == nil {
 		t.Fatalf("next=%+v result=%+v rolls=%v err=%v", next, result, rolls, err)
 	}
+	if result.Followers[0].ArrivalTrapEvent == nil || result.Followers[0].ArrivalTrapEvent.ActorID != "b" || result.Followers[0].ArrivalTrapEvent.RoomID != 2 {
+		t.Fatalf("follower trap event=%+v", result.Followers[0].ArrivalTrapEvent)
+	}
 	if next.Players["b"].Body.HPCurrent != 27 || next.Players["a"].Body.HPCurrent != 25 {
 		t.Fatalf("trap order/effect players=%+v", next.Players)
+	}
+}
+
+func TestDirectionalStepFlattensNestedFollowerTrapEventsInCOrder(t *testing.T) {
+	s, in := followerMovementFixture(t)
+	s.Players["c"] = PlayerState{Body: LegacyMonster{Name: "Carol", RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}}, Online: true, Items: &ItemCollection{Items: map[string]Item{}}}
+	r := s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "c")
+	s.Rooms[1] = r
+	var err error
+	s, err = s.FollowPlayer("c", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapDart
+	s.Rooms[2] = destination
+	leader := s.Players["a"]
+	leader.Body.Stats[1] = 1
+	s.Players["a"] = leader
+	follower := s.Players["b"]
+	follower.Body.Stats[1] = 1
+	s.Players["b"] = follower
+	rolls := []int{100, 2, 100, 3, 100, 4}
+	next, result, err := s.DirectionalStep(in, nil, func(low, high int) int {
+		if low != 1 || (high != 100 && high != 10) {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil)
+	if err != nil || len(rolls) != 0 || next.Players["c"].Body.RoomID != 2 {
+		t.Fatalf("next=%+v result=%+v rolls=%v err=%v", next, result, rolls, err)
+	}
+	if len(result.Followers) != 1 || len(result.Followers[0].Followers) != 1 {
+		t.Fatalf("follower tree=%+v", result.Followers)
+	}
+	events := FlattenFollowerArrivalTrapEvents(result.Followers)
+	if len(events) != 2 || events[0].ActorID != "c" || events[1].ActorID != "b" {
+		t.Fatalf("nested trap events=%+v", events)
+	}
+	if events[0].ActorText != "당신은 숨겨진 독화살에 맞았습니다!\n당신은 2점의 피해를 입었습니다.\n" || events[1].ActorText != "당신은 숨겨진 독화살에 맞았습니다!\n당신은 3점의 피해를 입었습니다.\n" {
+		t.Fatalf("nested trap output order=%q/%q", events[0].ActorText, events[1].ActorText)
+	}
+}
+
+func TestDirectionalStepDoesNotProjectDeadFollowerArrivalTrap(t *testing.T) {
+	s, in := followerMovementFixture(t)
+	s.War = &FamilyWar{}
+	s.Rooms[1008] = RoomState{Resource: LegacyRoom{LegacyRoomHeader: LegacyRoomHeader{ID: 1008}}, Items: &ItemCollection{Items: map[string]Item{}}}
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapDart
+	s.Rooms[2] = destination
+	follower := s.Players["b"]
+	follower.Body.HPMax = 3
+	follower.Body.HPCurrent = 3
+	follower.Body.Stats[1] = 1
+	s.Players["b"] = follower
+	rolls := []int{100, 10}
+	next, result, err := s.DirectionalStep(in, nil, func(low, high int) int {
+		if len(rolls) != 0 {
+			if low != 1 || (high != 100 && high != 10) {
+				t.Fatalf("unexpected trap roll %d..%d", low, high)
+			}
+			value := rolls[0]
+			rolls = rolls[1:]
+			return value
+		}
+		return low
+	}, nil)
+	if err != nil || next.Players["b"].Body.RoomID != 1008 {
+		t.Fatalf("next=%+v result=%+v rolls=%v err=%v", next, result, rolls, err)
+	}
+	if result.Followers[0].Death == nil || result.Followers[0].ArrivalTrapEvent != nil || len(FlattenFollowerArrivalTrapEvents(result.Followers)) != 0 {
+		t.Fatalf("dead follower projected trap event result=%+v", result.Followers)
+	}
+}
+
+func TestDirectionalStepCapturesFollowerTrapRecipientsAtCheckTime(t *testing.T) {
+	s, in := followerMovementFixture(t)
+	s.Players["c"] = PlayerState{Body: LegacyMonster{Name: "Carol", RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}}, Online: true, Items: &ItemCollection{Items: map[string]Item{}}}
+	r := s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "c")
+	s.Rooms[1] = r
+	leaderWithFollowers := s.Players["a"]
+	leaderWithFollowers.FollowerIDs = []string{"c", "b"}
+	leaderWithFollowers.FollowerRefs = nil
+	s.Players["a"] = leaderWithFollowers
+	child := s.Players["c"]
+	child.FollowingID = "a"
+	s.Players["c"] = child
+	leader := s.Players["a"]
+	leader.Body.Stats[1] = 1
+	s.Players["a"] = leader
+	follower := s.Players["b"]
+	follower.Body.Stats[1] = 1
+	s.Players["b"] = follower
+	child = s.Players["c"]
+	child.Body.Stats[1] = 1
+	s.Players["c"] = child
+	destination := s.Rooms[2]
+	destination.Resource.Trap = TrapDart
+	destination.PlayerIDs = []string{"observer"}
+	s.Players["observer"] = PlayerState{Body: LegacyMonster{Name: "Observer", RoomID: 2, Class: 4, Level: 1, HPMax: 20, HPCurrent: 20}, Online: true, Items: &ItemCollection{Items: map[string]Item{}}}
+	s.Rooms[2] = destination
+	r = s.Rooms[1]
+	r.PlayerIDs = append(r.PlayerIDs, "observer")
+	s.Rooms[1] = r
+	// Keep the observer in the destination only; the source append above is
+	// intentionally removed to make the fixture's room membership explicit.
+	r.PlayerIDs = r.PlayerIDs[:len(r.PlayerIDs)-1]
+	s.Rooms[1] = r
+
+	rolls := []int{100, 2, 100, 3, 100, 4}
+	_, result, err := s.DirectionalStep(in, nil, func(low, high int) int {
+		if low != 1 || (high != 100 && high != 10) {
+			t.Fatalf("unexpected roll %d..%d", low, high)
+		}
+		value := rolls[0]
+		rolls = rolls[1:]
+		return value
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := FlattenFollowerArrivalTrapEvents(result.Followers)
+	if len(events) != 2 || events[0].ActorID != "c" || events[1].ActorID != "b" {
+		t.Fatalf("follower trap order=%+v", events)
+	}
+	if containsString(events[0].RoomRecipientIDs, "b") || !containsString(events[1].RoomRecipientIDs, "c") {
+		t.Fatalf("check-time recipients=%+v", events)
+	}
+	if containsString(events[0].RoomRecipientIDs, "c") || containsString(events[1].RoomRecipientIDs, "b") {
+		t.Fatalf("event actor leaked as room recipient=%+v", events)
 	}
 }

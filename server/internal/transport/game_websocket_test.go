@@ -21,6 +21,11 @@ type eventGameStub struct {
 	events chan string
 }
 
+type followerProjectionGameStub struct {
+	projections chan followerProjectionDelivery
+	writes      chan followerProjectionDelivery
+}
+
 type secretGameStub struct {
 	secret bool
 }
@@ -33,6 +38,20 @@ func (g *eventGameStub) Submit(_ context.Context, line string) (string, error) {
 }
 func (g *eventGameStub) Close(context.Context) {}
 func (g *eventGameStub) Events() <-chan string { return g.events }
+
+func (g *followerProjectionGameStub) Open(_ context.Context, _ storage.Character) (GameConnection, string, error) {
+	return g, "광장", nil
+}
+func (g *followerProjectionGameStub) Submit(_ context.Context, line string) (string, error) {
+	return "명령: " + line, nil
+}
+func (g *followerProjectionGameStub) Close(context.Context) {}
+func (g *followerProjectionGameStub) followerProjectionEvents() <-chan followerProjectionDelivery {
+	return g.projections
+}
+func (g *followerProjectionGameStub) followerProjectionWrite(delivery followerProjectionDelivery) {
+	g.writes <- delivery
+}
 
 func (g *secretGameStub) Open(_ context.Context, _ storage.Character) (GameConnection, string, error) {
 	return g, "광장", nil
@@ -131,6 +150,50 @@ func TestWebSocketForwardsAsynchronousRoomEvent(t *testing.T) {
 	}
 	if output.Type != "event" || !strings.Contains(output.Text, "다른 모험가") || output.Secret || output.Closed {
 		t.Fatalf("unexpected async event=%+v", output)
+	}
+}
+
+func TestWebSocketAcknowledgesFollowerProjectionAfterClientWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	game := &followerProjectionGameStub{
+		projections: make(chan followerProjectionDelivery, 1),
+		writes:      make(chan followerProjectionDelivery, 1),
+	}
+	server := httptest.NewServer(NewGameHandler(ctx, accountStub{}, []string{"https://mud.test"}, game))
+	defer server.Close()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://mud.test"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var output Output
+	if err := wsjson.Read(ctx, conn, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"Alice", "pw1234"} {
+		if err := wsjson.Write(ctx, conn, Input{Type: "line", Text: line}); err != nil {
+			t.Fatal(err)
+		}
+		if err := wsjson.Read(ctx, conn, &output); err != nil {
+			t.Fatal(err)
+		}
+	}
+	delivery := followerProjectionDelivery{commandID: "wire-command", key: "0:room:observer", text: "wire-boundary"}
+	game.projections <- delivery
+	if err := wsjson.Read(ctx, conn, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Type != "event" || output.Text != delivery.text || output.Closed {
+		t.Fatalf("unexpected follower projection output=%+v", output)
+	}
+	select {
+	case written := <-game.writes:
+		if written != delivery {
+			t.Fatalf("write callback=%+v want=%+v", written, delivery)
+		}
+	case <-ctx.Done():
+		t.Fatal("projection write callback did not follow client write")
 	}
 }
 

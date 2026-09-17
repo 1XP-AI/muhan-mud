@@ -160,18 +160,18 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 	}
 	var committedNPCChaseIDs []string
 	var committedArrivalTrapEvent *world.ArrivalTrapEvent
-	receipt, err := o.ExecuteGame(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, error) {
+	receipt, err := o.ExecuteGameWithProjection(ctx, store, worldID, commandID, lease, payload, func(raw json.RawMessage, actorID string) (json.RawMessage, json.RawMessage, json.RawMessage, error) {
 		state, err := world.DecodeState(raw)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		proposal, err := state.PlanGo(actorID, command.ExitName, command.Occurrence, options)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		next, result, err := state.ApplyGo(proposal)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if proposal.NPCChase != nil {
 			for _, move := range proposal.NPCChase.Moves {
@@ -184,22 +184,32 @@ func (o *Ownership) ExecuteGoLineWithOptions(ctx context.Context, store engine.C
 		}
 		nextRaw, err := json.Marshal(next)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		response, err := json.Marshal(result.Response)
-		return nextRaw, response, err
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		projection, err := json.Marshal(movementReceiptProjection{
+			FollowerArrivalTrapEvents: proposal.FollowerArrivalTrapEvents,
+		})
+		return nextRaw, response, projection, err
 	})
 	if err != nil {
 		return receipt, err
 	}
 	receipt.NPCChaseIDs = nil
 	receipt.ArrivalTrapEvent = nil
+	receipt.FollowerArrivalTrapEvents = nil
 	if !receipt.Replayed && len(committedNPCChaseIDs) != 0 {
 		receipt.NPCChaseIDs = append([]string(nil), committedNPCChaseIDs...)
 	}
 	if !receipt.Replayed && committedArrivalTrapEvent != nil {
 		event := *committedArrivalTrapEvent
 		receipt.ArrivalTrapEvent = &event
+	}
+	if err := decodeMovementReceiptProjection(&receipt); err != nil {
+		return storage.WorldReceipt{}, err
 	}
 	return receipt, nil
 }

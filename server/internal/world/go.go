@@ -74,6 +74,10 @@ type GoProposal struct {
 	// ArrivalTrapEvent is receipt-only projection metadata. It is copied from
 	// the leader step after reducer application and never enters GoResult.
 	ArrivalTrapEvent *ArrivalTrapEvent `json:"-"`
+	// FollowerArrivalTrapEvents is the ordered, receipt-only projection of
+	// canonical player follower traps. It is post-order recursive C move()
+	// metadata and never enters GoResult.
+	FollowerArrivalTrapEvents []ArrivalTrapEvent `json:"-"`
 
 	before State
 	next   State
@@ -165,6 +169,7 @@ func (s State) PlanGo(actorID, prefix string, occurrence int, options GoOptions)
 	proposal.Death = step.Death
 	proposal.NPCChase = step.NPCChase
 	proposal.ArrivalTrapEvent = step.ArrivalTrapEvent
+	proposal.FollowerArrivalTrapEvents = FlattenFollowerArrivalTrapEvents(step.Followers)
 	proposal.Moved = step.Transfer.Movement.Moved
 	proposal.next = next
 	if step.Transfer.Movement.Moved {
@@ -345,6 +350,10 @@ func (s State) moveGoFollowerTree(leaderID string, in TransferInput, catalog Spa
 				return State{}, nil, err
 			}
 			childResult.Transfer, childResult.Death = childForTrap.Transfer, childForTrap.Death
+			if childForTrap.ArrivalTrapEvent != nil && childForTrap.Death == nil {
+				event := *childForTrap.ArrivalTrapEvent
+				childResult.ArrivalTrapEvent = &event
+			}
 		}
 		results = append(results, childResult)
 	}
@@ -410,6 +419,10 @@ func (s State) moveGoMixedFollowerTree(leaderID string, sourceRoomID int16, in T
 					return State{}, nil, nil, nil, err
 				}
 				childResult.Transfer, childResult.Death = childForTrap.Transfer, childForTrap.Death
+				if childForTrap.ArrivalTrapEvent != nil && childForTrap.Death == nil {
+					event := *childForTrap.ArrivalTrapEvent
+					childResult.ArrivalTrapEvent = &event
+				}
 				npcMoves = append(npcMoves, childNPCMoves...)
 				order = append(order, childOrder...)
 			}

@@ -248,6 +248,89 @@ func TestWorldConnectorSubmitGoPublishesLeaderArrivalTrapAfterArrivalAndSuppress
 	}
 }
 
+func TestWorldConnectorSubmitPublishesFollowerArrivalTrapLocallyAndToRoomOnce(t *testing.T) {
+	state := connectorGoState()
+	leader := state.Players["actor"]
+	leader.FollowerIDs = []string{"follower"}
+	leader.Body.Stats[1] = 1
+	state.Players["actor"] = leader
+	state.Players["follower"] = world.PlayerState{
+		Body:        world.LegacyMonster{Name: "Bob", Type: 0, RoomID: 1, Class: 4, Level: 1, HPMax: 30, HPCurrent: 30, Stats: [5]byte{10, 1, 10, 10, 10}},
+		Online:      true,
+		FollowingID: "actor",
+		Items:       &world.ItemCollection{Items: map[string]world.Item{}},
+	}
+	source := state.Rooms[1]
+	source.PlayerIDs = []string{"actor", "observer", "follower"}
+	state.Rooms[1] = source
+	destination := state.Rooms[2]
+	destination.Resource.Trap = world.TrapDart
+	state.Rooms[2] = destination
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &familyMutationReplayStore{connectorCommandStore: &connectorCommandStore{state: raw}}
+	calls := 0
+	connector, err := NewWorldConnector(WorldConnectorConfig{
+		Store: store, WorldID: "go-follower-arrival-trap-output", Clock: func() (int32, int) { return 100, 12 }, MaxSessions: 4,
+		Roll: func(low, high int) int {
+			calls++
+			if low != 1 || (high != 100 && high != 10) {
+				t.Fatalf("unexpected trap roll %d..%d", low, high)
+			}
+			return []int{100, 7, 100, 8}[calls-1]
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := admitConnectorPlayers(t, connector, []string{"actor", "follower", "observer", "away"})
+	output, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || !strings.Contains(output, "8점의 피해") || strings.Contains(output, "7점의 피해") || calls != 4 || store.commits != 1 {
+		t.Fatalf("go=%q err=%v calls=%d commits=%d", output, err, calls, store.commits)
+	}
+	if countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살") != 1 {
+		t.Fatalf("follower-local trap output count=%d", countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살"))
+	}
+	if countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살") != 1 {
+		t.Fatalf("follower room trap output count=%d", countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살"))
+	}
+	drainQueuedEvents(connections["follower"].events)
+	drainQueuedEvents(connections["away"].events)
+	replay, err := connections["actor"].Submit(context.Background(), "가 동굴")
+	if err != nil || replay != output || calls != 4 || store.commits != 1 {
+		t.Fatalf("replay=%q err=%v calls=%d commits=%d", replay, err, calls, store.commits)
+	}
+	if countQueuedEventContaining(connections["follower"].events, "당신은 숨겨진 독화살") != 0 || countQueuedEventContaining(connections["away"].events, "Bob이 숨겨진 독화살") != 0 {
+		t.Fatal("replay emitted follower trap output")
+	}
+}
+
+func countQueuedEventContaining(events <-chan string, want string) int {
+	count := 0
+	for {
+		select {
+		case event := <-events:
+			if strings.Contains(event, want) {
+				count++
+			}
+		default:
+			return count
+		}
+	}
+}
+
+func drainQueuedEvents(events <-chan string) {
+	for {
+		select {
+		case <-events:
+		default:
+			return
+		}
+	}
+}
+
 func TestWorldConnectorSubmitGoPITPublishesCommittedPreRelocationRoom(t *testing.T) {
 	state := connectorGoState()
 	destination := state.Rooms[2]

@@ -43,18 +43,20 @@ type ArrivalTrapResult struct {
 	Dead               bool
 }
 
-// ArrivalTrapEvent is the reducer-owned projection of one triggered leader
-// arrival trap. It is intentionally separate from ArrivalTrapResult and State:
-// transport may fan it out after the candidate commits, but it is never part
-// of the persisted state or public command response. RoomID is the room in
-// which check_traps ran, before a PIT relocation or a lethal death transition.
+// ArrivalTrapEvent is the reducer-owned projection of one triggered arrival
+// trap. It is intentionally separate from ArrivalTrapResult and State:
+// transport may fan it out after the candidate commits, while the follower
+// subset can be persisted in a private command projection without changing the
+// public command response. RoomID is the room in which check_traps ran, before
+// a PIT relocation or a lethal death transition.
 type ArrivalTrapEvent struct {
-	ActorID   string
-	ActorName string
-	RoomID    int16
-	Trap      byte
-	ActorText string
-	RoomText  string
+	ActorID          string   `json:"actor_id"`
+	ActorName        string   `json:"actor_name"`
+	RoomID           int16    `json:"room_id"`
+	Trap             byte     `json:"trap"`
+	ActorText        string   `json:"actor_text"`
+	RoomText         string   `json:"room_text"`
+	RoomRecipientIDs []string `json:"room_recipient_ids,omitempty"`
 }
 
 // arrivalTrapEventFor renders the C check_traps actor and room output after
@@ -62,15 +64,16 @@ type ArrivalTrapEvent struct {
 // actor identity because a PIT/death may leave the actor elsewhere by commit.
 // Avoided and levitating PIT results deliberately produce no event: C returns
 // before the trap-output switch in both cases.
-func arrivalTrapEventFor(actorID, actorName string, roomID int16, effect ArrivalTrapResult) (ArrivalTrapEvent, bool) {
+func arrivalTrapEventFor(actorID, actorName string, roomID int16, effect ArrivalTrapResult, roomRecipientIDs []string) (ArrivalTrapEvent, bool) {
 	if actorID == "" || actorName == "" || roomID == 0 || !effect.Triggered || effect.Avoided || effect.Suppressed {
 		return ArrivalTrapEvent{}, false
 	}
 	event := ArrivalTrapEvent{
-		ActorID:   actorID,
-		ActorName: actorName,
-		RoomID:    roomID,
-		Trap:      effect.Trap,
+		ActorID:          actorID,
+		ActorName:        actorName,
+		RoomID:           roomID,
+		Trap:             effect.Trap,
+		RoomRecipientIDs: append([]string(nil), roomRecipientIDs...),
 	}
 	switch effect.Trap {
 	case TrapPit:

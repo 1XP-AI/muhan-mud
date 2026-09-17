@@ -52,7 +52,9 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   request_hash bytea NOT NULL CHECK(octet_length(request_hash)=32),
   revision bigint NOT NULL CHECK(revision>0),
   response jsonb NOT NULL,
-  PRIMARY KEY(world_id,command_id),
+  projection jsonb NOT NULL DEFAULT '{}'::jsonb,
+  projection_delivered boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(world_id,command_id),
   UNIQUE(world_id,revision)
  );
  CREATE TABLE IF NOT EXISTS mud_go.character_imports (
@@ -95,6 +97,8 @@ func (p *Postgres) Migrate(ctx context.Context) error {
   CHECK((result='validated' AND source_octets>0 AND length(quarantine_reason)=0) OR result='quarantined')
  );
  ALTER TABLE mud_go.worlds ADD COLUMN IF NOT EXISTS writer_epoch bigint NOT NULL DEFAULT 0 CHECK(writer_epoch>=0);
+ ALTER TABLE mud_go.world_commands ADD COLUMN IF NOT EXISTS projection jsonb NOT NULL DEFAULT '{}'::jsonb;
+ ALTER TABLE mud_go.world_commands ADD COLUMN IF NOT EXISTS projection_delivered boolean NOT NULL DEFAULT false;
  ALTER TABLE mud_go.characters DROP CONSTRAINT IF EXISTS characters_stage_check;
  ALTER TABLE mud_go.characters ADD CONSTRAINT characters_stage_check CHECK(stage IN ('draft','linked'));
  ALTER TABLE mud_go.characters ADD COLUMN IF NOT EXISTS world_id text;
